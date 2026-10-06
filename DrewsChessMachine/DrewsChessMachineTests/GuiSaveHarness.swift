@@ -117,6 +117,7 @@ final class GuiSaveHarness {
         controller.parallelWorkerStatsBox = box
         controller.trainingBox = trainingStatsBox
         controller.lineageTracker = tracker
+        controller.beginRunStartCapture(buffer: buffer)
         // The segment counts on this box from its counts now, as
         // `beginLineageSegment` sets it up at a Play-and-Train start.
         let counts = box.snapshot()

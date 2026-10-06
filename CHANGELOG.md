@@ -9,6 +9,16 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Hyperparameter recording P3: GUI records the values in force
+
+Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (gap 3).
+
+- **A GUI save records the batch size, pre-train fill and buffer capacity the run trains under**, not a later edit of the settings. `RunStartParameterCapture` is taken at every Play-and-Train start (Continue included; capacity from the run's buffer) by `SessionController.beginRunStartCapture(buffer:)`, logged `[PARAM] run-start capture: …`, kept through Stop, cleared when the trainer is dropped, and put back when a start fails before its lineage segment begins. It is the single source for: the lineage record's parameter snapshot (`inForce(over:)`), `session.json` `batchSize` / `trainingPositionsSeen`, the status-bar and chart effective-LR readouts, the progress rate, the arena record and log, the `[STATS]`/chart sample's batch, the replay-ratio controller and the results recorder at start. A missing capture where a run is described is an error (`noSegment`), never a fallback to the settings; the arena stops rather than record a value the run does not use.
+- The stats/chart sample now reports the promote threshold and arena game count the arena reads (live), not run-start copies.
+- Settings popover: an edit of one of the three keys while a run holds a capture logs `[PARAM] <key>: old -> new (applies at the next Play-and-Train start; this run keeps N)`, and the fields carry an "applies at the next Play-and-Train start" caption.
+- The effective-LR warmup readout is published only while a run's capture exists (a sweep's trainer steps at no run's batch size).
+- Tests: `RunStartParameterCaptureTests`; owner-approved setup edits (O-14 and 2026-10-06) to `GuiSaveHarness`, `GuiLineageLifecycleTests`, `ExactResumeCompletionTests`, `SessionSaveReplayBufferTests`.
+
 ## 2026-10-06 — Hyperparameter recording P2: a CLI resume records what it trains
 
 Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (gaps 5-CLI and 13; B1's `session.json` fix).

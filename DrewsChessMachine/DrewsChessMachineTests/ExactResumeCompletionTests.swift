@@ -346,11 +346,12 @@ final class ExactResumeCompletionTests: XCTestCase {
     /// just finished, not the time since the arena before it — else a resume
     /// of every `-promote` save would run an arena at once.
     @MainActor
-    func testAPostPromotionSaveRecordsTheArenaAsJustFinished() {
+    func testAPostPromotionSaveRecordsTheArenaAsJustFinished() throws {
         let controller = SessionController()
         controller.arenaTriggerBox = ArenaTriggerBox(startTime: Date().addingTimeInterval(-900))
-        let live = controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .live, includeReplayBuffer: false)
-        let postPromotion = controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .arenaJustFinished, includeReplayBuffer: false)
+        controller.beginRunStartCapture(buffer: ReplayBuffer(capacity: 64, inputEncoding: .basic30, sampler: DCMRandom(seed: 3)))
+        let live = try controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .live, includeReplayBuffer: false)
+        let postPromotion = try controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .arenaJustFinished, includeReplayBuffer: false)
         XCTAssertEqual(live.arenaSecondsSinceLastArena ?? -1, 900, accuracy: 5)
         XCTAssertEqual(postPromotion.arenaSecondsSinceLastArena, 0)
     }

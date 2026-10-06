@@ -1201,7 +1201,8 @@ private struct OptimizerTab: View {
                 label: "Training batch size:",
                 text: $trainingBatchSizeText,
                 error: trainingBatchSizeError,
-                placeholder: TrainingBatchSize.declaredDefaultText
+                placeholder: TrainingBatchSize.declaredDefaultText,
+                hint: RunStartParameterCapture.appliesAtNextStartCaption
             ) {
                 Stepper(
                     "",
@@ -2187,6 +2188,9 @@ private struct ReplayTab: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Replay buffer")
                     .font(.subheadline.weight(.semibold))
+                Text("Capacity and pre-train fill apply at the next Play-and-Train start")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 PopoverRow(
                     label: "Capacity (plies):",
                     text: $replayBufferCapacityText,

@@ -138,8 +138,13 @@ extension SessionController {
         // rather than touching the trainer's executionQueue from inside
         // `body`. Only published while a trainer exists; a missing
         // trainer yields nil so the Idle chip path doesn't accidentally
-        // surface stale warmup numbers from a prior 
-        if let trainer {
+        // surface stale warmup numbers from a prior run. The effective LR
+        // is the one fed at the run's own batch size (its run-start
+        // capture), so the snapshot is published only while a run's
+        // capture exists: a trainer used outside Play-and-Train (a sweep)
+        // steps at no run's batch size, and a value computed from the
+        // settings would be one nothing is fed.
+        if let trainer, let runCapture = runStartCapture {
             // Sync SyncBox read — NOT `asyncCompletedTrainSteps()`, which
             // hops onto the trainer's serial `executionQueue` (the GPU work
             // queue) and waits behind the in-flight ~0.8s training step,
@@ -159,7 +164,7 @@ extension SessionController {
             // only the SyncBox step count + immutable LR config, so a direct
             // call on the main actor is instant.
             let effectiveLR = trainer.effectiveLearningRate(
-                forBatchSize: TrainingParameters.shared.trainingBatchSize,
+                forBatchSize: runCapture.trainingBatchSize,
                 completedSteps: completedTrainSteps
             )
             // Same step observation as the LR so the published pair is
@@ -575,11 +580,12 @@ extension SessionController {
         // `effectiveMomentum` resolve the cycle without touching
         // `executionQueue` (so a UI sample never blocks on a training step).
         let optimizerReadout: (learningRate: Double, momentum: Double, effectiveStepSize: Double)? = {
-            guard let trainer else { return nil }
-            // Same batch size the optimizer is actually stepping at, so the
-            // sqrt-batch scaling inside `effectiveLearningRate` matches what
-            // the SGD step applied rather than a nominal default.
-            let batchSize = TrainingParameters.shared.trainingBatchSize
+            // The run's own batch size (its run-start capture), the one the
+            // optimizer is stepping at, so the sqrt-batch scaling inside
+            // `effectiveLearningRate` matches what the SGD step applied.
+            // Without a run there is no fed LR to chart.
+            guard let trainer, let runCapture = runStartCapture else { return nil }
+            let batchSize = runCapture.trainingBatchSize
             let lr = Double(trainer.effectiveLearningRate(forBatchSize: batchSize))
             let mu = Double(trainer.effectiveMomentum())
             // `lr / (1 − μ)`. Guarded because μ = 1 is a legal parameter value
@@ -665,7 +671,11 @@ extension SessionController {
         // window timestamps, not elapsedSec).
         let elapsed = max(0, now.timeIntervalSince(chartCoordinator?.chartElapsedAnchor ?? Date()))
         let curSp = pStats.selfPlayPositions
-        let curTr = (trainingStats?.steps ?? 0) * TrainingParameters.shared.trainingBatchSize
+        // Positions trained = steps × the run's own batch size (its
+        // run-start capture). `realTraining` implies a capture; without one
+        // there is no training rate to report.
+        guard let runCapture = runStartCapture else { return }
+        let curTr = (trainingStats?.steps ?? 0) * runCapture.trainingBatchSize
 
         // Walk newest → oldest through the coordinator's ring,
         // recording the last sample we see that still falls inside

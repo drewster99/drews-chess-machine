@@ -490,7 +490,7 @@ extension SessionController {
             let sessionStateResult: Result<(state: SessionCheckpointState, trainingStep: Int, chartSnapshot: ChartCoordinatorSnapshot?), Error>
             do {
                 let trainingStep = try publishRunCountersAtCut()
-                let sessionState = buildCurrentSessionState(
+                let sessionState = try buildCurrentSessionState(
                     championID: championID,
                     trainerID: trainerID,
                     arenaClock: .live,
@@ -1143,14 +1143,21 @@ extension SessionController {
     /// `arenaClock` says which arena clock the save records;
     /// `includeReplayBuffer` whether the save writes the replay buffer, which
     /// `hasReplayBuffer` and the buffer counters then describe.
+    ///
+    /// `batchSize` and `trainingPositionsSeen` come from the run's
+    /// start-time capture (`RunStartParameterCapture`), the batch size the
+    /// trainer steps at; a save describes a run, so a missing capture
+    /// throws. The other settings are recorded from `TrainingParameters` as
+    /// before: a GUI resume restores its settings from them.
     @MainActor
     func buildCurrentSessionState(
         championID: String,
         trainerID: String,
         arenaClock: ArenaClockAtSave,
         includeReplayBuffer: Bool
-    ) -> SessionCheckpointState {
+    ) throws -> SessionCheckpointState {
         let params = TrainingParameters.shared
+        let runCapture = try requiredRunStartCapture(for: "the session state of this save")
         let wasTraining = realTraining
         checkpoint?.closeActiveTrainingSegment(reason: "save")
         if wasTraining && checkpoint?.activeSegmentStart == nil {
@@ -1216,8 +1223,8 @@ extension SessionController {
             trainingSteps: trainingSnap?.steps ?? 0,
             selfPlayGames: snap?.selfPlayGames ?? 0,
             selfPlayMoves: snap?.selfPlayPositions ?? 0,
-            trainingPositionsSeen: (trainingSnap?.steps ?? 0) * params.trainingBatchSize,
-            batchSize: params.trainingBatchSize,
+            trainingPositionsSeen: (trainingSnap?.steps ?? 0) * runCapture.trainingBatchSize,
+            batchSize: runCapture.trainingBatchSize,
             learningRate: lr,
             entropyRegularizationCoeff: entropyCoeff,
             drawPenalty: drawPen,
