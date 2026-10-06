@@ -9,6 +9,16 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Hyperparameter recording P1: build identity
+
+Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (gap 6 flag, B8 constants).
+
+- **`BuildInfo.gitDirty` now means "the compiled project differs from HEAD".** `generate-build-info.sh` tests only `DrewsChessMachine/` (project, scheme, test plan, sources, local packages), excludes the two files it writes itself (`build_counter.txt`, `App/BuildInfo.swift`), and counts staged, unstaged and untracked non-ignored files there. Before, it tested the whole repository after bumping the tracked counter, so every build said dirty (all lineage records on disk say `git_dirty: true`). Lineage records written by builds from this commit on carry the corrected flag; earlier records' flag is always true (risk R6).
+- **`BuildInfo.gitDiffSHA256`**: SHA-256 of `git diff --binary HEAD` over that scope plus each untracked file framed as `<path length>\n<path>\n<content length>\n<content>` in byte-sorted path order; `nil` exactly when clean. Not yet recorded in lineage (P4).
+- **`BuildInfo.xcodeBuild` / `sdkBuild` / `configuration`** from `XCODE_PRODUCT_BUILD_VERSION`, `SDK_PRODUCT_BUILD_VERSION`, `CONFIGURATION` (verified present in the Run Script phase); an empty or missing value fails the build. A git failure in the dirty test also fails the build instead of guessing.
+- New `scripts/safetensors_tensor_compare.py` (bit-exact or relative-tolerance tensor comparison, the plan's "no change to training math" check).
+- Tests: `test_build_info_script.py`, `test_safetensors_tensor_compare.py`, `BuildInfoConsistencyTests`.
+
 ## 2026-10-06 — /stupid fixes: per-site activations review
 
 - Build New Model: one `Availability` decides each site picker's state and help; each architecture-level picker is built from its site and binds through `BuildNewModelModel.activationKeyPath(at:)`; the choice-list aliases are gone (`ActivationFunction.functions` everywhere).
