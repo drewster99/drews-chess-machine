@@ -11,6 +11,7 @@ conversation.
 | 2026-10-05 23:44 | LR arm B-leakyall: B with leaky ReLU at every activation, to 40k | shares the GPU with two other runs |
 | 2026-10-05 23:44 | LR arm B-silu: B with SiLU in the tower (blocks + tower end) and leaky ReLU in the heads, to 40k | shares the GPU with two other runs |
 | 2026-10-06 17:00 | LR arm B-silu-clip1: exact resume of B-silu from its step-18000 checkpoint with `grad_clip_max_norm` 1.0 (B-silu: 15), to trainer step 40k | shares the GPU with two other runs |
+| 2026-10-06 18:15 | LR arm B-silu-ctl15: control for B-silu-clip1 — same exact resume from step 18000 with the original cap 15, to trainer step 23k | shares the GPU with three other runs |
 
 
 ## Next (in order)

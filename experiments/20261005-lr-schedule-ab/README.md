@@ -313,6 +313,21 @@ grep -A16 'LAYER-HEALTH\] checkpoint replay-final' ~/Library/Logs/DrewsChessMach
   feed and draws. Until gNorm first exceeds 1.0 it should track B-silu step for step (weights bit for bit only where
   MPSGraph steps are deterministic).
 
+## Arm B-silu-ctl15: control for B-silu-clip1 (added 2026-10-06 18:15, my decision)
+
+- B-silu-clip1 stopped tracking B-silu at trainer step 19,800, before its cap ever acted: its gNorm never exceeded 0.8.
+  The logged loss/gNorm agree with B-silu at every 50-step line through 19,750, then differ at 19,800 (loss 3.5357 vs
+  3.5356, gNorm 0.379 vs 0.332). That is run-to-run GPU nondeterminism with the GPU shared by three runs (CLAUDE.md:
+  weights match bit for bit only where MPSGraph steps are deterministic, not on a shared GPU). The 20k probes already
+  differ (B-silu 1390.2, clip1 1442.5), so a difference after 20,600 cannot be credited to the cap from these two runs
+  alone. The step-20,600 blowup could itself depend on the exact trajectory.
+- Control: the same `--resume-exact` from `20261005-lrBsilu-cyc1-replay-step18000.safetensors`, with the original
+  `parameters-B.json` (cap 15, so no `--accept-inexact`), `--training-step-limit 5000` (to trainer step 23,000, past
+  the blowup window), same build, flags and seed. Stem `20261006-lrBsilu-ctl15`, log `dcm_log_20261006-181510.txt`,
+  probes `probes-Bsilu-ctl15-seg1.jsonl`. Reading the two: if the control blows up near 20,600 and clip1 does not, the
+  cap is credited; if neither blows up, the original blowup depended on its trajectory; if both do, the cap did not
+  prevent it.
+
 ## Arm C-leaky (added 2026-10-05 23:13, owner)
 
 - Owner: "let's do a leaky version of C with the crazy high LR schedule". C's damage was not confined to the value head
