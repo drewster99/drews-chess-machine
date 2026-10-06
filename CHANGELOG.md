@@ -9,6 +9,11 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-05 22:45 CDT — Per-site activations: SE-less `se_activation` is `does_not_apply` (format v10), presets re-saved (`47e3b976` and the P4 completion commit)
+
+- **OD-13** (`47e3b976`): a block group's `se_activation` is `does_not_apply` exactly when the group has no SE block. Switching SE off sets it; switching it on asks for a function (Build New Model shows "choose…" and disables Build/Save). Format **v10**: a v9-or-older file's SE-less value (which had to equal the group's activation and was never applied) resolves to `does_not_apply`, logged; v9 files written by the first per-site build (the B-leaky run's checkpoints) therefore still load. `--set-activation` no longer changes `se_activation`.
+- **P4 completion:** the ten user presets re-saved at v10 after a verified backup (`Backups/Presets-pre-v9-20261005/`); validation V3–V8 passed (old vs new probes identical per position; an old-build trainer file resumes exactly with a matching behavior fingerprint; layer health identical; the leaky-head derive, mint and refusals behave as planned). ROADMAP entry completed. Full suite after P4: 2,391 passed, 0 failed, 1 skipped (env-gated).
+
 ## 2026-10-05 21:25 CDT — Per-site activations, architecture format v9 (`4e70c615`, `fa0ab1e8`, `5abff2d5`)
 
 Plan: `documentation/plans-active/HEAD_ACTIVATIONS_PLAN.md` (owner decisions OD-1 … OD-14).
