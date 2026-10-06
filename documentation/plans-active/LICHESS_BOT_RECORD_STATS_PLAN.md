@@ -486,6 +486,10 @@ Phases P3–P8 follow the recommended item order of OD-21; if the owner orders t
 - **OD-20 Account card ratings grid** stays as it is for now, though Time controls repeats its ratings. *Recommend keep*; revisit after P4.
 - **OD-21 First-pass scope and order:** which of the twelve proposed items ship first, and in what order. *Recommend items 1, 2, 4, 6, then 5 and 3* (the record table, then per-time-control, per-model and self-assessment, which most directly show how strong the bot is and whether its own evaluations can be trusted; endings and opponent strength last, as they refine the same picture); items 7–12 and the origin breakdown as later phases (§11). Alternative: any other subset or order; the phase list (§9) is reordered to match.
 
+**Decided (team lead, 2026-10-06, owner delegation).**
+- **OD-17: fold.** P0 is part of this plan, regression test first (§4.5, §7 P0).
+- **R-5 (Review): unchanged.** The PGN's per-move `gen=` comments stay per-session generation IDs; the `DCMModelIDs` tag still names every model.
+
 ---
 
 ## Review (2026-10-06, against `main` at `dad00b85`)
