@@ -67,7 +67,7 @@ final class LichessBotOnlineBotsRaceTests: XCTestCase {
         try LichessBotSettingsStore.save(settings, to: defaults)
         let token = LichessBotFakeLichess.token
         let controller = LichessBotController(
-            modelProvider: LichessBotFakeModelProvider(snapshot: nil),
+            modelProvider: try await LichessBotFakeModelProvider.randomChampion(),
             defaults: defaults,
             dataDirectory: LichessBotDataDirectory(root: root),
             services: LichessBotControllerServices(

@@ -44,7 +44,7 @@ struct LichessBotStatusChip: View {
             Button("Go Offline") {
                 Task { await controller.goOffline() }
             }
-            .disabled(!controller.isRunning)
+            .disabled(!controller.canGoOffline)
         }
         .accessibilityLabel("Lichess bot: \(text)")
         .task {
@@ -55,6 +55,9 @@ struct LichessBotStatusChip: View {
     private var text: String {
         let games = controller.activeGameIDs.count
         let base = "Lichess: \(controller.connection.label)"
+        if let goingOnline = controller.goingOnlineStatusText {
+            return "\(base) · \(goingOnline)"
+        }
         if games > 0 {
             return "\(base) · \(games) game\(games == 1 ? "" : "s")"
         }

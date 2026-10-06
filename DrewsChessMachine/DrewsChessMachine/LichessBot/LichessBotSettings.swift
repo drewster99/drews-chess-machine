@@ -102,6 +102,27 @@ enum LichessBotModelSourceKind: String, Sendable, Equatable, Codable, CaseIterab
     case liveTrainer
     /// A model file.
     case file
+
+    /// The operator-facing name, as the source picker shows it.
+    var displayName: String {
+        switch self {
+        case .champion: return "Champion"
+        case .trainerSnapshot: return "Trainer snapshot"
+        case .liveTrainer: return "Live trainer"
+        case .file: return "Model file"
+        }
+    }
+}
+
+/// What selects a model generation's weights: the source kind, plus the
+/// file for the file source. Settings with equal generation sources play the
+/// same weights; the other model fields (refresh interval, mid-game toggle)
+/// and a file path left over while another source is chosen don't change
+/// which weights are played (follow-lineage plan §3.4, §3.10).
+struct LichessBotGenerationSource: Sendable, Equatable {
+    let kind: LichessBotModelSourceKind
+    /// The model file's path; nil unless `kind` is `.file`.
+    let filePath: String?
 }
 
 struct LichessBotModelSettings: Sendable, Equatable, Codable {
@@ -112,6 +133,11 @@ struct LichessBotModelSettings: Sendable, Equatable, Codable {
     /// Live trainer only: whether games already in progress switch to each
     /// new snapshot, or keep the one they started with.
     var midGameRefresh = false
+
+    /// The weights these settings select.
+    var generationSource: LichessBotGenerationSource {
+        LichessBotGenerationSource(kind: source, filePath: source == .file ? filePath : nil)
+    }
 }
 
 /// Connection, pacing and safety (plan §5, §6, §12.6, §14.4).

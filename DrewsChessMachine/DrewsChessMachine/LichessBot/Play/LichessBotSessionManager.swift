@@ -182,8 +182,9 @@ actor LichessBotSessionManager {
     /// challenge from the same player during the POST can't make one game
     /// too many.
     private var outgoingChallengeReservations: [String: Int] = [:]
-    /// Games whose session is being set up (a model build can take a while);
-    /// they hold a slot like a running game.
+    /// Games whose session is being set up (reading the current model
+    /// generation and a leftover journal suspends); they hold a slot like a
+    /// running game.
     private var startingSessionIDs: Set<String> = []
     /// Challenges accepted whose `gameStart` hasn't arrived yet. They count
     /// against capacity, so two quick challenges can't both be accepted into
@@ -268,9 +269,8 @@ actor LichessBotSessionManager {
         Array(sessions.keys)
     }
 
-    /// Whether a session plays this game or is being set up for it (its
-    /// model can take a while to build). Either way the game is live and its
-    /// session's end hands it to filing.
+    /// Whether a session plays this game or is being set up for it. Either
+    /// way the game is live and its session's end hands it to filing.
     func hasSession(forGameID gameID: String) -> Bool {
         sessions[gameID] != nil || startingSessionIDs.contains(gameID)
     }
@@ -289,8 +289,7 @@ actor LichessBotSessionManager {
     /// on the event stream is reported. `opponentID` counts it against that
     /// player until it is answered.
     func noteOutgoingChallenge(id: String, opponentID: String? = nil) {
-        // Its game may already be running, or starting (the model builds
-        // first).
+        // Its game may already be running, or its session starting.
         if sessions[id] != nil || startingSessionIDs.contains(id) {
             onEvent(.outgoingChallengeResolved(challengeID: id, outcome: .accepted(gameID: id)))
             return
@@ -621,12 +620,9 @@ actor LichessBotSessionManager {
         rollDayIfNeeded()
         let now = time.now()
         challengeResponseTimes.removeAll { now - $0 > .seconds(60) }
-        let modelReady = await slots.sourceAvailable(for: settings.model)
-        // After the await: another call may have changed the commitments.
         dropExpiredAcceptances()
         let context = LichessBotChallengeContext(
             acceptingNewGames: acceptingNewGames && !rateLimitHold,
-            modelReady: modelReady,
             // Our pending outgoing challenges hold their slots too, so an
             // incoming game plus their later acceptance can never exceed
             // the concurrent-game limit.
@@ -650,41 +646,13 @@ actor LichessBotSessionManager {
         case .ignore:
             return
         case .accept:
-            // Make sure a generation is built before accepting, so the first
-            // move never waits on a network build (E15).
-            // Hold the slot across the model build: another challenge
-            // handled meanwhile must see it as taken.
-            acceptedAwaitingStart[challenge.id] = (challenge.challenger.id, time.now())
-            do {
-                _ = try await slots.ready(for: settings.model)
-            } catch {
-                acceptedAwaitingStart[challenge.id] = nil
-                onEvent(.anomaly("model not ready, declining \(challenge.id): \(error.localizedDescription)"))
-                await decline(challenge, reason: .later)
-                return
-            }
-            // The model build suspended this actor: a drain or a 429 hold may
-            // have stopped new games since the decision was made.
-            guard isAcceptingNewGames else {
-                acceptedAwaitingStart[challenge.id] = nil
-                onEvent(.challengeDecision(challengeID: challenge.id, challengerID: challenge.challenger.id, decision: .decline(.later, rule: "stopped accepting new games while the model was prepared")))
-                await decline(challenge, reason: .later)
-                return
-            }
-            // A long build can outlast the acceptance timeout, which drops the
-            // held slot, and another game may have taken it meanwhile. Hold
-            // it again, timed from this acceptance, only if there is still
-            // room.
-            if acceptedAwaitingStart[challenge.id] == nil {
-                let committed = Set(sessions.keys).union(startingSessionIDs).union(acceptedAwaitingStart.keys).count
-                    + pendingOutgoingChallenges.count
-                    + outgoingChallengeReservations.values.reduce(0, +)
-                guard committed < challengeSettings.maxConcurrentGames else {
-                    onEvent(.challengeDecision(challengeID: challenge.id, challengerID: challenge.challenger.id, decision: .decline(.later, rule: "the concurrent-game limit filled while the model was prepared")))
-                    await decline(challenge, reason: .later)
-                    return
-                }
-            }
+            // The model needs nothing here: a generation was built before
+            // the bot went online and every game reads the current one at
+            // its `gameStart` (follow-lineage plan §3.10). So nothing
+            // suspends between the decision and the acceptance, and the
+            // decision's view of capacity and of draining still holds.
+            // The slot is held from here until the game starts: another
+            // challenge handled meanwhile must see it as taken.
             acceptedAwaitingStart[challenge.id] = (challenge.challenger.id, time.now())
             await accept(challenge)
         case .decline(let reason, _):
@@ -730,18 +698,10 @@ actor LichessBotSessionManager {
         if let opponent = info.opponent?.id {
             opponentByGame[gameID] = opponent
         }
-        let settings = await settingsProvider()
-        let generation: LichessBotModelGeneration
-        do {
-            generation = try await slots.ready(for: settings.model)
-        } catch {
-            opponentByGame[gameID] = nil
-            // A game is running and there is no model to play it: the
-            // session can't move. Say so loudly; the game will be lost on
-            // time or aborted by Lichess, and reconciled afterwards.
-            onEvent(.anomaly("game \(gameID) started but no model is available: \(error.localizedDescription)"))
-            return
-        }
+        // The generation new games use. The slots always hold one: it is
+        // built before the bot goes online and only ever replaced by a newer
+        // one that finished building, so this never builds or waits.
+        let generation = await slots.current
         countGame(info)
         let origin = await sessionOrigin(gameID: gameID)
         let carryover: LichessBotGameSessionCarryover

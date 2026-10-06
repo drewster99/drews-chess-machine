@@ -25,7 +25,7 @@ final class LichessBotOfflineQuitTests: XCTestCase {
     /// A controller on `transport` whose quit replies are recorded in
     /// `replies`, with its own defaults suite and data folder, removed after
     /// the test.
-    private func makeController(transport: any LichessBotTransport, token: String, replies: SyncBox<[Bool]>, root: URL) throws -> LichessBotController {
+    private func makeController(transport: any LichessBotTransport, token: String, replies: SyncBox<[Bool]>, root: URL) async throws -> LichessBotController {
         let defaults = try makeTemporaryDefaults()
         var settings = LichessBotSettings.testBaseline()
         settings.chat.greetingEnabled = false
@@ -33,7 +33,7 @@ final class LichessBotOfflineQuitTests: XCTestCase {
         settings.challenge.outgoingChallengeTimeoutSeconds = 0
         try LichessBotSettingsStore.save(settings, to: defaults)
         let controller = LichessBotController(
-            modelProvider: LichessBotFakeModelProvider(snapshot: nil),
+            modelProvider: try await LichessBotFakeModelProvider.randomChampion(),
             defaults: defaults,
             dataDirectory: LichessBotDataDirectory(root: root),
             services: LichessBotControllerServices(
@@ -82,7 +82,7 @@ final class LichessBotOfflineQuitTests: XCTestCase {
         }
         let replies = SyncBox<[Bool]>([])
         let root = makeRoot()
-        let controller = try makeController(transport: lichess, token: LichessBotFakeLichess.token, replies: replies, root: root)
+        let controller = try await makeController(transport: lichess, token: LichessBotFakeLichess.token, replies: replies, root: root)
         await controller.goOnline()
         XCTAssertEqual(controller.connection, .online)
         try await waitUntil("the event stream is open") { lichess.base.eventStreamIsOpen }
@@ -108,7 +108,7 @@ final class LichessBotOfflineQuitTests: XCTestCase {
     func testQuitWithoutEverUsingTheBotIsImmediate() async throws {
         let replies = SyncBox<[Bool]>([])
         let root = makeRoot()
-        let controller = try makeController(transport: LichessBotResumeFakeLichess(), token: LichessBotResumeFakeLichess.token, replies: replies, root: root)
+        let controller = try await makeController(transport: LichessBotResumeFakeLichess(), token: LichessBotResumeFakeLichess.token, replies: replies, root: root)
         XCTAssertEqual(controller.applicationShouldTerminate(), .terminateNow)
         XCTAssertEqual(replies.value, [])
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path), "a launch that never used the bot leaves no data folder")
