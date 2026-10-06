@@ -16,11 +16,10 @@ usage: range16.py <safetensors path> <out.json> [posset.pkl]
 import sys, os, json, time, pickle, math, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 from fwd16 import *
-import dcm_arch
 
 MP = sys.argv[1]; OUT = sys.argv[2]
 PS = sys.argv[3] if len(sys.argv) > 3 else POSSET
-md, T = load(MP); sites = dcm_arch.site_activations_md(md); arch = norm_arch_md(md)
+md, T = load(MP); arch = norm_arch_md(md)
 T = {k: v for k, v in T.items() if not k.startswith('opt.')}
 P = pickle.load(open(PS, 'rb'))
 X = np.stack([p['x'] for p in P]).astype(np.float64); N = len(P)
@@ -61,7 +60,7 @@ print('worst subnormal tensors', sorted(((v['frac_subnormal'], k) for k, v in W.
 t = time.time()
 acc = {}; accb = {}; nin = {}; bstat = {}; lnvar = {}
 for s in range(0, N, 64):
-    o = forward(T, arch, X[s:s + 64], capture=True, sites=sites)
+    o = forward(T, arch, X[s:s + 64], capture=True, md=md)
     for n, x in o['acts'].items():
         a = np.abs(np.asarray(x, dtype=np.float64)).ravel(); nz = a[a > 0]
         d = acc.setdefault(n, dict(absmax=0.0, absmin_nz=np.inf, n=0, nnz=0, nsub=0, nzero16=0, nover=0))
@@ -109,12 +108,12 @@ for n in Nm: print(f'  norm {n:10s}', {k: f'{v:.3g}' for k, v in Nm[n].items()},
 
 # ---------------- (c) emulations ----------------
 def lsm(z): z = z - z.max(); return z - np.log(np.exp(z).sum())
-names = list(forward(T, arch, X[:2], capture=True, sites=sites)['acts'].keys())
+names = list(forward(T, arch, X[:2], capture=True, md=md)['acts'].keys())
 internal = frozenset(names) - {'p.convmm', 'v.fc2mm'}
 v5 = 'p.pre_bn' in names and arch['block_groups'][0].get('output_norm') == 'layer_norm'
 Tb = quantise_weights(T, bf16); Th = quantise_weights(T, f16); Tf = quantise_weights(T, f32)
 t = time.time()
-o64 = forward_batched(T, arch, X, sites=sites)
+o64 = forward_batched(T, arch, X, md=md)
 runs = {}
 # (weights q, internal rounding set, quantiser, head-output quantiser, value-softmax quantiser)
 runs['bf16 heads only'] = (T, frozenset(), ident, bf16, bf16)
@@ -130,7 +129,7 @@ runs['fp16 per-op + fp32 head tails'] = (Th, internal, f16, f32, f32)
 runs['fp32 per-op'] = (Tf, internal, f32, f32, f32)
 outs = {}
 for k, (Tq, Rs, q, qh, qs) in runs.items():
-    oo = o64 if (Tq is T and not Rs) else forward_batched(Tq, arch, X, Rs, q, sites=sites)
+    oo = o64 if (Tq is T and not Rs) else forward_batched(Tq, arch, X, Rs, q, md=md)
     outs[k] = (qh(oo['pl_raw']), qh(oo['vl_raw']), qs)
     print('emu', k, round(time.time() - t), 's', flush=True)
 p64 = softmax(o64['vl_raw']); v64 = p64[:, 0] - p64[:, 2]; ce64 = -np.log(p64[np.arange(N), labels])

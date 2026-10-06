@@ -115,25 +115,27 @@ def cmm(c, name, x, W, b=None):
     y = c(name + 'mm', x @ W.T)
     return y if b is None else c(name, y + b)
 
-def forward(T, arch, x, R=frozenset(), q=ident, capture=False, *, sites):
-    """sites: `dcm_arch.site_activations_md(md)` of the file, resolved by the
-    caller from the raw metadata (the normalized `arch` no longer carries the
-    format version or the uniform-tower form the resolution needs). Every
-    architecture-level site this forward applies is modelled as ReLU."""
-    c = Ctx(R, q, capture)
-    groups = arch['block_groups']; assert len(groups) == 1; g = groups[0]
-    assert arch['feature_skip_source'] == 'none', 'a feature skip is not modelled'
-    # The main path is modelled as ReLU only; the SE FC1 has its own activation.
-    assert g['activation_function'] == 'relu', 'only ReLU main paths are modelled'
+def forward(T, arch, x, R=frozenset(), q=ident, capture=False, *, md):
+    """md: the file's safetensors `__metadata__`; `arch` must be `norm_arch_md(md)`
+    (`dcm_arch.require_architecture_of`). The site activations are read from `md`
+    (the normalized `arch` no longer carries the format version or the
+    uniform-tower form their resolution needs). Every architecture-level site this
+    forward applies, and the block main path, is modelled as ReLU; the SE FC1 has
+    its own activation (`se_act`)."""
+    _dcm_arch.require_architecture_of(md, arch, 'fwd16.forward')
+    groups = arch['block_groups']
+    if len(groups) != 1:
+        raise _dcm_arch.ArchitectureError(f'fwd16.forward: {len(groups)} block groups; only one is modelled')
+    if arch['feature_skip_source'] != 'none':
+        raise _dcm_arch.ArchitectureError('fwd16.forward: a feature skip is not modelled')
+    g = groups[0]
     style = g['activation_style']
-    if style == 'post':
-        assert sites['stem_activation'] == 'relu', 'only a ReLU stem activation is modelled'
-    else:
-        assert sites['tower_end_activation'] == 'relu', 'only a ReLU tower-end activation is modelled'
+    sites = ('stem_activation' if style == 'post' else 'tower_end_activation',
+             'value_head_conv_activation', 'value_head_fc1_hidden_activation')
     if arch['policy_head_style'] != 'simple_conv':
-        assert sites['policy_head_activation'] == 'relu', 'only a ReLU policy pre-block activation is modelled'
-    assert sites['value_head_conv_activation'] == 'relu', 'only a ReLU value conv activation is modelled'
-    assert sites['value_head_fc1_hidden_activation'] == 'relu', 'only a ReLU value FC1 hidden activation is modelled'
+        sites += ('policy_head_activation',)
+    _dcm_arch.require_relu(md, 'fwd16.forward', sites, block_main_path=True)
+    c = Ctx(R, q, capture)
     x = c('input', x)
     h = cconv(c, 'stem.conv', x, T['stem.conv.weight'])
     h = bn(c, h, T, 'stem.bn', 'stem.bn')
@@ -206,8 +208,8 @@ def forward(T, arch, x, R=frozenset(), q=ident, capture=False, *, sites):
 def quantise_weights(T, q):
     return {k: q(v) for k, v in T.items() if not k.startswith('opt.')}
 
-def forward_batched(T, arch, X, R=frozenset(), q=ident, bs=128, keep=('pl_raw', 'vl_raw', 'f1'), *, sites):
-    outs = [forward(T, arch, X[i:i + bs], R, q, sites=sites) for i in range(0, len(X), bs)]
+def forward_batched(T, arch, X, R=frozenset(), q=ident, bs=128, keep=('pl_raw', 'vl_raw', 'f1'), *, md):
+    outs = [forward(T, arch, X[i:i + bs], R, q, md=md) for i in range(0, len(X), bs)]
     return {k: np.concatenate([o[k] for o in outs]) for k in keep}
 
 def softmax(z):

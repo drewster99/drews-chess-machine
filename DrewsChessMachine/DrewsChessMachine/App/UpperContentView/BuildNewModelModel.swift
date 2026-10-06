@@ -271,16 +271,26 @@ final class BuildNewModelModel {
         }
     }
 
+    /// The stored property holding `site`'s activation: the one site → field
+    /// map the screen's site pickers bind through
+    /// (`ArchitectureSiteActivationPicker.init(site:model:existingSites:)`)
+    /// and `storedActivation(at:)` reads.
+    static func activationKeyPath(
+        at site: ArchitectureActivationSite
+    ) -> ReferenceWritableKeyPath<BuildNewModelModel, ActivationFunction> {
+        switch site {
+        case .stem: return \.stemActivation
+        case .towerEnd: return \.towerEndActivation
+        case .featureSkip: return \.featureSkipActivation
+        case .policyHead: return \.policyHeadActivation
+        case .valueHeadConv: return \.valueHeadConvActivation
+        case .valueHeadFC1Hidden: return \.valueHeadFC1HiddenActivation
+        }
+    }
+
     /// The stored activation of `site` (the value its picker binds).
     func storedActivation(at site: ArchitectureActivationSite) -> ActivationFunction {
-        switch site {
-        case .stem: return stemActivation
-        case .towerEnd: return towerEndActivation
-        case .featureSkipFusion: return featureSkipActivation
-        case .policyHead: return policyHeadActivation
-        case .valueHeadConv: return valueHeadConvActivation
-        case .valueHeadFC1Hidden: return valueHeadFC1HiddenActivation
-        }
+        self[keyPath: Self.activationKeyPath(at: site)]
     }
 
     /// Whether the current topology has `site` (its picker is enabled only
@@ -300,8 +310,10 @@ final class BuildNewModelModel {
     /// every group's main path, through
     /// `NetworkArchitecture.setMainActivationEverywhere` — the rule
     /// `--derive-model --set-activation` applies, so the same edit made
-    /// either way gives the same architecture. Copied back through the
-    /// existing drafts so every row keeps its identity. Throws (changing
+    /// either way gives the same architecture. Copied back through each
+    /// existing draft's `activationFunction` (the shared setter), so every
+    /// row keeps its identity; the rule never changes a group's
+    /// `seActivation`, so there is nothing else to copy. Throws (changing
     /// nothing) only for `does_not_apply`, which its callers never pass.
     func applyMainActivationEverywhere(_ value: ActivationFunction) throws {
         var edited = architecture
@@ -310,8 +322,7 @@ final class BuildNewModelModel {
         precondition(edited.blockGroups.count == blockGroupDrafts.count,
                      "BuildNewModelModel: setting the activation changed the number of block groups")
         for (draft, group) in zip(blockGroupDrafts, edited.blockGroups) {
-            draft.group.activationFunction = group.activationFunction
-            draft.group.seActivation = group.seActivation
+            draft.activationFunction = group.activationFunction
         }
         stemActivation = edited.stemActivation
         towerEndActivation = edited.towerEndActivation

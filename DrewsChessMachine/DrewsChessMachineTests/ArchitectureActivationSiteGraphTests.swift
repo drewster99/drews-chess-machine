@@ -2,12 +2,11 @@
 //  ArchitectureActivationSiteGraphTests.swift
 //  DrewsChessMachineTests
 //
-//  The per-site activations (format v9) on the GPU: a legacy-decoded model
-//  builds the identical forward pass; each head site changes only the head it
-//  feeds; each site builds the function its own field names (checked
-//  numerically against a CPU computation from the tapped site input, not by
-//  op names); fresh trainables do not depend on the activations; leaky heads
-//  train; a head-only change changes the behavior fingerprint.
+//  The per-site activations (format v9) on the GPU: each head site changes
+//  only the head it feeds; each site builds the function its own field names
+//  (checked numerically against a CPU computation from the tapped site input,
+//  not by op names); fresh trainables do not depend on the activations; leaky
+//  heads train; a head-only change changes the behavior fingerprint.
 //
 
 import Foundation
@@ -76,39 +75,6 @@ final class ArchitectureActivationSiteGraphTests: XCTestCase {
         }
     }
 
-    // MARK: - Legacy decode
-
-    func testLegacyDecodedArchitectureBuildsTheIdenticalForwardPass() async throws {
-        try requireMetal()
-        let arch = ArchitectureActivationSiteTests.tiny(activation: .gelu, seStyle: .scaleAndBias)
-        let weights = try await perturbedWeights(arch)
-        let meta = ModelCheckpointMetadata(creator: "test", trainingStep: nil, parentModelID: "", notes: "fixture")
-        let encoded = try SafetensorsModelIO.encode(
-            modelID: "20261005-1-LGCY", createdAtUnix: 1_790_000_000, metadata: meta, weights: weights,
-            architecture: arch, includesVelocity: false,
-            lineage: try LineageRecord.forTests(trainerCompletedSteps: meta.trainerSchedule.map(\.completedTrainSteps), corpus: nil))
-        let (tensors, decodedMetadata) = try SafetensorsFile.decode(encoded)
-        var metadata = decodedMetadata
-        metadata.removeValue(forKey: SafetensorsFile.contentHashKey)
-        metadata["dcm_format_version"] = "8"
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(
-            with: Data(try XCTUnwrap(metadata["architecture"]).utf8)) as? [String: Any])
-        for site in ArchitectureActivationSite.allCases { object.removeValue(forKey: site.jsonKey) }
-        object["activation_function"] = "gelu"
-        metadata["architecture"] = String(
-            decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
-        let legacy = try SafetensorsModelIO.decode(
-            try SafetensorsFile.encode(tensors: tensors, metadata: metadata),
-            valueHead: .recenterUnlessMarked, source: "legacy.safetensors")
-        XCTAssertEqual(legacy.architecture, arch)
-        XCTAssertNotNil(legacy.architectureFormat.legacyLogLine)
-
-        let board = boards(arch, count: 1)
-        let current = try await outputs(try await network(arch, weights: weights), board: board)
-        let resolved = try await outputs(try await network(legacy.architecture, weights: weights), board: board)
-        XCTAssertEqual(current, resolved, "the resolved architecture must build the identical forward pass")
-    }
-
     // MARK: - Head sites
 
     func testEachHeadSiteChangesOnlyTheHeadItFeeds() async throws {
@@ -131,7 +97,7 @@ final class ArchitectureActivationSiteGraphTests: XCTestCase {
             case .towerEnd:
                 XCTAssertNotEqual(changed.value, reference.value, "the tower end feeds the value head")
                 XCTAssertNotEqual(changed.policy, reference.policy, "the tower end feeds the policy head")
-            case .stem, .featureSkipFusion:
+            case .stem, .featureSkip:
                 XCTFail("not a head site of this fixture")
             }
         }
@@ -218,7 +184,7 @@ final class ArchitectureActivationSiteGraphTests: XCTestCase {
             return (try batchNormThen(function, input: try tap("tower_final_bn_input"), count: count,
                                       channels: arch.towerOutputChannels, tensors: tensors, prefix: "tower_final_bn"),
                     "tower_output")
-        case .featureSkipFusion:
+        case .featureSkip:
             let fused = try batchNormThen(function, input: try tap("feature_skip_bn_input"), count: count,
                                           channels: arch.towerOutputChannels, tensors: tensors, prefix: "feature_skip.bn")
             return (conv1x1(fused, count: count, inChannels: arch.towerOutputChannels,

@@ -52,7 +52,7 @@ SUPPORTED_SCHEMA = 2
 # LineageRecord.metadataKey.
 METADATA_KEY = "dcm_lineage"
 FORMAT_VERSION_KEY = "dcm_format_version"
-# The header-size bound of the one header reader (`dcm_arch.read_metadata`),
+# The header-size bound of the one header reader (`dcm_arch.read_header`),
 # re-exported for callers that build a damaged header against it.
 MAX_HEADER_BYTES = dcm_arch.MAX_HEADER_BYTES
 
@@ -105,12 +105,9 @@ def format_version_of(metadata, source):
     if value is None:
         return UNVERSIONED_LEGACY_VERSION
     try:
-        version = int(value)
-    except (TypeError, ValueError):
+        return dcm_arch.parsed_format_version(value)
+    except dcm_arch.ArchitectureError:
         raise LineageError(f"{source}: unparseable {FORMAT_VERSION_KEY} {value!r}") from None
-    if version <= 0:
-        raise LineageError(f"{source}: unparseable {FORMAT_VERSION_KEY} {value!r}")
-    return version
 
 
 # Keys of the record this module reads. Every key of the record is required by

@@ -9,14 +9,14 @@ Stage 2 (scan): bf16 rounding at ONE point, heads unrounded, vs float64:
 import sys, os, pickle, json, time, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE); sys.path.insert(0, os.path.dirname(HERE))
 from fwd4 import load, bf16, forward_batched, forward, softmax
-from archnorm import norm_arch
+from archnorm import norm_arch_md
 MP = os.path.expanduser('~/Library/Application Support/DrewsChessMachine/Models/20260702-Qeu8-resume3-replay-step681000.safetensors')
-md, T = load(MP); arch = norm_arch(md['architecture'])
+md, T = load(MP); arch = norm_arch_md(md)
 P = pickle.load(open(os.path.join(HERE, 'posset_ejp0.pkl'), 'rb'))
 X = np.stack([p['x'] for p in P]).astype(np.float64); N = len(P)
 corpus = np.array([p['src'] == 'corpus' for p in P]); labels = np.array([p['label'] for p in P])
 legal = [p['legal'] for p in P]; targets = [p['target'] for p in P]
-names = list(forward(T, arch, X[:2], capture=True)['acts'].keys())
+names = list(forward(T, arch, X[:2], capture=True, md=md)['acts'].keys())
 stage = sys.argv[1]
 # which normaliser consumes which activation, and with what scale
 BN_IN = {'stem.conv': 'stem.bn', 'b0.ln': 'blocks.1.bn1', 'b0.conv1': 'blocks.0.bn2', 'b1.conv1': 'blocks.1.bn2',
@@ -27,7 +27,7 @@ if stage == 'stats':
     acc = {}
     lnr = {n: [] for n in LN_IN}; lnerr = {n: [] for n in LN_IN}
     for s in range(0, N, 128):
-        a = forward(T, arch, X[s:s+128], capture=True)['acts']
+        a = forward(T, arch, X[s:s+128], capture=True, md=md)['acts']
         for n, x in a.items():
             x = np.asarray(x, dtype=np.float64)
             if x.ndim == 0: x = x.reshape(1, 1)
@@ -77,7 +77,7 @@ if stage == 'stats':
     json.dump(out, open(os.path.join(HERE, 'net681_stats.json'), 'w'), indent=1)
 elif stage == 'scan':
     def lsm(z): z = z-z.max(); return z-np.log(np.exp(z).sum())
-    o64 = forward_batched(T, arch, X)
+    o64 = forward_batched(T, arch, X, md=md)
     p64 = softmax(o64['vl_raw']); ce64v = -np.log(p64[np.arange(N), labels])
     la64 = [lsm(o64['pl_raw'][i][legal[i]]) for i in range(N)]
     def metr(o, pol_round=None, val_round=None):
@@ -99,7 +99,7 @@ elif stage == 'scan':
             ('head matmul+bias rounded separately', frozenset({'p.conv', 'v.fc2mm'}), 'heads')]
     runs += [(n, frozenset({n}), None) for n in names if n not in ('p.conv', 'v.fc2mm')]
     for label, R, mode in runs:
-        t = time.time(); o = forward_batched(T, arch, X, R)
+        t = time.time(); o = forward_batched(T, arch, X, R, md=md)
         out[label] = metr(o, bf16, bf16) if mode == 'heads' else metr(o)
         print(f'{label:40s}', {k: f'{v:.3g}' for k, v in out[label].items()}, f'{time.time()-t:.0f}s', flush=True)
         json.dump(out, open(os.path.join(HERE, 'net681_scan.json'), 'w'), indent=1)

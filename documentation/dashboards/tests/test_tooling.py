@@ -101,6 +101,15 @@ class HeaderReadTests(unittest.TestCase):
             with self.assertRaises(dcm_arch.ArchitectureError, msg=header):
                 dcm_arch.read_metadata(self.path)
 
+    def test_read_header_returns_the_tensor_index_and_data_start(self):
+        header = {"__metadata__": {"model_id": "M1"}, "t": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}
+        raw = json.dumps(header).encode()
+        self.write_raw(struct.pack("<Q", len(raw)) + raw + struct.pack("<f", 1.5))
+        read, data_start = dcm_arch.read_header(self.path)
+        self.assertEqual(read, header)
+        self.assertEqual(data_start, 8 + len(raw))
+        self.assertEqual(dcm_arch.read_metadata(self.path), {"model_id": "M1"})
+
     def test_lineage_reader_is_the_same_reader_with_its_own_error_type(self):
         import dcm_lineage
         self.assertEqual(dcm_lineage.MAX_HEADER_BYTES, dcm_arch.MAX_HEADER_BYTES)

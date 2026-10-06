@@ -9,7 +9,7 @@ for spec in sys.argv[1:]:
     mid,step=spec.split(':'); p=pick(mid,step)
     if not p: print('missing',spec); continue
     md,T=load(p); assert md['model_id']==mid and md['training_step']==step
-    arch=norm_arch(md['architecture']); o=forward_batched(prep(T,'bf16'),arch,X,'f64')
+    arch=norm_arch_md(md); o=forward_batched(prep(T,'bf16'),arch,X,'f64',md=md)
     vl=o['vl']; e=np.exp(vl-vl.max(1,keepdims=True)); p64=e/e.sum(1,keepdims=True)
     vq=bf16(vl); e=np.exp(vq-vq.max(1,keepdims=True)); pq=bf16(e/e.sum(1,keepdims=True))
     ce64=-np.log(p64[np.arange(len(P)),lab]).mean(); ceq=-np.log(np.maximum(pq[np.arange(len(P)),lab],1e-30)).mean()

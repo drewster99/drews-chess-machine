@@ -120,7 +120,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
             .appendingPathComponent("activation-sites-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         addTeardownBlock {
-            do { try FileManager.default.removeItem(at: url) } catch {}
+            try FileManager.default.removeItem(at: url)
         }
         return url
     }
@@ -139,16 +139,13 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         XCTAssertEqual(ActivationFunction.functions, [.relu, .silu, .gelu, .leakyRelu])
     }
 
-    /// `ActivationFunction` keeps `CaseIterable`, so `functions` — `allCases`
-    /// without `does_not_apply` — is the list every picker and every derive
-    /// value syntax offers, and none of them may offer the marker.
+    /// `ActivationFunction` keeps `CaseIterable`, so `functions` must exclude
+    /// `does_not_apply`; every picker lists `functions` directly, and each
+    /// derive value syntax is built from it.
     @MainActor
     func testEveryActivationChoiceListIsTheFunctionsList() {
         XCTAssertFalse(ActivationFunction.functions.contains(.doesNotApply))
         XCTAssertEqual(ActivationFunction.functions, ActivationFunction.allCases.filter { $0 != .doesNotApply })
-        XCTAssertEqual(ArchitectureSiteActivationPicker.functionChoices, ActivationFunction.functions)
-        XCTAssertEqual(BuildNewModelView.groupActivationChoices, ActivationFunction.functions)
-        XCTAssertEqual(BuildNewModelView.mainActivationChoices, ActivationFunction.functions)
         let syntax = ActivationFunction.functions.map(\.rawValue).joined(separator: "|")
         XCTAssertEqual(SetActivationDeriveOperation.kind.valueSyntax, syntax)
         XCTAssertEqual(SetSEActivationDeriveOperation.kind.valueSyntax, syntax)
@@ -227,8 +224,20 @@ final class ArchitectureActivationSiteTests: XCTestCase {
             }
             XCTAssertTrue(line.contains("stem_activation := does_not_apply (\(ArchitectureActivationSite.stem.absentReason))"), line)
             XCTAssertTrue(line.contains(
-                "feature_skip_activation := does_not_apply (\(ArchitectureActivationSite.featureSkipFusion.absentReason))"), line)
+                "feature_skip_activation := does_not_apply (\(ArchitectureActivationSite.featureSkip.absentReason))"), line)
         }
+    }
+
+    /// A v8 file of a gelu tower with an SE block, stating only the
+    /// top-level `activation_function`, decodes to the architecture it was
+    /// written from. The graph is built from that value alone.
+    func testLegacyV8SEFileDecodesToTheArchitectureItWasWrittenFrom() throws {
+        let arch = Self.tiny(activation: .gelu, seStyle: .scaleAndBias)
+        let file = try rewriting(try encodedModel(arch), version: "8",
+                                 architecture: try legacyObject(arch, activationFunction: "gelu"))
+        let legacy = try SafetensorsModelIO.decode(file, valueHead: .recenterUnlessMarked, source: "legacy.safetensors")
+        XCTAssertEqual(legacy.architecture, arch)
+        XCTAssertNotNil(legacy.architectureFormat.legacyLogLine)
     }
 
     func testPreV9PostActivationFileResolvesTheStem() throws {
@@ -453,7 +462,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         // A function at a site the topology lacks.
         try add(Self.tiny(style: .pre), .stem, .relu)
         try add(Self.tiny(style: .post), .towerEnd, .relu)
-        try add(Self.tiny(), .featureSkipFusion, .relu)
+        try add(Self.tiny(), .featureSkip, .relu)
         try add(Self.tiny(policy: .simpleConv), .policyHead, .relu)
         // does_not_apply at a site that exists.
         for site in ArchitectureActivationSite.allCases {
@@ -550,7 +559,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
             mainPath.blockGroups[0].activationFunction = .doesNotApply
             XCTAssertThrowsError(try mainPath.validate()) { error in
                 XCTAssertEqual(error as? NetworkArchitectureError,
-                               .doesNotApplyAtAnAlwaysPresentSite(field: "blockGroups[0].activationFunction"))
+                               .doesNotApplyAtAnAlwaysPresentSite(group: 0))
             }
         }
         // An SE group stating does_not_apply, at v9 and v5.
@@ -651,18 +660,18 @@ final class ArchitectureActivationSiteTests: XCTestCase {
     func testBuildScreenAsksForAnSEActivationWhenSEIsSwitchedOn() throws {
         let model = BuildNewModelModel(NamedArchitecture(label: "t", architecture: Self.tiny(seStyle: .none)))
         let draft = model.blockGroupDrafts[0]
+        XCTAssertFalse(draft.group.hasSEFC1)
         let off = ArchitectureSiteActivationPicker.presentation(
-            activation: draft.group.seActivation, siteExists: draft.group.seStyle != .none,
-            siteDescription: "", absentReason: BlockGroup.seLessReason)
+            activation: draft.group.seActivation, availability: .seFC1(of: draft.group))
         XCTAssertFalse(off.isEnabled)
         draft.group.seStyle = .scaleAndBias
         XCTAssertEqual(draft.group.seActivation, .doesNotApply)
         let error = try XCTUnwrap(model.validationError)
-        XCTAssertTrue(error.contains("blockGroups[0].seActivation"), error)
+        XCTAssertTrue(error.contains("block_groups[0].se_activation"), error)
         XCTAssertNil(model.buildRequest)
+        XCTAssertTrue(draft.group.hasSEFC1)
         let on = ArchitectureSiteActivationPicker.presentation(
-            activation: draft.group.seActivation, siteExists: draft.group.seStyle != .none,
-            siteDescription: "", absentReason: BlockGroup.seLessReason)
+            activation: draft.group.seActivation, availability: .seFC1(of: draft.group))
         XCTAssertTrue(on.isEnabled)
         XCTAssertTrue(on.needsChoice)
         draft.group.seActivation = .leakyRelu
@@ -689,17 +698,17 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         // The fusion node needs compress fusion and a routed head.
         var concat = Self.fullSiteFixture()
         concat.featureSkipFusion = .concatDirect
-        XCTAssertFalse(concat.hasActivationSite(.featureSkipFusion))
+        XCTAssertFalse(concat.hasActivationSite(.featureSkip))
         var unrouted = Self.fullSiteFixture()
         unrouted.featureSkipToPolicyHead = false
         unrouted.featureSkipToFinalBlock = true
-        XCTAssertFalse(unrouted.hasActivationSite(.featureSkipFusion))
+        XCTAssertFalse(unrouted.hasActivationSite(.featureSkip))
         var valueRouted = unrouted
         valueRouted.featureSkipToValueHead = true
-        XCTAssertTrue(valueRouted.hasActivationSite(.featureSkipFusion))
+        XCTAssertTrue(valueRouted.hasActivationSite(.featureSkip))
         var off = Self.fullSiteFixture()
         off.featureSkipSource = .none
-        XCTAssertFalse(off.hasActivationSite(.featureSkipFusion))
+        XCTAssertFalse(off.hasActivationSite(.featureSkip))
     }
 
     func testValidateRefusesASiteMismatchInBothDirections() throws {
@@ -713,7 +722,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         }
         let absent: [(NetworkArchitecture, ArchitectureActivationSite)] = [
             (Self.tiny(style: .pre), .stem), (Self.tiny(style: .post), .towerEnd),
-            (Self.tiny(), .featureSkipFusion), (Self.tiny(policy: .simpleConv), .policyHead),
+            (Self.tiny(), .featureSkip), (Self.tiny(policy: .simpleConv), .policyHead),
         ]
         for (base, site) in absent {
             var arch = base
@@ -889,7 +898,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
                        " . act tower_end relu, policy leaky_relu, value_conv leaky_relu, value_fc1_hidden leaky_relu")
         XCTAssertTrue(arch.architectureSummary.contains(arch.siteActivationClause + " . policy "), arch.architectureSummary)
         var full = Self.fullSiteFixture()
-        try full.setActivation(.silu, at: .featureSkipFusion)
+        try full.setActivation(.silu, at: .featureSkip)
         XCTAssertEqual(full.siteActivationClause,
                        " . act stem relu, tower_end relu, fusion silu, policy relu, value_conv relu, value_fc1_hidden relu")
         for candidate in [arch, full, .current, Self.tiny(style: .post, policy: .simpleConv)] {
@@ -900,7 +909,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
     // MARK: - Layer health
 
     private static let batchNormSiteName: [ArchitectureActivationSite: String] = [
-        .stem: "stem.bn", .towerEnd: "tower_final_bn", .featureSkipFusion: "feature_skip.bn",
+        .stem: "stem.bn", .towerEnd: "tower_final_bn", .featureSkip: "feature_skip.bn",
         .policyHead: "policy.pre_bn", .valueHeadConv: "value.bn",
     ]
 
@@ -1080,7 +1089,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
     func testSiteSetterRefusesASiteTheTopologyLacks() throws {
         let cases: [(NetworkArchitecture, ArchitectureActivationSite)] = [
             (Self.tiny(style: .pre), .stem), (Self.tiny(style: .post), .towerEnd),
-            (Self.tiny(), .featureSkipFusion), (Self.tiny(policy: .simpleConv), .policyHead),
+            (Self.tiny(), .featureSkip), (Self.tiny(policy: .simpleConv), .policyHead),
         ]
         for (arch, site) in cases {
             XCTAssertThrowsError(try SetSiteActivationDeriveOperation(site: site, value: .relu).apply(to: arch)) { error in
@@ -1188,7 +1197,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         model.featureSkipSource = .stemOutput
         model.featureSkipFusion = .compressConvBNReLU
         model.featureSkipToValueHead = true
-        XCTAssertTrue(model.siteExists(.featureSkipFusion))
+        XCTAssertTrue(model.siteExists(.featureSkip))
         model.blockGroupDrafts[0].activationStyle = .post
         XCTAssertTrue(model.siteExists(.stem))
         XCTAssertFalse(model.siteExists(.towerEnd))
@@ -1226,8 +1235,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
     @MainActor
     func testUseForEveryActivationMatchesDeriveSetActivation() throws {
         var source = Self.tiny(seStyle: .scaleAndBias)
-        var post = Self.tiny(style: .post).blockGroups[0]
-        post.activationStyle = .post
+        let post = Self.tiny(style: .post).blockGroups[0]
         source.blockGroups.insert(post, at: 0)
         source.stemActivation = .relu
         try source.validate()
@@ -1245,6 +1253,9 @@ final class ArchitectureActivationSiteTests: XCTestCase {
             }
             XCTAssertTrue(model.isValid, model.validationError ?? "")
         }
+        let unchanged = BuildNewModelModel(NamedArchitecture(label: "t", architecture: source))
+        try unchanged.applyMainActivationEverywhere(.relu)
+        XCTAssertEqual(unchanged.architecture, source, "the screen allows the no-op derive refuses, and it changes nothing")
         let model = BuildNewModelModel(NamedArchitecture(label: "t", architecture: source))
         XCTAssertThrowsError(try model.applyMainActivationEverywhere(.doesNotApply))
         XCTAssertEqual(model.architecture, source, "a refused edit changes nothing")
@@ -1260,7 +1271,7 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         postToPreSimple.blockGroups = [post, postToPreSimple.blockGroups[0]]
         postToPreSimple.stemActivation = .silu
         var compress = Self.fullSiteFixture()
-        try compress.setActivation(.gelu, at: .featureSkipFusion)
+        try compress.setActivation(.gelu, at: .featureSkip)
         var allPost = Self.tiny(style: .post)
         try allPost.setActivation(.leakyRelu, at: .policyHead)
         try allPost.setActivation(.leakyRelu, at: .valueHeadConv)
@@ -1354,7 +1365,7 @@ extension NetworkArchitecture {
         switch site {
         case .stem: stemActivation = value
         case .towerEnd: towerEndActivation = value
-        case .featureSkipFusion: featureSkipActivation = value
+        case .featureSkip: featureSkipActivation = value
         case .policyHead: policyHeadActivation = value
         case .valueHeadConv: valueHeadConvActivation = value
         case .valueHeadFC1Hidden: valueHeadFC1HiddenActivation = value

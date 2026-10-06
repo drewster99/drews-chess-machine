@@ -5,11 +5,12 @@
 //  The Build New Model screen's six architecture-level activation pickers,
 //  hosted for real: across pre/post first and last groups, simple_conv and
 //  the compress fusion on and off, the screen draws without a trap, and each
-//  site's picker presentation (`ArchitectureSiteActivationPicker.presentation`,
-//  the value the picker's body draws) is enabled exactly where the site
-//  exists. A topology change made through the model mutators the controls
-//  bind to leaves an appeared site asking for a choice and a disappeared one
-//  holding `does_not_apply`.
+//  site's picker, built as the screen builds it
+//  (`ArchitectureSiteActivationPicker(site:model:existingSites:)`; its
+//  `presentation` is the value the body draws), is enabled exactly where the
+//  site exists and writes only its own site's field. A topology change made
+//  through the model mutators the controls bind to leaves an appeared site
+//  asking for a choice and a disappeared one holding `does_not_apply`.
 //
 //  The drawn controls themselves cannot be read back here: SwiftUI builds no
 //  accessibility tree for an in-process query (`accessibilityChildren()` of
@@ -57,8 +58,8 @@ final class BuildNewModelSiteActivationRenderTests: XCTestCase {
 
     private func presentation(_ model: BuildNewModelModel, _ site: ArchitectureActivationSite)
         -> ArchitectureSiteActivationPicker.Presentation {
-        ArchitectureSiteActivationPicker.presentation(
-            site: site, activation: model.storedActivation(at: site), siteExists: model.siteExists(site))
+        ArchitectureSiteActivationPicker(site: site, model: model, existingSites: model.existingActivationSites)
+            .presentation
     }
 
     /// Every site's picker presentation is enabled exactly where the site
@@ -108,6 +109,26 @@ final class BuildNewModelSiteActivationRenderTests: XCTestCase {
         }
     }
 
+    /// Each site's picker, built as the screen builds it, writes exactly its
+    /// own site's field (checked against `NetworkArchitecture.activation(at:)`,
+    /// an independent site → field map) and no other.
+    func testEverySitePickerBindsItsOwnSitesField() throws {
+        let source = ArchitectureActivationSiteTests.fullSiteFixture()
+        try source.validate()
+        for site in ArchitectureActivationSite.allCases {
+            let model = makeModel(source)
+            let picker = ArchitectureSiteActivationPicker(site: site, model: model,
+                                                          existingSites: model.existingActivationSites)
+            XCTAssertEqual(picker.activation, source.activation(at: site), "\(site)")
+            XCTAssertNotEqual(source.activation(at: site), .gelu, "\(site)")
+            picker.activation = .gelu
+            for other in ArchitectureActivationSite.allCases {
+                XCTAssertEqual(model.architecture.activation(at: other),
+                               other == site ? .gelu : source.activation(at: other), "\(site) → \(other)")
+            }
+        }
+    }
+
     func testATopologyChangeShowsAChoiceForAnAppearedSite() throws {
         let model = makeModel(ArchitectureActivationSiteTests.tiny(policy: .simpleConv))
         let host = hostScreen(model)
@@ -119,7 +140,7 @@ final class BuildNewModelSiteActivationRenderTests: XCTestCase {
         model.featureSkipFusion = .compressConvBNReLU
         model.featureSkipToValueHead = true
         settle(host)
-        for site in [ArchitectureActivationSite.stem, .featureSkipFusion, .policyHead] {
+        for site in [ArchitectureActivationSite.stem, .featureSkip, .policyHead] {
             XCTAssertTrue(model.siteExists(site), "\(site)")
             XCTAssertEqual(model.storedActivation(at: site), .doesNotApply, "\(site): an appeared site asks for a choice")
             let shown = presentation(model, site)

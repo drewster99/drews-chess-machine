@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — /stupid fixes: per-site activations review
+
+- Build New Model: one `Availability` decides each site picker's state and help; each architecture-level picker is built from its site and binds through `BuildNewModelModel.activationKeyPath(at:)`; the choice-list aliases are gone (`ActivationFunction.functions` everywhere).
+- `SEStyle.hasFC1` also gates the graph's SE block and `LayerHealth`'s SE FC1 rows; `absentReason` traps for the always-present value sites; group-level messages name the JSON path; the `featureSkipFusion` site case is `featureSkip`; a uniform-tower file must state `activation_function`.
+- Python: format versions parsed as Swift parses them; missing keys and empty `block_groups` are `ArchitectureError`s; `fwd16` takes `md=` with a pairing guard; `read_header`; `bn_liveness.py` reports activation-aware parked / mostly-off counts per activation and reuses `dcm_arch` / `dcm_lineage`. E-0018 and the LR-schedule README: C-leaky dead counts corrected (four were one 50-step row off) and C's values at 300–500 filled in.
+- Tests: edits listed in `HEAD_ACTIVATIONS_PLAN.md` X2; one GPU test replaced by a Metal-free decode test (ID-16).
+
 ## 2026-10-06 — Per-site activations: final-recheck fixes
 
 - Build New Model: validation messages name a site by its picker label with the JSON key in parentheses; the site picker no longer uses multiple trailing closures; one source for "this group has an SE FC1" (`SEStyle.hasFC1`).

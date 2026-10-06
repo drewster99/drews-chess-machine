@@ -52,13 +52,13 @@ def struct_policy(T,arch):
     return dict(mean_row_norm=float(np.linalg.norm(m)),resid_norm_med=float(np.median(np.linalg.norm(R,axis=1))),resid_norm_max=float(np.linalg.norm(R,axis=1).max()),
                 row_cos_mean_med=float(np.median(W@m/np.linalg.norm(W,axis=1)/np.linalg.norm(m))),bias_mean=float(b.mean()),bias_std=float(b.std()),bias_absmax=float(np.abs(b).max()))
 def analyze(path,tag):
-    md,T=load(path); arch=norm_arch(md['architecture']); nat=DT[arch['compute_data_type']]
+    md,T=load(path); arch=norm_arch_md(md); nat=DT[arch['compute_data_type']]
     bfexact=float(np.mean(np.concatenate([(bf16(v)==v).ravel() for k,v in T.items() if not k.startswith('opt.')])))
     r=dict(tag=tag,path=path,model_id=md['model_id'],step=md.get('training_step'),native=nat,bf16_exact_weight_frac=bfexact,
            policy_style=arch['policy_head_style'],value_style=arch['value_head_style'])
     r['vstruct']=struct_value(T); r['pstruct']=struct_policy(T,arch)
     TT=prep(T,'f64'); t=time.time()
-    o64=forward_batched(TT,arch,X,'f64')
+    o64=forward_batched(TT,arch,X,'f64',md=md)
     r['value_logit']=dict(mean_of_class_mean=float(o64['vl'].mean()),absmean=float(np.abs(o64['vl']).mean()),maxabs=float(np.abs(o64['vl']).max()),
         spread_med=float(np.median(o64['vl'].max(1)-o64['vl'].min(1))),shared_med=float(np.median(o64['vl'].mean(1))))
     r['policy_mag']=policy_mag(o64['pl'],o64['pfeat'],TT,arch)
@@ -67,9 +67,9 @@ def analyze(path,tag):
     emus={}
     for dt in sorted({nat,'bf16'}):
         q=Q[dt]; Tq=prep(T,dt)
-        oo=forward_batched(Tq,arch,X,'f64'); vlq=q(oo['vl']); emus[f'{dt}-out']=(vlq,vsoft(vlq,q),q(oo['pl']),q)
+        oo=forward_batched(Tq,arch,X,'f64',md=md); vlq=q(oo['vl']); emus[f'{dt}-out']=(vlq,vsoft(vlq,q),q(oo['pl']),q)
         if dt=='bf16':
-            po=forward_batched(Tq,arch,X,'bf16'); emus['bf16-perop']=(po['vl'],po['vp'],po['pl'],q)
+            po=forward_batched(Tq,arch,X,'bf16',md=md); emus['bf16-perop']=(po['vl'],po['vp'],po['pl'],q)
         # value recentered (exact): subtract mean row and mean bias of fc2, then output-round
         W=T['value.wdl_fc2.weight']; b=T['value.wdl_fc2.bias']
         vlr=q(q(oo['f1']@(q(W-W.mean(0))).T)+q(b-b.mean())) if False else q(oo['vl']-oo['vl'].mean(1,keepdims=True)*0 - (oo['f1']@W.mean(0)+b.mean())[:,None])

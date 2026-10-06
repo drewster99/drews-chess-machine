@@ -7,7 +7,7 @@ output + fused head outputs rounded); 'heads' = prior survey's emulation
 import sys, os, csv, json, pickle, time, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE); sys.path.insert(0, os.path.dirname(HERE))
 from fwd4 import load, bf16, forward_batched, softmax
-from archnorm import norm_arch
+from archnorm import norm_arch_md
 D = os.path.expanduser('~/Library/Application Support/DrewsChessMachine/Models/')
 rows = list(csv.DictReader(open(os.path.join(HERE, 'trend_struct.csv'))))
 WANT = {('20260702-7-Qeu8', 0), ('20260702-9-GLu5', 41000), ('20260703-1-Lnji', 67508), ('20260706-1-PVZp', 67000)}
@@ -23,9 +23,9 @@ legal = [p['legal'] for p in Q]; targets = [p['target'] for p in Q]
 def lsm(z): z = z-z.max(); return z-np.log(np.exp(z).sum())
 out = []
 for r in sel:
-    md, T = load(D+r['file']); assert md['model_id'] == r['model_id']; arch = norm_arch(md['architecture'])
+    md, T = load(D+r['file']); assert md['model_id'] == r['model_id']; arch = norm_arch_md(md)
     t = time.time()
-    o64 = forward_batched(T, arch, X); oreal = forward_batched(T, arch, X, frozenset({'p.pre_bn'}))
+    o64 = forward_batched(T, arch, X, md=md); oreal = forward_batched(T, arch, X, frozenset({'p.pre_bn'}), md=md)
     vl = o64['vl_raw']; p64 = softmax(vl); ce64 = -np.log(p64[np.arange(N), labels])
     d = dict(model_id=r['model_id'], step=int(r['step']), file=r['file'])
     d['v_shared_med'] = float(np.median(vl.mean(1))); d['v_shared_p5'] = float(np.percentile(vl.mean(1), 5)); d['v_shared_p95'] = float(np.percentile(vl.mean(1), 95))

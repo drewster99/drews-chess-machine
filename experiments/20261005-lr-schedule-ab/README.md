@@ -31,6 +31,22 @@ Full per-probe data: `probes-A.jsonl`, `probes-B.jsonl` (to 36k) and `probes-*-s
   stayed dead. The policy probes do not measure the value head.
 - Summary page: E-0017.
 
+## BN health across activations (`bn_liveness.py`)
+
+`[LAYER-HEALTH]`'s dead / mostly-off / always-on counts come from β/|γ| and are defined only for ReLU and leaky ReLU
+(SiLU and GELU sites print n/a). `bn_liveness.py` reads the enumerated checkpoints and reports, per BN site that feeds
+an activation, the expected gradient pass-through under a Gaussian input and the "parked" (below Φ(−3) above the
+activation's floor) and "mostly off" counts, per activation and never summed across activations. For ReLU and leaky
+ReLU these equal `[LAYER-HEALTH]`'s dead and mostly-off counts exactly; for SiLU they are the same line on the
+activation's own derivative. Each checkpoint's activations come from its own architecture (`scripts/dcm_arch.py`)
+and its trainer step from its lineage record (`scripts/dcm_lineage.py`).
+
+```
+python3 experiments/20261005-lr-schedule-ab/bn_liveness.py                 # every checkpoint of every arm
+python3 experiments/20261005-lr-schedule-ab/bn_liveness.py --steps 1000,6000 --site value.bn
+python3 experiments/20261005-lr-schedule-ab/bn_liveness.py --selftest
+```
+
 ## Question
 
 The 33k tests used an LR cycle (0.1 ↔ 0.001, 20k period). Our best long runs (v5 1770.5, qeu8
@@ -162,7 +178,8 @@ PROBE_BIN="$BIN" TRAINER_PID=<pid> experiments/probe_loop.sh 20261005-lrBleaky-c
 - Both: `parameters-B.json`, `--seed 20261005`, 40,000 steps, same flags and frozen build as B-leaky. Every trainable
   tensor is byte-identical to B's start net; only the 16 BN running-statistics tensors differ (mint-time calibration
   through the different activations). `[LAYER-HEALTH]` does not classify SiLU sites (dead/off/on = n/a), so B-silu's
-  tower health is read from β/|γ| ranges and running-variance ratios instead.
+  tower health is read from β/|γ| ranges and running-variance ratios instead; `bn_liveness.py` reports SiLU sites'
+  pass-through.
 - Three runs (B-leaky, B-leakyall, B-silu) and the implementation's test runs share the GPU.
 
 ## Arm C-leaky (added 2026-10-05 23:13, owner)
@@ -184,7 +201,7 @@ PROBE_BIN="$BIN" TRAINER_PID=<pid> experiments/probe_loop.sh 20261005-lrBleaky-c
   32,846 (step 400); total loss 33,011 / 76,059 / 414,420 / 4,494,490 / 2,243,050 at steps 400 / 500 / 600 / 900 / 1,000;
   gNorm up to 393,032; illegal-move mass 0.95–0.97. Probe at step 1,000: pElo 497.2, NLL 4.2782 (B: 1018.2, 2.8753).
   Weights stayed finite throughout (0 non-finite values in 102 tensors at steps 1,000 and 1,175). BN-fed channels classified
-  dead: 0 at step 50, 26 at 300, 367 at 400, 527 at 1,000, 543 at 1,175 (worst site policy pre-BN, 93 of 128).
+  dead: 0 at step 50, 84 at 300, 367 at 400, 532 at 1,000, 543 at 1,175 (worst site policy pre-BN, 93 of 128).
 - Conclusion: leaky ReLU everywhere does not make a 10-peak cycle survivable on this net and batch; it changes the
   failure from frozen (C) to runaway (C-leaky). The usable peak lies between 1 (B) and 3.
 - **Stopped by the owner 2026-10-05 23:43** at step 1,175 (SIGINT, abort save `20261005-lrCleaky-cyc10-replay-latest`).

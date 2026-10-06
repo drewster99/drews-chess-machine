@@ -3,15 +3,15 @@ point; count exact matches with the bot's recorded outputs."""
 import sys, os, pickle, json, time, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE); sys.path.insert(0, os.path.dirname(HERE))
 from fwd4 import load, bf16, forward_batched, forward, softmax
-from archnorm import norm_arch
+from archnorm import norm_arch_md
 MP = os.path.expanduser('~/Library/Application Support/DrewsChessMachine/Models/20260702-Qeu8-resume3-replay-step681000.safetensors')
-md, T = load(MP); arch = norm_arch(md['architecture'])
+md, T = load(MP); arch = norm_arch_md(md)
 P = pickle.load(open(os.path.join(HERE, 'posset_ejp0.pkl'), 'rb')); L = [p for p in P if p['ours']]
 X = np.stack([p['x'] for p in L]).astype(np.float64)
-names = list(forward(T, arch, X[:2], capture=True)['acts'].keys())
+names = list(forward(T, arch, X[:2], capture=True, md=md)['acts'].keys())
 REC = np.array([[p['obs']['win'], p['obs']['draw'], p['obs']['loss']] for p in L], dtype=np.float32)
 def score(R):
-    o = forward_batched(T, arch, X, R)
+    o = forward_batched(T, arch, X, R, md=md)
     pl = bf16(o['pl_raw']); vp = bf16(softmax(bf16(o['vl_raw']))).astype(np.float32)
     w = int(np.sum(np.all(vp == REC, 1))); pe = 0
     for k, p in enumerate(L):

@@ -50,7 +50,7 @@ struct ArchitectureDiagramView: View {
             connector()
             cell(width: barWidth(arch.stemOutputChannels), emphasized: false) {
                 line("stem \(arch.stemConvKernelSize)×\(arch.stemConvKernelSize) conv", bold: true)
-                line("\(arch.inputPlanes) → \(arch.stemOutputChannels)ch · BN\(arch.hasStemActivation ? " · \(arch.stemActivation.rawValue)" : "")")
+                line("\(arch.inputPlanes) → \(arch.stemOutputChannels)ch · BN\(arch.hasActivationSite(.stem) ? " · \(arch.stemActivation.rawValue)" : "")")
                 paramsLine(segs.stem)
             }
             ForEach(Array(arch.blockGroups.enumerated()), id: \.offset) { gi, g in
@@ -77,7 +77,7 @@ struct ArchitectureDiagramView: View {
             HStack(alignment: .top, spacing: 16) {
                 cell(width: 175, emphasized: false) {
                     line("policy · \(arch.policyHeadStyle.rawValue)", bold: true)
-                    if arch.policyHeadStyle != .simpleConv {
+                    if arch.hasActivationSite(.policyHead) {
                         line("\(arch.policyHeadInputChannels) → K=\(arch.policyPreConvChannels) · \(arch.policyHeadActivation.rawValue)")
                     }
                     line("→ \(arch.policySize) logits")
@@ -176,7 +176,7 @@ struct ArchitectureDiagramView: View {
             : "+\(arch.featureSkipSourceChannels)ch"
         // The fusion node's activation, drawn only where the node is built,
         // so `does_not_apply` never appears.
-        let fusionActivation = arch.hasActivationSite(.featureSkipFusion)
+        let fusionActivation = arch.hasActivationSite(.featureSkip)
             ? " · \(arch.featureSkipActivation.rawValue)"
             : ""
         return Text("⤳ skip \(arch.featureSkipSource.rawValue) → [\(dests)] · \(arch.featureSkipFusion.rawValue)\(fusionActivation) (\(detail))")

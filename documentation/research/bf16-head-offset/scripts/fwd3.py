@@ -1,7 +1,7 @@
 """Batched faithful forward pass of ChessNetwork (all block/head styles used by
 saved models), with per-op rounding emulation for bf16 / fp16 / fp32 compute."""
 import numpy as np, json, struct, math
-from archnorm import norm_arch
+from archnorm import norm_arch_md, require_architecture_of, site_activations_md
 def load(p):
     with open(p,'rb') as f:
         n=struct.unpack('<Q',f.read(8))[0]; h=json.loads(f.read(n)); data=f.read()
@@ -53,12 +53,16 @@ def se(z,T,pre,g,q,qm=None):
     return q(q(z*sig(s[:,:C])[:,:,None,None])+s[:,C:][:,:,None,None])
 def prep(T,precision):
     q=Q[precision.split(':')[0]]; return {k:q(v) for k,v in T.items() if not k.startswith('opt.')}
-def forward(TT,arch,x,precision):
+def forward(TT,arch,x,precision,*,md):
+    """md: the file's safetensors __metadata__; `arch` must be norm_arch_md(md). The
+    architecture-level site activations are read from md (site_activations_md)."""
+    require_architecture_of(md,arch,'fwd3.forward')
+    sites=site_activations_md(md)
     if ':' in precision:
         base,mode=precision.split(':'); qb=Q[base]; ident=lambda a:a
-        return _forward(TT,arch,x,ident,qb,qb)
-    return _forward(TT,arch,x,Q[precision],Q[precision],Q[precision])
-def _forward(TT,arch,x,q,qm,qout):
+        return _forward(TT,arch,sites,x,ident,qb,qb)
+    return _forward(TT,arch,sites,x,Q[precision],Q[precision],Q[precision])
+def _forward(TT,arch,sites,x,q,qm,qout):
     """x [N,30,8,8]. Returns value logits [N,3], value probs [N,3], policy logits [N,4864],
     plus intermediates (fc1 hidden, policy pre-projection features)."""
     a=arch
@@ -66,7 +70,7 @@ def _forward(TT,arch,x,q,qm,qout):
     assert a['value_head_style']=='wdl_softmax'
     groups=a['block_groups']
     h=conv(q(x),TT['stem.conv.weight'],q,qm); h=bn(h,TT,'stem.bn',q)
-    if groups[0]['activation_style']=='post': h=act(h,a['activation_function'],q)
+    if groups[0]['activation_style']=='post': h=act(h,sites['stem_activation'],q)
     i=0; inC=h.shape[1]
     for g in groups:
         fn=g['activation_function']
@@ -89,25 +93,25 @@ def _forward(TT,arch,x,q,qm,qout):
             if g.get('output_norm')=='layer_norm': h=ln(h,TT,pre+'res_ln',q)
             inC=g['channels']; i+=1
     if groups[-1]['activation_style']=='pre':
-        h=act(bn(h,TT,'tower_final_bn',q),a['activation_function'],q)
-    N=x.shape[0]; fn=a['activation_function']
+        h=act(bn(h,TT,'tower_final_bn',q),sites['tower_end_activation'],q)
+    N=x.shape[0]
     # policy
     ps=a['policy_head_style']
     if ps=='simple_conv':
         feat=h
         pl=qout(conv(h,TT['policy.conv.weight'],q,qm)+TT['policy.conv.bias'][None,:,None,None]).reshape(N,-1)
     else:
-        feat=act(bn(conv(h,TT['policy.pre_conv.weight'],q,qm),TT,'policy.pre_bn',q),fn,q)
+        feat=act(bn(conv(h,TT['policy.pre_conv.weight'],q,qm),TT,'policy.pre_bn',q),sites['policy_head_activation'],q)
         if ps=='intermediate_conv':
             pl=qout(conv(feat,TT['policy.conv.weight'],q,qm)+TT['policy.conv.bias'][None,:,None,None]).reshape(N,-1)
         else:
             pl=qout(fc(feat.reshape(N,-1),TT['policy.fc.weight'],TT['policy.fc.bias'],q,qm))
     # value
-    v=act(bn(conv(h,TT['value.conv.weight'],q,qm),TT,'value.bn',q),fn,q)
-    f1=act(fc(v.reshape(N,-1),TT['value.fc1.weight'],TT['value.fc1.bias'],q,qm),fn,q)
+    v=act(bn(conv(h,TT['value.conv.weight'],q,qm),TT,'value.bn',q),sites['value_head_conv_activation'],q)
+    f1=act(fc(v.reshape(N,-1),TT['value.fc1.weight'],TT['value.fc1.bias'],q,qm),sites['value_head_fc1_hidden_activation'],q)
     vl=qout(fc(f1,TT['value.wdl_fc2.weight'],TT['value.wdl_fc2.bias'],q,qm))
     e=np.exp(vl-vl.max(1,keepdims=True)); vp=qout(e/e.sum(1,keepdims=True))
     return dict(vl=vl,vp=vp,pl=pl,f1=f1,pfeat=feat)
-def forward_batched(TT,arch,X,precision,bs=128):
-    outs=[forward(TT,arch,X[i:i+bs],precision) for i in range(0,len(X),bs)]
+def forward_batched(TT,arch,X,precision,bs=128,*,md):
+    outs=[forward(TT,arch,X[i:i+bs],precision,md=md) for i in range(0,len(X),bs)]
     return {k:np.concatenate([o[k] for o in outs]) for k in outs[0]}

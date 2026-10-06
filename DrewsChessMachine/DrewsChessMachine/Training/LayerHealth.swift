@@ -221,14 +221,15 @@ enum LayerHealth {
     }
 
     /// Every SE excitation FC1 (`C → C/r`, activated by the group's
-    /// `seActivation`), one per block whose SE style is not `none`.
+    /// `seActivation`), one per block that has one (`BlockGroup.hasSEFC1`).
     static func squeezeExcitationFC1Layers(for arch: NetworkArchitecture) -> [HiddenUnitLayer] {
         var layers: [HiddenUnitLayer] = []
-        for (blockIndex, spec) in arch.expandedBlocks.enumerated() {
+        for (blockIndex, spec) in arch.expandedBlocks.enumerated() where spec.hasSEFC1 {
             let module: String
             switch spec.seStyle {
             case .none:
-                continue
+                preconditionFailure("LayerHealth: block \(blockIndex) has se_style '\(spec.seStyle.rawValue)' "
+                    + "but SEStyle.hasFC1 reports an SE FC1; the two disagree, which is a defect")
             case .attenuateOnly:
                 module = "se_attenuate"
             case .scaleAndBias:

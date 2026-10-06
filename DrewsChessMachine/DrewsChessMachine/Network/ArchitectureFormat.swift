@@ -171,8 +171,10 @@ enum ArchitectureFormat {
         /// topology has the site (`NetworkArchitecture.activationSiteMismatch`).
         case activationSiteMismatch(ActivationSiteMismatch, location: String, formatVersion: Int, source: String)
         /// `does_not_apply` in a field whose site always exists: a block
-        /// group's `activation_function` / `se_activation`, or the uniform
-        /// tower's `activation_function`, which those come from.
+        /// group's `activation_function`, or the uniform tower's
+        /// `activation_function`, which it comes from. (A group's
+        /// `se_activation` follows its SE style instead:
+        /// `seActivationMismatch`.)
         case doesNotApplyAtAnAlwaysPresentSite(field: String, location: String, formatVersion: Int, source: String)
         /// A block group's `se_activation` disagrees with its SE style (a
         /// function without an SE block, or `does_not_apply` with one).
@@ -251,7 +253,8 @@ enum ArchitectureFormat {
         var allowsMissingSEBetaInit: Bool { formatVersion < ArchitectureFormat.seBetaInitRequiredFromVersion }
 
         /// True when `se_activation` may be absent and resolves to the
-        /// group's own `activation_function`.
+        /// group's own `activation_function` (on a group without an SE FC1,
+        /// to `does_not_apply`).
         var allowsMissingSEActivation: Bool { formatVersion < ArchitectureFormat.seActivationRequiredFromVersion }
 
         /// True when `rezero_alpha_cap` may be absent and resolves to the
@@ -373,6 +376,10 @@ enum ArchitectureFormat {
     /// `legacyActivationFunctionMissing`, naming every site key it lacks
     /// (`allSiteKeys` absent from the container), so the error lists all of
     /// them however many there are and makes nothing up.
+    /// In the uniform-tower form the caller has already required
+    /// `activation_function` and always passes it, so
+    /// `legacyActivationFunctionMissing` arises only for a block-groups file
+    /// older than `siteActivationsRequiredFromVersion`.
     static func decodeSiteActivation<Key: CodingKey>(
         key: Key,
         in container: KeyedDecodingContainer<Key>,

@@ -17,4 +17,7 @@ from dcm_arch import (  # noqa: E402
     ArchitectureError,
     norm_arch,
     norm_arch_md,
+    require_architecture_of,
+    require_relu,
+    site_activations_md,
 )

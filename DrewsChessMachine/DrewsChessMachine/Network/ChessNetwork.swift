@@ -3013,7 +3013,8 @@ final class ChessNetwork: @unchecked Sendable {
 
     /// Squeeze-and-Excitation channel attention applied to `z`. Appends SE weights
     /// to `trainables` (FC1 w/b then FC2 w/b). Identity (returns `z`) when
-    /// `arch.blockSeStyle == .none`. `attenuateOnly`: FC2->C, `sigmoid(z)*x`.
+    /// the group has no SE FC1 (`BlockGroup.hasSEFC1`), so `seActivation`
+    /// is read only where it names a function. `attenuateOnly`: FC2->C, `sigmoid(z)*x`.
     /// `scaleAndBias`: FC2->2C, `sigmoid(gamma)*x + beta`.
     private static func applySE(
         graph: MPSGraph, arch: NetworkArchitecture, spec: BlockGroup, z: MPSGraphTensor, prefix: String,
@@ -3022,7 +3023,7 @@ final class ChessNetwork: @unchecked Sendable {
         initializer: TensorInitializer,
         trainables: inout [MPSGraphTensor], shouldDecay: inout [Bool]
     ) throws -> MPSGraphTensor {
-        guard spec.seStyle != .none else { return z }
+        guard spec.hasSEFC1 else { return z }
         let channels = spec.channels
         let seReduced = channels / spec.seReductionRatio
         let seExpand = spec.seStyle == .scaleAndBias ? 2 * channels : channels

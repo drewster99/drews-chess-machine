@@ -33,9 +33,9 @@ def sample(shards, games_per_shard, plies_per_game, seed):
     return out
 
 def net_probs(path, X):
-    md, arch, t = ri.load(path); sites = ri.dcm_arch.site_activations_md(md); V = []
+    md, arch, t = ri.load(path); V = []
     for i in range(0, len(X), 64):
-        V.append(ri.forward(X[i:i + 64], arch, t, lambda *a: None, sites=sites)[1])
+        V.append(ri.forward(X[i:i + 64], arch, t, lambda *a: None, md=md)[1])
     V = np.concatenate(V); e = np.exp(V - V.max(1, keepdims=True)); return e / e.sum(1, keepdims=True)
 
 def sf_eval(fens):

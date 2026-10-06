@@ -214,14 +214,10 @@ def analyze(run, ckpt, fresh):
     group = groups[0]
     if group["activation_style"] != "pre" or group["activation_function"] != "relu":
         raise ValueError(f"{ckpt.file}: unexpected block activation {group}")
-    if "se_activation" in group:
-        se_act = group["se_activation"]
-    elif int(ckpt.metadata["dcm_format_version"]) < 5:
-        # Same rule as NetworkArchitecture's decoder: files older than format 5
-        # predate the field, and their SE FC1 used the group's activation.
-        se_act = group["activation_function"]
-    else:
-        raise ValueError(f"{ckpt.file}: format >= 5 without se_activation")
+    if group["se_style"] != "scale_and_bias":
+        raise ValueError(f"{ckpt.file}: se_style {group['se_style']!r} is not modelled (only scale_and_bias)")
+    # dcm_arch.norm_arch_md resolved the FC1 activation of a file older than the field.
+    se_act = group["se_activation"]
     blocks = group["count"]
     channels = group["channels"]
     reduced = channels // group["se_reduction_ratio"]

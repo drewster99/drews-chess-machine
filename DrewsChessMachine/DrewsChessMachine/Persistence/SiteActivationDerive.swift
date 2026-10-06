@@ -39,8 +39,8 @@ struct SetSiteActivationDeriveOperation: DeriveOperation {
         "set-" + site.jsonKey.replacingOccurrences(of: "_", with: "-")
     }
 
-    /// What the operation sets, for the `does_not_apply` refusal.
-    private static func setsWhat(_ site: ArchitectureActivationSite) -> String {
+    /// Why this operation refuses `does_not_apply`: the clause `doesNotApplyRefusal` appends.
+    private static func doesNotApplyRefusalReason(for site: ArchitectureActivationSite) -> String {
         "--\(name(for: site)) sets only a site the model has"
     }
 
@@ -61,7 +61,7 @@ struct SetSiteActivationDeriveOperation: DeriveOperation {
                 SetSiteActivationDeriveOperation(
                     site: site,
                     value: try ModelDerivation.parseActivationFunctionValue(
-                        value, operation: operationName, setsWhat: SetSiteActivationDeriveOperation.setsWhat(site)))
+                        value, operation: operationName, refusalReason: SetSiteActivationDeriveOperation.doesNotApplyRefusalReason(for: site)))
             })
     }
 
@@ -71,7 +71,7 @@ struct SetSiteActivationDeriveOperation: DeriveOperation {
 
     func apply(to architecture: NetworkArchitecture) throws -> NetworkArchitecture {
         guard value != .doesNotApply else {
-            throw ModelDerivation.doesNotApplyRefusal(operation: kindName, setsWhat: Self.setsWhat(site))
+            throw ModelDerivation.doesNotApplyRefusal(operation: kindName, refusalReason: Self.doesNotApplyRefusalReason(for: site))
         }
         guard architecture.hasActivationSite(site) else {
             throw ModelDerivation.DeriveError.operationNotApplicable(

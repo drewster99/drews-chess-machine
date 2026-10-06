@@ -84,6 +84,7 @@ def forward(T,arch,x,precision='f64',return_all=False,*,md):
     # This forward applies ReLU at the block main path, the tower end and both
     # value sites without reading their keys; refuse any file where they are not ReLU.
     dcm_arch.require_relu(md,'fwd.forward',('tower_end_activation','value_head_conv_activation','value_head_fc1_hidden_activation'),block_main_path=True)
+    dcm_arch.require_architecture_of(md,arch,'fwd.forward')
     q=(lambda a:a) if precision=='f64' else bf16
     W=(lambda a:a) if precision=='f64' else bf16   # weights stored bf16 in-graph
     TT={k:W(v) for k,v in T.items() if not k.startswith('opt.')}

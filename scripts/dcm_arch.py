@@ -34,6 +34,7 @@ library.
 import copy
 import json
 import math
+import re
 import struct
 
 # First DCM file format (safetensors `dcm_format_version`) whose block groups
@@ -77,26 +78,54 @@ CURRENT_FORMAT_VERSION = 10
 # a few kilobytes); refusing it keeps a damaged length prefix from being read
 # as a request for gigabytes.
 MAX_HEADER_BYTES = 100 * 1024 * 1024
+# The text Swift's `Int(String)` parses: an optional sign, then one or more ASCII
+# digits, nothing else (no whitespace, underscores or non-ASCII digits, all of
+# which Python's int() accepts). Used with fullmatch: `$` would admit a trailing
+# newline.
+_SWIFT_INT_TEXT = re.compile(r'[+-]?[0-9]+')
+# The keys of the uniform-tower (legacy) form, every one required by the app's
+# decoder (NetworkArchitecture.init(from:) without `block_groups`).
+_UNIFORM_TOWER_KEYS = (
+    'num_blocks', 'channels', 'block_conv1_kernel_size', 'block_conv2_kernel_size', 'block_se_style',
+    'block_se_reduction_ratio', 'block_use_rezero', 'rezero_alpha_init', 'activation_function',
+    'block_activation_style', 'block_skip_merge')
+# The block-group keys norm_arch and rezero_blocks read, each required by the
+# app's BlockGroup decoder at every format version (`activation_style`, also
+# required there, is checked by site_exists, its one reader here).
+_BLOCK_GROUP_KEYS_READ = ('count', 'se_style', 'use_rezero', 'rezero_alpha_init', 'activation_function')
 
 
 class ArchitectureError(ValueError):
     """A header whose architecture the app would refuse to load."""
 
 
+def parsed_format_version(format_version):
+    """A stated format version as a positive int, parsed as the app parses it
+    (ArchitectureFormat.safetensorsFormatVersion): text must be what Swift's
+    `Int(String)` accepts (`_SWIFT_INT_TEXT`); an int (not a bool) is taken as is;
+    anything else, or a value of 0 or below, raises. No upper bound: that is
+    `checked_format_version`'s."""
+    if isinstance(format_version, str):
+        if not _SWIFT_INT_TEXT.fullmatch(format_version):
+            raise ArchitectureError(f"format version {format_version!r} is not an integer")
+        version = int(format_version)
+    elif isinstance(format_version, int) and not isinstance(format_version, bool):
+        version = format_version
+    else:
+        raise ArchitectureError(f"format version {format_version!r} is not an integer")
+    if version <= 0:
+        raise ArchitectureError(f"format version {format_version!r} is not a positive integer")
+    return version
+
+
 def checked_format_version(format_version):
     """The carrier's format version as an int, or None for an unversioned
     (legacy) carrier. Refuses what the app refuses
     (ArchitectureFormat.requireSupported / safetensorsFormatVersion): a value
-    that is not an integer, one of 0 or below, or one newer than
-    CURRENT_FORMAT_VERSION."""
+    `parsed_format_version` refuses, or one newer than CURRENT_FORMAT_VERSION."""
     if format_version is None:
         return None
-    try:
-        version = int(format_version)
-    except (TypeError, ValueError):
-        raise ArchitectureError(f"format version {format_version!r} is not an integer") from None
-    if version <= 0:
-        raise ArchitectureError(f"format version {format_version!r} is not a positive integer")
+    version = parsed_format_version(format_version)
     if version > CURRENT_FORMAT_VERSION:
         raise ArchitectureError(
             f"format v{version} is newer than this module understands (newest: v{CURRENT_FORMAT_VERSION})")
@@ -112,6 +141,14 @@ def _refuse_retired_activation_function(a, uniform, version):
         raise ArchitectureError(
             f"format v{version} architecture states the retired top-level 'activation_function'; "
             f"it is replaced by {', '.join(SITE_ACTIVATION_KEYS)}")
+
+
+def _require_keys(mapping, keys, prefix):
+    """Raises ArchitectureError naming the first of `keys` missing from `mapping`,
+    as `<prefix><key> is missing` (the app's decoder refuses a missing required key)."""
+    for key in keys:
+        if key not in mapping:
+            raise ArchitectureError(f"{prefix}{key} is missing")
 
 
 def _require_group_token(i, field, value, allow_does_not_apply):
@@ -152,6 +189,7 @@ def norm_arch(s, format_version=None):
     uniform = 'block_groups' not in a
     _refuse_retired_activation_function(a, uniform, version)
     if uniform:
+        _require_keys(a, _UNIFORM_TOWER_KEYS, '')
         _require_group_token(0, 'activation_function', a['activation_function'], allow_does_not_apply=False)
         a['block_groups'] = [dict(
             count=a['num_blocks'], channels=a['channels'],
@@ -172,10 +210,11 @@ def norm_arch(s, format_version=None):
     strict_se_act = version is not None and version >= SE_ACTIVATION_REQUIRED_FROM_VERSION
     strict_cap = version is not None and version >= REZERO_ALPHA_CAP_REQUIRED_FROM_VERSION
     legacy_se_less = uniform or version is None or version < SE_LESS_SE_ACTIVATION_DOES_NOT_APPLY_FROM_VERSION
-    for i, g in enumerate(a['block_groups']):
-        for required in ('se_style', 'activation_function'):
-            if required not in g:
-                raise ArchitectureError(f"block_groups[{i}].{required} is missing")
+    groups = a['block_groups']
+    if not isinstance(groups, list) or not groups:
+        raise ArchitectureError("block_groups must contain at least one group")
+    for i, g in enumerate(groups):
+        _require_keys(g, _BLOCK_GROUP_KEYS_READ, f"block_groups[{i}].")
         has_se = g['se_style'] != 'none'
         _require_group_token(i, 'activation_function', g['activation_function'], allow_does_not_apply=False)
         if 'se_beta_init' not in g:
@@ -232,14 +271,17 @@ def site_exists(norm, key):
     `key` — the rule of NetworkArchitecture.hasActivationSite."""
     groups = norm['block_groups']
     if key == 'stem_activation':
+        _require_keys(groups[0], ('activation_style',), 'block_groups[0].')
         return groups[0]['activation_style'] == 'post'
     if key == 'tower_end_activation':
+        _require_keys(groups[-1], ('activation_style',), f"block_groups[{len(groups) - 1}].")
         return groups[-1]['activation_style'] == 'pre'
     if key == 'feature_skip_activation':
         return (norm.get('feature_skip_source', 'none') != 'none'
                 and norm.get('feature_skip_fusion') == 'compress_conv_bn_relu'
                 and bool(norm.get('feature_skip_to_policy_head') or norm.get('feature_skip_to_value_head')))
     if key == 'policy_head_activation':
+        _require_keys(norm, ('policy_head_style',), '')
         style = norm['policy_head_style']
         if style not in ('simple_conv', 'intermediate_conv', 'fc_bottleneck'):
             raise ArchitectureError(f"unknown policy_head_style {style!r}")
@@ -349,16 +391,29 @@ def require_relu(md, source, sites, block_main_path=False):
                                         f"{group['activation_function']!r}; this script models a ReLU main path")
 
 
-def read_metadata(path):
-    """The `__metadata__` dict of a .safetensors file (string values, as stored),
-    reading only the header.
+def require_architecture_of(md, arch, source):
+    """The pairing guard of a forward pass that takes a normalized architecture
+    and the file metadata its site activations come from as separate arguments:
+    raises ArchitectureError naming `source` unless `arch` equals
+    `norm_arch_md(md)`, so the two cannot come from different files."""
+    if arch != norm_arch_md(md):
+        raise ArchitectureError(f"{source}: arch is not norm_arch_md(md); the architecture and the metadata "
+                                f"come from different files")
 
-    The one header reader of the Python tooling (`dcm_lineage.read_metadata`
-    delegates here). A damaged file is an ArchitectureError: a length prefix of
-    zero or above MAX_HEADER_BYTES, a short read, a header that is not a JSON
-    object, or one without a `__metadata__` object. Without the bound, a damaged
-    prefix is a request to read up to 2^64 bytes, which fails as OverflowError or
-    MemoryError — neither of which a caller catching ValueError expects."""
+
+def read_header(path):
+    """The whole safetensors header of a .safetensors file — the tensor index
+    and its `__metadata__` dict (string values, as stored) — and the byte offset
+    at which tensor data starts (`data_offsets` are relative to it), reading
+    only the header.
+
+    The one header reader of the Python tooling (`read_metadata` and
+    `dcm_lineage.read_metadata` are built on it). A damaged file is an
+    ArchitectureError: a length prefix of zero or above MAX_HEADER_BYTES, a
+    short read, a header that is not a JSON object, or one without a
+    `__metadata__` object. Without the bound, a damaged prefix is a request to
+    read up to 2^64 bytes, which fails as OverflowError or MemoryError — neither
+    of which a caller catching ValueError expects."""
     with open(path, "rb") as handle:
         prefix = handle.read(8)
         if len(prefix) != 8:
@@ -375,10 +430,15 @@ def read_metadata(path):
         raise ArchitectureError(f"{path}: safetensors header is not JSON ({error})") from None
     if not isinstance(header, dict):
         raise ArchitectureError(f"{path}: safetensors header is not a JSON object")
-    metadata = header.get("__metadata__")
-    if not isinstance(metadata, dict):
+    if not isinstance(header.get("__metadata__"), dict):
         raise ArchitectureError(f"{path}: no __metadata__ object in the safetensors header")
-    return metadata
+    return header, 8 + header_length
+
+
+def read_metadata(path):
+    """The `__metadata__` dict of a .safetensors file (string values, as
+    stored), reading only the header: `read_header`'s, with its refusals."""
+    return read_header(path)[0]["__metadata__"]
 
 
 class RezeroBlock:

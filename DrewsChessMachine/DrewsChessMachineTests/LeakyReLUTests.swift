@@ -118,11 +118,9 @@ final class LeakyReLUTests: XCTestCase {
     func testLeakyReLUChangesTheForwardPassAndTrains() async throws {
         _ = try requireMetal()
         var reluArch = NetworkArchitecture.current
-        try reluArch.setActivationAtEveryExistingSite(.relu)
-        for index in reluArch.blockGroups.indices { reluArch.blockGroups[index].activationFunction = .relu }
+        try reluArch.setMainActivationEverywhere(.relu)
         var leakyArch = reluArch
-        try leakyArch.setActivationAtEveryExistingSite(.leakyRelu)
-        for index in leakyArch.blockGroups.indices { leakyArch.blockGroups[index].activationFunction = .leakyRelu }
+        try leakyArch.setMainActivationEverywhere(.leakyRelu)
 
         let reluNet = try ChessMPSNetwork(.randomWeights(initSeed: 1), arch: reluArch)
         let leakyNet = try ChessMPSNetwork(.randomWeights(initSeed: 2), arch: leakyArch)
@@ -168,7 +166,6 @@ final class LeakyReLUTests: XCTestCase {
     func testSetActivationChangesEverySiteAndCopiesEveryTensor() throws {
         var source = NetworkArchitecture.current
         try source.setMainActivationEverywhere(.relu)
-        for index in source.blockGroups.indices { source.blockGroups[index].activationFunction = .relu }
         let sourceData = try encodedModel(source)
 
         let result = try derive(sourceData, to: .leakyRelu)
@@ -178,7 +175,6 @@ final class LeakyReLUTests: XCTestCase {
         XCTAssertTrue(result.targetArchitecture.blockGroups.allSatisfy { $0.activationFunction == .leakyRelu })
         var expected = source
         try expected.setMainActivationEverywhere(.leakyRelu)
-        for index in expected.blockGroups.indices { expected.blockGroups[index].activationFunction = .leakyRelu }
         XCTAssertEqual(result.targetArchitecture, expected, "only the activation fields may change")
         XCTAssertTrue(result.rewrites.isEmpty, "activations have no parameters")
 
@@ -196,8 +192,7 @@ final class LeakyReLUTests: XCTestCase {
 
     func testSetActivationRefusesANoOp() throws {
         var source = NetworkArchitecture.current
-        try source.setActivationAtEveryExistingSite(.leakyRelu)
-        for index in source.blockGroups.indices { source.blockGroups[index].activationFunction = .leakyRelu }
+        try source.setMainActivationEverywhere(.leakyRelu)
         XCTAssertThrowsError(try derive(try encodedModel(source), to: .leakyRelu)) { error in
             guard case .operationNotApplicable? = error as? ModelDerivation.DeriveError else {
                 return XCTFail("expected operationNotApplicable, got \(error)")

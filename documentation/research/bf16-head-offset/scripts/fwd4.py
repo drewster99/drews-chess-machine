@@ -17,6 +17,7 @@ separate graph ops (`graph.mean`, `graph.variance`) whose outputs are bf16
 tensors in the real graph: points `<ln>.mean`, `<ln>.var`.
 """
 import numpy as np, json, struct, math
+from archnorm import ArchitectureError, require_architecture_of, require_relu
 
 def load(p):
     with open(p, 'rb') as f:
@@ -67,19 +68,23 @@ def ln(c, h, T, n, key):
 
 def relu(x): return np.maximum(x, 0)
 
-def forward(T, arch, x, R=frozenset(), capture=False, vfc2=None, q=None):
-    """T: float64 weights (already bf16-exact for this model). Returns dict with
+def forward(T, arch, x, R=frozenset(), capture=False, vfc2=None, q=None, *, md):
+    """T: float64 weights (already bf16-exact for this model). md: the file's
+    safetensors __metadata__; `arch` must be norm_arch_md(md). Returns dict with
     pl_raw/vl_raw (head outputs before their final rounding), f1, and — if
     capture — every named pre-rounding activation."""
+    require_architecture_of(md, arch, 'fwd4.forward')
     c = Ctx(R, capture, q)
     groups = arch['block_groups']; assert len(groups) == 1
     g = groups[0]
     assert g['activation_style'] == 'pre' and g['skip_merge'] == 'clean_add' and g['se_style'] == 'scale_and_bias'
     assert g.get('output_norm') == 'layer_norm' and g['use_rezero'] and arch['policy_head_style'] == 'intermediate_conv'
-    # ReLU everywhere, SE FC1 included. A file without `se_activation`
-    # predates it (format v4 or older): its FC1 used the group's activation.
-    assert arch['activation_function'] == 'relu' and g['activation_function'] == 'relu'
-    assert g.get('se_activation', g['activation_function']) == 'relu', 'only a ReLU SE FC1 is modelled'
+    # ReLU everywhere, SE FC1 included (norm_arch_md resolves the FC1 activation
+    # of a file that predates `se_activation`).
+    require_relu(md, 'fwd4.forward', ('tower_end_activation', 'policy_head_activation', 'value_head_conv_activation',
+                                      'value_head_fc1_hidden_activation'), block_main_path=True)
+    if g['se_activation'] != 'relu':
+        raise ArchitectureError(f"fwd4.forward: se_activation is {g['se_activation']!r}; only a ReLU SE FC1 is modelled")
     x = c('input', x)
     h = c('stem.conv', conv(x, T['stem.conv.weight']))
     h = bn(c, h, T, 'stem.bn', 'stem.bn')
@@ -128,8 +133,8 @@ def forward(T, arch, x, R=frozenset(), capture=False, vfc2=None, q=None):
 
 def f32(x): return np.asarray(x, dtype=np.float32).astype(np.float64)
 
-def forward_batched(T, arch, X, R=frozenset(), bs=256, vfc2=None, q=None, keep=('pl_raw', 'vl_raw', 'f1', 'pm', 'vm')):
-    outs = [forward(T, arch, X[i:i+bs], R, vfc2=vfc2, q=q) for i in range(0, len(X), bs)]
+def forward_batched(T, arch, X, R=frozenset(), bs=256, vfc2=None, q=None, keep=('pl_raw', 'vl_raw', 'f1', 'pm', 'vm'), *, md):
+    outs = [forward(T, arch, X[i:i+bs], R, vfc2=vfc2, q=q, md=md) for i in range(0, len(X), bs)]
     return {k: np.concatenate([o[k] for o in outs]) for k in keep}
 
 def softmax(z):

@@ -3,10 +3,10 @@ from fwd3 import *
 P=pickle.load(open('posset.pkl','rb')); L=[p for p in P if p['ours']]
 X=np.stack([p['x'] for p in L]).astype(np.float64)
 md,T=load('/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20260629-mini1b-Coxw-resume-replay-step277000.safetensors')
-arch=norm_arch(md['architecture'])
+arch=norm_arch_md(md)
 res={}
-res['f64']=forward_batched(prep(T,'f64'),arch,X,'f64')
-res['bf16']=forward_batched(prep(T,'bf16'),arch,X,'bf16')
+res['f64']=forward_batched(prep(T,'f64'),arch,X,'f64',md=md)
+res['bf16']=forward_batched(prep(T,'bf16'),arch,X,'bf16',md=md)
 o=dict(res['f64']); o['pl']=bf16(o['pl']); res['f64->bf16out']=o
 for name,ob in res.items():
     errs=[];ties_ok=0;top1=0

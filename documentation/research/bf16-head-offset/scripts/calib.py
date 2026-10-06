@@ -5,15 +5,15 @@ bf16 legal logits) for all Ejp0 step-681000 moves."""
 import sys, os, pickle, json, time, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE); sys.path.insert(0, os.path.dirname(HERE))
 from fwd4 import load, bf16, forward_batched, softmax
-from archnorm import norm_arch
+from archnorm import norm_arch_md
 MP = os.path.expanduser('~/Library/Application Support/DrewsChessMachine/Models/20260702-Qeu8-resume3-replay-step681000.safetensors')
-md, T = load(MP); arch = norm_arch(md['architecture'])
+md, T = load(MP); arch = norm_arch_md(md)
 assert md['model_id'] == '20260727-1-Ejp0' and md['training_step'] == '681000'
 P = pickle.load(open(os.path.join(HERE, 'posset_ejp0.pkl'), 'rb')); L = [p for p in P if p['ours']]
 X = np.stack([p['x'] for p in L]).astype(np.float64)
 # all point names
 from fwd4 import forward
-names = list(forward(T, arch, X[:2], capture=True)['acts'].keys())
+names = list(forward(T, arch, X[:2], capture=True, md=md)['acts'].keys())
 ALLN = set(names)
 variants = {
   'f64 internals, heads fused-rounded': (frozenset(), False),
@@ -28,7 +28,7 @@ variants = {
 res = {}
 for name, (R, mm) in variants.items():
     t = time.time()
-    o = forward_batched(T, arch, X, R)
+    o = forward_batched(T, arch, X, R, md=md)
     pl = bf16(o['pl_raw']); vl = bf16(o['vl_raw'])
     vp = bf16(softmax(vl)).astype(np.float32)
     wdl_exact = 0; wdl_err = []; pol_exact = 0; pol_err = []; top1 = 0; tie_rep = 0; tie_obs = 0

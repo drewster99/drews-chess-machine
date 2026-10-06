@@ -203,17 +203,22 @@ def ln(x, t, name):
     mu = x.mean(1, keepdims=True); var = x.var(1, keepdims=True)
     return (x - mu) / np.sqrt(var + EPS) * t[name + ".weight"][None, :, None, None] + t[name + ".bias"][None, :, None, None]
 
-def forward(x, arch, t, record, *, sites):
-    """sites: dcm_arch.site_activations_md(md) of the file (which also checks them
-    against the topology); every site this forward applies is modelled as ReLU."""
+def forward(x, arch, t, record, *, md):
+    """md: the file's safetensors __metadata__; `arch` must be dcm_arch.norm_arch_md(md)
+    (dcm_arch.require_architecture_of). Every site this forward applies, and every
+    block main path, is modelled as ReLU (dcm_arch.require_relu)."""
+    dcm_arch.require_architecture_of(md, arch, "relu_inputs.forward")
     groups = arch["block_groups"]
-    assert all(g["activation_style"] == "pre" and g["se_style"] == "none" and not g["use_rezero"]
-               and g["skip_merge"] == "clean_add" and g.get("output_norm") == "layer_norm" for g in groups), "unsupported architecture"
-    assert arch["policy_head_style"] == "intermediate_conv" and arch["value_head_style"] == "wdl_softmax"
-    assert all(g["activation_function"] == "relu" for g in groups), "only ReLU block main paths are modelled"
-    for key in ("tower_end_activation", "policy_head_activation", "value_head_conv_activation", "value_head_fc1_hidden_activation"):
-        assert sites[key] == "relu", f"only a ReLU {key} is modelled (the file has {sites[key]!r})"
-    assert arch["feature_skip_source"] == "none", "a feature skip is not modelled"
+    if not all(g["activation_style"] == "pre" and g["se_style"] == "none" and not g["use_rezero"]
+               and g["skip_merge"] == "clean_add" and g.get("output_norm") == "layer_norm" for g in groups):
+        raise dcm_arch.ArchitectureError("relu_inputs.forward: unsupported architecture")
+    if arch["policy_head_style"] != "intermediate_conv" or arch["value_head_style"] != "wdl_softmax":
+        raise dcm_arch.ArchitectureError("relu_inputs.forward: only an intermediate_conv policy and a wdl_softmax value head are modelled")
+    if arch["feature_skip_source"] != "none":
+        raise dcm_arch.ArchitectureError("relu_inputs.forward: a feature skip is not modelled")
+    dcm_arch.require_relu(md, "relu_inputs.forward", ("tower_end_activation", "policy_head_activation",
+                                                      "value_head_conv_activation", "value_head_fc1_hidden_activation"),
+                          block_main_path=True)
     h = conv(x, t["stem.conv.weight"]); record("tap:stem_bn_input", h)
     h = bn(h, t, "stem.bn")
     i = 0
@@ -254,7 +259,6 @@ class ChannelStats:
 
 def run(label, path, pos):
     md, arch, t = load(path)
-    sites = dcm_arch.site_activations_md(md)
     stats = {}; maxabs = {}
     def record(name, a):
         if name.startswith("tap:"):
@@ -263,7 +267,7 @@ def run(label, path, pos):
     X = np.stack([p[0] for p in pos])
     logits_all = []; vlog_all = []
     for i in range(0, len(X), 64):
-        lg, vl = forward(X[i:i + 64], arch, t, record, sites=sites)
+        lg, vl = forward(X[i:i + 64], arch, t, record, md=md)
         logits_all.append(lg); vlog_all.append(vl)
     L = np.concatenate(logits_all); V = np.concatenate(vlog_all)
     legal_means = []; legal_spreads = []; legal_min = []; legal_max = []; all_means = []

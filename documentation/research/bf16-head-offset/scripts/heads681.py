@@ -10,22 +10,22 @@ every fix option quantified. Emulations:
 import sys, os, pickle, json, time, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE); sys.path.insert(0, os.path.dirname(HERE))
 from fwd4 import load, bf16, f32, forward_batched, forward, softmax
-from archnorm import norm_arch
+from archnorm import norm_arch_md
 MP = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else '~/Library/Application Support/DrewsChessMachine/Models/20260702-Qeu8-resume3-replay-step681000.safetensors')
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(HERE, 'heads681.json')
-md, T = load(MP); arch = norm_arch(md['architecture'])
+md, T = load(MP); arch = norm_arch_md(md)
 print(md['model_id'], md['training_step'], flush=True)
 P = pickle.load(open(os.path.join(HERE, 'posset_ejp0.pkl'), 'rb'))
 X = np.stack([p['x'] for p in P]).astype(np.float64); N = len(P)
 corpus = np.array([p['src'] == 'corpus' for p in P]); lich = ~corpus
 c900 = np.array([p['c900'] for p in P]); ours = np.array([p['ours'] for p in P])
 labels = np.array([p['label'] for p in P]); legal = [p['legal'] for p in P]; targets = [p['target'] for p in P]
-names = list(forward(T, arch, X[:2], capture=True)['acts'].keys())
+names = list(forward(T, arch, X[:2], capture=True, md=md)['acts'].keys())
 t = time.time()
-o64 = forward_batched(T, arch, X)
-oreal = forward_batched(T, arch, X, frozenset({'p.pre_bn'}))
-operop = forward_batched(T, arch, X, frozenset(names) - {'p.conv', 'v.fc2mm'})
-o32 = forward_batched(T, arch, X, 'ALL', q=f32)
+o64 = forward_batched(T, arch, X, md=md)
+oreal = forward_batched(T, arch, X, frozenset({'p.pre_bn'}), md=md)
+operop = forward_batched(T, arch, X, frozenset(names) - {'p.conv', 'v.fc2mm'}, md=md)
+o32 = forward_batched(T, arch, X, 'ALL', q=f32, md=md)
 print('forwards', time.time()-t, flush=True)
 W2 = T['value.wdl_fc2.weight']; b2 = T['value.wdl_fc2.bias']; m2 = W2.mean(0)
 Wp = T['policy.conv.weight'][:, :, 0, 0]; bp = T['policy.conv.bias']

@@ -745,9 +745,9 @@ extension ModelDerivation {
     /// own message — it is a marker for a site the topology lacks, never a
     /// function an operation can set — and any other unknown text is refused
     /// naming the functions. The one parser every activation operation uses.
-    static func parseActivationFunctionValue(_ value: String, operation: String, setsWhat: String) throws -> ActivationFunction {
+    static func parseActivationFunctionValue(_ value: String, operation: String, refusalReason: String) throws -> ActivationFunction {
         if value == ActivationFunction.doesNotApply.rawValue {
-            throw doesNotApplyRefusal(operation: operation, setsWhat: setsWhat)
+            throw doesNotApplyRefusal(operation: operation, refusalReason: refusalReason)
         }
         guard let parsed = ActivationFunction(rawValue: value) else {
             throw DeriveError.operationNotApplicable(
@@ -760,11 +760,11 @@ extension ModelDerivation {
     /// The refusal of `does_not_apply` as an operation's value, at parse and
     /// again at apply (an operation constructed directly never reaches the
     /// parser).
-    static func doesNotApplyRefusal(operation: String, setsWhat: String) -> DeriveError {
+    static func doesNotApplyRefusal(operation: String, refusalReason: String) -> DeriveError {
         DeriveError.operationNotApplicable(
             operation: operation,
             detail: "'\(ActivationFunction.doesNotApply.rawValue)' is not an activation function; it marks a site "
-                + "the topology lacks, and \(setsWhat)")
+                + "the topology lacks, and \(refusalReason)")
     }
 
     /// `ActivationFunction.functions` as an operation's value syntax.
@@ -798,8 +798,8 @@ extension ModelDerivation {
 struct SetActivationDeriveOperation: DeriveOperation {
     let value: ActivationFunction
 
-    /// What this operation sets, for the `does_not_apply` refusal.
-    private static let setsWhat = "--set-activation sets only sites that exist"
+    /// Why this operation refuses `does_not_apply`: the clause `doesNotApplyRefusal` appends.
+    private static let doesNotApplyRefusalReason = "--set-activation sets only sites that exist"
 
     static let kind = DeriveOperationKind(
         name: "set-activation",
@@ -818,7 +818,7 @@ struct SetActivationDeriveOperation: DeriveOperation {
         acceptsGroupSelection: false,
         make: { value, _ in
             SetActivationDeriveOperation(value: try ModelDerivation.parseActivationFunctionValue(
-                value, operation: "set-activation", setsWhat: SetActivationDeriveOperation.setsWhat))
+                value, operation: "set-activation", refusalReason: SetActivationDeriveOperation.doesNotApplyRefusalReason))
         })
 
     var kindName: String { Self.kind.name }
@@ -827,7 +827,7 @@ struct SetActivationDeriveOperation: DeriveOperation {
 
     func apply(to architecture: NetworkArchitecture) throws -> NetworkArchitecture {
         guard value != .doesNotApply else {
-            throw ModelDerivation.doesNotApplyRefusal(operation: kindName, setsWhat: Self.setsWhat)
+            throw ModelDerivation.doesNotApplyRefusal(operation: kindName, refusalReason: Self.doesNotApplyRefusalReason)
         }
         let alreadySet = ArchitectureActivationSite.allCases
             .filter { architecture.hasActivationSite($0) }
@@ -862,8 +862,8 @@ struct SetSEActivationDeriveOperation: DeriveOperation {
     /// 0-based block-group indices, or nil for every group with an SE block.
     let groupIndices: [Int]?
 
-    /// What this operation sets, for the `does_not_apply` refusal.
-    private static let setsWhat = "an SE FC1 exists whenever its SE block does"
+    /// Why this operation refuses `does_not_apply`: the clause `doesNotApplyRefusal` appends.
+    private static let doesNotApplyRefusalReason = "an SE FC1 exists whenever its SE block does"
 
     static let kind = DeriveOperationKind(
         name: "set-se-activation",
@@ -878,7 +878,7 @@ struct SetSEActivationDeriveOperation: DeriveOperation {
         make: { value, groupIndices in
             SetSEActivationDeriveOperation(
                 value: try ModelDerivation.parseActivationFunctionValue(
-                    value, operation: "set-se-activation", setsWhat: SetSEActivationDeriveOperation.setsWhat),
+                    value, operation: "set-se-activation", refusalReason: SetSEActivationDeriveOperation.doesNotApplyRefusalReason),
                 groupIndices: groupIndices)
         })
 
@@ -905,7 +905,7 @@ struct SetSEActivationDeriveOperation: DeriveOperation {
             for index in groupIndices where !architecture.blockGroups[index].hasSEFC1 {
                 throw ModelDerivation.DeriveError.operationNotApplicable(
                     operation: kindName,
-                    detail: "block group \(index) has se_style '\(SEStyle.none.rawValue)'; se_activation applies only "
+                    detail: "block group \(index) has se_style '\(architecture.blockGroups[index].seStyle.rawValue)'; se_activation applies only "
                         + "to a group with an SE block")
             }
             return groupIndices
@@ -920,7 +920,7 @@ struct SetSEActivationDeriveOperation: DeriveOperation {
 
     func apply(to architecture: NetworkArchitecture) throws -> NetworkArchitecture {
         guard value != .doesNotApply else {
-            throw ModelDerivation.doesNotApplyRefusal(operation: kindName, setsWhat: Self.setsWhat)
+            throw ModelDerivation.doesNotApplyRefusal(operation: kindName, refusalReason: Self.doesNotApplyRefusalReason)
         }
         let groups = try selectedGroups(in: architecture)
         guard groups.contains(where: { architecture.blockGroups[$0].seActivation != value }) else {

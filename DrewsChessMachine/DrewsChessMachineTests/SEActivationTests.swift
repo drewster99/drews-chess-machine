@@ -594,9 +594,11 @@ final class SEActivationTests: XCTestCase {
         XCTAssertEqual(first.group.seActivation, .leakyRelu)
     }
 
-    /// The same activation edit made on the Build screen and through
-    /// `--derive-model --set-activation` yields the same architecture, for a
-    /// group with an SE block and an SE-less one alike.
+    /// "Use for every activation" on the Build screen gives the architecture
+    /// `--derive-model --set-activation` gives. Both apply
+    /// `setMainActivationEverywhere`, so this checks the screen's copy-back
+    /// through its existing drafts, for a group with an SE block and an
+    /// SE-less one alike.
     @MainActor
     func testBuildScreenAndDeriveApplyTheSameActivationRule() throws {
         var source = Self.twoGroupArchitecture(group0SE: .relu, group1SE: .relu)
@@ -605,10 +607,10 @@ final class SEActivationTests: XCTestCase {
         let derived = try SetActivationDeriveOperation(value: .leakyRelu).apply(to: source)
 
         let model = BuildNewModelModel(NamedArchitecture(label: "test", architecture: source))
+        let draftsBefore = model.blockGroupDrafts.map { ObjectIdentifier($0) }
         try model.applyMainActivationEverywhere(.leakyRelu)
-        for draft in model.blockGroupDrafts {
-            draft.activationFunction = .leakyRelu
-        }
+        XCTAssertEqual(model.blockGroupDrafts.map { ObjectIdentifier($0) }, draftsBefore,
+                       "the copy-back keeps every row's draft")
         XCTAssertEqual(model.architecture, derived)
         XCTAssertEqual(derived.blockGroups[0].seActivation, .relu)
         XCTAssertEqual(derived.blockGroups[1].seActivation, .doesNotApply)

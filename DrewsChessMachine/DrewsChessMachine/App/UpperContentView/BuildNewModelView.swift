@@ -22,15 +22,6 @@ struct BuildNewModelView: View {
 
     @State private var saveStatus: String?
 
-    /// The functions a block group's "Activation" picker offers:
-    /// `ActivationFunction.functions`, never `allCases` (which includes the
-    /// `does_not_apply` marker a group's main path never accepts). The "SE
-    /// activation" picker offers `ArchitectureSiteActivationPicker.functionChoices`.
-    static let groupActivationChoices = ActivationFunction.functions
-
-    /// The functions the "Use for every activation" menu offers.
-    static let mainActivationChoices = ActivationFunction.functions
-
     /// A Save-as-Preset the store refused because a preset of that name
     /// already exists, captured at click time so "Replace" writes exactly
     /// what the user was looking at when they saved — not whatever the
@@ -100,23 +91,18 @@ struct BuildNewModelView: View {
 
                     Section("Tower") {
                         intField("Stem kernel size (odd)", $model.stemConvKernelSize)
-                        ArchitectureSiteActivationPicker(
-                            site: .stem, activation: $model.stemActivation,
-                            siteExists: existingSites.contains(.stem))
-                        ArchitectureSiteActivationPicker(
-                            site: .towerEnd, activation: $model.towerEndActivation,
-                            siteExists: existingSites.contains(.towerEnd))
+                        ArchitectureSiteActivationPicker(site: .stem, model: model, existingSites: existingSites)
+                        ArchitectureSiteActivationPicker(site: .towerEnd, model: model, existingSites: existingSites)
                         // The `--derive-model --set-activation` rule, from the
                         // same function (`setMainActivationEverywhere`), so an
                         // edit made either way gives the same architecture.
                         // `applyMainActivationEverywhere` throws only for
-                        // `does_not_apply` (`setMainActivationEverywhere`'s
-                        // one refusal), which this menu never offers: its
-                        // choices are `ActivationFunction.functions`, pinned
-                        // by `testEveryActivationChoiceListIsTheFunctionsList`.
+                        // `does_not_apply` (`setMainActivationEverywhere`'s one
+                        // refusal), and this menu lists only
+                        // `ActivationFunction.functions`, which never holds it.
                         // A throw here is therefore a defect, not a user error.
                         Menu("Use for every activation") {
-                            ForEach(BuildNewModelView.mainActivationChoices, id: \.self) { function in
+                            ForEach(ActivationFunction.functions, id: \.self) { function in
                                 Button(function.rawValue) {
                                     do {
                                         try model.applyMainActivationEverywhere(function)
@@ -170,9 +156,7 @@ struct BuildNewModelView: View {
                         if model.policyHeadStyle != .simpleConv {
                             intField("Policy pre-conv channels (K)", $model.policyPreConvChannels)
                         }
-                        ArchitectureSiteActivationPicker(
-                            site: .policyHead, activation: $model.policyHeadActivation,
-                            siteExists: existingSites.contains(.policyHead))
+                        ArchitectureSiteActivationPicker(site: .policyHead, model: model, existingSites: existingSites)
                         InitOptionRow(
                             isNonStandard: nonStandard.contains(.policyHeadFinalInit),
                             stepZeroEffect: InitOptionField.policyHeadFinalInit.stepZeroEffect
@@ -184,13 +168,9 @@ struct BuildNewModelView: View {
                     Section("Value head") {
                         enumPicker("Value style", $model.valueHeadStyle, ValueHeadStyle.allCases)
                         intField("Value conv channels", $model.valueHeadConvChannels)
-                        ArchitectureSiteActivationPicker(
-                            site: .valueHeadConv, activation: $model.valueHeadConvActivation,
-                            siteExists: existingSites.contains(.valueHeadConv))
+                        ArchitectureSiteActivationPicker(site: .valueHeadConv, model: model, existingSites: existingSites)
                         intField("Value hidden units", $model.valueHeadHiddenUnits)
-                        ArchitectureSiteActivationPicker(
-                            site: .valueHeadFC1Hidden, activation: $model.valueHeadFC1HiddenActivation,
-                            siteExists: existingSites.contains(.valueHeadFC1Hidden))
+                        ArchitectureSiteActivationPicker(site: .valueHeadFC1Hidden, model: model, existingSites: existingSites)
                         InitOptionRow(
                             isNonStandard: nonStandard.contains(.valueHeadFinalInit),
                             stepZeroEffect: InitOptionField.valueHeadFinalInit.stepZeroEffect
@@ -215,9 +195,7 @@ struct BuildNewModelView: View {
                         // Outside the source check, so it is present (and
                         // disabled) with the feature skip off, like every
                         // other site picker.
-                        ArchitectureSiteActivationPicker(
-                            site: .featureSkipFusion, activation: $model.featureSkipActivation,
-                            siteExists: existingSites.contains(.featureSkipFusion))
+                        ArchitectureSiteActivationPicker(site: .featureSkip, model: model, existingSites: existingSites)
                         if model.featureSkipSource != .none {
                             Toggle("Route to policy head", isOn: $model.featureSkipToPolicyHead)
                             Toggle("Route to value head", isOn: $model.featureSkipToValueHead)
@@ -503,7 +481,7 @@ private struct BlockGroupFieldsView: View {
         // Through the draft, so the edit applies the rule
         // `--derive-model --set-activation` shares
         // (`BlockGroup.setActivationFunction`).
-        enumPicker("Activation", $draft.activationFunction, BuildNewModelView.groupActivationChoices)
+        enumPicker("Activation", $draft.activationFunction, ActivationFunction.functions)
         // The SE FC1's own activation (issue #2), a site that exists only
         // with an SE block (OD-13): always present so the row layout never
         // shifts, disabled and `does_not_apply` on an SE-less group, and
@@ -512,10 +490,7 @@ private struct BlockGroupFieldsView: View {
         ArchitectureSiteActivationPicker(
             title: "SE activation",
             activation: $draft.group.seActivation,
-            siteExists: draft.group.hasSEFC1,
-            siteDescription: "Activation after the SE bottleneck FC1 (C → C/r), set independently of the group's "
-                + "activation. leaky_relu here keeps FC1 units from dying at almost no cost.",
-            absentReason: BlockGroup.seLessReason)
+            availability: .seFC1(of: draft.group))
         // Through the draft, so the model's site sync runs inside the edit
         // (the first group's style decides the stem, the last group's the
         // tower end).

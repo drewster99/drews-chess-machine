@@ -1,7 +1,7 @@
 """Tests for the format-v9 site activations in scripts/dcm_arch.py and the scripts that rely on them:
 the legacy resolution, the v9 gate, the retired top-level key, both mismatch directions, the
-`require_relu` guard, units.py's architecture check, and the keyword-only `sites` / `md` of the
-forward passes in fwd16.py and bf16-head-offset/scripts/fwd.py.
+`require_relu` guard, units.py's architecture check, and the keyword-only `md` of the forward
+passes in fwd16.py and bf16-head-offset/scripts/fwd.py.
 
 Run: python3 -m unittest discover -s documentation/dashboards/tests
 Every test works on synthetic architectures; nothing reads a model file.
@@ -202,6 +202,37 @@ class NormArchParityTests(unittest.TestCase):
                          dcm_arch.CURRENT_FORMAT_VERSION)
         self.assertIsNone(dcm_arch.checked_format_version(None))
 
+    def test_format_version_text_is_what_swift_int_parses(self):
+        for value in ("1_0", " 9", "9\n", "\u0669", "9.0", "", "+", "-0", True, 9.5):
+            with self.assertRaises(dcm_arch.ArchitectureError, msg=repr(value)):
+                dcm_arch.checked_format_version(value)
+        for value, expected in (("+9", 9), ("09", 9), (9, 9)):
+            self.assertEqual(dcm_arch.checked_format_version(value), expected)
+
+    def test_missing_required_keys_are_architecture_errors(self):
+        empty = architecture()
+        empty["block_groups"] = []
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "at least one group"):
+            dcm_arch.norm_arch_md(md(empty))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "at least one group"):
+            dcm_arch.site_activations_md(md(empty))
+        tower = uniform("relu")
+        del tower["num_blocks"]
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "num_blocks"):
+            dcm_arch.norm_arch_md(md(tower, "3"))
+        no_alpha_init = group()
+        del no_alpha_init["rezero_alpha_init"]
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "rezero_alpha_init"):
+            dcm_arch.norm_arch_md(md(architecture(groups=[no_alpha_init])))
+        no_style = group()
+        del no_style["activation_style"]
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "activation_style"):
+            dcm_arch.site_activations_md(md(architecture(groups=[no_style])))
+        no_policy_style = architecture()
+        del no_policy_style["policy_head_style"]
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "policy_head_style"):
+            dcm_arch.site_activations_md(md(no_policy_style))
+
     def test_v10_group_rules_are_enforced_by_norm_arch(self):
         with self.assertRaisesRegex(dcm_arch.ArchitectureError, "se_activation"):
             dcm_arch.norm_arch_md(md(architecture(groups=[group(se_activation="relu")])))
@@ -312,23 +343,31 @@ class ForwardGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(dcm_arch.ArchitectureError, "value_head_fc1_hidden_activation"):
             fwd.forward({}, arch, np.zeros((30, 8, 8)), md=leaky)
 
-    def test_fwd16_forward_requires_sites_and_refuses_unmodelled_files(self):
+    def test_fwd_forward_refuses_an_architecture_from_another_file(self):
+        fwd = import_from(BF16_SCRIPTS, "fwd")
+        other = md(architecture(groups=[group(channels=32)]))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "different files"):
+            fwd.forward({}, dcm_arch.norm_arch_md(md(architecture())), np.zeros((30, 8, 8)), md=other)
+
+    def test_fwd16_forward_requires_md_and_refuses_unmodelled_files(self):
         fwd16 = import_from(FP16_SCRIPTS, "fwd16")
-        relu = architecture()
-        arch = dcm_arch.norm_arch_md(md(relu))
+        relu = md(architecture())
+        arch = dcm_arch.norm_arch_md(relu)
         x = np.zeros((1, 30, 8, 8))
         with self.assertRaises(TypeError):
             fwd16.forward({}, arch, x)
-        with self.assertRaisesRegex(AssertionError, "feature skip"):
-            fwd16.forward({}, dict(arch, feature_skip_source="stem_output"), x,
-                          sites=dcm_arch.site_activations_md(md(relu)))
-        leaky = architecture(sites=dict(value_head_fc1_hidden_activation="leaky_relu"))
-        with self.assertRaisesRegex(AssertionError, "value FC1"):
-            fwd16.forward({}, dcm_arch.norm_arch_md(md(leaky)), x, sites=dcm_arch.site_activations_md(md(leaky)))
+        skip = md(architecture(feature_skip_source="stem_output", feature_skip_to_value_head=True))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "feature skip"):
+            fwd16.forward({}, dcm_arch.norm_arch_md(skip), x, md=skip)
+        leaky = md(architecture(sites=dict(value_head_fc1_hidden_activation="leaky_relu")))
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "value_head_fc1_hidden_activation"):
+            fwd16.forward({}, dcm_arch.norm_arch_md(leaky), x, md=leaky)
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, "different files"):
+            fwd16.forward({}, arch, x, md=leaky)
         # A pre-activation file states the stem as does_not_apply and passes the checks
         # (it then fails only for want of tensors); one stating a ReLU stem is refused first.
         with self.assertRaises(KeyError):
-            fwd16.forward({}, arch, x, sites=dcm_arch.site_activations_md(md(relu)))
+            fwd16.forward({}, arch, x, md=relu)
         with self.assertRaisesRegex(dcm_arch.ArchitectureError, "stem_activation"):
             dcm_arch.site_activations_md(md(architecture(sites=dict(stem_activation="relu"))))
 

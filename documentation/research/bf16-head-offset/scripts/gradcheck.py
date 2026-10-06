@@ -7,14 +7,14 @@ the output (s*(1-s), 1-t^2) exactly zero."""
 import sys, os, pickle, json, math, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE); sys.path.insert(0, os.path.dirname(HERE))
 from fwd4 import load, bf16, forward_batched, forward, softmax
-from archnorm import norm_arch
+from archnorm import norm_arch_md
 MP = os.path.expanduser('~/Library/Application Support/DrewsChessMachine/Models/20260702-Qeu8-resume3-replay-step681000.safetensors')
-md, T = load(MP); arch = norm_arch(md['architecture'])
+md, T = load(MP); arch = norm_arch_md(md)
 P = [p for p in pickle.load(open(os.path.join(HERE, 'posset_ejp0.pkl'), 'rb')) if p['src'] == 'corpus']
 X = np.stack([p['x'] for p in P]).astype(np.float64); N = len(P)
 labels = np.array([p['label'] for p in P])
-o = forward_batched(T, arch, X, frozenset({'p.pre_bn'}), keep=('pl_raw', 'vl_raw', 'f1', 'pm', 'vm'))
-o64 = forward_batched(T, arch, X, keep=('pl_raw', 'vl_raw', 'f1'))
+o = forward_batched(T, arch, X, frozenset({'p.pre_bn'}), keep=('pl_raw', 'vl_raw', 'f1', 'pm', 'vm'), md=md)
+o64 = forward_batched(T, arch, X, keep=('pl_raw', 'vl_raw', 'f1'), md=md)
 R = {}
 def cos(a, b): return float((a*b).sum()/np.linalg.norm(a)/np.linalg.norm(b))
 # ---- value ----
@@ -39,7 +39,7 @@ peps = 0.1
 pl64 = o64['pl_raw']; plb = bf16(o['pl_raw'])
 rels = []; G64 = np.zeros((76, 512)); Gb = np.zeros((76, 512)); sh64 = []; shb = []; ysum = []
 feat = None
-fe = forward_batched(T, arch, X, frozenset({'p.pre_bn'}), keep=('feat',))['feat']  # [N,512,8,8] (bf16-rounded pre-BN, relu)
+fe = forward_batched(T, arch, X, frozenset({'p.pre_bn'}), keep=('feat',), md=md)['feat']  # [N,512,8,8] (bf16-rounded pre-BN, relu)
 for i in range(N):
     li = P[i]['legal']; y = np.zeros(4864); y[li] = bf16(bf16(peps)/len(li)); y[P[i]['target']] += bf16(1-peps); y = bf16(y)
     ysum.append(y.sum()-1)
@@ -53,7 +53,7 @@ print('policy', R['policy'], flush=True)
 # ---- saturation of bf16 nonlinearities (derivative from output == 0) ----
 sat = {}
 for s in range(0, 1024, 256):
-    a = forward(T, arch, X[s:s+256], capture=True)['acts']
+    a = forward(T, arch, X[s:s+256], capture=True, md=md)['acts']
     for k in ('b0.se.sig', 'b1.se.sig'):
         v = bf16(a[k]); d = sat.setdefault(k, [0, 0, 0]); d[0] += int((v == 1.0).sum()); d[1] += int((v == 0.0).sum()); d[2] += v.size
 R['se_gate_bf16_exact_1_or_0'] = {k: dict(frac_eq1=v[0]/v[2], frac_eq0=v[1]/v[2]) for k, v in sat.items()}

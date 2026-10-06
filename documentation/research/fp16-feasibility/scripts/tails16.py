@@ -5,7 +5,6 @@ head tails, bf16 vs fp16."""
 import sys, os, json, pickle, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 from fwd16 import *
-import dcm_arch
 A = os.path.expanduser('~/Library/Application Support/DrewsChessMachine/')
 P = pickle.load(open(POSSET, 'rb'))
 X = np.stack([p['x'] for p in P]).astype(np.float64); N = len(P)
@@ -14,12 +13,12 @@ legal = [np.asarray(p['legal']) for p in P]; tg = [list(legal[i]).index(P[i]['ta
 def lsm(z): z = z - z.max(); return z - np.log(np.exp(z).sum())
 out = {}
 for rel in sys.argv[1:]:
-    md, T = load(A + rel); sites = dcm_arch.site_activations_md(md); arch = norm_arch_md(md); T = {k: v for k, v in T.items() if not k.startswith('opt.')}
-    o64 = forward_batched(T, arch, X, sites=sites)
+    md, T = load(A + rel); arch = norm_arch_md(md); T = {k: v for k, v in T.items() if not k.startswith('opt.')}
+    o64 = forward_batched(T, arch, X, md=md)
     p64 = softmax(o64['vl_raw']); ce64 = -np.log(p64[np.arange(N), labels]); la64 = [lsm(o64['pl_raw'][i][legal[i]]) for i in range(N)]
     r = {}
     for dt, q in (('bf16', bf16), ('fp16', f16)):
-        o = forward_batched(quantise_weights(T, q), arch, X, frozenset({'p.pre_bn'}), q, sites=sites)
+        o = forward_batched(quantise_weights(T, q), arch, X, frozenset({'p.pre_bn'}), q, md=md)
         for tail, qt in ((dt + ' head outputs', q), ('fp32 head tails', f32)):
             vl = qt(o['vl_raw']); p = qt(softmax(vl)); pn = p / p.sum(1, keepdims=True)
             vkl = np.sum(p64 * (np.log(p64) - np.log(np.maximum(pn, 1e-30))), 1)
