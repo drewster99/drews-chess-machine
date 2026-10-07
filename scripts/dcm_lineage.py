@@ -17,8 +17,15 @@ The rules mirror the app and CLAUDE.md "Run tracking: three axes":
 - A file older than `LINEAGE_REQUIRED_FROM_VERSION` has no record and is
   reported as unrecorded — nothing is reconstructed for it.
 - A file at or after that version without a record, with a record that does
-  not parse, or with a record of an unknown schema, is refused (the app
-  refuses to load it too).
+  not parse, or with a record of a schema outside `OLDEST_SUPPORTED_SCHEMA` ...
+  `SUPPORTED_SCHEMA` (2 ... 3), is refused (the app refuses to load it too).
+  A schema-2 record (every file written before hyperparameter recording P4)
+  is read as written: it has no `configuration` / `run_seeds` / `ancestry`,
+  and its corpus position names one corpus as `corpus_id` / `corpus_path`
+  where schema 3 has `corpus_identity` (read both with `corpus_ids`).
+- A record's `cum_*` totals are *this run's* totals: a branch restarts them,
+  a derive continues its source's. The totals behind the weights themselves
+  are `weights_totals`, which adds the runs a schema-3 `ancestry` names.
 - A total the record holds as null (a run continuing history written before
   lineage existed) stays absent. A base is the record's total minus its own
   segment's contribution — arithmetic on two measured values — and is never
@@ -48,7 +55,9 @@ LINEAGE_REQUIRED_FROM_VERSION = 7
 # dcm_format_version is.
 UNVERSIONED_LEGACY_VERSION = 3
 # LineageRecord.currentSchema.
-SUPPORTED_SCHEMA = 2
+SUPPORTED_SCHEMA = 3
+# LineageRecord.oldestDecodableSchema: the oldest schema the app still reads.
+OLDEST_SUPPORTED_SCHEMA = 2
 # LineageRecord.metadataKey.
 METADATA_KEY = "dcm_lineage"
 FORMAT_VERSION_KEY = "dcm_format_version"
@@ -127,6 +136,12 @@ _REQUIRED_SEGMENT_SUMMARY = ("segment_index", "segment_id", "start", "started_un
                              "start_trainer_step", "end_trainer_step", "segment_local_step",
                              "segment_games", "segment_positions", "segment_train_step_sec",
                              "segment_wall_sec", "exact_resume", "build", "device")
+# What schema 3 added: required in a schema-3 record, refused in a schema-2 one
+# (the app's decoder does both).
+_SCHEMA_3_TOP = ("configuration", "run_seeds", "ancestry")
+_SCHEMA_3_BUILD = ("git_diff_sha256", "xcode_build", "sdk_build", "configuration")
+_SCHEMA_3_SEGMENT_SUMMARY = ("configuration", "parameters", "corpus_identity", "segment_start_corpus",
+                             "path_kind", "argv", "run_seeds")
 
 
 def lineage_of(metadata, source):
@@ -163,16 +178,88 @@ def validated_record(record, source, field=METADATA_KEY):
             if key not in holder:
                 where = f"{section}.{key}" if section else key
                 raise LineageError(f"{source}: {field} has no {where}")
-    if record["schema"] != SUPPORTED_SCHEMA:
-        raise LineageError(f"{source}: {field} schema {record['schema']} is not the supported "
-                           f"schema {SUPPORTED_SCHEMA}")
+    schema = record["schema"]
+    if not isinstance(schema, int) or isinstance(schema, bool) \
+            or not OLDEST_SUPPORTED_SCHEMA <= schema <= SUPPORTED_SCHEMA:
+        raise LineageError(f"{source}: {field} schema {schema!r} is not a supported schema "
+                           f"({OLDEST_SUPPORTED_SCHEMA}...{SUPPORTED_SCHEMA})")
     if not isinstance(record["segments"], list):
         raise LineageError(f"{source}: {field}.segments is not a list")
+    build = record.get("build")
+    if not isinstance(build, dict):
+        raise LineageError(f"{source}: {field}.build is missing or not an object")
+    _check_schema_keys(record, _SCHEMA_3_TOP, schema, source, field)
+    _check_schema_keys(build, _SCHEMA_3_BUILD, schema, source, f"{field}.build")
     for position, summary in enumerate(record["segments"]):
         for key in _REQUIRED_SEGMENT_SUMMARY:
             if key not in summary:
                 raise LineageError(f"{source}: {field}.segments[{position}] has no {key}")
+        _check_schema_keys(summary, _SCHEMA_3_SEGMENT_SUMMARY, schema, source, f"{field}.segments[{position}]")
     return record
+
+
+def _check_schema_keys(holder, keys, schema, source, where):
+    """Each of schema 3's `keys` is present in `holder` at schema 3 and
+    absent at schema 2, as the app's decoder requires."""
+    for key in keys:
+        if schema >= 3 and key not in holder:
+            raise LineageError(f"{source}: {where} has no {key} (schema {schema})")
+        if schema < 3 and key in holder:
+            raise LineageError(f"{source}: {where} carries {key}, which schema {schema} never wrote")
+
+
+def corpus_ids(corpus):
+    """The corpus IDs a record's corpus position (`fed.corpus`, a dict) fed,
+    in feed order: every corpus of a schema-3 `corpus_identity.listed`, the
+    first only for `first_only` (a position carried from schema 2) and for a
+    schema-2 position's `corpus_id`."""
+    identity = corpus.get("corpus_identity")
+    if identity is None:
+        return [corpus["corpus_id"]]
+    if "listed" in identity:
+        return [entry["corpus_id"] for entry in identity["listed"]]
+    return [identity["first_only"]["corpus_id"]]
+
+
+# The totals `weights_totals` sums, as named in `steps` / `fed` / `time` and in
+# an ancestor's `totals_at_departure`.
+WEIGHTS_TOTAL_KEYS = (("steps", "cum_trainer_step"), ("fed", "cum_games"), ("fed", "cum_positions"),
+                      ("time", "cum_train_step_sec"), ("time", "cum_wall_sec"))
+
+
+def weights_totals(record):
+    """The totals behind the weights a record describes (plan B4, O-15):
+    the record's own `cum_*` totals (this run's, which already include what
+    any derive carried from its source) plus, for every ancestor run the
+    next run left by a *branch*, that ancestor's `totals_at_departure`.
+
+    A derive continues its source's totals, so adding an ancestor left by a
+    derive would count it twice; only branch boundaries add.
+
+    Returns a dict keyed by total name, or None — never a partial sum — when
+    the history is not all recorded: a schema-2 record (no ancestry), a
+    `history_before_oldest_run` of `unrecorded`, or a null total the sum
+    needs."""
+    ancestry = record.get("ancestry")
+    if ancestry is None or ancestry["history_before_oldest_run"] != "none":
+        return None
+    totals = {}
+    for section, key in WEIGHTS_TOTAL_KEYS:
+        value = record[section][key]
+        if value is None:
+            return None
+        totals[key] = value
+    # `runs` is oldest first; each entry is the run its successor left. The
+    # successor of the last entry is this record's own run.
+    for ancestor in ancestry["runs"]:
+        if ancestor["left_by"] != "branch":
+            continue
+        departure = ancestor["totals_at_departure"]
+        for _, key in WEIGHTS_TOTAL_KEYS:
+            if departure[key] is None:
+                return None
+            totals[key] += departure[key]
+    return totals
 
 
 def device_label(device):

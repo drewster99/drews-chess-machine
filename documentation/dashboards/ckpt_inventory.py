@@ -68,7 +68,11 @@ def lineage_summary(meta, source):
                 segment_local_step=record["steps"]["segment_local_step"],
                 cum_games=record["fed"]["cum_games"],
                 cum_train_step_sec=record["time"]["cum_train_step_sec"],
-                corpus=None if corpus is None else dict(corpus_id=corpus["corpus_id"], epoch=corpus["epoch"],
+                # The first corpus fed, plus the whole feed-order list (a
+                # schema-3 replay can feed several; schema 2 named one).
+                corpus=None if corpus is None else dict(corpus_id=dcm_lineage.corpus_ids(corpus)[0],
+                                                        corpus_ids=dcm_lineage.corpus_ids(corpus),
+                                                        epoch=corpus["epoch"],
                                                         next_game_index=corpus["next_game_index"]),
                 path_kind=record["invocation"]["path_kind"])
 

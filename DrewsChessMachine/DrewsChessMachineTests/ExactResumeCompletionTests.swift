@@ -128,9 +128,20 @@ final class ExactResumeCompletionTests: XCTestCase {
         let running = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "00")
         XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: record, runningBuild: record.build, runningDevice: record.device,
                                                  runningFingerprint: running).gaps, [])
-        let otherBuild = LineageRecord.Build(buildNumber: record.build.buildNumber + 1, gitHash: record.build.gitHash,
-                                             gitBranch: record.build.gitBranch, gitDirty: record.build.gitDirty)
+        let otherBuild = try LineageRecord.Build(buildNumber: record.build.buildNumber + 1, gitHash: record.build.gitHash,
+                                                 gitBranch: record.build.gitBranch, gitDirty: record.build.gitDirty,
+                                                 gitDiffSHA256: record.build.gitDiffSHA256, xcodeBuild: record.build.xcodeBuild,
+                                                 sdkBuild: record.build.sdkBuild, configuration: record.build.configuration)
         XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: record, runningBuild: otherBuild, runningDevice: record.device,
+                                                 runningFingerprint: running).gaps, [.build])
+        // The same build number and commit with other uncommitted changes is
+        // another build (schema 3's git_diff_sha256).
+        let otherDiff = try LineageRecord.Build(buildNumber: record.build.buildNumber, gitHash: record.build.gitHash,
+                                                gitBranch: record.build.gitBranch, gitDirty: true,
+                                                gitDiffSHA256: .recorded(String(repeating: "e", count: 64)),
+                                                xcodeBuild: record.build.xcodeBuild, sdkBuild: record.build.sdkBuild,
+                                                configuration: record.build.configuration)
+        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: record, runningBuild: otherDiff, runningDevice: record.device,
                                                  runningFingerprint: running).gaps, [.build])
         let otherOS = LineageRecord.Device(hardwareModel: record.device.hardwareModel, cpu: record.device.cpu,
                                            isVirtualMachine: record.device.isVirtualMachine,
@@ -216,7 +227,7 @@ final class ExactResumeCompletionTests: XCTestCase {
                                        startedAt: start, segmentStartTrainerStep: 0)
         let freshRecord = try fresh.record(at: start, trainerCompletedSteps: 3, segmentLocalStep: 3, segmentGames: 0,
                                            segmentPositions: 0, corpus: nil, parameters: nil,
-                                           rng: .withoutRunStreams(dropoutPhiloxState: nil))
+                                           rng: .withoutRunStreams(dropoutPhiloxState: nil), inputs: fresh.testInputs)
         XCTAssertEqual(freshRecord.rng.initialization, initialization)
         let text = try freshRecord.jsonText()
         XCTAssertTrue(text.contains("\"init_seed\":\"18446744073709551557\""), text)
@@ -227,11 +238,11 @@ final class ExactResumeCompletionTests: XCTestCase {
                                                lineage: .recorded(freshRecord), derivationHistory: [])
         let resumed = try LineageTracker(start: .resume(parent: parent, gaps: [], legacyTotals: nil), pathKind: .replay,
                                          argv: ["dcm"], startedAt: start, segmentStartTrainerStep: 3)
-        XCTAssertEqual(try resumed.startRecord(at: start, trainerCompletedSteps: 3, parameters: nil).rng.initialization,
+        XCTAssertEqual(try resumed.startRecord(at: start, trainerCompletedSteps: 3, parameters: nil, inputs: resumed.testInputs).rng.initialization,
                        initialization)
         let branch = try LineageTracker(start: .branch(parent: parent), pathKind: .replay, argv: ["dcm"],
                                         startedAt: start, segmentStartTrainerStep: 0)
-        XCTAssertNil(try branch.startRecord(at: start, trainerCompletedSteps: 0, parameters: nil).rng.initialization)
+        XCTAssertNil(try branch.startRecord(at: start, trainerCompletedSteps: 0, parameters: nil, inputs: branch.testInputs).rng.initialization)
         let minted = try LineageTracker.mintRecord(pathKind: .newModel, argv: ["dcm"], initialization: initialization, at: start)
         XCTAssertEqual(minted.rng.initialization, initialization)
 
@@ -367,7 +378,7 @@ final class ExactResumeCompletionTests: XCTestCase {
                                          pathKind: .vsuci, argv: ["dcm"], startedAt: start, segmentStartTrainerStep: 10)
         let inexactRecord = try inexact.record(at: start, trainerCompletedSteps: 10, segmentLocalStep: 0, segmentGames: 0,
                                                segmentPositions: 0, corpus: nil, parameters: nil,
-                                               rng: .withoutRunStreams(dropoutPhiloxState: nil))
+                                               rng: .withoutRunStreams(dropoutPhiloxState: nil), inputs: inexact.testInputs)
         XCTAssertFalse(inexactRecord.run.exactResume)
         XCTAssertEqual(inexactRecord.run.notExactItems, ["buffer", "os"])
 
@@ -375,7 +386,7 @@ final class ExactResumeCompletionTests: XCTestCase {
                                        pathKind: .replay, argv: ["dcm"], startedAt: start, segmentStartTrainerStep: 10)
         let exactRecord = try exact.record(at: start, trainerCompletedSteps: 10, segmentLocalStep: 0, segmentGames: 0,
                                            segmentPositions: 0, corpus: nil, parameters: nil,
-                                           rng: .withoutRunStreams(dropoutPhiloxState: nil))
+                                           rng: .withoutRunStreams(dropoutPhiloxState: nil), inputs: exact.testInputs)
         XCTAssertTrue(exactRecord.run.exactResume)
         XCTAssertEqual(exactRecord.run.notExactItems, [])
     }
@@ -392,7 +403,7 @@ final class ExactResumeCompletionTests: XCTestCase {
                                          pathKind: .vsuci, argv: ["dcm"], startedAt: Date(timeIntervalSince1970: 1_790_000_000),
                                          segmentStartTrainerStep: 10)
         let record = try tracker.startRecord(at: Date(timeIntervalSince1970: 1_790_000_000), trainerCompletedSteps: 10,
-                                             parameters: nil)
+                                             parameters: nil, inputs: tracker.testInputs)
         let runLine = RunProvenanceLine.line(record: record, seed: nil)
         XCTAssertEqual(exactness.logLine, "[RESUME] NOT EXACT: rng_sampler, buffer, os")
         XCTAssertTrue(runLine.contains("not exact: rng_sampler, buffer, os"), runLine)

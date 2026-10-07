@@ -180,7 +180,8 @@ final class TrainVsUciSessionTests: XCTestCase {
         let lineage = try tracker.record(
             at: saved, trainerCompletedSteps: snapshot.schedule.completedTrainSteps,
             segmentLocalStep: 0, segmentGames: 3, segmentPositions: 150, corpus: nil,
-            parameters: nil, rng: .withoutRunStreams(dropoutPhiloxState: snapshot.dropoutRNG.philoxState))
+            parameters: nil, rng: .withoutRunStreams(dropoutPhiloxState: snapshot.dropoutRNG.philoxState),
+            inputs: tracker.testInputs)
         let buffer = try ResumeEquivalenceTests.fixtureBuffer(sampler: DCMRandom(seed: 3))
         let state = TrainVsUciSession.sessionState(
             sessionID: "20261003-9-TeSt", savedAt: saved, runStart: started,
@@ -199,7 +200,7 @@ final class TrainVsUciSessionTests: XCTestCase {
                 creator: "train-vs-uci", trainingStep: 0, parentModelID: "", notes: "test",
                 schedule: snapshot.schedule, policyTailPrecision: trainer.policyTailPrecision),
             trainerCreatedAtUnix: Int64(saved.timeIntervalSince1970),
-            state: state, lineage: lineage, championLineage: lineage.withoutTrainerState(), architecture: arch,
+            state: state, lineage: lineage, championLineage: try lineage.withoutTrainerState(), architecture: arch,
             replayBuffer: buffer, chartSnapshot: nil,
             trigger: TrainVsUciSession.SaveKind.final.diskTag, at: saved, sessionsDirectory: sessions)
 

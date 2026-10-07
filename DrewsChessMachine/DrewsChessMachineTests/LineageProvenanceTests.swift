@@ -77,7 +77,7 @@ final class LineageProvenanceTests: XCTestCase {
                                         startedAt: start, segmentStartTrainerStep: 0)
         let trainedRecord = try branch.record(at: start.addingTimeInterval(30), trainerCompletedSteps: 1, segmentLocalStep: 1,
                                               segmentGames: 1, segmentPositions: 60, corpus: nil, parameters: nil,
-                                              rng: .withoutRunStreams(dropoutPhiloxState: nil))
+                                              rng: .withoutRunStreams(dropoutPhiloxState: nil), inputs: branch.testInputs)
         XCTAssertEqual(trainedRecord.derivationHistory, derived.history)
         let trained = try trainerFile(modelID: "20261002-3-TRNB", steps: 1,
                                       architecture: derived.targetArchitecture, lineage: trainedRecord)
@@ -94,7 +94,7 @@ final class LineageProvenanceTests: XCTestCase {
             pathKind: .replay, argv: ["dcm"], startedAt: start.addingTimeInterval(60), segmentStartTrainerStep: 1)
         let resumedRecord = try resume.record(at: start.addingTimeInterval(90), trainerCompletedSteps: 2, segmentLocalStep: 1,
                                               segmentGames: 1, segmentPositions: 60, corpus: nil, parameters: nil,
-                                              rng: .withoutRunStreams(dropoutPhiloxState: nil))
+                                              rng: .withoutRunStreams(dropoutPhiloxState: nil), inputs: resume.testInputs)
         XCTAssertEqual(resumedRecord.derivationHistory, derived.history)
 
         // Deriving again from a model file of the trained weights (derive
@@ -150,7 +150,7 @@ final class LineageProvenanceTests: XCTestCase {
         first.recordTrainingStep(totalMs: 2500)
         let firstRecord = try first.record(at: start.addingTimeInterval(100), trainerCompletedSteps: 10, segmentLocalStep: 10,
                                            segmentGames: 7, segmentPositions: 400, corpus: nil, parameters: nil,
-                                           rng: .withoutRunStreams(dropoutPhiloxState: nil))
+                                           rng: .withoutRunStreams(dropoutPhiloxState: nil), inputs: first.testInputs)
         let parentData = try trainerFile(modelID: "20261002-6-PRNT", steps: 10, architecture: arch, lineage: firstRecord)
         let parentURL = try write(parentData, named: "parent.safetensors")
         let parent = try SafetensorsModelIO.readParentFile(at: parentURL)
@@ -158,8 +158,10 @@ final class LineageProvenanceTests: XCTestCase {
         let resume = try LineageTracker(start: .resume(parent: parent, gaps: [], legacyTotals: nil),
                                         pathKind: .replay, argv: ["dcm", "--replay-corpus", "w3aA5b", "--seed", "42"],
                                         startedAt: start.addingTimeInterval(200), segmentStartTrainerStep: 10)
+        try resume.noteSegmentStartForTests(trainerStep: 10)
         let parameters = try LineageRecord.Parameters(values: ["learning_rate": .double(0.0005)])
-        let record = try resume.startRecord(at: start.addingTimeInterval(200), trainerCompletedSteps: 10, parameters: parameters)
+        let record = try resume.startRecord(at: start.addingTimeInterval(200), trainerCompletedSteps: 10, parameters: parameters,
+                                            inputs: resume.testInputs)
         return (record, parentSHA)
     }
 
@@ -183,6 +185,8 @@ final class LineageProvenanceTests: XCTestCase {
             "os=",
             "seed=42 mode=seeded(--seed) derivation=\(DCMRandomStreams.derivationVersion)",
             "params_sha=\(try XCTUnwrap(record.parameters?.sha256).prefix(12))",
+            "policy_tail=\(ChessNetwork.PolicyTailPrecision.default.rawValue)",
+            "git_diff=",
             "cum_step=10",
             "cum_games=7",
             "cum_train_sec=2.5",
@@ -198,14 +202,15 @@ final class LineageProvenanceTests: XCTestCase {
                                                      lineage: .unrecorded(formatVersion: 6), derivationHistory: [])
         let tracker = try LineageTracker(start: .resume(parent: legacyParent, gaps: [], legacyTotals: nil),
                                          pathKind: .vsuci, argv: ["dcm"], startedAt: start, segmentStartTrainerStep: 41_000)
-        let record = try tracker.startRecord(at: start, trainerCompletedSteps: 41_000, parameters: nil)
+        let record = try tracker.startRecord(at: start, trainerCompletedSteps: 41_000, parameters: nil,
+                                             inputs: tracker.testInputs)
         let line = RunProvenanceLine.line(record: record, seed: nil)
         for fragment in ["path=vsuci", "resume of 20260901-1-OLDP sha=unrecorded", "not exact: lineage",
-                         "seed=none", "params_sha=none", "cum_step=41000", "cum_games=unrecorded", "cum_train_sec=unrecorded"] {
+                         "seed=none", "params_sha=none", "policy_tail=none", "cum_step=41000", "cum_games=unrecorded", "cum_train_sec=unrecorded"] {
             XCTAssertTrue(line.contains(fragment), "missing \(fragment) in \(line)")
         }
 
-        let uci = RunProvenanceLine.line(pathLabel: "uci", build: .current, device: .current, argv: ["dcm", "--uci"])
+        let uci = RunProvenanceLine.line(pathLabel: "uci", build: try .current, device: .current, argv: ["dcm", "--uci"])
         for fragment in ["[RUN] path=uci", "run=none", "build=\(BuildInfo.buildNumber)", "seed=none", "argv=\"dcm --uci\""] {
             XCTAssertTrue(uci.contains(fragment), "missing \(fragment) in \(uci)")
         }
@@ -243,6 +248,10 @@ final class LineageProvenanceTests: XCTestCase {
         XCTAssertNotNil(lineage["fed"])
         XCTAssertNotNil(lineage["time"])
         XCTAssertNotNil(lineage["parameters"])
+        // Schema 3: the configuration and seeds the run trained under travel
+        // with the parameters they qualify.
+        XCTAssertNotNil(lineage["configuration"])
+        XCTAssertNotNil(lineage["run_seeds"])
         XCTAssertNil(lineage["segments"], "segments are left out of results.json")
         XCTAssertNil(lineage["derivation_history"], "derivation_history is left out of results.json")
 

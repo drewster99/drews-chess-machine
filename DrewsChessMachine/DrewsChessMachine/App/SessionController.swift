@@ -443,7 +443,13 @@ final class SessionController {
     /// `training_step_delay_ms`, `ReplayRatioInitialDelay`). A stored value
     /// of another type is an error, never coerced or treated as absent.
     func savedAutoComputedDelayMs() throws -> Int? {
-        guard let stored = UserDefaults.standard.object(forKey: Self.lastAutoComputedDelayMsKey) else { return nil }
+        try Self.savedAutoComputedDelayMs(in: .standard)
+    }
+
+    /// `savedAutoComputedDelayMs()` read from `defaults` — the one reader,
+    /// taking its store so a test can use a private suite.
+    nonisolated static func savedAutoComputedDelayMs(in defaults: UserDefaults) throws -> Int? {
+        guard let stored = defaults.object(forKey: lastAutoComputedDelayMsKey) else { return nil }
         guard let delay = stored as? Int else {
             throw ReplayRatioInitialDelay.StoredDelayError.notAnInteger(storedType: String(describing: type(of: stored)))
         }

@@ -287,8 +287,9 @@ final class ExactResumeTests: XCTestCase {
     }
 
     func test_corpusReplay_resumeExact_continuesTheScheduleAsIfNeverStopped() async throws {
-        try await assertCLIExactResume(creator: "replay", corpus: LineageRecord.CorpusPosition(
-            corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", epoch: 0,
+        try await assertCLIExactResume(creator: "replay", corpus: try LineageRecord.CorpusPosition(
+            corpusIdentity: .listed([.init(corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", shardCount: 0)]),
+            segmentStart: .recorded(LineageRecord.FeedPoint(epoch: 0, nextGameIndex: 0)), epoch: 0,
             nextGameIndex: 12, shard: 0, populatedPlies: 0, bufferCapacity: 0,
             feedAheadPositions: 0, feedPerStep: 1, shardSHA256: []))
     }
@@ -424,8 +425,9 @@ final class ExactResumeTests: XCTestCase {
             weights: baseWeights,
             architecture: .current,
             includesVelocity: false,
-            lineage: try LineageRecord.forTests(trainerCompletedSteps: 9, corpus: LineageRecord.CorpusPosition(
-                corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", epoch: 0,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: 9, corpus: try LineageRecord.CorpusPosition(
+            corpusIdentity: .listed([.init(corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", shardCount: 0)]),
+            segmentStart: .recorded(LineageRecord.FeedPoint(epoch: 0, nextGameIndex: 0)), epoch: 0,
                 nextGameIndex: 0, shard: 0, populatedPlies: 0, bufferCapacity: 0,
             feedAheadPositions: 0, feedPerStep: 1, shardSHA256: []))
         )

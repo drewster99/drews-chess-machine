@@ -154,7 +154,8 @@ extension SessionController {
             let fingerprint = try fingerprintResult.get()
             SessionLogger.shared.log("[RUN] behavior fingerprint recipe=\(fingerprint.recipe) sha256=\(fingerprint.sha256)")
             runBehaviorFingerprint = fingerprint
-            try beginLineageSegment(mode: mode, trainer: trainer, resumed: pendingLoadedSession,
+            try beginLineageSegment(mode: mode, trainer: trainer, championIdentifier: championIdentifier,
+                                    resumed: pendingLoadedSession,
                                     continuedRunStreams: continuedRunStreams,
                                     replayBufferRestored: replayBufferRestored,
                                     behaviorFingerprint: fingerprint)
@@ -206,7 +207,8 @@ extension SessionController {
     /// streams it continues, nil when it drew a new seed) and
     /// `replayBufferRestored` (`guiResumeGaps`). Both are ignored when
     /// `resumed` is nil.
-    func beginLineageSegment(mode: TrainingStartMode, trainer: ChessTrainer, resumed: LoadedSession?,
+    func beginLineageSegment(mode: TrainingStartMode, trainer: ChessTrainer, championIdentifier: ModelID?,
+                             resumed: LoadedSession?,
                              continuedRunStreams: LineageRecord.RunStreams?, replayBufferRestored: Bool,
                              behaviorFingerprint: BehaviorFingerprint.Record) throws {
         let counts = parallelWorkerStatsBox?.snapshot()
@@ -275,7 +277,7 @@ extension SessionController {
             tracker = try LineageTracker(
                 start: start, pathKind: .gui, argv: CommandLine.arguments,
                 startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
-            try noteSegmentStart(on: tracker, isNewSegment: true, trainer: trainer,
+            try noteSegmentStart(on: tracker, isNewSegment: true, trainer: trainer, championIdentifier: championIdentifier,
                                  startValueHeadRecentered: startValueHeadRecentered, seed: seed)
             lineageTracker = tracker
             lineageFedCarry = LineageFedCarry()
@@ -289,6 +291,7 @@ extension SessionController {
         do {
             if start == nil {
                 try noteSegmentStart(on: tracker, isNewSegment: false, trainer: trainer,
+                                     championIdentifier: championIdentifier,
                                      startValueHeadRecentered: startValueHeadRecentered, seed: seed)
             }
             // The one [RUN] line of this Play-and-Train start: the segment as
@@ -358,6 +361,7 @@ extension SessionController {
     ///   captured differently, at the start clock — no step is in flight at
     ///   a start, so the next step uses it.
     func noteSegmentStart(on tracker: LineageTracker, isNewSegment: Bool, trainer: ChessTrainer,
+                          championIdentifier: ModelID?,
                           startValueHeadRecentered: LineageRecord.Recorded<Bool>, seed: RunRandomSeed) throws {
         guard let seedKind = runSeedStartKind, let ratioStart = replayRatioStart else {
             throw LineageSegmentError.noSegmentStartInputs
@@ -378,9 +382,9 @@ extension SessionController {
                 selfPlayDirichlet: LineageRecord.Dirichlet(dirichlet),
                 startValueHeadRecentered: startValueHeadRecentered))
             tracker.noteRunSeed(seed, atTrainerStep: clock)
-            guard let championID = network?.identifier else {
-                throw LineageTracker.TrackerError.noModelID(what: "the champion")
-            }
+            // The champion this start generates games with: the identifier
+            // the start was given (the one its trainer ID is minted from).
+            let championID = try Self.requiredChampionID(championIdentifier)
             tracker.noteChampionChange(LineageRecord.ChampionChange(
                 trainerStep: clock, recordedUnix: now, championModelID: championID.description,
                 championContentSHA256: try championContentSHA256(), trigger: .segmentStart))

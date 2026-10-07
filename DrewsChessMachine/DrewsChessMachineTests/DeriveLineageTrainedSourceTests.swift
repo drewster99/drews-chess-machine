@@ -81,8 +81,8 @@ final class DeriveLineageTrainedSourceTests: XCTestCase {
             modelID: "20261003-4-TRND", contentSHA256: nil, trainerCompletedSteps: 5000,
             lineage: .recorded(try LineageRecord.forTests(trainerCompletedSteps: 5000, corpus: nil)),
             derivationHistory: [])
-        let copyRecord = LineageTracker.untrainedCopyRecord(
-            source: trainedParent, derivation: nil, pathKind: .gui, argv: ["test"],
+        let copyRecord = try LineageTracker.untrainedCopyRecord(
+            source: trainedParent, derivation: nil, sourceArchitecture: nil, pathKind: .gui, argv: ["test"],
             at: Date(timeIntervalSince1970: 1_790_000_050))
         assertRefusedAsTrained(try encodedModel(trainingStep: nil, lineage: copyRecord))
     }

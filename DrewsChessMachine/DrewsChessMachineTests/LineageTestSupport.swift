@@ -82,6 +82,18 @@ extension LineageRecord.Build {
     }
 }
 
+extension LineageRecord.Parameters {
+    /// A full composed snapshot (every parameter but the seed settings) at
+    /// the declared defaults with `overrides`, adopting `schedule`: what a
+    /// trainer-state file's record must hold, since the writer refuses a
+    /// record whose schedule keys are not the file's schedule.
+    static func forTests(adopting schedule: TrainerScheduleState,
+                         overriding overrides: [String: ParameterValue] = [:]) throws -> LineageRecord.Parameters {
+        try LineageRecord.Parameters(values: try TrainingParametersSnapshot.declaredDefaults(overriding: overrides)
+            .adoptingSchedule(schedule).lineageValues())
+    }
+}
+
 extension LineageTracker {
     /// The save inputs of a test record: the journals as they stand, with
     /// no derived values.
@@ -92,17 +104,19 @@ extension LineageTracker {
     /// What a production start notes on its segment before a record with
     /// training behind it: the segment's configuration and the run's seed,
     /// and on a gui segment its `segment_start` champion.
-    func noteSegmentStartForTests(trainerStep: Int) throws {
+    func noteSegmentStartForTests(trainerStep: Int,
+                                  policyTailPrecision: ChessNetwork.PolicyTailPrecision = .default,
+                                  seed: RunRandomSeed = RunRandomSeed.resolve(mode: .seeded, configuredSeed: 7,
+                                                                              commandLineSeed: nil, drawSeed: { 0 })) throws {
         try configureSegment(SegmentConfiguration(
-            policyTailPrecision: .default, budget: .none,
+            policyTailPrecision: policyTailPrecision, budget: .none,
             vsuci: pathKind == .vsuci
                 ? LineageRecord.VsUciGeneration(maxPliesPerGame: 400, evalSyncEverySteps: 10,
                                                 trainerMoveSelection: LineageRecord.MoveSelection(.argmax), opponents: [])
                 : nil,
             selfPlayDirichlet: pathKind == .gui ? LineageRecord.Dirichlet(.alphaZero) : nil,
             startValueHeadRecentered: .recorded(false)))
-        noteRunSeed(RunRandomSeed.resolve(mode: .seeded, configuredSeed: 7, commandLineSeed: nil, drawSeed: { 0 }),
-                    atTrainerStep: trainerStep)
+        noteRunSeed(seed, atTrainerStep: trainerStep)
         if pathKind == .gui {
             noteChampionChange(LineageRecord.ChampionChange(
                 trainerStep: trainerStep, recordedUnix: 1_790_000_000, championModelID: "20261003-1-CHMP",

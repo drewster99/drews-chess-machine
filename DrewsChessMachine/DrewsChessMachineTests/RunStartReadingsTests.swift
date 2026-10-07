@@ -159,7 +159,8 @@ final class RunStartReadingsTests: XCTestCase {
         XCTAssertEqual(controller.runStartCapture, captureA, "the capture the segment left in place was trained under")
         XCTAssertTrue(controller.replayBuffer === harness.buffer, "the buffer that capture describes")
         let record = try controller.lineageRecordForSave(
-            at: Date(), trainerCompletedSteps: harness.trainer.completedTrainSteps,
+            at: Date(), cut: try controller.takeConfigurationCut(trainer: harness.trainer),
+            trainerCompletedSteps: harness.trainer.completedTrainSteps,
             dropoutPhiloxState: nil, dropoutStreamState: nil)
         let state = try controller.buildCurrentSessionState(
             championID: "c", trainerID: "t", arenaClock: .live, includeReplayBuffer: true)
@@ -345,13 +346,17 @@ final class RunStartReadingsTests: XCTestCase {
         let start = Date(timeIntervalSince1970: 1_790_000_000)
         let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .gui,
                                          argv: ["DrewsChessMachine"], startedAt: start, segmentStartTrainerStep: 0)
+        try tracker.noteSegmentStartForTests(trainerStep: 0)
         let record = try tracker.record(
             at: start.addingTimeInterval(60), trainerCompletedSteps: trainingSteps, segmentLocalStep: trainingSteps,
             segmentGames: 2, segmentPositions: 120, corpus: nil,
-            parameters: try LineageRecord.Parameters(values: ["learning_rate": .double(0.0005)]),
+            parameters: try .forTests(
+                adopting: TrainerScheduleState(completedTrainSteps: trainingSteps, lrWarmupSteps: 3, lrMomentumCycle: .disabled),
+                overriding: ["learning_rate": .double(0.0005)]),
             rng: LineageRecord.RNG(dropoutPhiloxState: try DropoutPhiloxState(words: [1, 2, 3, 4, 5, 6, 7]),
                                    streams: nil,
-                                   behaviorFingerprint: BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab")))
+                                   behaviorFingerprint: BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab")),
+            inputs: tracker.testInputs)
         let weights = arch.weightTensorPlan().enumerated().map { i, spec in
             (0..<spec.elementCount).map { Float((i * 5 + $0) % 11) * 0.01 }
         } + arch.trainableTensorPlan().map { [Float](repeating: -0.25, count: $0.elementCount) }
