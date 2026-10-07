@@ -207,15 +207,23 @@ folders). A rolling `…-vsuci-latest.safetensors` written by an earlier build i
 still an ordinary model file for `--start-model`.
 
 **Step checkpoints.** With `--enumerate-checkpoints`, the trainer file is also
-written every 1000 steps (and at the end, when the last step is not a multiple of
-1000) as `<stem>-vsuci-step<N>.safetensors`. The stem is `--checkpoint-stem`
+written at every trainer-step multiple of 1000 (and at the end, when the last
+trainer step is not one, and the segment trained at least one step) as
+`<stem>-vsuci-step<T>.safetensors`, `T` the trainer step — the same value as the
+file's `training_step` (architecture format v11). The stem is `--checkpoint-stem`
 (a path, which may contain dots but must not end in a model or session extension —
 `.safetensors`, `.dcmmodel`, `.dcmsession` — nor itself be named like a step file);
 otherwise the `--start-model` file's own stem, next to it (the names earlier runs
 produced); otherwise — a fresh run or a session start — the run's model ID in
-`Models/`. Step files are never overwritten: step numbers restart in every run, so
-a run whose stem already holds step files it could reach refuses to start — give
-every resumed segment its own `--checkpoint-stem` (e.g. `…-resume2`).
+`Models/`. Step files are never overwritten. Names carry the trainer step and a
+segment writes only above the trainer step it starts from, so an exact resume may
+keep its run's `--checkpoint-stem` and continues the series (a resume from
+`…-step1013` writes `…-step2000`, …). A run whose stem already holds step files it
+could reach (above its start, up to its start plus `--training-step-limit`) refuses
+to start — for example a second resume of an earlier file into a stem a later
+resume already wrote into; give it its own `--checkpoint-stem`. Resumed segments
+written before format v11 named their files `<stem>-vsuci-seg<k>-step<N>` (N their
+own step); those names stay as they are.
 
 ## Timing model — fixed per-move only, no clock
 
@@ -282,11 +290,17 @@ for reproducibility.
 
 ## Observability
 
-- `[VS-UCI]` — lifecycle: start-model, `[VS-UCI-ARCH]`, opponent pool, per-step
-  `step=… loss=… pLoss=… vLoss=…`, autosave/enumerate lines.
+- `[VS-UCI]` — lifecycle: start-model, `[VS-UCI-ARCH]`, opponent pool, the
+  step-line cadence, step lines `step=… loss=… pLoss=… vLoss=… … trainerStep=…`,
+  autosave/enumerate lines. Step lines follow the shared trainer-step cadence: the
+  segment's first step, every 50 trainer steps through 1000, every trainer-step
+  multiple of 1000, and the first diagnostics step `step_line_interval_sec`
+  (default 180 s) after the previous line; every line after the first carries the
+  diagnostics. `step=` is the segment's own step, `trainerStep=` the trainer step.
 - `[VS-UCI-STATS]` — per-instance + aggregate: `games=`, `plies=`, `g/s=`, `p/s=`,
   `W-L-D=` (trainer-side scoreline only). Quote throughput as **plies/hour**.
-- `[BATCH-STATS]` — sampled-batch (buffer) composition: `game_length` (ply bins
+- `[BATCH-STATS]` — written with each step line (session log only) —
+  sampled-batch (buffer) composition: `game_length` (ply bins
   **short ≤50 / medium ≤150 / long ≤300 / very_long**), `phase_by_ply`
   (opening/early/mid/late/end), `bucket_mix` (**material** — non-pawn piece count,
   *not* plies), `outcome` (W/L/D balance of the batch), `buffer_stored` /
