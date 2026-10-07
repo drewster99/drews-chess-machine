@@ -1,6 +1,6 @@
 # Lichess bot: a durable challenge log, and how each game started
 
-Status (2026-10-06): **P1 implemented** (`FileSafety.openForAppending`, the locked JSONL append, the journal and protocol log on it, the data-directory paths, the challenge-log entry schema, writer and reader, and `LichessBotChallengeLedger`; §12). Nothing calls the writer yet. P2 onward start after `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` has landed (§7, "Sequencing"). Owner decisions: all but OD-11 decided (§10). Reviewed 2026-10-06 against the code and the real bot data; the fixes are listed in §11.
+Status (2026-10-07): **P1–P7 implemented** on branch `worktree-agent-a1e4e0cda94c5842a`, merged with `main` at every phase boundary (the team lead's directive of 2026-10-06 overrode §7's sequencing, so P2–P7 did not wait for follow-lineage). Implementation notes per phase: P1 §12, P2 §13, P3 §14, P4 §15, P6 §16, P5 §17, P7 §18. Owner decisions: all decided; OD-11's ROADMAP line was added by the team lead (`fdd0855c`) and is marked done at P7 (§10). Reviewed 2026-10-06 against the code and the real bot data; the fixes are listed in §11.
 - Every `file:line` was checked against `main` at `57af1480`.
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`) or `documentation/`.
 - Numbers about the bot's data were measured on this Mac on 2026-10-06, read-only, from `~/Library/Application Support/DrewsChessMachine/LichessBot/`. Sizes are base-2.
@@ -831,6 +831,8 @@ Each phase: all work → recheck → build → its tests → commit (`git add` o
 | OD-13 | Record the matchmaking trigger (automatic pass vs. Fill Open Slots) on live sends? | **Yes.** Cheap and otherwise unknowable; reconstruction can't recover it. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
 | OD-14 | Fix the tests' session-log pollution (§1.8, §8) in a separate small change? | **Yes, separately:** give tests a temporary log folder. Not part of this plan. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
 
+OD-11 update (2026-10-06): the team lead added the ROADMAP line in `fdd0855c`; P7 marks it done, removing nothing.
+
 The owner delegated these on 2026-10-06 ("solve the problem yourself"). Also decided then (team lead, 2026-10-06, owner delegation): the wording **Withdrawn (reason not recorded)** for the 6 historical outgoing cancels with no withdrawal line (§11, open points) is accepted.
 
 ---
@@ -944,6 +946,183 @@ Tests (new files; no existing test changed):
 - `LichessBotJSONLinesSynchronizationTests`: `.none` / `.fsync` / `.fullSync` reach the right calls, the folder flushed only for a new file; a link at a journal path and at a protocol-log path refused with a reported failure, its target unchanged.
 - `LichessBotAppendPathCompatibilityTests`: literal journal and protocol lines in the earlier builds' format decode and re-encode byte for byte; such files, clean or with a torn tail, are appended in place (same inode and mode, old bytes kept, new lines in the same format) and stay readable; a fragment another instance left after this launch's append is cut and recorded; a new day file gets the earlier builds' permissions.
 - `LichessBotDataDirectoryChallengePathsTests`: the `Challenges/` paths, UTC day naming in three time zones (shared with the protocol log), `createDirectories()`.
+
+## 13. Implementation notes: P2 recording (2026-10-06)
+
+The team lead's directive of 2026-10-06 overrode §7's sequencing: P2–P7 are implemented now, on the same branch, merging `main` (where follow-lineage lands) at every phase boundary and keeping both sides' behavior.
+
+Implemented:
+- **`App/LichessBotChallengeLogRecorder.swift`** (new, `@MainActor @Observable`), owned by the controller as `challengeLogRecorder`. It holds the ledger, `eventsAwaitingLedger`, the held echoes, this run's unanswered sends and `gameStartsSeen`, and owns the writer. `record(_:)` is the one funnel (the controller's `recordChallengeEvent` calls it). The bookkeeping that writes facts (echo expiry, teardown flush, `gameStarted`) goes through the same `record`. Moving it out of the 3,600-line controller keeps it unit-testable without a runtime.
+- **Load:** `loadChallengeLog()` runs at go-online, after the player notes and outcome log, and when the bot window opens. It loads only while nil and only once at a time. Facts recorded before the read are dropped from the buffer when the load starts, because their appends were enqueued ahead of the read; facts recorded after it are folded on top. A failed read gives a `failed` ledger holding this run's facts, plus an alarm. Skipped newer lines and left-out files each raise an alarm. The `[LICHESS-BOT] challenge log loaded: …` line is logged as §3.4 specifies.
+- **Manager events:** `.challengeArrived` carries the `LichessBotChallenge`. New `.challengeAnsweredOnStream(reference, .declined|.canceled)` for every such line, and `.gameStartReceived(info)` before the session starts.
+- **`ChallengeOrigin`:** `.manual` (Challenge sheet only), plus `.casualResendOffer` and `.challengeQueue`. `.matchmaking` gains `trigger:`, and `ChallengeOrigin.sender` is the one mapping to `LichessBotChallengeSender`. The queue pump and Resend as Casual call the private send with their own origin, and `runMatchmakingPass(trigger:fillMode:)` gets `.fillOpenSlots` from Fill Open Slots and `.automaticPass` from the poll loop.
+- **Call sites:**
+  - `outgoingCreated`: after the POST, before the went-offline check.
+  - `outgoingNotCreated`: offline, refused, and no answer.
+  - `withdrawalRequested` and `withdrawalResult`: the public `cancelChallenge(id:)` forwards `.operatorCancel` to a private `cancelChallenge(id:reason:)`, and the timeout path passes `.unansweredTimeout(seconds:)`. `withdraw(challengeID:client:reason:)` takes `.goingOffline` or `.wentOfflineWhileSending`; `CancellationError` becomes `.abandonedAtShutdown`, and 400/404 becomes `.alreadyGone`.
+  - Incoming: `incomingReceived` once per id, `incomingDecided` for a challenger that isn't us, and `incomingResponseFailed`.
+  - From the stream: `declinedOnLichess` / `canceledOnLichess`, `gameStarted`, and echoes held, then written on expiry from the poll loop or at teardown.
+- **Shutdown** logs `[LICHESS-BOT] challenge log: N appends, slowest sync … ms` after the file queue closes.
+
+Decisions:
+- **No-answer sends** (§3.4 "POST failed without an answer"): recorded for every failure that may have reached Lichess. That excludes the gate refusing to send and an unbuildable URL (`challengePostMayHaveReachedLichess`), and includes a cancellation in flight. The credit cost is the worst case (the opponent's cost), so P6's credit counts never understate.
+- **Outcome-log call sites stay where they are in P2.** §3.8's "move them into the funnel" is skipped, because P6 (OD-2, decided) replaces the outcome log with a fold of the challenge log. Doing both would rewrite the same sites twice.
+- **Echo attribution window:** a no-answer send to the same player (lowercased) within `echoMatchWindow` (2 × 30 s) on either side of the echo's arrival.
+- **Alarm routing:** the recorder raises through the controller's alarm list (which also logs). The writer's failures reach it through a relay. With no controller wired, a failure is still written to the session log.
+
+Tests (new files; no existing test changed):
+- `LichessBotUnmatchedEchoTests` (11): echo matched → nothing written; one no-answer send (case-insensitive) → attributed; none or two → not recorded; teardown writes every held echo; an echo of an id already on disk is not held; a game start before the created line is written right after it; a game start with its echo held is written at once and not again; an unknown game start writes nothing; a replayed incoming challenge is written once; a fact recorded during the load is in the ledger once; a failed load keeps this run's facts and raises an alarm.
+- `LichessBotChallengeLogControllerTests` (8, fake Lichess): sheet, queue and Fill Open Slots senders; the operator's Resend as Casual; operator cancel (and a cancel of a non-pending id writes nothing); going-offline withdrawal; game start → accepted; our echo after the created line never written; an incoming challenge, DCM's decision and the challenger's cancel; files only under the temporary data folder.
+
+## 14. Implementation notes: P3 game origin (2026-10-06)
+
+Implemented:
+- **`Play/LichessBotGameOrigin.swift`** (new):
+  - `LichessBotGameSourceName`, taken from lila's `Source` enum (`modules/core/src/main/game/misc.scala`, read 2026-10-06): lobby, friend, ai, api, arena, position, import, importlive, simul, pool, swiss. There is no `relay`.
+  - `LichessBotGameOrigin` and `LichessBotGameOriginGap` as in §3.5.
+  - `LichessBotGameOrigin.token`: the one place the PGN / protocol tokens are spelled.
+  - `LichessBotGameOrigin.recorded(from:)`: first determined, else last undetermined, plus the conflicting later ones. It is the one rule shared by the record builder and the resumed journal.
+  - `LichessBotGameOriginResolver` (pure).
+- `LichessBotGameEventInfo.source` is `LichessBotOpenValue<LichessBotGameSourceName>?`, so an unknown value is kept verbatim.
+- **The journal** gains `.gameOrigin`, and `LichessBotJournalWriter.recordOrigin(_:gameID:)` writes it with `.fsync`, the `recordRequest` pattern.
+- **The three exhaustive switches:**
+  - the record builder keeps the recorded origin and adds an anomaly per conflicting later determined origin;
+  - the carryover fold ignores the case;
+  - the live view's replay applies the same rule.
+- `LichessBotResumedJournal.recordedOrigin`.
+- **Optional `origin` fields** on `LichessBotGameRecord` (schema stays 1), `LichessBotGameSummary` and `LichessBotLiveGame` (with `setOrigin`). `LichessBotIndex.schemaVersion` is 2 → 3, the +1 rule of §7, since record-stats has not landed.
+- The PGN gets `DCMOrigin` only when the record has an origin, so new games only.
+- **Controller:**
+  - The resolver gets the `gameStart`s, the session starts (with a resumed journal's recorded origin) and the session ends.
+  - The recorder's `onRecorded` / `onLoaded` hooks decide waiting games as their challenge facts arrive, or when the ledger lands.
+  - `writeGameOrigin` sets the live game, logs protocol `.game` "game origin: <token>" (fields `origin`, and `challenge` when there is one) and the session line, and journals it through the runtime's writer. With no runtime it logs that it was not written.
+
+Decisions:
+- **The live game holds the decided `LichessBotGameOrigin?`**, not a `LichessBotGameOriginDisplay?`. The display (category, detail, basis) is derived by the §3.6 resolver, which P4 adds with its reconstruction step. A live game's origin is always "recorded" or not yet known, so it has no basis of its own to store.
+- **No `basis` field on the protocol line.** Every line written there is a recorded origin. The basis belongs to the display (§3.6).
+- **Once per run, explicitly:** the resolver remembers each game's known origin, whether a resumed journal held it or this run wrote it. A second session for the same game in the same run shows it and writes nothing.
+- **An incoming row with no snapshot** (only decisions, which this build never writes alone) is treated as not known yet, rather than inventing a challenger id.
+
+Tests (new files; no existing test changed):
+- `LichessBotGameOriginResolverTests` (13): incoming whatever DCM decided; each of the six senders; the POST race (waiting, then decided once); echo-only, attributed and not; arena and swiss; an unknown source kept verbatim; partial, failed and not-loaded ledgers → `challengeLogIncomplete`; resumed with determined, none, and undetermined later decided or not rewritten; decided once per run; the tokens; the source as an open value.
+- `LichessBotGameOriginJournalTests` (9): first determined kept; conflicting determined → anomaly; an old journal → no origin, no row origin, no PGN tag; the resumed journal's origin; carryover unchanged; live replay; a new record's origin in its row and PGN; a record written before origins decodes with none; an index stored at `LichessBotIndex.schemaVersion - 1` is rebuilt and stored at `LichessBotIndex.schemaVersion`.
+
+## 15. Implementation notes: P4 back-fill (2026-10-06)
+
+The pure reconstruction was built in parallel by a helper agent on its own branch (`9500c0fb`), from P1, and merged in. Its report, recorded here:
+- **Files:** `Stats/LichessBotChallengeReconstruction.swift` (Algorithm v1 of §3.7, the row types, the frozen message parser, the game join) and `Data/LichessBotChallengeReconstructionStore.swift` (regenerate-when-stale, write-only-when-different, the summary line). `LichessBotChallengeLogState` and `LichessBotChallengeLedgerNote` gained `Codable`, so rebuilt rows persist.
+- **Validation on this Mac (read-only):**
+  - On the plan's own inputs (the live files cut back to Appendix A's sizes): rows 373 (outgoing created 289, not created 54, incoming 30); games 206 = incoming 12, matchmaking 132, operator (inferred) 62, unknown 0. Every number equals Appendix B and B.2.
+  - On today's files: rows 400 (310 / 58 / 32); games 222 = incoming 12, matchmaking 148, operator (inferred) 62, unknown 0. These match Appendix B and B.2 rerun on the same snapshot.
+  - No unpaired, ambiguous or unexplained lines. The pick line was present for 190 of 190 matchmaking sends and 0 of 99 inferred-operator sends. Build time about 190 ms.
+- **Its decisions:**
+  - `publishNewFile` rather than `writeNewFile` for an absent file, so no partial file is ever visible.
+  - `replaceRegularFile` without an expected identity (a derived file: the newer read wins).
+  - A bot-limit line with no outcome line is its own not-created reason (`botGameLimit`), not an invented refusal.
+  - States come from the P1 ledger's precedence, by feeding the rebuilt facts through `LichessBotChallengeLedgerRow`.
+  - Three more message forms are read, so failures and acceptances aren't misread: matchmaking and queue "stopped" companions, and "outgoing challenge accepted; game X".
+  - Pairing is directional and consumes candidates; ambiguity is counted, never guessed.
+  - A timeout withdrawal is attributed only when exactly one challenge to that player is open.
+  - Pick lines go into `pickLineCheck`, not into `evidence`.
+  - An undecodable protocol line is listed per input rather than failing the run.
+  - An extra log category, "outgoing sender not determined".
+  - The store does no logging (it returns `undecodableStoredFile`).
+  - Freshness compares the cutoff as its encoded text.
+- **Found, not changed (outside this plan):** Lichess sends decline keys in lowercase (`nobot`, `timecontrol`, `toofast`), but `LichessBotDeclineReason`'s raw values are camelCase. So `LichessBotDeclineReasonRecord(reasonKey:)` stores most real declines as `.unrecognized`: 39 `nobot` and 19 `timecontrol` in today's data.
+
+Integration (this branch):
+- **Live log cutoff.** The reader's day files carry `firstEntryAt`, and `LichessBotChallengeLogContents.liveLogFirstEntryAt` is the first entry of the oldest day file that has one. If an older day file was left out (corrupt), the start of its UTC day stands in, so the cutoff is never later than the real first entry. The recorder keeps the value from its load.
+- **Controller:**
+  - `challengeHistory`, `challengeHistoryStatus` (`notBuilt` / `noAccount` / `rebuilding` / `ready(outcome, at:)` / `failed`) and `rebuildChallengeHistory()`, which runs the store on the general file queue. It runs once after the challenge log first loads, in a `Task`, so going online doesn't wait for it, and again from the Challenge Log window's Rebuild button (P5).
+  - The summary line is logged with the game counts joined from the index rows. An undecodable stored file is logged, and a failure raises an alarm.
+  - It is skipped before the challenge log has loaded, since its cutoff isn't known yet. With no account it would be skipped too, but settings validation already refuses an empty account, so `noAccount` is a guard, not a reachable state today.
+- **`Play/LichessBotGameOriginDisplay.swift`:** the §3.6 resolver, all five steps, plus `display(_:basis:)` for a known origin.
+  - `LichessBotGameOrigin.fromChallengeLog(gameID:row:)` (in P3's file) is the one ledger-row mapping, shared with the P3 resolver.
+  - Rebuilt operator sends show as `challengeSheet` with their confidence, because the reconstruction can't tell the sheet from Resend as Casual. Ambiguous or missing senders show as `outgoingSenderNotRecorded`, with basis `reconstructed(.certain)`: the direction is certain, the category says the sender isn't.
+- **`originsByGameID`** is recomputed when the index changes, when a challenge fact is recorded, when the ledger loads, and when the history is ready. A record that disagrees with the challenge log is logged once per game per launch: `[LICHESS-BOT] origin disagreement for <id>: …`.
+
+Tests (new files; no existing test changed):
+- From the helper: `LichessBotChallengeReconstructionTests` (24) and `LichessBotChallengeReconstructionRealDataTests` (1). The real-data test is read-only, skips when the folder is absent, and never runs the store.
+- `LichessBotGameOriginDisplayTests` (8): each step of the order; step 5's split, including no live log; every category from an origin; the cutoff from the oldest day file, and from an older left-out file's day start.
+- `LichessBotChallengeHistoryControllerTests` (1): loading the challenge log rebuilds the history into the temporary data folder, and a rerun writes nothing (the modification time is unchanged).
+
+## 16. Implementation notes: P6 outcome log from the challenge log (2026-10-06)
+
+OD-2 was decided, so P6 is in.
+
+Implemented:
+- **`Stats/LichessBotChallengeOutcomeFold.swift`** (new): `LichessBotChallengeOutcomeLog.fold(ledger:history:liveLogFirstEntryAt:now:)`. It takes the challenge log's rows, plus the rebuilt rows from before the live log's first entry (live rows win on an id), pruned to the rolling day.
+- `LichessBotChallengeOutcomeLog` gains `init()` and `init(records:)`. Its type, `load(from:)`, `save(to:)`, `summary` and `prune` are unchanged, and `LichessBotChallengeOutcomeTests` passes unchanged.
+- **Controller:**
+  - `challengeOutcomeLog` is refolded whenever a challenge fact is recorded, the ledger loads, or the history is rebuilt, and is assigned only on a change.
+  - `loadChallengeOutcomes()` now loads the challenge log and folds it, so the bot window and going online are unchanged.
+  - `updateChallengeOutcomeLog` (and its save of `challenge-outcomes.json`) is gone. Its protocol lines stay: `logChallengeOutcome` writes "challenge outcome: …" with the rolling credit counts, after the fact it describes is recorded.
+  - The old file is never read or written again, and stays on disk as it was.
+  - The quit check also counts a loaded challenge log as "used the bot".
+
+Mapping (the old log's meaning kept):
+- A created challenge is pending until accepted (its game started), declined, or withdrawn or canceled (both `.canceled`). A started game outranks a withdrawal, as `resolve` let an acceptance replace an inferred cancel.
+- Offline → `.offline`, costing nothing. A refused POST → `.refused`, with the recorded charge.
+- **Not folded, as before:** sends with no answer (the old log left them out; whether a challenge exists is unknown), echo-only rows and incoming challenges.
+- **Rebuilt rows carry no cost or kind.** A challenge to a `BOT` is a bot's cost, and anything else the worst case (a human's). A bot-vs-bot limit refusal is a bot's. A pre-outcome-line bot-limit line maps to a `botDailyGameLimit` refusal: it was logged only from a 400 refusal. Its answer time stands in as its first evidence.
+- **Record ids:** the attempt id for a not-created send. Otherwise a SHA-256-derived UUID of the challenge id or the protocol line, so a refold keeps ids stable for the Overview's lists.
+
+Decision:
+- **Resolution lines are written on every answer**, not only when the old log's `canResolve` would have changed a record. The fold already holds the fact by then, so that check no longer means anything. A challenge canceled and then accepted gets both lines, as its facts say.
+
+Tests (new files; no existing test changed):
+- `LichessBotChallengeOutcomeFoldTests` (5): each state mapped; not-created attempts and what stays out; the rolling day; stable ids across refolds; rebuilt rows only before the live log, with live rows winning on a shared id.
+- `LichessBotOutcomeLogFromChallengeLogTests` (1, fake Lichess): the outcome log follows a send and a lowercased-key decline (`nobot` → `.known(.noBot)`), and an old `challenge-outcomes.json` is left byte for byte.
+
+## 17. Implementation notes: P5 UI (2026-10-06)
+
+Built by a helper agent on its own branch (`de1327dc`, from P4) and merged in. No controller lines changed.
+
+Implemented:
+- `UI/LichessBotGameOriginStyle` and `UI/LichessBotChallengeLogStyle`: every glyph and every piece of wording in one place.
+- Building blocks: `LichessBotGameOriginGlyph`, `LichessBotGameOriginLabel`, `LichessBotGameOriginDetailLine`.
+- **All Games window:**
+  - a sortable Origin column after Color;
+  - an Origin filter (`LichessBotAllGamesOriginFilterPicker`);
+  - the filtered and sorted rows and the summary kept in `@State` and refreshed on change;
+  - per-category counts in the summary line.
+- **Elsewhere:**
+  - the Recent games list has a glyph column;
+  - the Live picker's title gets " · <short label>" / " · origin not yet known";
+  - a tile shows the glyph beside the opponent;
+  - the game detail has an Origin row;
+  - the outcomes card has a "Challenge Log…" button.
+- **Challenge Log window** (`LichessBotChallengeLogWindow`, with its view, filter bar, table, footer, and opponent and game cells):
+  - the pure row model is `Stats/LichessBotChallengeLogRow.swift`, plus `LichessBotChallengeLogFilter` and `LichessBotChallengeLogCounts`;
+  - live rows win on a shared id;
+  - every "not recorded" is its own case.
+- The recorder gains `loadedFiles` (files, lines, bytes, skipped newer lines at load) for the footer, and `LichessBotLiveGame` gains a computed `originDisplay`.
+
+Decisions (the helper's):
+- **Style file:** `LichessBotGameOriginStyle` has its own file, not `LichessBotOverviewView.swift` where `LichessBotStatusStyle` lives.
+- **Unknown origins:** the long label is the reason ("Unknown — played before origins were recorded; …").
+- **"Not yet known":** a live game with no origin yet has its own glyph ("ellipsis"), distinct from unknown's "?".
+- **`@State` updates from `onChange`** go through `Task { @MainActor in }`, the bot UI's existing pattern.
+- **Challenge Log defaults:** the date range defaults to All, so rebuilt rows show with "Include reconstructed" on.
+- **Credits:** "–" means "costs DCM no credits" for incoming, and "not recorded" for an echo or rebuilt row.
+- **Footer:** worded "Challenge log at load: …".
+- **Window sizes:** All Games 1080 wide (minimum 820); Challenge Log 1500 (minimum 1000).
+- **Ledger on open:** the window's `.task` calls `loadChallengeLog()`, which loads only while nil.
+- **Long Table bodies:** the two `Table` bodies run past 20 lines, because a `TableColumn` builder can't be split into child views; each cell is short or its own view.
+
+Tests (new files; no existing test changed): `LichessBotChallengeLogRowTests` (18), `LichessBotGameOriginStyleTests` (17), `LichessBotChallengeLogViewRenderTests` (5), `LichessBotGameOriginViewRenderTests` (4). Render data: empty, live-only, rebuilt-only and mixed, every state kind and every category.
+
+## 18. Implementation notes: P7 documentation (2026-10-07)
+
+- `LICHESS_BOT_PLAN.md` §10.1's layout gains the two `Challenges/` rows; the rest of its text is kept.
+- `CHANGELOG.md` has one entry per phase.
+- This file's status, and §12–§18.
+- ROADMAP.md: the line the team lead added (`fdd0855c`) is marked done, with nothing removed (OD-11).
+- **Validation done on this Mac:**
+  - §6.3, read-only: Appendix B's numbers reproduced exactly on the plan's inputs (§15).
+  - Idempotence, in tests: a rerun writes nothing and leaves the modification time unchanged.
+  - Nothing written under the real data folder: every test uses temporary folders, and the real-data test only reads.
+- **Not done here, and left to the owner** (they need the running app or lichess.org): §6.2 builds through drews-xcode-mcp (this branch was built with xcodebuild, as the team lead directed), §6.5's read-only proof on the real data folder, the §6.6 live checks, the §6.7 crash check, and §6.9's load cost in the CHANGELOG. `[LICHESS-BOT] challenge log loaded: … ms=…` is logged on every load for §6.9.
 
 ## Appendix A. Measured data (2026-10-06, read-only)
 

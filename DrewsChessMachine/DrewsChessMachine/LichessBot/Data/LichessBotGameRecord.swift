@@ -174,6 +174,11 @@ struct LichessBotGameRecord: Sendable, Codable, Equatable {
     /// (see `LichessBotJSONLines.cutUnterminatedFinalLine`).
     let droppedTrailingJournalBytes: Int
     let reconciliation: Reconciliation
+    /// How the game began (challenge-log plan §3.5), from its journal. Nil
+    /// when the journal held none: a game played before origins were
+    /// recorded, or one whose origin write failed. The schema stays 1: an
+    /// optional field older builds ignore and older records decode without.
+    let origin: LichessBotGameOrigin?
 }
 
 enum LichessBotRecordError: LocalizedError, Equatable {
@@ -316,6 +321,10 @@ enum LichessBotRecordBuilder {
             mismatches.append("no export and no finished status in the journal")
         }
         replay.finishMoves(ourColor: ourColor, exportNoteTime: checkedAt)
+        let recordedOrigin = LichessBotGameOrigin.recorded(from: replay.origins.map(\.origin))
+        for conflicting in recordedOrigin.conflicting {
+            replay.anomalies.append(.init(at: checkedAt, text: "the journal records a second origin, \(conflicting.token), after \(recordedOrigin.origin?.token ?? "none"); the first is kept"))
+        }
         if journal.droppedTrailingByteCount > 0 {
             replay.anomalies.append(.init(at: checkedAt, text: "the journal ended in an unterminated line of \(journal.droppedTrailingByteCount) bytes (an interrupted write), which was dropped"))
         }
@@ -361,7 +370,8 @@ enum LichessBotRecordBuilder {
             rejectedMoves: replay.rejectedMoves,
             streamReconnects: max(0, replay.streamOpens - 1),
             droppedTrailingJournalBytes: journal.droppedTrailingByteCount,
-            reconciliation: reconciliation
+            reconciliation: reconciliation,
+            origin: recordedOrigin.origin
         )
     }
 
@@ -513,6 +523,8 @@ enum LichessBotRecordBuilder {
         var decisions: [Int: [(decision: LichessBotMoveDecision, generationID: Int, generationIndex: Int)]] = [:]
         var posts: [Int: [(uci: String, offeringDraw: Bool, milliseconds: Double)]] = [:]
         var offerFlags: [String: Bool] = [:]
+        /// Every `gameOrigin` line, in journal order.
+        var origins: [(at: Date, origin: LichessBotGameOrigin)] = []
 
         init(ourAccountID: String) {
             self.ourAccountID = ourAccountID
@@ -573,6 +585,8 @@ enum LichessBotRecordBuilder {
                 // The reply itself is a request and a sent chat message,
                 // both journaled on their own.
                 break
+            case .gameOrigin(let origin):
+                origins.append((entry.at, origin))
             }
         }
 

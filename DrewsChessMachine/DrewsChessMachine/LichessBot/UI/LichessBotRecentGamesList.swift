@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// DCM's most recent filed games, newest first: result chip, color, the
-/// opponent and their kind and rating, the game's speed, and when. It
-/// scrolls within the card's height; "More…" opens every game in a
+/// DCM's most recent filed games, newest first: result chip, color, how the
+/// game began, the opponent and their kind and rating, the game's speed, and
+/// when. It scrolls within the card's height; "More…" opens every game in a
 /// sortable window.
 struct LichessBotRecentGamesList: View {
     /// A bound on what the card lists; the window lists every game.

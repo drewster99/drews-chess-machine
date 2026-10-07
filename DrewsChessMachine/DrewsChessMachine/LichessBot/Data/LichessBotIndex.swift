@@ -26,6 +26,9 @@ struct LichessBotGameSummary: Sendable, Codable, Equatable {
     let builds: [Int]
     let reconciliation: LichessBotGameRecord.Reconciliation.Outcome
     let anomalyCount: Int
+    /// How the game began, copied from its record; nil when the record has
+    /// none (challenge-log plan §3.5).
+    let origin: LichessBotGameOrigin?
     /// The per-game facts the Record card's statistics read
     /// (`LICHESS_BOT_RECORD_STATS_PLAN.md` §4.2), reduced from the record
     /// once, here, so the statistics never open a record file. Optional so
@@ -59,6 +62,7 @@ struct LichessBotGameSummary: Sendable, Codable, Equatable {
         builds = record.builds
         reconciliation = record.reconciliation.outcome
         anomalyCount = record.anomalies.count
+        origin = record.origin
         facts = LichessBotGameFacts(record: record)
     }
 }
@@ -71,12 +75,13 @@ struct LichessBotGameSummary: Sendable, Codable, Equatable {
 /// general-purpose one, never the journal queue, since a rebuild decodes
 /// every record.
 enum LichessBotIndex {
-    /// 3: rows carry `facts` (`LICHESS_BOT_RECORD_STATS_PLAN.md` §4.2).
-    /// Bump it again whenever `LichessBotSelfAssessmentDefinition`'s
-    /// thresholds change: the facts are reduced with them, so rows of the
-    /// old thresholds must not be kept. A stored index of another version is
-    /// rejected and rebuilt from the records.
-    static let schemaVersion = 3
+    /// Bumped by one for each change to a row, so a stored index from an
+    /// older build is rebuilt from the records once: 3, `origin`
+    /// (challenge-log plan §3.5); 4, `facts`
+    /// (`LICHESS_BOT_RECORD_STATS_PLAN.md` §4.2). Bump it again whenever
+    /// `LichessBotSelfAssessmentDefinition`'s thresholds change: the facts
+    /// are reduced with them, so rows of the old thresholds must not be kept.
+    static let schemaVersion = 4
 
     /// A record file the index left out because it doesn't decode.
     struct UnreadableRecord: Sendable, Codable, Equatable {

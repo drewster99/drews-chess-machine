@@ -31,8 +31,21 @@ enum LichessBotChallengeOutcome: Sendable, Hashable, Codable {
 /// A decline's reason as Lichess reported it. Lichess documents the keys in
 /// `LichessBotDeclineReason`; a key outside them, or a decline event with
 /// none, is kept as reported rather than folded into `generic`.
+///
+/// Saved records (`challenge-outcomes.json`, the challenge log) store the
+/// form Swift synthesizes for these cases — `{"known":{"_0":"noBot"}}`,
+/// `{"unrecognized":{"_0":"…"}}`, `{"unstated":{}}` — and still do;
+/// `StoredForm` keeps that shape. Reading normalizes: builds before the
+/// event-key fix stored the event stream's lowercased keys (`nobot`,
+/// `timecontrol`, `toofast`, `tooslow`, `onlybot`) as unrecognized, and
+/// such a record reads as its known reason through `init(reasonKey:)`, so a
+/// reason is counted under one case whichever build wrote it. Nothing is
+/// rewritten for this: `challenge-outcomes.json` carries the known form
+/// after its next ordinary save, and append-only lines stay as written.
 enum LichessBotDeclineReasonRecord: Sendable, Hashable, Codable {
     case known(LichessBotDeclineReason)
+    /// A key outside `LichessBotDeclineReason`, as sent. Built only through
+    /// `init(reasonKey:)`, so it never holds a key that names a reason.
     case unrecognized(String)
     /// The decline event carried no reason key.
     case unstated
@@ -42,14 +55,48 @@ enum LichessBotDeclineReasonRecord: Sendable, Hashable, Codable {
             self = .unstated
             return
         }
-        if let known = LichessBotDeclineReason(rawValue: reasonKey) {
+        if let known = LichessBotDeclineReason(lichessKey: reasonKey) {
             self = .known(known)
         } else {
             self = .unrecognized(reasonKey)
         }
     }
 
-    /// The key as Lichess spells it, for tables and logs.
+    /// The stored shape: the one Swift synthesizes for this enum's cases,
+    /// kept so files written before and after the normalizing decode read
+    /// alike.
+    private enum StoredForm: Codable {
+        case known(LichessBotDeclineReason)
+        case unrecognized(String)
+        case unstated
+    }
+
+    init(from decoder: Decoder) throws {
+        switch try StoredForm(from: decoder) {
+        case .known(let reason):
+            self = .known(reason)
+        case .unrecognized(let key):
+            self.init(reasonKey: key)
+        case .unstated:
+            self = .unstated
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        let stored: StoredForm
+        switch self {
+        case .known(let reason):
+            stored = .known(reason)
+        case .unrecognized(let key):
+            stored = .unrecognized(key)
+        case .unstated:
+            stored = .unstated
+        }
+        try stored.encode(to: encoder)
+    }
+
+    /// The reason for tables and logs: a known reason in the API
+    /// documentation's spelling (`noBot`), any other key as Lichess sent it.
     var keyText: String {
         switch self {
         case .known(let reason): return reason.rawValue
@@ -202,6 +249,14 @@ struct LichessBotChallengeOutcomeRecord: Sendable, Hashable, Codable, Identifiab
 struct LichessBotChallengeOutcomeLog: Sendable, Codable, Equatable {
     /// Oldest first.
     private(set) var records: [LichessBotChallengeOutcomeRecord] = []
+
+    init() {}
+
+    /// A log holding `records`, oldest first (the challenge-log fold,
+    /// `fold(ledger:history:liveLogFirstEntryAt:now:)`).
+    init(records: [LichessBotChallengeOutcomeRecord]) {
+        self.records = records
+    }
 
     /// Rolling counts over the last day (the credits also over the last
     /// minute), for the Overview.

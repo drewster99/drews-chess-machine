@@ -149,7 +149,7 @@ enum LichessBotChallengeLogDirection: String, Sendable, Codable, Equatable, Hash
 
 /// Where a challenge's life ended up (§3.4), decided by the strongest fact
 /// present, never by the last one read.
-enum LichessBotChallengeLogState: Sendable, Equatable {
+enum LichessBotChallengeLogState: Sendable, Codable, Equatable {
     /// No terminal fact. The UI shows Waiting while the challenge is
     /// pending, else "No answer recorded" — explicit, never blank.
     case open
@@ -180,7 +180,7 @@ enum LichessBotChallengeLogState: Sendable, Equatable {
 
 /// A fact that a stronger one outranked in an accepted row, kept so the row
 /// still says what happened on the way.
-enum LichessBotChallengeLedgerNote: Sendable, Equatable {
+enum LichessBotChallengeLedgerNote: Sendable, Codable, Equatable {
     /// A withdrawal was attempted, but the game started anyway (the cancel
     /// lost the race with the acceptance, or Lichess answered "already
     /// gone").

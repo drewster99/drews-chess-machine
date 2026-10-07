@@ -64,6 +64,7 @@ struct LichessBotGameDetailContent: View {
         let material = MaterialCount(game.state(afterPlies: displayed))
         VStack(alignment: .leading, spacing: 8) {
             LichessBotGameHeaderView(game: game, onPopOut: onPopOut)
+            LichessBotGameOriginDetailLine(display: game.originDisplay)
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
                     LichessBotPlayerLineView(

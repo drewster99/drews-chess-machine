@@ -50,7 +50,9 @@ struct LichessBotLiveView: View {
 
     static func menuTitle(for game: LichessBotLiveGame) -> String {
         let opponent = game.opponent?.name ?? "?"
-        return "\(game.isFinished ? "✓" : "●") \(opponent) · \(game.id)"
+        let origin = game.originDisplay.map { LichessBotGameOriginStyle.presentation(of: $0).markedShortLabel }
+            ?? LichessBotGameOriginStyle.notYetKnownPickerSuffix
+        return "\(game.isFinished ? "✓" : "●") \(opponent) · \(game.id) · \(origin)"
     }
 }
 

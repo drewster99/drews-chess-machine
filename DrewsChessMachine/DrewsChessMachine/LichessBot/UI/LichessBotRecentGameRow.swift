@@ -10,6 +10,8 @@ struct LichessBotRecentGameRow: View {
             LichessBotResultChip(ourScore: row.ourScore)
             PieceColorDisc(color: row.ourColor == .white ? .white : .black, diameter: 10)
                 .help(row.ourColor == .white ? "DCM played White" : "DCM played Black")
+            LichessBotGameOriginGlyph(display: controller.originsByGameID[row.gameID])
+                .font(LichessBotStatsStyle.noteFont)
             HStack(spacing: 4) {
                 LichessBotFavoriteStar(controller: controller, userID: row.opponentID)
                 Text(row.opponentName ?? "?")
