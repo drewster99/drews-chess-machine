@@ -27,6 +27,6 @@ struct LichessBotOpponentsFigures: View {
 
     static func bestWinText(_ win: LichessBotNotableWin?) -> String {
         guard let win else { return "Highest-rated win: none" }
-        return "Highest-rated win: \(win.opponentName) (\(win.rating)), \(win.createdAt.formatted(date: .abbreviated, time: .omitted))"
+        return "Highest-rated win: \(win.opponentName ?? "an opponent without a name") (\(win.rating)), \(win.createdAt.formatted(date: .abbreviated, time: .omitted))"
     }
 }

@@ -10,9 +10,7 @@ struct LichessBotEndingRowView: View {
     var body: some View {
         let counted = row.ending != .notCounted
         GridRow {
-            Text(row.ending.label)
-                .font(LichessBotStatsStyle.rowLabelFont)
-                .gridColumnAlignment(.leading)
+            LichessBotRowLabel(text: row.ending.label)
             Text(counted ? LichessBotStatsFormat.countWithShare(row.wins, of: totals.wins) : LichessBotStatsFormat.missing)
                 .foregroundStyle(LichessBotStatsStyle.win)
             Text(counted ? LichessBotStatsFormat.countWithShare(row.draws, of: totals.draws) : LichessBotStatsFormat.missing)

@@ -256,6 +256,9 @@ struct LichessBotModelTableRow: Sendable, Equatable, Identifiable {
 struct LichessBotProgressionPoint: Sendable, Equatable, Identifiable {
     /// The run: its lineage run ID, else its model ID.
     let series: String
+    /// The point's place in its run, from 0. Part of the ID: two bins of a
+    /// run can end at the same step (checkpoints that share a step).
+    let ordinal: Int
     /// The last merged checkpoint's lineage cumulative step when recorded,
     /// else its training step.
     let step: Int
@@ -267,7 +270,7 @@ struct LichessBotProgressionPoint: Sendable, Equatable, Identifiable {
     let interval: LichessBotScoreInterval?
     let performance: LichessBotRatingEstimate
 
-    var id: String { "\(series)#\(step)" }
+    var id: String { "\(series)#\(ordinal)" }
 }
 
 /// What the progression chart plots on its y axis.

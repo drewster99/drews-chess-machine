@@ -166,7 +166,8 @@ struct LichessBotOpponentRecordRow: Sendable, Equatable, Identifiable {
 struct LichessBotNotableWin: Sendable, Equatable {
     let gameID: String
     let createdAt: Date
-    let opponentName: String
+    /// The name, else the user id; nil only if a rated opponent had neither.
+    let opponentName: String?
     let rating: Int
 }
 

@@ -22,7 +22,7 @@ struct LichessBotHeldGameRow: View {
             .font(LichessBotStatsStyle.noteFont)
             .help("Open \(game.gameID) on Lichess")
         }
-        .font(.callout)
+        .font(LichessBotStatsStyle.rowFont)
         .lineLimit(1)
         .fixedSize()
     }

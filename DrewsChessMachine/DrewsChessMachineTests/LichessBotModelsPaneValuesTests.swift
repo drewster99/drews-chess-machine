@@ -47,8 +47,8 @@ final class LichessBotModelsPaneValuesTests: XCTestCase {
 
     func testChartMarks() {
         let points = [
-            LichessBotProgressionPoint(series: "R", step: 100, stepIsCumulative: false, firstStep: 50, checkpointCount: 2, games: 30, score: 0.5, interval: LichessBotScoreInterval(lower: 0.33, upper: 0.67), performance: .estimate(1501)),
-            LichessBotProgressionPoint(series: "R", step: 200, stepIsCumulative: false, firstStep: 150, checkpointCount: 2, games: 30, score: 1, interval: LichessBotScoreInterval(lower: 0.88, upper: 1), performance: .atLeast(1900)),
+            LichessBotProgressionPoint(series: "R", ordinal: 0, step: 100, stepIsCumulative: false, firstStep: 50, checkpointCount: 2, games: 30, score: 0.5, interval: LichessBotScoreInterval(lower: 0.33, upper: 0.67), performance: .estimate(1501)),
+            LichessBotProgressionPoint(series: "R", ordinal: 1, step: 200, stepIsCumulative: false, firstStep: 150, checkpointCount: 2, games: 30, score: 1, interval: LichessBotScoreInterval(lower: 0.88, upper: 1), performance: .atLeast(1900)),
         ]
         let score = LichessBotProgressChartMark.marks(points, metric: .score)
         XCTAssertEqual(score.map(\.value), [50, 100])

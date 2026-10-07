@@ -6,9 +6,7 @@ struct LichessBotGameLengthRowView: View {
 
     var body: some View {
         GridRow {
-            Text(row.label)
-                .font(LichessBotStatsStyle.rowLabelFont)
-                .gridColumnAlignment(.leading)
+            LichessBotRowLabel(text: row.label)
             Text("\(row.games)")
             Text(LichessBotStatsFormat.oneDecimal(row.meanPlies))
             Text(LichessBotStatsFormat.oneDecimal(row.medianPlies))

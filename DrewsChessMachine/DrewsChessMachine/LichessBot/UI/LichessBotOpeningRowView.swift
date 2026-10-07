@@ -7,9 +7,7 @@ struct LichessBotOpeningRowView: View {
 
     var body: some View {
         GridRow {
-            Text(row.family)
-                .font(LichessBotStatsStyle.rowLabelFont)
-                .gridColumnAlignment(.leading)
+            LichessBotRowLabel(text: row.family)
             Text(row.ecoRange)
             LichessBotTallyText(tally: row.asWhite, countWidth: countWidth)
             Text(LichessBotStatsFormat.percent(row.asWhite.score))

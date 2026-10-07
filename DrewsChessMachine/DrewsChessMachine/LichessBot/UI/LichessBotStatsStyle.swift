@@ -39,6 +39,8 @@ enum LichessBotStatsStyle {
     /// font with monospaced digits, so the numbers align without the whole
     /// sentence in a code font.
     static let figureFont = Font.callout.monospacedDigit()
+    /// The text of a list row (recent games, held games, short losses).
+    static let rowFont = Font.callout
     /// A row's name (a period, a speed, a model).
     static let rowLabelFont = Font.callout.weight(.medium)
     /// A pane's section title.
@@ -57,6 +59,9 @@ enum LichessBotStatsStyle {
     /// and checks this bound; 1,300 leaves room for four-digit counts.
     static let wideCardWidth: CGFloat = 1_300
     static let recentGamesMinimumWidth: CGFloat = 380
+    /// Beside the statistics, the recent games grow no wider than this; the
+    /// statistics take the rest.
+    static let recentGamesMaximumWidth: CGFloat = 532
     /// The recent games' height when stacked below the statistics.
     static let narrowRecentGamesHeight: CGFloat = 200
     static let columnSpacing: CGFloat = 18

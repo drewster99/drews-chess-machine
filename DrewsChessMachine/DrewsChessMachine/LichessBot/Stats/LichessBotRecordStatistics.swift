@@ -541,7 +541,7 @@ private struct PeriodAccumulator {
             groups: groupList,
             noModelRecorded: noModelRecorded,
             decisionsWithoutGeneration: decisionsWithoutGeneration,
-            progression: Self.progression(checkpoints.values.map { ($0.facts, $0.line) })
+            progression: Self.progression(checkpoints.map { ($0.key, $0.value.facts, $0.value.line) })
         )
     }
 
@@ -564,8 +564,13 @@ private struct PeriodAccumulator {
     /// own point. Checkpoints with no step at all can't be placed and are
     /// left out of the chart (they stay in the table). Runs with fewer than
     /// two points are left out.
-    private static func progression(_ checkpoints: [(facts: LichessBotGenerationFacts, line: ModelLineAccumulator)]) -> [LichessBotProgressionPoint] {
-        typealias Entry = (step: Int, cumulative: Bool, line: ModelLineAccumulator)
+    ///
+    /// Checkpoints at one step (a trainer snapshot and a file of the same
+    /// step) are ordered by first game, then by key, so the bins never
+    /// depend on the dictionary's order and the chart is the same on every
+    /// launch.
+    private static func progression(_ checkpoints: [(key: LichessBotModelKey, facts: LichessBotGenerationFacts, line: ModelLineAccumulator)]) -> [LichessBotProgressionPoint] {
+        typealias Entry = (step: Int, cumulative: Bool, key: String, line: ModelLineAccumulator)
         var bySeries: [String: [Entry]] = [:]
         for checkpoint in checkpoints {
             let step: Int
@@ -579,11 +584,15 @@ private struct PeriodAccumulator {
             } else {
                 continue
             }
-            bySeries[checkpoint.facts.lineageRunID ?? checkpoint.facts.modelID, default: []].append((step, cumulative, checkpoint.line))
+            bySeries[checkpoint.facts.lineageRunID ?? checkpoint.facts.modelID, default: []].append((step, cumulative, "\(checkpoint.key)", checkpoint.line))
         }
         var points: [LichessBotProgressionPoint] = []
         for (series, unordered) in bySeries.sorted(by: { $0.key < $1.key }) {
-            let entries = unordered.sorted { $0.step < $1.step }
+            let entries = unordered.sorted { lhs, rhs in
+                if lhs.step != rhs.step { return lhs.step < rhs.step }
+                if lhs.line.first != rhs.line.first { return lhs.line.first < rhs.line.first }
+                return lhs.key < rhs.key
+            }
             var bins: [[Entry]] = []
             var pending: [Entry] = []
             var pendingGames = 0
@@ -600,7 +609,7 @@ private struct PeriodAccumulator {
                 bins.append(pending)
             }
             guard bins.count >= 2 else { continue }
-            for bin in bins {
+            for (ordinal, bin) in bins.enumerated() {
                 guard let first = bin.first, let last = bin.last else { continue }
                 var tally = LichessBotResultTally()
                 var performance = PerformanceAccumulator()
@@ -614,6 +623,7 @@ private struct PeriodAccumulator {
                 let score = Double(tally.wins) + 0.5 * Double(tally.draws)
                 points.append(LichessBotProgressionPoint(
                     series: series,
+                    ordinal: ordinal,
                     step: last.step,
                     stepIsCumulative: last.cumulative,
                     firstStep: first.step,
@@ -710,7 +720,7 @@ private struct LaterAccumulator {
             shortLosses.append(LichessBotShortGame(gameID: row.gameID, createdAt: row.createdAt, opponentName: row.opponentName ?? row.opponentID, plies: row.plies))
         }
         if ourScore == 1, let rating = row.opponentRating {
-            let candidate = LichessBotNotableWin(gameID: row.gameID, createdAt: row.createdAt, opponentName: row.opponentName ?? row.opponentID ?? "?", rating: rating)
+            let candidate = LichessBotNotableWin(gameID: row.gameID, createdAt: row.createdAt, opponentName: row.opponentName ?? row.opponentID, rating: rating)
             if Self.beats(candidate, highestRatedWin) {
                 highestRatedWin = candidate
             }

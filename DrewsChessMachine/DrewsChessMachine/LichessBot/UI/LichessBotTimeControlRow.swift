@@ -16,9 +16,7 @@ struct LichessBotTimeControlRow: View {
     var body: some View {
         let tally = selected?.tally ?? LichessBotResultTally()
         GridRow {
-            Text(speed)
-                .font(LichessBotStatsStyle.rowLabelFont)
-                .gridColumnAlignment(.leading)
+            LichessBotRowLabel(text: speed)
             Text(LichessBotStatsFormat.accountRating(perf))
                 .help(accountLoaded ? "Lichess's current rating in \(speed)\(perf?.prov == true ? " (provisional)" : "")" : "Account not loaded")
             Text(LichessBotStatsFormat.ratingChange(today?.ratingChange ?? LichessBotRatingChange()))

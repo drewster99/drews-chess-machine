@@ -12,16 +12,7 @@ struct LichessBotRecentGamesList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Recent games")
-                    .font(LichessBotStatsStyle.headerFont)
-                    .foregroundStyle(LichessBotStatsStyle.neutral)
-                Spacer()
-                Button("More…") {
-                    LichessBotAllGamesWindowController.open(controller: controller)
-                }
-                .font(.caption)
-            }
+            LichessBotRecentGamesHeader(controller: controller)
             Text("No games filed yet")
                 .foregroundStyle(LichessBotStatsStyle.neutral)
                 .shown(rows.isEmpty)

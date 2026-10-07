@@ -112,6 +112,9 @@ final class LichessBotRecordStatisticsPipeline {
     /// Outcomes applied (results and errors), for tests that check a late
     /// outcome was dropped.
     @ObservationIgnored private(set) var appliedOutcomeCount = 0
+    /// An index change whose `record stats (index)` log line has not been
+    /// written yet; the next applied result writes it.
+    @ObservationIgnored private(set) var indexLogPending = false
 
     /// - Parameters:
     ///   - compute: the statistics function; tests substitute one that
@@ -168,6 +171,7 @@ final class LichessBotRecordStatisticsPipeline {
     /// The games index changed: recompute from its rows.
     func indexChanged(rows: [LichessBotGameSummary]) {
         self.rows = rows
+        indexLogPending = true
         schedule(reason: .index, now: Date())
     }
 
@@ -226,8 +230,13 @@ final class LichessBotRecordStatisticsPipeline {
             state = .ready(statistics)
             // One line per index change, not per clock tick: the numbers a
             // tick changes are period boundaries, already in the snapshot.
-            if reason == .index {
-                SessionLogger.shared.log(LichessBotRecordStatsLogLine.text(statistics, reason: reason.rawValue, milliseconds: milliseconds))
+            // Keyed on the pending flag rather than this request's reason:
+            // a clock request made while an index request was in flight
+            // supersedes it but computes from the same new rows, and the
+            // index change must still get its line.
+            if indexLogPending {
+                indexLogPending = false
+                SessionLogger.shared.log(LichessBotRecordStatsLogLine.text(statistics, reason: LichessBotRecordStatisticsReason.index.rawValue, milliseconds: milliseconds))
             }
         case .failure(let error):
             if isShutDown, error is LichessBotFileQueueError {

@@ -7,9 +7,7 @@ struct LichessBotOpponentRecordRowView: View {
 
     var body: some View {
         GridRow {
-            Text(row.name)
-                .font(LichessBotStatsStyle.rowLabelFont)
-                .gridColumnAlignment(.leading)
+            LichessBotRowLabel(text: row.name)
             Text(Self.kindText(row.kind))
                 .font(LichessBotStatsStyle.noteFont)
                 .foregroundStyle(LichessBotStatsStyle.neutral)

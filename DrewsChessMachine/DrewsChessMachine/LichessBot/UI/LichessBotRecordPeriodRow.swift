@@ -8,9 +8,7 @@ struct LichessBotRecordPeriodRow: View {
 
     var body: some View {
         GridRow {
-            Text(period.label)
-                .font(LichessBotStatsStyle.rowLabelFont)
-                .gridColumnAlignment(.leading)
+            LichessBotRowLabel(text: period.label)
                 .help(period == .lastHour ? "The 60 minutes before now (not the clock hour), so just after midnight it can hold games Today does not" : "Games started since the start of this period, in this Mac's calendar and time zone")
             Text("\(row.record.all.scored)")
             LichessBotTallyText(tally: row.record.all, countWidth: countWidth)

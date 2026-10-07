@@ -15,20 +15,14 @@ struct LichessBotRecentGameRow: View {
                 Text(row.opponentName ?? "?")
                     .lineLimit(1)
             }
-            Text(Self.kindText(row))
-                .font(LichessBotStatsStyle.noteFont)
-                .foregroundStyle(LichessBotStatsStyle.neutral)
+            LichessBotNoteText(text: Self.kindText(row))
             Text(row.opponentRating.map { "\($0)" } ?? "")
                 .font(LichessBotStatsStyle.numberFont)
                 .gridColumnAlignment(.trailing)
-            Text("\(row.speed)\(row.rated ? " · rated" : "")")
-                .font(LichessBotStatsStyle.noteFont)
-                .foregroundStyle(LichessBotStatsStyle.neutral)
-            Text(row.createdAt.formatted(.relative(presentation: .named)))
-                .font(LichessBotStatsStyle.noteFont)
-                .foregroundStyle(LichessBotStatsStyle.neutral)
+            LichessBotNoteText(text: "\(row.speed)\(row.rated ? " · rated" : "")")
+            LichessBotNoteText(text: row.createdAt.formatted(.relative(presentation: .named)))
         }
-        .font(.callout)
+        .font(LichessBotStatsStyle.rowFont)
     }
 
     private static func kindText(_ row: LichessBotGameSummary) -> String {

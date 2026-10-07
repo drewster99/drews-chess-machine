@@ -6,9 +6,7 @@ struct LichessBotClockRowView: View {
 
     var body: some View {
         GridRow {
-            Text(row.speed)
-                .font(LichessBotStatsStyle.rowLabelFont)
-                .gridColumnAlignment(.leading)
+            LichessBotRowLabel(text: row.speed)
             Text("\(row.games)")
             Text(LichessBotStatsFormat.seconds(row.meanThinkSeconds))
                 .help("Over \(row.thinkTimeMoves) moves whose clocks were recorded")

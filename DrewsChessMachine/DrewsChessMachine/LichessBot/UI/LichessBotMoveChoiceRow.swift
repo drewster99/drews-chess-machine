@@ -7,9 +7,7 @@ struct LichessBotMoveChoiceRow: View {
 
     var body: some View {
         GridRow {
-            Text(label)
-                .font(LichessBotStatsStyle.rowLabelFont)
-                .gridColumnAlignment(.leading)
+            LichessBotRowLabel(text: label)
             Text("\(line.decisions)")
             Text(LichessBotStatsFormat.percent(line.topMoveShare))
                 .help("Share of DCM's decisions (\(line.decisionsWithTopMoves) recorded the policy's top moves) that played the policy's own top move")

@@ -6,9 +6,7 @@ struct LichessBotCalibrationRowView: View {
 
     var body: some View {
         GridRow {
-            Text("\(row.moveNumber)")
-                .font(LichessBotStatsStyle.rowLabelFont)
-                .gridColumnAlignment(.leading)
+            LichessBotRowLabel(text: "\(row.moveNumber)")
                 .help("Games that reached DCM's move \(row.moveNumber); games that ended earlier are not in this row")
             Text("\(row.games)")
             Text("\(row.missing)")

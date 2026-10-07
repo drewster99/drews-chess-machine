@@ -11,10 +11,10 @@ struct LichessBotReliabilityChart: View {
 
     var body: some View {
         Chart {
-            LineMark(x: .value("Predicted", 0.0), y: .value("Actual", 0.0), series: .value("Line", "Calibrated"))
-                .foregroundStyle(LichessBotStatsStyle.neutral.opacity(0.5))
-            LineMark(x: .value("Predicted", 1.0), y: .value("Actual", 1.0), series: .value("Line", "Calibrated"))
-                .foregroundStyle(LichessBotStatsStyle.neutral.opacity(0.5))
+            ForEach([0.0, 1.0], id: \.self) { end in
+                LineMark(x: .value("Predicted", end), y: .value("Actual", end), series: .value("Line", "Calibrated"))
+                    .foregroundStyle(LichessBotStatsStyle.neutral.opacity(0.5))
+            }
             ForEach(buckets) { bucket in
                 PointMark(x: .value("Predicted", bucket.meanPredicted), y: .value("Actual", bucket.meanActual))
                     .symbolSize(by: .value("Positions", bucket.positions))

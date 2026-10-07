@@ -33,13 +33,7 @@ struct LichessBotRecordCardLayout<Statistics: View, RecentGames: View>: View {
                 .fill(LichessBotStatsStyle.separator)
                 .frame(width: isWide ? 1 : nil, height: isWide ? nil : 1)
             recentGames
-                .frame(
-                    minWidth: isWide ? LichessBotStatsStyle.recentGamesMinimumWidth : nil,
-                    maxWidth: isWide ? LichessBotStatsStyle.recentGamesMinimumWidth * 1.4 : .infinity,
-                    maxHeight: .infinity,
-                    alignment: .topLeading
-                )
-                .frame(height: isWide ? nil : LichessBotStatsStyle.narrowRecentGamesHeight)
+                .modifier(LichessBotRecentGamesFrame(isWide: isWide))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onGeometryChange(

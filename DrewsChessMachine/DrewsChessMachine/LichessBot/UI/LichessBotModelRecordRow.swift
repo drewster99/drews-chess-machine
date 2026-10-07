@@ -10,10 +10,7 @@ struct LichessBotModelRecordRow: View {
     var body: some View {
         GridRow {
             LichessBotModelDisclosureButton(groupModelID: row.groupModelID, expanded: $expanded)
-            Text(row.label)
-                .font(row.kind == .checkpoint ? LichessBotStatsStyle.noteFont : LichessBotStatsStyle.rowLabelFont)
-                .padding(.leading, row.kind == .checkpoint ? 14 : 0)
-                .gridColumnAlignment(.leading)
+            LichessBotModelRowLabel(row: row)
             Text("\(row.tally.scored)")
             LichessBotTallyText(tally: row.tally, countWidth: countWidth)
             Text("\(LichessBotStatsFormat.percent(row.tally.score)) (\(LichessBotStatsFormat.interval(row.interval)))")
