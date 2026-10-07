@@ -68,7 +68,7 @@ present or future — can reach the real folder from a test process.
   `$TMPDIR/DrewsChessMachine-XCTest-SessionLogs/run-<yyyyMMdd-HHmmss>-pid<pid>/`,
   computed once per process so a `start()` after `shutdown()` stays in the same
   folder. The parent is created with intermediate directories (shared by every
-  test run); the per-run folder is created on first use.
+  test run); both are created by `start()`.
 - The folder is **left in the temporary directory**, not removed at teardown:
   - the app-hosted test process has no teardown hook that runs after the last
     line is written (the logger writes until the process exits);
@@ -114,3 +114,22 @@ present or future — can reach the real folder from a test process.
    `20261006-170000`, `20261006-181510`) are expected to grow and are only
    read. Nothing in `~/Library/Logs` is deleted or modified.
 4. Build, targeted tests, full suite.
+
+## Results (2026-10-06)
+
+- Red, unfixed code: the regression test failed with "a test process wrote its
+  session log into the user's real log folder:
+  ~/Library/Logs/DrewsChessMachine/dcm_log_20261006-211057.txt" (that file, from
+  this worktree's branch, is the one the red run left behind; it was not
+  removed).
+- Green, fixed code, the regression test unmodified: `SessionLoggerTestIsolationTests`
+  (4), `LichessBotCasualFallbackTests` (9), `AutoResumeControllerTests` (8),
+  `SessionLoggerLazyFileTests` (3) — 24 passed.
+- End to end: across the targeted run and the full suite, no new or changed
+  file in `~/Library/Logs/DrewsChessMachine` carries this worktree's branch or
+  commit; every one that changed is a training log or another worktree's test
+  run. This branch's test runs logged to
+  `$TMPDIR/DrewsChessMachine-XCTest-SessionLogs/run-…-pid…/` (FitBot lines and
+  the probe lines included).
+- Full suite: 2,616 tests, 0 failures, 1 skipped
+  (`LegacyDcmmodelLoadTests.testRealLegacyDcmmodelsResolveBuildAndLoad`).
