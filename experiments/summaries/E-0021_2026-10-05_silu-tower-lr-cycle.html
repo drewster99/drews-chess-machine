@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0021">
+<meta name="dcm-date" content="2026-10-05">
+<meta name="dcm-title" content="SiLU tower with leaky heads on B's LR cycle (arm B-silu)">
+<meta name="dcm-status" content="stopped">
+<meta name="dcm-tags" content="silu, activations, lr-schedule, training-stability, basic24">
+<meta name="dcm-takeaway" content="SiLU in the tower (leaky ReLU in the heads) tracked ReLU B to 19k (mean −3.7 pElo), but at gradient cap 15 it blew up at the second LR peak (20,600) and 20 of 128 policy pre-BN channels stayed parked for the remaining 16k steps, ending 1250.0 vs B&#x27;s 1620.7 at 36k; the SiLU tower itself kept every channel, and the same start with a 1.0 cap avoids the blowup (E-0020), so SiLU towers need the cap.">
+<meta name="dcm-related" content="E-0017, E-0019, E-0020">
+<meta name="dcm-superseded-by" content="">
+<title>E-0021 · SiLU tower with leaky heads on B's LR cycle (arm B-silu)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0021</span><span>2026-10-05</span><span class="status stopped">stopped</span></div>
+<h1>SiLU tower with leaky heads on B's LR cycle (arm B-silu)</h1>
+<div class="tags"><span class="tag">silu</span><span class="tag">activations</span><span class="tag">lr-schedule</span><span class="tag">training-stability</span><span class="tag">basic24</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>In ReLU arm B (1.0 ↔ 0.001 LR cycle, E-0017) the tower's <code>blocks.2.bn1</code> drifted toward the dead line across LR cycles (worst β/|γ| −1.17 → −2.55, 5 channels mostly off by 36k) while constant-LR arm A barely moved. Would SiLU in the tower (blocks and tower end), with leaky ReLU in the heads, keep the tower healthy on the same cycle without losing strength?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Arch</dt><dd><code>r7_basic24_silublocks_leakyheads.json</code>: B's R7 shape (basic24, 3 blocks 7×7 at 128) with SiLU in the block group and at the tower end, leaky ReLU at the policy head, value conv and value FC1. Start net <code>20261005-r7b24-silublocks-leakyheads-fresh.safetensors</code> (<code>20261006-42-Lzj4</code>); every trainable tensor byte-identical to B's start net, only the BN running statistics differ.</dd><dt>Run</dt><dd>Corpus replay <code>20260624-192615-w3aA5b</code>, <code>parameters-B.json</code> (LR cycle, <code>grad_clip_max_norm</code> 15), <code>--seed 20261005</code>, <code>--policy-tail-precision fp32_from_pre_bn</code>, frozen build 2330 (<code>DCM-2331-4e70c615-p1headact.app</code>). Stem <code>20261005-lrBsilu-cyc1</code>, run <code>085EF48A…</code>, ModelID <code>20261006-44-8ipq</code>, log <code>dcm_log_20261005-234437.txt</code>.</dd><dt>Span</dt><dd>2026-10-05 23:44 → 2026-10-06 23:10. Planned 40,000 steps; stopped by the owner at 36,066 (SIGINT, clean abort save, rc 0) because no parked channel had come back.</dd><dt>Measured</dt><dd>Policy probes every 1,000 steps (<code>--probe-set wide</code>) plus the abort checkpoint; <code>[LAYER-HEALTH]</code>; <code>bn_liveness.py</code> per site (SiLU sites by pass-through).</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<figure class="chart">
+<script type="application/json">{"x": {"label": "trainer step"}, "y": {"label": "pElo (wide probe set)"}, "series": [{"name": "B (ReLU, cap 15)", "points": [[1000, 1018.2], [2000, 1251.6], [3000, 1321.7], [4000, 1391.2], [5000, 1402.5], [6000, 1405.6], [7000, 1395.8], [8000, 1409.2], [9000, 1372.2], [10000, 1384.0], [11000, 1320.7], [12000, 1430.7], [13000, 1554.9], [14000, 1557.5], [15000, 1566.2], [16000, 1571.4], [17000, 1581.6], [18000, 1573.9], [19000, 1558.5], [20000, 1471.3], [21000, 1332.5], [22000, 1372.2], [23000, 1573.4], [24000, 1597.5], [25000, 1604.7], [26000, 1609.4], [27000, 1603.7], [28000, 1598.6], [29000, 1596.0], [30000, 1504.6], [31000, 1372.7], [32000, 1431.3], [33000, 1578.5], [34000, 1614.0], [35000, 1628.4], [36000, 1620.7]]}, {"name": "B-silu (SiLU tower, leaky heads, cap 15)", "points": [[1000, 1063.3], [2000, 1259.8], [3000, 1349.0], [4000, 1397.3], [5000, 1410.2], [6000, 1411.2], [7000, 1416.4], [8000, 1424.1], [9000, 1391.2], [10000, 1337.7], [11000, 1276.4], [12000, 1376.3], [13000, 1513.4], [14000, 1554.4], [15000, 1559.0], [16000, 1566.2], [17000, 1558.5], [18000, 1560.1], [19000, 1571.9], [20000, 1390.2], [21000, 457.4], [22000, 833.8], [23000, 927.2], [24000, 951.9], [25000, 953.5], [26000, 963.3], [27000, 968.7], [28000, 960.6], [29000, 977.9], [30000, 773.9], [31000, 1013.4], [32000, 1048.5], [33000, 1216.4], [34000, 1230.4], [35000, 1251.6], [36000, 1250.0], [36066, 1247.4]]}], "vlines": [{"x": 20600, "label": "blowup"}]}</script>
+<figcaption>Policy pElo every 1,000 steps; B-silu's last point is the 36,066 abort checkpoint.</figcaption>
+</figure>
+<div class="tablebox"><table><caption>pElo, B vs B-silu (selected steps; the full grid is in the README).</caption><thead><tr><th>trainer step</th><th class="n">B</th><th class="n">B-silu</th><th class="n">Δ</th></tr></thead><tbody><tr><td>1,000</td><td class="n">1018.2</td><td class="n">1063.3</td><td class="n">+45.1</td></tr><tr><td>6,000</td><td class="n">1405.6</td><td class="n">1411.2</td><td class="n">+5.7</td></tr><tr><td>9,000</td><td class="n">1372.2</td><td class="n">1391.2</td><td class="n">+19.0</td></tr><tr><td>11,000</td><td class="n">1320.7</td><td class="n">1276.4</td><td class="n">-44.3</td></tr><tr><td>16,000</td><td class="n">1571.4</td><td class="n">1566.2</td><td class="n">-5.1</td></tr><tr><td>19,000</td><td class="n">1558.5</td><td class="n">1571.9</td><td class="n">+13.3</td></tr><tr><td>20,000</td><td class="n">1471.3</td><td class="n">1390.2</td><td class="n">-81.1</td></tr><tr><td>21,000</td><td class="n">1332.5</td><td class="n">457.4</td><td class="n">-875.2</td></tr><tr><td>22,000</td><td class="n">1372.2</td><td class="n">833.8</td><td class="n">-538.4</td></tr><tr><td>24,000</td><td class="n">1597.5</td><td class="n">951.9</td><td class="n">-645.7</td></tr><tr><td>26,000</td><td class="n">1609.4</td><td class="n">963.3</td><td class="n">-646.1</td></tr><tr><td>29,000</td><td class="n">1596.0</td><td class="n">977.9</td><td class="n">-618.1</td></tr><tr><td>31,000</td><td class="n">1372.7</td><td class="n">1013.4</td><td class="n">-359.3</td></tr><tr><td>33,000</td><td class="n">1578.5</td><td class="n">1216.4</td><td class="n">-362.2</td></tr><tr><td>35,000</td><td class="n">1628.4</td><td class="n">1251.6</td><td class="n">-376.8</td></tr><tr><td>36,000</td><td class="n">1620.7</td><td class="n">1250.0</td><td class="n">-370.6</td></tr><tr><td>36,066 (abort save)</td><td class="n"></td><td class="n">1247.4</td><td class="n"></td></tr></tbody></table></div>
+<div class="tablebox"><table><caption>Per site at the end (<code>bn_liveness.py</code>): parked / mostly off / lowest pass-through.</caption><thead><tr><th>site</th><th class="n">B-silu (36,066)</th><th class="n">B (ReLU, 36,000)</th></tr></thead><tbody>
+<tr><td>blocks.0.bn1</td><td class="n">silu 0 / 1 / 0.0199</td><td class="n">relu 0 / 0 / 0.1229</td></tr>
+<tr><td>blocks.0.bn2</td><td class="n">silu 0 / 0 / 0.0447</td><td class="n">relu 0 / 0 / 0.0483</td></tr>
+<tr><td>blocks.1.bn1</td><td class="n">silu 0 / 0 / 0.0373</td><td class="n">relu 0 / 0 / 0.0638</td></tr>
+<tr><td>blocks.1.bn2</td><td class="n">silu 0 / 0 / 0.0230</td><td class="n">relu 0 / 0 / 0.0246</td></tr>
+<tr><td>blocks.2.bn1</td><td class="n">silu 0 / 0 / 0.0313</td><td class="n">relu 0 / 5 / 0.0053</td></tr>
+<tr><td>blocks.2.bn2</td><td class="n">silu 0 / 0 / 0.0520</td><td class="n">relu 0 / 0 / 0.0235</td></tr>
+<tr><td>tower_final_bn</td><td class="n">silu 0 / 0 / 0.2249</td><td class="n">relu 0 / 0 / 0.2387</td></tr>
+<tr><td>policy.pre_bn</td><td class="n">leaky 20 / 5 / 0.0100</td><td class="n">relu 0 / 0 / 0.1184</td></tr>
+<tr><td>value.bn</td><td class="n">leaky 2 / 2 / 0.0100</td><td class="n">relu 6 / 1 / ≈0</td></tr>
+</tbody></table></div>
+<p>Before the blowup B-silu tracked B (mean −3.7 pElo over 1k–19k; ahead through 9k, −41.6 … −54.5 at the first LR peak, best 1571.9 at 19k vs B 1558.5). It blew up at 20,600 (gNorm 2.566, illegal mass 0.80 at 20,650; E-0020). From 21k to 36,066 policy pre-BN stayed at 20 of 128 parked at every checkpoint (21 at 22k); value.bn went 1 → 2 parked from 32k. pElo stalled at 951.9–977.9 over 24k–29k and reached 1250.0 at 36k (B 1620.7). Batch loss came back (3.5684 at 36,050 vs 3.5319 at 19,950) while probe strength did not. The SiLU tower sites have no parked channel at the end, but several have extreme β/|γ| (min −1,562.7 at blocks.1.bn1) and the running-variance max/median reached 9,097 at blocks.1.bn1.</p>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>SiLU in the tower is not worse than ReLU while the run is stable, and the tower itself ends without a parked channel where B's <code>blocks.2.bn1</code> had 5 mostly off. But at cap 15 the second LR peak broke the run, and the damage landed in the policy head's pre-BN layer and stayed there through two LR troughs: parked channels did not come back on their own. E-0020 shows a 1.0 global-norm cap on the same 18k state avoids the blowup, so this arm answers only "SiLU tower at cap 15" (no); a SiLU-vs-ReLU comparison needs the cap on both arms. One seed, one start.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">SiLU in the tower (leaky ReLU in the heads) tracked ReLU B to 19k (mean −3.7 pElo), but at gradient cap 15 it blew up at the second LR peak (20,600) and 20 of 128 policy pre-BN channels stayed parked for the remaining 16k steps, ending 1250.0 vs B&#x27;s 1620.7 at 36k; the SiLU tower itself kept every channel, and the same start with a 1.0 cap avoids the blowup (E-0020), so SiLU towers need the cap.</p>
+</section>
+
+<section>
+<h2>Reproduce</h2>
+<p><code>DrewsChessMachine --replay-corpus 20260624-192615-w3aA5b --start-model …/Models/20261005-r7b24-silublocks-leakyheads-fresh.safetensors --out-model …/Models/20261005-lrBsilu-cyc1-replay-latest.safetensors --parameters experiments/20261005-lr-schedule-ab/parameters-B.json --epochs 12 --training-step-limit 40000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005</code> with the frozen build above; probes with <code>experiments/probe_loop.sh 20261005-lrBsilu-cyc1 probes-Bsilu.jsonl</code> and <code>PROBE_BIN</code> = the frozen build. Per-site table: <code>bn_liveness.analyze()</code> on <code>20261005-lrBsilu-cyc1-replay-step36066</code> and B's <code>20261005-lrB-cyc1-replay-step36000</code>.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261005-lr-schedule-ab/README.md">experiments/20261005-lr-schedule-ab/</a> — "Arms B-leakyall and B-silu", "Arm B-silu: result (stopped at 36,066; E-0021)"</li><li><a href="../20261005-lr-schedule-ab/probes-Bsilu.jsonl">probes-Bsilu.jsonl</a> — all probes including the abort checkpoint</li><li><a href="../20261005-lr-schedule-ab/bn_liveness.py">bn_liveness.py</a> — per-site BN liveness</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

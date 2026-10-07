@@ -424,6 +424,44 @@ B-silu at 22,000; at its 22,030 abort save, value.bn has 1 more channel mostly o
 - **To add when clip1 ends at 40,000:** its full probe table, the cycle-peak behaviour at 30–31k, the final checkpoint layer health, and a comparison with B and B-silu at 40k.
 - **Reproduce the analysis:** `python3 -c` comparisons of the three logs' `[REPLAY]` lines (`dcm_log_20261005-234437.txt`, `dcm_log_20261006-170000.txt`, `dcm_log_20261006-181510.txt`); `bn_liveness.analyze()` on `20261005-lrBsilu-cyc1-replay-step22000`, `20261006-lrBsilu-ctl15-replay-seg1-step4000` / `-step4030` and `20261006-lrBsilu-clip1-replay-seg1-step4000`.
 
+## Arm B-silu: result (stopped at 36,066; E-0021)
+
+- **Stopped by the owner** at 2026-10-06 23:10 ("terminate b silu. we haven't recovered any channels"): SIGINT, clean abort
+  save at trainer step 36,066 (`[REPLAY] done: steps=36066 … gamesFed=4647312`, rc 0), log `dcm_log_20261005-234437.txt`.
+  The probe loop probed the abort checkpoint (`…-replay-step36066`): pElo 1247.4, NLL 2.5185.
+- **Before the blowup (1k–19k)** B-silu tracked B: mean −3.7 pElo over the 19 probes, ahead by 5.7–45.1 through 9k and at
+  19k (1571.9 vs 1558.5, its best), behind by 41.6–54.5 at 10k–13k around the first LR peak, within −23.1 … −3.1 at
+  14k–18k. NLL was 0.019–0.112 lower than B's through 9k.
+- **After the blowup** (20,600, see the gradient-cap sections above) policy pre-BN parked channels (β/|γ| < −3) stayed at
+  20 of 128 at every 1k checkpoint from 21k to 36,066 (21 at 22k); value.bn went 1 → 2 parked from 32k. pElo climbed
+  457.4 (21k) → 951.9 (24k), then stalled at 951.9–977.9 through 29k, then 1013–1048 at 31–32k and 1216–1252 at 33–36k,
+  ending 1250.0 at 36k vs B's 1620.7 (−370.7) and 1247.4 at the abort save.
+- **Batch loss recovered but probe strength did not.** Logged loss at 36,050 was 3.5684 (pLoss 2.7551, vLoss 0.8075,
+  illegal mass 0.0059, gNorm 0.291) against 3.5319 (pLoss 2.7390, illegal 0.0049) at 19,950 before the blowup, while
+  pElo stayed ~320 below its 19k value.
+- **Final per-site health** (`bn_liveness.py`, step 36,066 vs B at 36,000; parked / mostly off / lowest pass-through):
+
+  | site | B-silu (36,066) | B (ReLU, 36,000) |
+  |---|---:|---:|
+  | blocks.0.bn1 | silu 0 / 1 / 0.0199 | relu 0 / 0 / 0.1229 |
+  | blocks.0.bn2 | silu 0 / 0 / 0.0447 | relu 0 / 0 / 0.0483 |
+  | blocks.1.bn1 | silu 0 / 0 / 0.0373 | relu 0 / 0 / 0.0638 |
+  | blocks.1.bn2 | silu 0 / 0 / 0.0230 | relu 0 / 0 / 0.0246 |
+  | blocks.2.bn1 | silu 0 / 0 / 0.0313 | relu 0 / 5 / 0.0053 |
+  | blocks.2.bn2 | silu 0 / 0 / 0.0520 | relu 0 / 0 / 0.0235 |
+  | tower_final_bn | silu 0 / 0 / 0.2249 | relu 0 / 0 / 0.2387 |
+  | policy.pre_bn | leaky 20 / 5 / 0.0100 | relu 0 / 0 / 0.1184 |
+  | value.bn | leaky 2 / 2 / 0.0100 | relu 6 / 1 / ≈0 |
+
+  The SiLU tower itself has no parked channel, though several of its β/|γ| are extreme (min −1,562.7 at blocks.1.bn1,
+  −422.6 at blocks.0.bn1); SiLU still passes at least 0.0199 of the signal at every one of those channels. The damage is in the policy head's pre-BN
+  layer. Checkpoint `[LAYER-HEALTH]` at 36,066: dead=22 off=7 over the 144 relu/leaky channels, worst policy.pre_bn
+  (dead 20 off 5), running-variance max/median 9,097 at blocks.1.bn1[76], no non-finite values.
+- **Reading.** The SiLU tower trained as well as ReLU B up to 19k, but the run did not survive the second LR peak at
+  cap 15, and 16k steps later the 20 parked policy pre-BN channels had not come back at any LR, including two
+  troughs. E-0020 shows the same start with a 1.0 gradient cap avoids the blowup entirely. A SiLU-tower comparison with
+  B therefore needs the cap; this arm answers only "SiLU tower at cap 15", and the answer is no.
+
 ## Arm C-leaky (added 2026-10-05 23:13, owner)
 
 - Owner: "let's do a leaky version of C with the crazy high LR schedule". C's damage was not confined to the value head

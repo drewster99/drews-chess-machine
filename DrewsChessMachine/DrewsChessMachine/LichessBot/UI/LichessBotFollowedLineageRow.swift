@@ -57,7 +57,11 @@ struct LichessBotFollowedLineageRow: View {
             return
         }
         resolution = .reading
-        resolution = await LichessBotFollowedLineageResolution.resolve(followedLineage, in: modelsDirectory)
+        let resolved = await LichessBotFollowedLineageResolution.resolve(followedLineage, in: modelsDirectory)
+        // A newer choice (or the bot taking over the reporting) cancelled
+        // this read; its result must not overwrite the newer one's.
+        guard !Task.isCancelled else { return }
+        resolution = resolved
     }
 }
 
