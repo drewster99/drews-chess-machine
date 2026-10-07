@@ -1004,6 +1004,14 @@ can always be discarded.
 
 ## 11. Statistics
 
+**Implemented in part (2026-10-06):** the Overview's Record card now holds
+the period table (last hour … all time, with performance rating, average
+opponent rating and rating change), a Rated / Casual / All filter, and panes
+for time controls, models, self-assessment, endings, opponent strength, move
+choice, clock, game length, openings, opponents and bot health. Design,
+definitions and decisions: `LICHESS_BOT_RECORD_STATS_PLAN.md`. The
+combinable filters and group-by tables below remain to be built.
+
 **Filters** (combinable):
 - date range
 - model source kind and ModelID
