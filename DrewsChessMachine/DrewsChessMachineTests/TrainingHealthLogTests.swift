@@ -138,11 +138,29 @@ final class TrainingHealthLogTests: XCTestCase {
             "[HEALTH] check trainerStep=1250 generation=2 evaluations=5 live=5 checkpoint=0 stale=1 truncated=0 cost_ms=0.0 train_ms=250.0 liveReadFailed=1 lossMaxRatio=-- lossMedianRatio=-- gradMaxRatio=1.25 nodata=none active=none final=true")
     }
 
+    /// Review minor 1: every field of the active `dead_channels` detail gets
+    /// the rule's prefix, so the coverage note is not a bare `coverage=`.
+    func testCheckLinePrefixesEveryDeadChannelsField() {
+        let fields = TrainingHealthLog.CheckFields(
+            trainerStep: 1000, generation: 0, live: 20, checkpoint: 0, stale: 0, truncated: 0, costMs: 1,
+            trainMs: 1000, liveReadFailed: 0, lossMaxRatio: nil, lossMedianRatio: nil, gradientMaxRatio: nil,
+            noData: [:],
+            active: [
+                TrainingHealthActiveAlarm(rule: .deadChannels, severity: .warning, since: 300, value: "dead=20/1040",
+                                          detail: "sites=policy.pre_bn(19/128) coverage=relu_leaky_relu_only", action: .log),
+            ],
+            marker: nil)
+        XCTAssertTrue(
+            TrainingHealthLog.checkLine(fields).hasSuffix(
+                " active=dead_channels:warning dead_channels_sites=policy.pre_bn(19/128) dead_channels_coverage=relu_leaky_relu_only"),
+            TrainingHealthLog.checkLine(fields))
+    }
+
     func testValueFC1Line() {
         XCTAssertEqual(
             TrainingHealthLog.valueFC1Line(
-                trainerStep: 3000, zeroVelocityUnitCount: 2, unitCount: 128, lowVelocityUnitCount: 9, readMs: 1.234, summaryMs: 0.5),
-            "[LAYER-HEALTH] value-fc1 trainerStep=3000 valueFC1ZeroVel=2/128 lowVel=9 readMs=1.23 summaryMs=0.50")
+                trainerStep: 3000, stepsTrainedByThisProcess: 2500, zeroVelocityUnitCount: 2, unitCount: 128, lowVelocityUnitCount: 9, readMs: 1.234, summaryMs: 0.5),
+            "[LAYER-HEALTH] value-fc1 trainerStep=3000 trained=2500 valueFC1ZeroVel=2/128 lowVel=9 readMs=1.23 summaryMs=0.50")
     }
 
     func testEveryAlarmLineIsSelectedByTheGrepAndNothingElse() {

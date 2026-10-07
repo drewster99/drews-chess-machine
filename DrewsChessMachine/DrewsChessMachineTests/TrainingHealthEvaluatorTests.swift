@@ -169,7 +169,7 @@ final class TrainingHealthEvaluatorTests: XCTestCase {
         let digest = LayerHealthDigest(
             tier: .live,
             deadChannels: LayerHealthDigest.DeadChannels(
-                classifiedSiteCount: 0, classifiedChannelCount: 0, deadChannelCount: 0, sites: [],
+                modeledSiteCount: 0, modeledChannelCount: 0, parkedChannelCount: 0, sites: [],
                 coversEveryActivation: true),
             nonFiniteValueCount: 0, runningVariance: nil, valueFC1: nil)
         let result = e.evaluate(S.liveObservation(step: 100, digest: digest), config: try S.config())
@@ -437,6 +437,35 @@ final class TrainingHealthEvaluatorTests: XCTestCase {
                              .batchNormRunningVarianceRunaway), [.clear])
     }
 
+    // MARK: Clears need two observed states (review M4)
+
+    /// At a save step the live evaluation and the checkpoint evaluation read
+    /// the same weights at the same trainer step: two evaluations, one state.
+    func testDeadChannelsClearNeedsTwoDistinctTrainerSteps() throws {
+        var e = evaluator()
+        let config = try S.config()
+        _ = e.evaluate(S.liveObservation(step: 950, digest: S.deadDigest(dead: 60)), config: config)
+        let live = e.evaluate(S.liveObservation(step: 1000, digest: S.deadDigest(dead: 0)), config: config)
+        XCTAssertTrue(kinds(live, .deadChannels).filter { $0 == .clear }.isEmpty)
+        let sameStep = e.evaluate(
+            S.checkpointObservation(step: 1000, digest: S.deadDigest(dead: 0, tier: .checkpoint)), config: config)
+        XCTAssertTrue(kinds(sameStep, .deadChannels).isEmpty, "a second read of the step-1000 weights is not a second state")
+        XCTAssertEqual(e.activeAlarms.map(\.rule), [.deadChannels])
+        let next = e.evaluate(S.liveObservation(step: 1050, digest: S.deadDigest(dead: 0)), config: config)
+        XCTAssertEqual(kinds(next, .deadChannels), [.clear])
+    }
+
+    func testRunningVarianceClearNeedsTwoDistinctTrainerSteps() throws {
+        var e = evaluator()
+        let config = try S.config()
+        _ = e.evaluate(S.liveObservation(step: 950, digest: S.runningVarianceDigest(1415.5)), config: config)
+        _ = e.evaluate(S.liveObservation(step: 1000, digest: S.runningVarianceDigest(80)), config: config)
+        let sameStep = e.evaluate(S.checkpointObservation(step: 1000, digest: S.runningVarianceDigest(80)), config: config)
+        XCTAssertTrue(kinds(sameStep, .batchNormRunningVarianceRunaway).isEmpty)
+        let next = e.evaluate(S.liveObservation(step: 1050, digest: S.runningVarianceDigest(80)), config: config)
+        XCTAssertEqual(kinds(next, .batchNormRunningVarianceRunaway), [.clear])
+    }
+
     // MARK: Rule 9 — gradient_spike
 
     private func spikeWindow(_ step: Int, _ gradient: Float) -> TrainingHealthObservation {
@@ -640,7 +669,7 @@ final class TrainingHealthEvaluatorTests: XCTestCase {
         let digest = LayerHealthDigest(
             tier: .live,
             deadChannels: LayerHealthDigest.DeadChannels(
-                classifiedSiteCount: 9, classifiedChannelCount: 1040, deadChannelCount: 300, sites: [],
+                modeledSiteCount: 9, modeledChannelCount: 1040, parkedChannelCount: 300, sites: [],
                 coversEveryActivation: true),
             nonFiniteValueCount: 2,
             runningVariance: LayerHealthDigest.RunningVarianceRunaway(maxOverMedian: 5000, site: "value.bn"),
