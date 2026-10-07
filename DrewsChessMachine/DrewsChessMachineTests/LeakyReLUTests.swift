@@ -11,8 +11,9 @@
 //  - Wiring: a network whose activation is `leaky_relu` computes a different,
 //    finite forward pass than the same weights under ReLU, and trains a
 //    finite step.
-//  - `--set-activation`: changes the tower-level and every group's activation,
-//    copies every tensor bit-exact, and refuses a request that changes nothing.
+//  - `--set-activation`: changes every existing architecture-level site and
+//    every group's main path, copies every tensor bit-exact, and refuses a
+//    request that changes nothing.
 //
 
 import XCTest
