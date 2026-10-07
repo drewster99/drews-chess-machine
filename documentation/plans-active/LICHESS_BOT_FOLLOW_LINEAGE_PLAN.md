@@ -1,6 +1,6 @@
 # Lichess bot: follow the newest checkpoint of one lineage on disk
 
-Status (2026-10-06): **IN PROGRESS.** Implemented: P-ready (a7803ac0, review fixes 52fde131), P0 (4cc8b84b), P1. OD-19 and the §5.1 test edits were decided by the owner on 2026-10-06 (§10); implementation follows the phase order of §7.
+Status (2026-10-06): **IN PROGRESS.** Implemented: P-ready (a7803ac0, review fixes 52fde131), P0 (4cc8b84b), P1 (ae658dc7), P2. OD-19 and the §5.1 test edits were decided by the owner on 2026-10-06 (§10); implementation follows the phase order of §7.
 - **Owner decisions recorded 2026-10-06** (§10). They amend OD-6, OD-8, OD-9 and OD-17 (keep playing + alarm instead of declining) and add a rule for every source: **the bot builds its model generation before it goes online** (§3.10, OD-18, OD-19). The design, tests, validation and phasing below follow them.
 - Every `file:line` was checked against `main` at `f5be524b`.
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`) or `documentation/`.
@@ -747,3 +747,8 @@ Decisions taken while implementing, where the plan left a choice open or the cod
 - **`ModelFileLineagePosition`'s record initializer lives in an extension**, so the memberwise initializer stays for tests that build positions by hand (`testNullCumulativeStepStillRanks`).
 - **The catalog's unreadable-folder error is `ModelFolderScanError.folderUnreadable`** ("The folder … can't be listed: …") instead of the raw Cocoa error; the picker shows it as before. Non-regular items and dangling links are listed as unreadable with their own reason ("… is a directory, not a model file", "… is a symbolic link to nothing") instead of the header read's Cocoa error.
 - **`FileSafety.resolvedItem(at:)`** is the one addition to `FileSafety`: kind, identity, size and modification time from one `stat` that follows links (read-only).
+
+**P2**
+- **The `followLineage` enum case and the "Choose a lineage to follow" validation land in P3, not P2**, with the build path that plays the source. Every source picker lists `LichessBotModelSourceKind.allCases`, so a P2 case would offer a source that could not build; P2 holds the settings type, the two fields, the limits, the interval validation and the store fix. `testFollowLineageWithoutALineageIsInvalid` comes with the case in P3.
+- **Fail-first for the store fix:** without the `keyNotFound` clause, `testSavedFollowedLineageLoadsThroughTheStore` and `testFollowLineageRoundTrips` failed with `unreadable(… keyNotFound … Path: model.followedLineage)`; with it they pass unmodified. `testAnUnrelatedMissingKeyIsStillUnreadable` passes both ways (it guards the fix's scope).
+- **The saved-settings fixture** of `testTodaysSaveWithoutTheNewFieldsLoads` is the operator's blob with `matchmaking.fallBackToCasual` added, a key today's build writes that the blob read earlier lacked.

@@ -9,6 +9,8 @@ import Foundation
 ///   Games/YYYY/MM/<YYYYMMDD-HHMMSS>-<gameId>.journal.jsonl  raw journal, kept
 ///   InProgress/<gameId>.journal.jsonl                       journal while live
 ///   Protocol/events-YYYYMMDD.jsonl                          protocol event log, one file per UTC day
+///   Challenges/challenges-YYYYMMDD.jsonl                    challenge log, one file per UTC day, kept forever
+///   Challenges/reconstructed-from-protocol.json             challenges rebuilt from Protocol/ (derived, regenerable)
 ///   index.json                                              derived stats cache
 ///   player-notes.json                                       favorites, bot limit times
 ///   challenge-outcomes.json                                 outgoing challenges' outcomes, last 24 h
@@ -27,12 +29,46 @@ struct LichessBotDataDirectory: Sendable, Equatable {
     var gamesDirectory: URL { root.appendingPathComponent("Games", isDirectory: true) }
     var inProgressDirectory: URL { root.appendingPathComponent("InProgress", isDirectory: true) }
     var protocolDirectory: URL { root.appendingPathComponent("Protocol", isDirectory: true) }
+    var challengesDirectory: URL { root.appendingPathComponent("Challenges", isDirectory: true) }
     var indexURL: URL { root.appendingPathComponent("index.json", isDirectory: false) }
     var lockURL: URL { root.appendingPathComponent("bot.lock", isDirectory: false) }
     var playerNotesURL: URL { root.appendingPathComponent("player-notes.json", isDirectory: false) }
     var challengeOutcomesURL: URL { root.appendingPathComponent("challenge-outcomes.json", isDirectory: false) }
 
     static let journalExtension = "journal.jsonl"
+
+    /// `Protocol/events-YYYYMMDD.jsonl` for the UTC day containing `date`.
+    func protocolLogURL(for date: Date) -> URL {
+        protocolDirectory.appendingPathComponent("events-\(Self.utcDayStamp(for: date)).jsonl", isDirectory: false)
+    }
+
+    /// `Challenges/challenges-YYYYMMDD.jsonl` for the UTC day containing
+    /// `date` (challenge-log plan §3.1).
+    func challengeLogURL(for date: Date) -> URL {
+        challengesDirectory.appendingPathComponent("challenges-\(Self.utcDayStamp(for: date)).jsonl", isDirectory: false)
+    }
+
+    /// `Challenges/reconstructed-from-protocol.json`: past challenges rebuilt
+    /// from the protocol log (challenge-log plan §3.7). Derived and
+    /// regenerable; never part of the live challenge log.
+    var reconstructedChallengesURL: URL {
+        challengesDirectory.appendingPathComponent("reconstructed-from-protocol.json", isDirectory: false)
+    }
+
+    /// The day-file name part, in UTC (plan E50): a day's file never changes
+    /// with the Mac's time zone. A value-type style, so nothing is allocated
+    /// per entry. The one definition shared by every per-day file, so the
+    /// protocol log and the challenge log name a day the same way.
+    private static let utcDayFileNameStyle = Date.VerbatimFormatStyle(
+        format: "\(year: .padded(4))\(month: .twoDigits)\(day: .twoDigits)",
+        timeZone: .gmt,
+        calendar: Calendar(identifier: .gregorian)
+    )
+
+    /// `YYYYMMDD` for the UTC day containing `date`.
+    static func utcDayStamp(for date: Date) -> String {
+        date.formatted(utcDayFileNameStyle)
+    }
 
     /// `InProgress/<gameId>.journal.jsonl`, unchecked. Production paths use
     /// `validatedInProgressJournalURL(gameID:)`; this form exists for
@@ -81,7 +117,7 @@ struct LichessBotDataDirectory: Sendable, Equatable {
 
     func createDirectories() throws {
         let fm = FileManager.default
-        for directory in [root, gamesDirectory, inProgressDirectory, protocolDirectory] {
+        for directory in [root, gamesDirectory, inProgressDirectory, protocolDirectory, challengesDirectory] {
             try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         }
     }

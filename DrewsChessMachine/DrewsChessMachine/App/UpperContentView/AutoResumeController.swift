@@ -88,7 +88,7 @@ final class AutoResumeController {
     /// at launch, but cheap). `UpperContentView` calls it only once no other
     /// launch sheet is up.
     func maybePresentSheet(isTrainingActive: Bool) {
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        if XCTestHostDetection.isRunningUnderXCTest {
             SessionLogger.shared.log("[RESUME] Skipping auto-resume sheet — running under XCTest")
             return
         }

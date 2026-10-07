@@ -350,5 +350,26 @@ window.DCM_EXPERIMENTS = [
    "E-0018"
   ],
   "supersededBy": null
+ },
+ {
+  "id": "E-0020",
+  "date": "2026-10-06",
+  "file": "E-0020_2026-10-06_gradient-cap-bsilu-blowup.html",
+  "title": "Gradient-norm cap 1.0 vs B-silu's step-20,600 blowup (exact-resume A/B with a cap-15 control)",
+  "status": "running",
+  "tags": [
+   "gradient-clipping",
+   "silu",
+   "lr-schedule",
+   "training-stability",
+   "exact-resume",
+   "basic24"
+  ],
+  "takeaway": "An exact rerun of B-silu from 18k with its own cap 15 reproduced the step-20,600 blowup bit for bit, while the same rerun with grad_clip_max_norm 1.0 never blew up (0 dead channels at 22k vs 22, pElo 1597.5 at 24k vs 951.9, equal to ReLU B); the precursor gradient spike fell between 50-step log lines, so cap the global gradient norm near 1.0 and log the per-window maximum.",
+  "related": [
+   "E-0017",
+   "E-0019"
+  ],
+  "supersededBy": null
  }
 ];

@@ -111,11 +111,9 @@ struct DrewsChessMachineApp: App {
         // the xctest runner injects its own arguments (e.g.
         // `-XCTest`, test-bundle paths) which the strict parser
         // would reject, tearing down the whole test target.
-        // `XCTestConfigurationFilePath` is set by xctest and
-        // is the canonical "we are in a test run" signal.
-        let isRunningUnderXCTest = ProcessInfo.processInfo
-            .environment["XCTestConfigurationFilePath"] != nil
-        let rawArgs: [String] = isRunningUnderXCTest
+        // `XCTestHostDetection` is the one definition of "we are
+        // in a test run".
+        let rawArgs: [String] = XCTestHostDetection.isRunningUnderXCTest
             ? []
             : Array(CommandLine.arguments.dropFirst())
 
@@ -460,7 +458,8 @@ struct DrewsChessMachineApp: App {
         // Start the session logger before any view work so every event
         // from this launch — button taps, arena results, periodic
         // stats — lands in a single `dcm_log_yyyymmdd-HHMMSS.txt`
-        // file under the app's Library/Logs directory.
+        // file under the app's Library/Logs directory (a test host's
+        // go to a temporary folder instead; see `SessionLogger`).
         SessionLogger.shared.start()
         // (Channel display names are now derived per-encoding from
         // `InputEncoding.channelNames` — sized to `planeCount` by construction
@@ -539,7 +538,7 @@ struct DrewsChessMachineApp: App {
         // every test run would otherwise sweep the user's real Sessions
         // and Models folders. Tests call `cleanupOrphans` on folders of
         // their own.
-        if !isRunningUnderXCTest {
+        if !XCTestHostDetection.isRunningUnderXCTest {
             CheckpointPaths.cleanupOrphans()
         }
     }

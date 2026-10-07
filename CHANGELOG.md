@@ -45,6 +45,21 @@ Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` ("Implementation not
 - A failed start puts back the capture, positions count and replay buffer together. The heartbeat no longer stops the training chart and divergence alarm when it finds no capture: it surfaces the error and skips only the progress-rate sample. The effective-LR readouts are published only while a run is active. `--max-plies` below 1 is refused at parse; the driver no longer raises it silently.
 - Tests: `RunStartReadingsTests`, `ParametersFileRoundTripTests`, `ResumeDiffAbsentValueTests`, `ReplayResumeDiffLogTests`, `MaxPliesArgumentTests`, `TrainVsUciTrainedPositionsTests`, new cases in `test_build_info_script.py`; edits to existing tests listed in the plan notes.
 
+## 2026-10-06 — Lichess bot challenge log P1: entry schema, writer, reader, ledger
+
+- `Data/LichessBotChallengeLog.swift`: `LichessBotChallengeLogEntry` (`schemaVersion` 1, time, build, event) and its 12 event cases with their supporting types; the writer `LichessBotChallengeLog` (`F_FULLFSYNC` per append, the folder of a new day file too, timed syncs, torn tails recorded as `unterminatedLineCut`); the reader (newer-build lines skipped and counted, a corrupt day file left out with file and line, an unterminated tail dropped).
+- `Stats/LichessBotChallengeLedger.swift`: the pure, order-independent fold into one row per challenge or not-created attempt, with the plan's precedence, sender rule, typed notes and anomalies, and load status. Adds `canceledOnLichessDirectionNotRecorded` for a cancel whose direction no fact records.
+- `LichessBotJSONLines.forEachCompleteLine`: the one line splitter, shared by `decode` and the challenge-log reader. Nothing calls the writer yet (P2).
+- New tests: `LichessBotChallengeLogSchemaTests`, `LichessBotChallengeLogWriterTests`, `LichessBotChallengeLedgerTests`.
+
+## 2026-10-06 — Lichess bot challenge log P1: one locked append path for journals and the protocol log
+
+- `FileSafety.openForAppending` / `openExistingRegularFileForAppending` (`O_RDWR | O_APPEND | O_NOFOLLOW | O_NONBLOCK`, type checked on the descriptor, exact "created" flag) and `waitForExclusiveLock` (`flock`).
+- `LichessBotJSONLines.append(to:synchronization:systemCalls:composing:)`: open, `flock(LOCK_EX)`, tail check and cut on the same descriptor, write, `Synchronization` (`.none` / `.fsync` / `.fullSync`, the last also flushing the folder of a new file), close. The journal (`fsync` where it synchronized before) and the protocol log (`.none`) use it.
+- Behavior changes: a symbolic link, folder or FIFO at a journal or protocol-log path is refused and reported, never written through (none exist in the real data); two instances' protocol-log appends take turns; the tail is checked on every append, so a fragment another instance's crash left is cut and recorded instead of corrupting the next line. Existing files are appended in place, byte for byte.
+- `LichessBotDataDirectory`: `Challenges/` (created at startup), `challengeLogURL(for:)`, `reconstructedChallengesURL`, and one UTC day stamp shared with `protocolLogURL(for:)`.
+- `LICHESS_BOT_CHALLENGE_LOG_PLAN.md`: owner decisions recorded (all but OD-11, which stays open), implementation notes in §12. New tests: `FileSafetyAppendTests`, `LichessBotJSONLinesSynchronizationTests`, `LichessBotAppendPathCompatibilityTests`, `LichessBotDataDirectoryChallengePathsTests`.
+
 ## 2026-10-06 — Hyperparameter recording P3: GUI records the values in force
 
 Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (gap 3).
