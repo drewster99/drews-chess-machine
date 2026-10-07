@@ -67,7 +67,7 @@ Rules this plan follows (CLAUDE.md files and the owner's standing rules):
 ### 1.4 What CLI runs write, and how
 
 - Every corpus-replay / train-vs-UCI launch mints a new `model_id`, an exact resume included (`CLI/CorpusReplayRunner.swift:610-620`). So one CLI process = one `model_id` = one lineage segment.
-- `LineageRecord.Run`: `lineage_run_id` (minted on fresh / branch / derive, inherited by every exact resume), `segment_index` (+1 per resume), `segment_id` (per process), `recorded_unix` (save time) (`Persistence/LineageRecord.swift:91-123`). `Steps`: `cum_trainer_step` (nullable), `segment_local_step` (the CLI files' `training_step`) (`:176-212`). `Invocation.pathKind`: `gui | replay | vsuci | derive | new_model` (`:417-435`).
+- `LineageRecord.Run`: `lineage_run_id` (minted on fresh / branch / derive, inherited by every exact resume), `segment_index` (+1 per resume), `segment_id` (per process), `recorded_unix` (save time) (`Persistence/LineageRecord.swift:91-123`). `Steps`: `cum_trainer_step` (nullable), `segment_local_step` (equal to `training_step` on CLI files before v11) (`:176-212`). `Invocation.pathKind`: `gui | replay | vsuci | derive | new_model` (`:417-435`).
 - A resume record carries every earlier segment of its run, oldest first, with each segment's `segment_id`: `segments = record.segments + [SegmentSummary(of: record)]` (`Persistence/LineageTracker.swift:188-202`; `SegmentSummary` at `LineageRecord.swift:713-745`). A resume that is not exact (`--accept-inexact`) also continues the run, so two processes resumed from the same file are **sibling segments of one run** (`LineageTracker.swift:102`, `:188-202`).
 - Header-only read of identity + lineage already exists: `SafetensorsModelIO.readParentFile(fromMetadata:source:)` → model ID, `content_sha256`, trainer clock, `LineageRecord.Presence` (`Persistence/SafetensorsModelIO.swift:389-409`, lineage decode at `:372-383`). Files before format v7 report `.unrecorded` (`Network/ArchitectureFormat.swift:109`).
 - Writes are complete before they are visible under their final name:
@@ -120,7 +120,7 @@ Rules this plan follows (CLAUDE.md files and the owner's standing rules):
 
 - **A — chain depth, then `segment_local_step`, then `recorded_unix` (chosen).** Within a linear chain a deeper segment is always later work. Within one segment, the local step only moves forward on the CLI paths. `recorded_unix` breaks a tie between two saves at one step (a final save replacing the last autosave).
 - **B — `cum_trainer_step` first.** Wrong when a segment is resumed from an earlier file of its parent after the parent stopped: the new segment's files start below the parent's latest cumulative step but are the live continuation. (If the parent kept training, neither is "the" continuation: a fork, §3.3 step 2b.) Also `cum_trainer_step` is nullable (`LineageRecord.swift:180`). Shown for display only.
-- Never: filename, `training_step` across segments (segment-local), modification time.
+- Never: filename, `training_step` across segments (the segment's step before format v11, the trainer step from v11; not used across segments for the reason given against option B, above), modification time.
 
 ---
 
@@ -199,7 +199,7 @@ Rules this plan follows (CLAUDE.md files and the owner's standing rules):
       let toStartedUnix: Int64
   }
   ```
-- `ModelFileCatalog.entry(for:)` (`:131-177`) becomes `entry(for:metadata:)` over a header already read, plus the existing `entry(for:)` reading it. Lineage comes from `SafetensorsModelIO.readParentFile(fromMetadata:source:)` (`SafetensorsModelIO.swift:396-409`) — the one header-only lineage reader. Any error it throws (it also throws for a bad format version, trainer clock or derivation history, not only for the record) becomes `.unreadable(reason)`, not a thrown error, so the file picker lists exactly the files it lists today.
+- `ModelFileCatalog.entry(for:)` (`:131-177`) becomes `entry(for:metadata:)` over a header already read, plus the existing `entry(for:)` reading it. Lineage comes from `SafetensorsModelIO.readParentFile(fromMetadata:source:)` (`SafetensorsModelIO.swift:396-409`) — the one header-only lineage reader. Any error it throws (it also throws for a bad format version, trainer clock or derivation history, not only for the record) becomes `.unreadable(reason)`, not a thrown error, so the file picker lists exactly the files it lists today. *(Since the step-line cadence plan's format v11 (`STATS_LINE_RESUME_CADENCE_FIX_PLAN.md` D5), the entry's step comes from `trainingStepReading`, which needs the record for a v11 file that states a `training_step`; such a file with a missing or malformed record is an unreadable catalog entry, not a listed file with `.unreadable` lineage. No v7+ file on this Mac lacks a record (survey 2026-10-06, 240 files).)*
 - `handoffs` are built from the record's `segments` (each `SegmentSummary.segmentLocalStep` is the step that segment's resumed file was at; the resuming segment's start is the next summary's `startedUnix`, or the record's own `run.segmentStartedUnix` for the last link).
 
 **`Persistence/ModelFolderHeaderCache.swift` (new)** — incremental scan of one folder:
@@ -284,7 +284,7 @@ Behavior:
   }
   ```
 - Filled for `followLineage` and also for `file` when the file carries a record (OD-11): same loader, free, and every Lichess game becomes traceable to a run and cumulative step.
-- `trainingStep` stays the file's `training_step`; its stale doc comment (`:26-28`) is corrected.
+- `trainingStep` is the file's trainer step, or its stated step where none is recorded (`trainingStepReading.trainerStepOrStatedStep`), set at `LichessBotModelSlots.swift:189`; its stale doc comment (`:26-28`) is corrected.
 - Records, PGN (`DCMSources` gains `followLineage`) and the index need no other change. No new PGN tag (non-goal).
 
 ### 3.7 Logging (`[LICHESS-BOT]`, through the slots' `log`)

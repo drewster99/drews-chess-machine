@@ -21,17 +21,18 @@ final class ModelFolderHeaderCacheTests: XCTestCase {
     }
 
     /// A small safetensors file whose header is a model file's: model ID,
-    /// format version, training step and (optionally) a lineage record.
-    private func headerFile(modelID: String, step: Int, record: LineageRecord?, extra: [String: String] = [:], payload: [Float] = [1, 2]) throws -> Data {
+    /// format version, training step and lineage record. The record is not
+    /// optional: every file written at the current format carries one
+    /// (required from v7), and from v11 a file stating a `training_step`
+    /// without one is unreadable, since its segment step is the record's.
+    private func headerFile(modelID: String, step: Int, record: LineageRecord, extra: [String: String] = [:], payload: [Float] = [1, 2]) throws -> Data {
         var metadata: [String: String] = [
             "model_id": modelID,
             "created_at_unix": "1790000000",
             "training_step": String(step),
             SafetensorsModelIO.Key.formatVersion: SafetensorsModelIO.formatVersion,
+            LineageRecord.metadataKey: try record.jsonText(),
         ]
-        if let record {
-            metadata[LineageRecord.metadataKey] = try record.jsonText()
-        }
         metadata.merge(extra) { _, new in new }
         return try SafetensorsFile.encode(tensors: [SafetensorsTensor(name: "w", shape: [payload.count], data: payload)], metadata: metadata)
     }
@@ -46,7 +47,7 @@ final class ModelFolderHeaderCacheTests: XCTestCase {
 
     func testStagingFilesAreNeverListed() throws {
         let folder = try makeFolder()
-        let data = try headerFile(modelID: "20261006-1-AAAA", step: 1, record: nil)
+        let data = try headerFile(modelID: "20261006-1-AAAA", step: 1, record: try record(localStep: 1))
         try data.write(to: folder.appendingPathComponent("model.safetensors"))
         try data.write(to: folder.appendingPathComponent(".model.safetensors.\(UUID().uuidString).tmp"))
         try data.write(to: folder.appendingPathComponent("model2.safetensors.tmp"))
@@ -76,8 +77,8 @@ final class ModelFolderHeaderCacheTests: XCTestCase {
     func testAFileRenamedOverTheSamePathIsReadAgain() throws {
         let folder = try makeFolder()
         let url = folder.appendingPathComponent("run-replay-latest.safetensors")
-        let first = try headerFile(modelID: "20261006-1-AAAA", step: 1000, record: nil)
-        let second = try headerFile(modelID: "20261006-1-BBBB", step: 2000, record: nil)
+        let first = try headerFile(modelID: "20261006-1-AAAA", step: 1000, record: try record(localStep: 1000))
+        let second = try headerFile(modelID: "20261006-1-BBBB", step: 2000, record: try record(localStep: 2000))
         XCTAssertEqual(first.count, second.count, "same size, so only the identity tells them apart")
         try first.write(to: url)
         let modified = try XCTUnwrap(try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date)
@@ -93,8 +94,8 @@ final class ModelFolderHeaderCacheTests: XCTestCase {
         let folder = try makeFolder()
         let keep = folder.appendingPathComponent("keep.safetensors")
         let gone = folder.appendingPathComponent("gone.safetensors")
-        try headerFile(modelID: "20261006-1-KEEP", step: 1, record: nil).write(to: keep)
-        try headerFile(modelID: "20261006-1-GONE", step: 1, record: nil).write(to: gone)
+        try headerFile(modelID: "20261006-1-KEEP", step: 1, record: try record(localStep: 1)).write(to: keep)
+        try headerFile(modelID: "20261006-1-GONE", step: 1, record: try record(localStep: 1)).write(to: gone)
         let before = try scan(folder)
         let listedGone = try XCTUnwrap(before.entries.first { $0.modelID == "20261006-1-GONE" }?.url)
         XCTAssertNotNil(before.cache.fingerprint(of: listedGone))
@@ -107,7 +108,7 @@ final class ModelFolderHeaderCacheTests: XCTestCase {
     func testTruncatedFileIsUnreadableUntilItChanges() throws {
         let folder = try makeFolder()
         let url = folder.appendingPathComponent("copying.safetensors")
-        let full = try headerFile(modelID: "20261006-1-AAAA", step: 1, record: nil)
+        let full = try headerFile(modelID: "20261006-1-AAAA", step: 1, record: try record(localStep: 1))
         try full.prefix(20).write(to: url)
         // The listing names the folder by its resolved path (/private/var),
         // so files are compared by name.
@@ -138,7 +139,7 @@ final class ModelFolderHeaderCacheTests: XCTestCase {
         let folder = try makeFolder()
         try headerFile(modelID: "20261006-1-AAAA", step: 1000, record: try record(localStep: 1000)).write(to: folder.appendingPathComponent("a-1000.safetensors"))
         try headerFile(modelID: "20261006-1-AAAA", step: 2000, record: try record(localStep: 2000)).write(to: folder.appendingPathComponent("a-2000.safetensors"))
-        try headerFile(modelID: "20261006-2-BBBB", step: 5, record: nil).write(to: folder.appendingPathComponent("b.safetensors"))
+        try headerFile(modelID: "20261006-2-BBBB", step: 5, record: try record(localStep: 5)).write(to: folder.appendingPathComponent("b.safetensors"))
         try Data("not a model".utf8).write(to: folder.appendingPathComponent("junk.safetensors"))
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("dir.safetensors"), withIntermediateDirectories: false)
 
@@ -184,8 +185,8 @@ final class ModelFolderHeaderCacheTests: XCTestCase {
         let targets = try makeFolder()
         let a = targets.appendingPathComponent("a.safetensors")
         let b = targets.appendingPathComponent("b.safetensors")
-        try headerFile(modelID: "20261006-1-AAAA", step: 1, record: nil).write(to: a)
-        try headerFile(modelID: "20261006-1-BBBB", step: 1, record: nil).write(to: b)
+        try headerFile(modelID: "20261006-1-AAAA", step: 1, record: try record(localStep: 1)).write(to: a)
+        try headerFile(modelID: "20261006-1-BBBB", step: 1, record: try record(localStep: 1)).write(to: b)
         let link = folder.appendingPathComponent("current.safetensors")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: a)
         let before = try scan(folder)
@@ -195,6 +196,31 @@ final class ModelFolderHeaderCacheTests: XCTestCase {
         let after = try scan(folder, previous: before.cache)
         XCTAssertEqual(after.headersRead, 1, "the cache keys on what the link resolves to")
         XCTAssertEqual(after.entries.map(\.modelID), ["20261006-1-BBBB"])
+    }
+
+    /// A current-format file that states a `training_step` but carries no
+    /// `dcm_lineage` record is malformed: from v11 its segment step is the
+    /// record's, and lineage is required from v7. No writer of this app
+    /// produces one (every v7+ header on the owner's Mac carries a record),
+    /// so the scan must show it as an unreadable entry naming the missing
+    /// record — never drop it, and never list it with a step read some
+    /// other way.
+    func testCurrentFormatFileWithoutItsLineageRecordIsListedUnreadable() throws {
+        let folder = try makeFolder()
+        let metadata: [String: String] = [
+            "model_id": "20261006-1-AAAA",
+            "created_at_unix": "1790000000",
+            "training_step": "1000",
+            SafetensorsModelIO.Key.formatVersion: SafetensorsModelIO.formatVersion,
+        ]
+        let data = try SafetensorsFile.encode(tensors: [SafetensorsTensor(name: "w", shape: [2], data: [1, 2])], metadata: metadata)
+        try data.write(to: folder.appendingPathComponent("no-record.safetensors"))
+        let result = try scan(folder)
+        XCTAssertEqual(result.listed, 1)
+        XCTAssertEqual(result.entries, [], "no step is invented for it")
+        XCTAssertEqual(result.unreadable.map(\.url.lastPathComponent), ["no-record.safetensors"])
+        let reason = try XCTUnwrap(result.unreadable.first?.reason)
+        XCTAssertTrue(reason.contains(LineageRecord.metadataKey), "the reason names the missing record: \(reason)")
     }
 
     func testLineageFactsComeFromTheRecordNotTheMirrorKeys() throws {
