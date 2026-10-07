@@ -9,6 +9,18 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 12:14 — Review fixes: Lichess bot-game limit, analyses, SPRT drain count, KL window `b98d1813`
+
+- **Correction to `88cb3a55`:** Lichess' bot-vs-bot limit is not a fixed 24 h window. lila keeps one `RateLimit` entry per account (Caffeine expire-after-write, a day after the last game it counted): below 100 a game adds one without moving the clear time; at 100 nothing is counted until the clear time passes, and a count past its clear time can no longer limit the account. `LichessBotBotGameWindow` replays exactly that; the old model kept matchmaking paused up to a day longer than Lichess does.
+- The reserves count bot games that may still start (DCM's pending challenges to bots, sends in flight, accepted games not listed yet, live games whose opponent is unknown); the challenge queue waits rather than skipping entries while the records load or such games are outstanding. Resume texts say which case applies.
+- One game-start merge (`LichessBotGameStart`) feeds the bot-game count, the account grid (Today / Last 24 h now include games in progress; Today uses the Record card's calendar) and matchmaking's contact memory.
+- Record card resize handle drags from the shown edge; window title leads with "Lichess Bot"; the pick log names the pool drawn from; previous-period help and calendar errors name their own unit; one seed-only rule for the model picker's sort and colour.
+- Analyses: the trainer's weights, step, fp32 masters and velocity are one cut (one trainer-queue turn), read while training runs; both networks' identity is checked across the export (a champion replacement window, closed when its origin is recorded); Run All captures both networks before the replay step and builds the trainer entropy probe from that capture.
+- Init reference: one plain seeded build per (architecture, seed), shared per request; exactness from the builder's own random-tensor roles; BN running statistics get no init figures; the audit's head-bias init mean is read from the reference. Export metadata v5.
+- Analysis JSON is written off the main actor and the cooperative pool, through `FileSafety.publishNewFileWithNumericSuffix`: an earlier file of the same label and second is never replaced (`.atomic` used to).
+- Arena SPRT records the finished count at the verdict, so the log splits the games past the start-order sample into finished-before and drained-after (older sessions: "split not recorded"). Corrects `82e1b785`'s docs: the overshoot is K − 1 in-flight games plus every game that finished ahead of the sample, not at most K − 1.
+- KL rolling windows span trainer steps, not probes (512 probes covered ~51,200 steps at the default interval).
+
 ## 2026-10-07 11:23 — Analyses describe the weights they analyzed `86825cbc`
 
 - One weights snapshot per network (`AnalyzedNetworkSnapshot`), shared by the weight analysis, the value-head analysis and the numerics audit of one request; the trainer's is paired with its step (`exportWeightsWithCompletedSteps`), the champion's step is what its origin states. Before, each analyzer exported separately while SGD ran and the files' steps came from two counters read at the button press.
