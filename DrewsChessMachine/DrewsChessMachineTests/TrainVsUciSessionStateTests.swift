@@ -9,6 +9,7 @@
 import XCTest
 @testable import DrewsChessMachine
 
+@MainActor
 final class TrainVsUciSessionStateTests: XCTestCase {
 
     func testSessionStateRecordsTheRunsPlyCap() throws {

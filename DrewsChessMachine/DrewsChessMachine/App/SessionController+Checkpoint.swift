@@ -574,9 +574,12 @@ extension SessionController {
             // responsive during the scratch-network build (sub-second).
             // The trainer file states its own snapshot's clock (format v11:
             // `training_step` is the trainer step, and on a trainer-state
-            // file it must equal the schedule's clock). The stats box's count
-            // at the cut is the same number at every cut
-            // (`SessionSaveConsistentCutTests`); the writer reads one source.
+            // file it must equal the schedule's clock); the writer reads one
+            // source. The stats box's count at the cut is the same number
+            // after a fresh start or a session resume
+            // (`SessionSaveConsistentCutTests`), but not after "New Session,
+            // keep trainer", whose box counts the session from 0 — another
+            // reason the file never states the box's count.
             let trainerMetadata = ModelCheckpointMetadata.trainerFile(
                 creator: diskTag,
                 trainingStep: trainerSnapshot.schedule.completedTrainSteps,
@@ -1220,7 +1223,10 @@ extension SessionController {
         let trainedPositions = try trainedPositionsForSessionState(atSessionSteps: trainingStats?.steps ?? 0)
         let wasTraining = realTraining
         checkpoint?.closeActiveTrainingSegment(reason: "save")
-        if wasTraining && checkpoint?.activeSegmentStart == nil {
+        // A suspended run (health alarm or divergence) closed its segment
+        // when it parked, so the parked idle is not training wall time; a
+        // save then must not reopen it.
+        if wasTraining && trainingSuspension == nil && checkpoint?.activeSegmentStart == nil {
             checkpoint?.beginActiveTrainingSegment()
         }
         let now = Date()

@@ -602,7 +602,15 @@ enum LayerHealth {
         } else {
             maxOverMedian = nil
         }
-        let passThrough = passThroughHealth(activation: site.activation, gamma: gamma, beta: beta)
+        let passThrough: (parked: Int, mostlyOff: Int, minimum: Double?, median: Double?)?
+        do {
+            passThrough = try passThroughHealth(activation: site.activation, gamma: gamma, beta: beta)
+        } catch {
+            // The one production caller (`summary`) refuses tensors whose
+            // sizes differ from the site's channel count before calling here,
+            // so unequal γ / β lengths are a code bug, never data to hide.
+            preconditionFailure("\(site.name): \(error.localizedDescription)")
+        }
 
         return LayerHealthSummary.BatchNormSiteHealth(
             site: site.name,
@@ -631,18 +639,24 @@ enum LayerHealth {
 
     /// The activation-aware parked / mostly-off counts and the pass-through
     /// extremes of one site (`BatchNormPassThrough`), over its finite
-    /// channels; nil when no activation consumes the site's output.
+    /// channels; nil when no activation consumes the site's output. Throws
+    /// when γ and β differ in length: one value of each per channel, so a
+    /// mismatch is a bug, not a smaller channel count.
     static func passThroughHealth(
         activation: ActivationFunction?,
         gamma: [Float],
         beta: [Float]
-    ) -> (parked: Int, mostlyOff: Int, minimum: Double?, median: Double?)? {
+    ) throws -> (parked: Int, mostlyOff: Int, minimum: Double?, median: Double?)? {
+        guard gamma.count == beta.count else {
+            throw LayerHealthError.tensorSizeMismatch(name: "β (per-channel, beside γ)", expected: gamma.count,
+                                                      got: beta.count)
+        }
         guard let activation, BatchNormPassThrough.isModeled(activation) else { return nil }
         var parked = 0
         var mostlyOff = 0
         var passThroughs: [Double] = []
         passThroughs.reserveCapacity(gamma.count)
-        for channel in 0..<min(gamma.count, beta.count) {
+        for channel in gamma.indices {
             let g = Double(gamma[channel])
             let b = Double(beta[channel])
             guard g.isFinite, b.isFinite else { continue }

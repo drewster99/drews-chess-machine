@@ -2749,6 +2749,16 @@ public final class TrainingParameters {
     /// assignment does not clear the entry the hold just recorded.
     nonisolated(unsafe) private static var assigningRunHold = false
 
+    /// Keys whose assignment `commitAssignment` just rejected: the calling
+    /// `didSet` puts the previous value back next, and that revert is an
+    /// assignment like any other (the `@Observable` setter runs `didSet`
+    /// again), so the next commit of such a key is the revert. It restores
+    /// the value that was in force — persisted, or held, exactly as before
+    /// — so it is neither validated (a resume's held out-of-range value
+    /// must come back too) nor journalled (nothing changed). Main actor
+    /// only, read and written synchronously like `suppressPersistence`.
+    nonisolated(unsafe) private static var revertingRejectedAssignmentIDs: Set<String> = []
+
     /// Record what key `id` holds now as the value a run-only hold
     /// replaces, unless an earlier hold of the key already recorded it.
     private func recordRunHoldPrior(id: String) {
@@ -2907,6 +2917,9 @@ public final class TrainingParameters {
     /// same range.
     private nonisolated static func commitAssignment<K: TrainingParameterKey>(_ key: K.Type, value: K.Value,
                                                                             oldValue: K.Value) -> Bool {
+        if revertingRejectedAssignmentIDs.remove(K.id) != nil {
+            return true
+        }
         let raw = K.encode(value)
         do {
             try K.definition.validate(raw)
@@ -2922,6 +2935,7 @@ public final class TrainingParameters {
             let message = "[PARAM-REJECTED] \(error.localizedDescription); assignment reverted to the previous value"
             SessionLogger.shared.log(message)
             FileHandle.standardError.write(Data((message + "\n").utf8))
+            revertingRejectedAssignmentIDs.insert(K.id)
             return false
         }
         // An assignment that is not itself a run-only hold is the value the
@@ -2946,23 +2960,24 @@ public final class TrainingParameters {
     /// Tell the run-change observer about a committed assignment — copied
     /// out of its box and called after the box's lock is released, so the
     /// observer (which takes its journal's own lock) never runs under
-    /// another lock. Skipped: an unchanged value; the revert of a rejected
-    /// assignment (its "old" value is the rejected one, which never took
-    /// effect); a resume's run-only holds; the seed settings, which no
-    /// running run reads; and the keys a run captures at its start, whose
-    /// edits take effect only at the next start, where the recapture is
-    /// journalled instead.
+    /// another lock. Skipped: an unchanged value; a resume's run-only
+    /// holds; the seed settings, which no running run reads; and the keys a
+    /// run captures at its start, whose edits take effect only at the next
+    /// start, where the recapture is journalled instead.
+    ///
+    /// Neither half of a rejected assignment gets here: `commitAssignment`
+    /// returns false for it before calling this, and recognises the
+    /// `didSet` revert that follows (`revertingRejectedAssignmentIDs`) and
+    /// returns before it too. So the old value is never screened against
+    /// today's range — a change away from a resume's held out-of-range value
+    /// (`restoreFromSession`), or a hold released back to the user's value,
+    /// is a real change and is journalled.
     private nonisolated static func notifyRunChangeObserver<K: TrainingParameterKey>(
         _ key: K.Type, old: ParameterValue, new: ParameterValue
     ) {
         guard old != new, !assigningRunHold else { return }
         guard !LineageRecord.Parameters.excludedParameterIDs.contains(K.id),
               !RunStartParameterCapture.capturedKeyIDs.contains(K.id) else { return }
-        do {
-            try K.definition.validate(old)
-        } catch {
-            guard admittingSessionValueOutsideDeclaredRange else { return }
-        }
         guard let observer = runChangeObserver.value else { return }
         observer(K.id, old, new)
     }
@@ -3079,6 +3094,11 @@ public final class TrainingParameters {
         RandomSeedModeParameter.self,
         RandomSeed.self
     ]
+
+    /// `allKeys` by parameter id, for readers that meet an id in a file and
+    /// need its declared type.
+    nonisolated static let keysByID: [String: any TrainingParameterKey.Type] =
+        Dictionary(uniqueKeysWithValues: allKeys.map { ($0.id, $0) })
 
     public nonisolated static var allDefinitions: [TrainingParameterDefinition] {
         allKeys.map { $0.definition }

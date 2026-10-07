@@ -137,11 +137,24 @@ enum TrainVsUciRunner {
         }
         sigSource.resume()
 
+        // Synchronous pre-flight: hash the engine executables here, on this
+        // thread, before the async run starts (`TrainVsUciOpponentExecutableDigests`).
+        let executableDigests: TrainVsUciOpponentExecutableDigests
+        do {
+            executableDigests = try TrainVsUciOpponentExecutableDigests(hashingExecutablesOf: config)
+        } catch {
+            FileHandle.standardError.write(Data("train-vs-uci: failed: \(error.localizedDescription)\n".utf8))
+            SessionLogger.shared.log("[VS-UCI] failed: \(error.localizedDescription)")
+            SessionLogger.shared.shutdown()
+            Darwin.exit(33)
+        }
+
         let result: Result
         do {
             result = try withExtendedLifetime(sigSource) {
                 try syncWait {
-                    try await runTraining(config: config, params: params, abort: abort)
+                    try await runTraining(config: config, params: params, executableDigests: executableDigests,
+                                          abort: abort)
                 }
             }
         } catch let refusal as CLIRunRefusal {
@@ -174,7 +187,11 @@ enum TrainVsUciRunner {
     /// The whole train-vs-UCI run. Internal (not private) only so tests can
     /// run its launch checks in-process; production enters through
     /// `runAndExit`.
-    static func runTraining(config: TrainVsUciConfig, params configuredParams: ReplayParams, abort: TrainVsUciAbortFlag) async throws -> Result {
+    /// `executableDigests` is the pre-flight's hash of the opponents'
+    /// executables (`runAndExit`).
+    static func runTraining(config: TrainVsUciConfig, params configuredParams: ReplayParams,
+                            executableDigests: TrainVsUciOpponentExecutableDigests,
+                            abort: TrainVsUciAbortFlag) async throws -> Result {
         // `--output` support. Only allocated when a destination was given, so a
         // run without `--output` carries no per-step recording cost at all.
         let recorder: CliTrainingRecorder? = config.output == nil ? nil : {
@@ -494,7 +511,8 @@ enum TrainVsUciRunner {
             policyTailPrecision: trainer.policyTailPrecision,
             budget: LineageRecord.Budget(trainingStepLimit: config.stepLimit, trainingTimeLimitSec: config.timeLimitSec,
                                          epochLimit: nil),
-            vsuci: try TrainVsUciSession.lineageGeneration(config: config, trainerMoveSelection: trainerMoveSelection),
+            vsuci: try TrainVsUciSession.lineageGeneration(config: config, executableDigests: executableDigests,
+                                                           trainerMoveSelection: trainerMoveSelection),
             selfPlayDirichlet: nil,
             startValueHeadRecentered: .recorded(try LineageTracker.startValueHeadRecentered(of: startModelFile))))
         lineageTracker.noteRunSeed(runSeed, atTrainerStep: trainer.completedTrainSteps)

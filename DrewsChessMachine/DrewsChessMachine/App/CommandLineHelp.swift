@@ -157,15 +157,17 @@ enum CommandLineHelp {
                                       --epochs <n> (default: 1 pass) and --parameters <file> to pin the
                                       hyperparameters. Pass --start-model <file> to continue training from a
                                       saved model (its embedded architecture is used). Ctrl-C stops cleanly
-                                      and saves; press again to force-quit. The trainer model is saved every
-                                      1000 steps and on exit/abort to a single rolling file (overwritten):
+                                      and saves; press again to force-quit. The trainer model is saved at
+                                      trainer-step multiples of 1000 (a resume at trainer step 513 first
+                                      saves at 1000) and on exit/abort to a single rolling file (overwritten):
                                       --out-model <path>, else next to --start-model, else the app Models dir
                                       named after the corpus (<corpusID>-replay-latest.safetensors).
                                       Replay only reads the corpus: unsealed .open shards are skipped (and
                                       listed in a warning), never recovered or modified -- recover them
                                       with --validate-corpus <dir> --fix.
-                                      Training-health alarms run on every step ([HEALTH] / [ALARM] health
-                                      lines; training_health_* parameters). Exit status: 0 done, 2 refused
+                                      Training-health alarms evaluate every 50 trainer steps (each step is
+                                      recorded; [HEALTH] / [ALARM] health lines; training_health_*
+                                      parameters). Exit status: 0 done, 2 refused
                                       at launch, 33 failed, 35 stopped by a training-health alarm whose
                                       training_health_action_<rule> stops the run (after the final save,
                                       tagged health-stop). The same statuses apply to --train-vs-uci.
@@ -185,14 +187,17 @@ enum CommandLineHelp {
                                       save failing again at its next attempt stops the run.
       --overwrite-out-model           Use an --out-model the check above would refuse, replacing the file
                                       there (still never the --start-model, never a non-regular file).
-      --enumerate-checkpoints         Also keep a copy of every save as <stem>-replay-step<N>.safetensors
-                                      (<stem>-step<N> when the stem has no -replay-latest marker; see
-                                      --train-vs-uci below for its step files). An exact resume of a recorded
-                                      run writes <stem>-replay-seg<k>-step<N>, k its lineage segment index, so
-                                      it can keep the stem. Never overwrites: step numbers restart in every
-                                      segment, so the run refuses to start when its stem already has step
-                                      files it could reach at its segment index -- give that run its own
-                                      --out-model stem (e.g. <name>-resume2-replay-latest.safetensors).
+      --enumerate-checkpoints         Also keep a copy of every save as <stem>-replay-step<T>.safetensors
+                                      (<stem>-step<T> when the stem has no -replay-latest marker; see
+                                      --train-vs-uci below for its step files), T the trainer step at the
+                                      save -- the file's training_step. Every segment of a run names its
+                                      files this way, so an exact resume continues the series under the same
+                                      stem (a resume from ...-step36000 writes ...-step37000). Files named
+                                      <stem>-replay-seg<k>-step<N> by resumed segments before format v11
+                                      keep their names. Never overwrites: the run refuses to start when its
+                                      stem already has a step file above its start trainer step that it
+                                      could reach (up to its start plus --training-step-limit, or any step
+                                      without one) -- give that run its own --out-model stem.
       --epochs <n>                    Replay budget: number of full passes over the corpus (default 1 when
                                       no --training-step-limit is given), counted from the start of the
                                       run's lineage: a --resume-exact of a checkpoint saved in pass k
@@ -274,8 +279,9 @@ enum CommandLineHelp {
       --save-replay-buffer            Include replay_buffer.bin in every session save (several GB), so an
                                       exact resume restores the buffer instead of refilling it.
       --enumerate-checkpoints [--checkpoint-stem <path stem>]
-                                      Also write the trainer file every 1000 steps and at the end as
-                                      <stem>-vsuci-step<N>.safetensors (default stem: the --start-model
+                                      Also write the trainer file at trainer-step multiples of 1000 and at
+                                      the end as <stem>-vsuci-step<T>.safetensors, T the trainer step (default
+                                      stem: the --start-model
                                       file's own, next to it, else the run's model ID in Models/). Never
                                       overwrites; refuses a stem that already has step files it could reach.
       (--out-model and --overwrite-out-model do not apply to --train-vs-uci and are refused.)

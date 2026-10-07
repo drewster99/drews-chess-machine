@@ -501,10 +501,18 @@ extension SessionController {
     /// The running segment's lineage now, for `results.json`: its record as
     /// of this moment (no trainer snapshot behind it, so no dropout state,
     /// and no saved file) and the per-row totals it implies.
-    func lineageForResults(trainerCompletedSteps: Int) throws -> (totals: LineageTracker.Totals, record: LineageRecord) {
+    ///
+    /// The record's clock is the one its configuration cut read, never a
+    /// clock the caller read earlier: training runs while the results ticker
+    /// calls this, and a settings change journalled between an earlier read
+    /// and the cut would sit above that clock, which `LineageRecord`'s
+    /// invariants refuse. Edits commit on the main actor, so none lands
+    /// between the cut and the record built here.
+    func lineageForResults() throws -> (totals: LineageTracker.Totals, record: LineageRecord) {
         guard let trainer else { throw LineageSegmentError.noSegment("the results record (no trainer)") }
-        let record = try lineageRecordForSave(at: Date(), cut: try takeConfigurationCut(trainer: trainer),
-                                              trainerCompletedSteps: trainerCompletedSteps,
+        let cut = try takeConfigurationCut(trainer: trainer)
+        let record = try lineageRecordForSave(at: Date(), cut: cut,
+                                              trainerCompletedSteps: cut.schedule.completedTrainSteps,
                                               dropoutPhiloxState: nil, dropoutStreamState: nil)
         return (LineageTracker.Totals(of: record), record)
     }

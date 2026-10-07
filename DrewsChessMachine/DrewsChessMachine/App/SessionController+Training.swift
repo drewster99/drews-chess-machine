@@ -1468,11 +1468,15 @@ extension SessionController {
                 // least `step_line_interval_sec` (read live) after the
                 // previous line. It polls every 50 ms, so a fixed line lands
                 // on the first poll at or past its step. The trainer step is
-                // the stats box's cumulative count — seeded with the saved
-                // step on a session resume and rewound on a promotion (the
-                // schedule moves its baseline there; a rewind is not itself
-                // a line). The time rule needs no new step, so lines keep
-                // coming while an arena pauses training.
+                // the trainer's own clock (`completedTrainSteps`), rewound on
+                // a promotion (the schedule moves its baseline there; a
+                // rewind is not itself a line) — not the stats box's count,
+                // which equals it after a fresh start or a session resume
+                // but restarts at 0 after "New Session, keep trainer"
+                // (`TrainingStepLineSchedule.guiPollLineDue`). The box still
+                // gates the first line and supplies what `[STATS]` displays.
+                // The time rule needs no new step, so lines keep coming
+                // while an arena pauses training.
                 //
                 // Each line snapshots the thread-safe stats boxes, refreshes
                 // `legalMass` via a sampled forward pass, writes the
@@ -1958,7 +1962,7 @@ extension SessionController {
                             let lineageNow: (totals: LineageTracker.Totals, record: LineageRecord)?
                             do {
                                 lineageNow = try await MainActor.run {
-                                    try self.lineageForResults(trainerCompletedSteps: completedSteps)
+                                    try self.lineageForResults()
                                 }
                             } catch {
                                 SessionLogger.shared.log("[RESULTS] lineage for results.json unavailable at step \(completedSteps): \(error.localizedDescription); this row records no lineage totals")
@@ -2139,14 +2143,17 @@ extension SessionController {
                     while !Task.isCancelled {
                         let trainingSnap = await box.snapshot()
                         let steps = trainingSnap.stats.steps
-                        // No line before the first training step (the box
-                        // starts at 0 on a fresh session; a resumed session's
+                        // No line before the session's first training step
+                        // (the box starts at 0 on a fresh session and after
+                        // "New Session, keep trainer"; a resumed session's
                         // box is seeded with the saved step, so its first
-                        // line comes at the first poll).
+                        // line comes at the first poll). The line itself is
+                        // keyed on the trainer's clock.
                         if steps > 0 {
                             let intervalSec = await MainActor.run { TrainingParameters.shared.stepLineIntervalSec }
-                            let due = stepLines.lineDue(
-                                trainerStep: steps,
+                            let due = stepLines.guiPollLineDue(
+                                sessionSteps: steps,
+                                trainerStep: trainer.completedTrainSteps,
                                 elapsedSec: TrainingStepLineSchedule.seconds(lineClock.now - lineClockStart),
                                 carriesDiagnostics: trainingSnap.rollingPolicyEntropy != nil,
                                 intervalSec: intervalSec)

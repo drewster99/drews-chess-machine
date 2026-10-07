@@ -175,7 +175,7 @@ extension SessionController {
         }
         trainingHealthMonitor = monitor
         trainingHealthAutoTrainStop = autoTrainStop
-        trainingAlarm?.setHealthSuspension(nil)
+        trainingAlarm?.beginHealthRun()
         trainingAlarm?.refreshHealth(from: monitor)
         if let config = resolveTrainingHealthConfig() {
             recorder?.setAlarmConfig(config)
@@ -301,9 +301,14 @@ extension SessionController {
 
     /// At Stop: the final `[HEALTH] check … final=true` line of this start's
     /// monitor. A checkpoint pass still running then writes its own
-    /// `late=true` line when it finishes.
+    /// `late=true` line when it finishes. The alarm list keeps the ended
+    /// run's alarms for review but quiet, and drops the suspension header
+    /// (`TrainingAlarmController.endHealthRun()`), before Stop's banner
+    /// `clear()` un-silences: nothing evaluates after Stop, so those alarms
+    /// could never clear by recovery and would beep until the next start.
     func finishTrainingHealthRun() {
         trainingHealthMonitor?.writeFinalCheck(log: GuiTrainingHealthWorker.logSink)
         trainingHealthAutoTrainStop = nil
+        trainingAlarm?.endHealthRun()
     }
 }

@@ -218,7 +218,7 @@ final class TrainingStepBasisTests: XCTestCase {
         let reading = file.trainingStepReading
         XCTAssertEqual(reading.basis, .legacyUnknownWriter)
         XCTAssertEqual(reading.trainerStep, 40)
-        XCTAssertEqual(reading.segmentStep, 40)
+        XCTAssertNil(reading.segmentStep, "no record: the segment step is unknown")
         XCTAssertEqual(file.lineageParent.trainerCompletedSteps, 40)
         XCTAssertTrue(try XCTUnwrap(reading.legacyResolution).contains("was stated by writer 'test'"))
     }
