@@ -4,6 +4,7 @@ enum LichessBotSessionModelError: LocalizedError, Equatable {
     case sessionGone
     case missingModelID(source: String)
     case trainerChangedDuringExport
+    case championChangedDuringExport
 
     var errorDescription: String? {
         switch self {
@@ -13,6 +14,8 @@ enum LichessBotSessionModelError: LocalizedError, Equatable {
             return "The \(source) network has no ModelID, so games played with it could not be attributed"
         case .trainerChangedDuringExport:
             return "The trainer's weights were being replaced (a promotion, reset or load) during the export, so they can't be attributed; the next snapshot will be"
+        case .championChangedDuringExport:
+            return "The champion's weights were being replaced (a promotion or load) during the export, or the last replacement failed, so they can't be attributed until a replacement completes"
         }
     }
 }
@@ -46,7 +49,20 @@ final class LichessBotSessionModelProvider: LichessBotModelProvider {
         guard let identifier = champion.identifier else {
             throw LichessBotSessionModelError.missingModelID(source: "champion")
         }
+        // A promotion or load replaces the champion's weights before it
+        // stamps the new identity and records their origin
+        // (`SessionController.championWeightIdentity`). One in progress, or
+        // one that overlapped the export, would label the new weights with
+        // the old model ID — and the model ID alone can't tell, since every
+        // checkpoint of a run shares it.
+        let before = session.championWeightIdentity
+        guard !before.awaitingOrigin else {
+            throw LichessBotSessionModelError.championChangedDuringExport
+        }
         let weights = try await champion.exportWeights()
+        guard session.network === champion, session.championWeightIdentity == before, champion.identifier == identifier else {
+            throw LichessBotSessionModelError.championChangedDuringExport
+        }
         return LichessBotWeightsSnapshot(weights: weights, architecture: champion.arch, modelID: "\(identifier)", trainingStep: nil)
     }
 

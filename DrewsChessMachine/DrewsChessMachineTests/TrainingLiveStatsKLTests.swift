@@ -71,8 +71,9 @@ final class TrainingLiveStatsKLTests: XCTestCase {
         XCTAssertNil(snap.rollingKLStdDev)
     }
 
-    /// A probe whose readback failed reports a non-finite value; it must not
-    /// enter the mean.
+    /// A non-finite KL value must not enter the mean. No producer reports one
+    /// today (a probe whose readback failed reports nil); the guard keeps one
+    /// that did from poisoning the window.
     func testNonFiniteKLIsNotRecorded() throws {
         let box = TrainingLiveStatsBox(rollingWindow: 100)
         box.recordStep(makeTiming(hasDiagnostics: false, klMean: .nan, klStdDev: .infinity))

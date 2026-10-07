@@ -74,7 +74,6 @@ extension SessionController {
             return
         }
 
-        let trainerNet = trainer.network
         // Mark a checkpoint-affecting operation in flight up front
         // (same pattern as `handleSaveSessionManual`), so a concurrent
         // File ▸ Save Session can't start and fight us for the pause
@@ -86,7 +85,7 @@ extension SessionController {
 
         Task {
             // 1) Pause self-play (evaluates against `champion`) and
-            //    training (drives `trainerNet`) so the export/load is
+            //    training (drives the trainer's network) so the export/load is
             //    race-free. Bounded waits so a session end mid-promote
             //    can't spin forever.
             let selfPlayAcquired = await selfPlayGate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
@@ -152,7 +151,11 @@ extension SessionController {
             var copyError: Error?
             do {
                 try await Task.detached(priority: .userInitiated) {
-                    let weights = try await trainerNet.exportWeights()
+                    // Read through the trainer's queue, where a reset
+                    // replaces its network, so the export is of the network
+                    // the trainer holds at that turn — never one a reset
+                    // swapped out under a reference taken earlier.
+                    let weights = try await trainer.exportWeightsWithCompletedSteps().weights
                     try await champion.loadWeights(weights)
                 }.value
             } catch {

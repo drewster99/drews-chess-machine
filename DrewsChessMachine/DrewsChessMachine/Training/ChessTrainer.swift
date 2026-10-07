@@ -1791,7 +1791,17 @@ final class ChessTrainer: @unchecked Sendable {
     /// `splitWorkingWeightSync` is true; run as their own pass in
     /// `runPreparedStep`. Empty otherwise.
     private var workingSyncOps: [MPSGraphOperation] = []
-    private(set) var network: ChessNetwork
+    /// The training-mode network. Replaced only on `executionQueue`
+    /// (`internalResetNetwork`), but read from many threads — human play,
+    /// the probe watchers, the Lichess bot, manual promotion, the arena —
+    /// so the reference lives in a lock: a read off the queue never races
+    /// the replacement (an unsynchronized read of a class reference being
+    /// written is undefined behavior). Which network a caller gets around a
+    /// reset is a separate question: a caller that must attribute the
+    /// weights checks `weightIdentityState`, or reads them through the queue
+    /// (`exportWeightsWithCompletedSteps`).
+    var network: ChessNetwork { networkBox.value }
+    private let networkBox: SyncBox<ChessNetwork>
     private var movePlayedPlaceholder: MPSGraphTensor   // [batch] int32
     private var zPlaceholder: MPSGraphTensor            // [batch, 1] float
     private var vBaselinePlaceholder: MPSGraphTensor    // [batch, 1] float
@@ -2252,7 +2262,7 @@ final class ChessTrainer: @unchecked Sendable {
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
         net.commandQueue.label = "ChessTrainer.net(init)"
-        self.network = net
+        self.networkBox = SyncBox(net)
         let built = try withLargeBuildStack {
             try Self.buildTrainingOps(network: net, splitTrainableWorkingSync: splitWorkingWeightSync)
         }
@@ -2320,7 +2330,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.assignOpsWithoutDropoutAdvance = built.assignOps
         // Advance the dropout RNG stream exactly once per training step,
         // compiled into the same executable as the SGD assigns.
-        if let advance = network.dropoutRngAdvanceOp {
+        if let advance = net.dropoutRngAdvanceOp {
             self.assignOps.append(advance)
         }
         // Experiment: when the working-weight sync is split out of the fused
@@ -2488,7 +2498,7 @@ final class ChessTrainer: @unchecked Sendable {
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
         net.commandQueue.label = "ChessTrainer.net(reset)"
-        self.network = net
+        networkBox.value = net
         let built = try withLargeBuildStack {
             try Self.buildTrainingOps(network: net, splitTrainableWorkingSync: self.splitWorkingWeightSync)
         }

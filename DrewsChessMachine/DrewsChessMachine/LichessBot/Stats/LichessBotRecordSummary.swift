@@ -136,11 +136,6 @@ enum LichessBotRecordSummary {
         return tallies
     }
 
-    /// Games against bots started at or after `since`.
-    static func botGames(rows: [LichessBotGameSummary], since: Date) -> Int {
-        rows.filter { $0.opponentKind == .bot && $0.createdAt >= since }.count
-    }
-
     /// Each period's record. The boundaries come from
     /// `LichessBotStatsPeriods`, their one definition.
     static func compute(rows: [LichessBotGameSummary], now: Date, calendar: Calendar) throws -> Records {

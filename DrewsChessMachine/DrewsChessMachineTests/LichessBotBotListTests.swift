@@ -118,26 +118,6 @@ final class LichessBotBotListTests: XCTestCase {
         XCTAssertEqual(favorites.map(\.username), ["zeta", "Gone"])
         XCTAssertEqual(favorites.map(\.isOnline), [true, false])
     }
-
-    // MARK: - Our own bot-game count
-
-    private func row(_ id: String, kind: LichessBotOpponentKind, at date: Date) throws -> LichessBotGameSummary {
-        let json = """
-        {"gameID":"\(id)","createdAt":"\(date.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true)))","speed":"blitz","rated":false,"ourColor":"white","opponentKind":"\(kind.rawValue)","status":"mate","plies":40,"modelIDs":[],"sourceKinds":[],"builds":[],"reconciliation":"matched","anomalyCount":0,"ourScore":1}
-        """
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601withFractionalSeconds
-        return try decoder.decode(LichessBotGameSummary.self, from: Data(json.utf8))
-    }
-
-    func testBotGamesCountsOnlyBotsSinceTheCutoff() throws {
-        let rows = [
-            try row("a", kind: .bot, at: Date(timeIntervalSince1970: 100)),
-            try row("b", kind: .bot, at: Date(timeIntervalSince1970: 50)),
-            try row("c", kind: .human, at: Date(timeIntervalSince1970: 100)),
-        ]
-        XCTAssertEqual(LichessBotRecordSummary.botGames(rows: rows, since: Date(timeIntervalSince1970: 60)), 1)
-    }
 }
 
 /// Regression (live, 2026-09-28): a minimum rating alone must filter, not
