@@ -1844,7 +1844,7 @@ enum CheckpointManager {
             throw CheckpointManagerError.readFailed(url, error)
         }
         let file = try decodeAnyModelFile(data, valueHead: .asStored, source: url.lastPathComponent)
-        file.architectureFormat?.logLegacyResolutions()
+        logLegacyFileFacts(file, source: url.lastPathComponent)
         return file
     }
 
@@ -1856,9 +1856,33 @@ enum CheckpointManager {
             throw CheckpointManagerError.readFailed(url, error)
         }
         let file = try decodeAnyModelFile(data, valueHead: .recenterUnlessMarked, source: url.lastPathComponent)
-        file.architectureFormat?.logLegacyResolutions()
+        logLegacyFileFacts(file, source: url.lastPathComponent)
         logValueHeadCentering(file, source: url.lastPathComponent)
         return file
+    }
+
+    /// Write the one `[ARCH] legacy file` line for a loaded file, or nothing
+    /// when it needed no legacy reading. A safetensors file's decode collects
+    /// its architecture resolutions and its `training_step` reading on its
+    /// `DecodeFormat`; a legacy `.dcmmodel` has no `DecodeFormat` (its
+    /// architecture is a compiled-in preset), so its training-step entry is
+    /// written here through the same formatter, at the unversioned legacy
+    /// version. Called by the loaders that know the file's name, once per
+    /// load — not by `decodeAnyModelFile`, which the post-save verification
+    /// also runs.
+    static func logLegacyFileFacts(_ file: ModelCheckpointFile, source: String) {
+        guard let line = legacyFileFactsLine(file, source: source) else { return }
+        SessionLogger.shared.log(line)
+    }
+
+    /// The line `logLegacyFileFacts` writes, or nil when it writes none.
+    static func legacyFileFactsLine(_ file: ModelCheckpointFile, source: String) -> String? {
+        if let format = file.architectureFormat {
+            return format.legacyLogLine
+        }
+        return ArchitectureFormat.legacyLogLine(
+            formatVersion: ArchitectureFormat.unversionedLegacyVersion, source: source,
+            resolutions: file.trainingStepReading.legacyResolution.map { [$0] } ?? [])
     }
 
     /// Write the one `[NUMERICS]` line for a file whose value head decode
@@ -1913,8 +1937,8 @@ enum CheckpointManager {
         let trainerFile = try decodeAnyModelFile(
             trainerData, valueHead: .recenterUnlessMarked,
             source: "\(directoryURL.lastPathComponent) trainer")
-        championFile.architectureFormat?.logLegacyResolutions()
-        trainerFile.architectureFormat?.logLegacyResolutions()
+        logLegacyFileFacts(championFile, source: "\(directoryURL.lastPathComponent) champion")
+        logLegacyFileFacts(trainerFile, source: "\(directoryURL.lastPathComponent) trainer")
         logValueHeadCentering(championFile, source: "\(directoryURL.lastPathComponent) champion")
         logValueHeadCentering(trainerFile, source: "\(directoryURL.lastPathComponent) trainer")
         let bufferURL = SessionCheckpointLayout.replayBufferURL(in: directoryURL)

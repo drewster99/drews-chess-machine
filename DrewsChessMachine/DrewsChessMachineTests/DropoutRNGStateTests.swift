@@ -183,7 +183,7 @@ final class DropoutRNGStateTests: XCTestCase {
         let data = try SafetensorsModelIO.encode(
             modelID: "20261002-1-DRPF", createdAtUnix: 1_790_000_000,
             metadata: ModelCheckpointMetadata.trainerFile(
-                creator: "replay", trainingStep: 0, parentModelID: "", notes: "dropout state file test",
+                creator: "replay", trainingStep: snapshot.schedule.completedTrainSteps, parentModelID: "", notes: "dropout state file test",
                 schedule: snapshot.schedule, policyTailPrecision: source.policyTailPrecision),
             weights: snapshot.trainerWeights, architecture: archWithDropout(), includesVelocity: true, lineage: lineage)
 

@@ -180,6 +180,7 @@ enum TrainVsUciSession {
             legalMassCollapseNoImprovementProbes: p.legalMassCollapseNoImprovementProbes,
             batchStatsInterval: hp.batchStatsInterval,
             klProbeInterval: hp.klProbeInterval,
+            stepLineIntervalSec: p.stepLineIntervalSec,
             periodicAutosaveIntervalSec: p.periodicAutosaveIntervalSec,
             maxPeriodicAutosavesKept: p.maxPeriodicAutosavesKept,
             automaticSavePruningEnabled: p.automaticSavePruningEnabled,

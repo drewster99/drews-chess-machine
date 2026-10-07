@@ -6,6 +6,7 @@ Status:
 - 2026-10-06: independent review of the redesign; fixes applied in place and listed under Review at the end. Reflects the owner's decision that alarm evaluations are decoupled from log lines. Not implemented.
 - 2026-10-06: **owner decisions recorded** (Owner decisions). OD-1 is reversed: from architecture format v11 every file's `training_step` is the overall trainer step and the segment step is a sidecar; older files are not rewritten, they keep their writer's meaning and are flagged when loaded (D5). OD-16: `bn_liveness.py` is updated now (D9). OD-2 to OD-15 as recommended, with OD-12b and OD-13 restated for OD-1. Changes listed under Revision at the end. Not implemented; for re-review.
 - 2026-10-06: **second independent review** of the OD-1 revision (`57af1480`) against the code and every header on this Mac; must-fixes applied in place and listed under Review 2 at the end. New owner decision OD-18. Not implemented.
+- 2026-10-06: **implementation started** on a branch (P1 + P2, then P3, P4, P5); OD-17 approved by the owner during it. See Implementation notes at the end.
 
 Found while drafting `TRAINING_HEALTH_ALARMS_PLAN.md` (its OD-12, which this plan supersedes). That plan's P2 is gated on this one (its Part P).
 
@@ -502,7 +503,7 @@ All decided by the owner on 2026-10-06 unless marked otherwise.
 - **OD-15** One live `[LAYER-HEALTH]` read serves both the step line and the alarm evaluation when they coincide (implemented by the alarms plan). **Decided (owner, 2026-10-06): as recommended.**
 - **OD-16** `bn_liveness.py`. Recommended was: update it only if an arm is resumed on the P2 build. **Decided (owner, 2026-10-06): update it now** — it stays in use (the alarms implementation makes reference fixtures with it; future experiments will run it) and must understand new files (D9, P4).
 - **OD-B** Approve test edits TE-1 to TE-4, including the **two test deletions** and **one removed assertion** listed under TE-4 (TE-5: none expected). **Decided (owner, 2026-10-06): approved**, including deleting `testALaterSegmentsNamesCarryItsIndex` and `testEachSegmentParsesOnlyItsOwnStepFiles` and removing the `-seg1-` name assertion from `testTheSegmentIndexComesFromTheLineageRule`.
-- **OD-17 (new, needs the owner's approval)** The OD-1 test edits TE-6 to TE-10, TE-P1 and TE-P2 (under Existing-test edits), with their exact before / after. (Review 2 re-searched: no other test pins the old meaning; see Review 2.)
+- **OD-17** The OD-1 test edits TE-6 to TE-10, TE-P1 and TE-P2 (under Existing-test edits), with their exact before / after. (Review 2 re-searched: no other test pins the old meaning; see Review 2.) **Decided (owner, 2026-10-06): approved.**
 - **OD-18 (new, needs the owner's decision)** Format v11 also stamps presets, `architecture.json` and new seeds, which frozen builds then cannot read (Risks). Recommended: accept, and mint seeds and presets for frozen-build experiments with those builds — or carry the marker on safetensors model files only (a second version number for one fact, against D5's single-marker reason). **Decided (team lead, under the owner's 2026-10-06 delegation "solve the problem yourself"): accepted as recommended** — one version number for one fact; a frozen-build A/B series mints its seeds and presets with its own build.
 - **OD-C** (old) Moot: every checkpoint step is now a fixed line step and carries diagnostics.
 
@@ -637,3 +638,28 @@ Sound after the fixes above. OD-1 is implemented without touching training state
 
 - **OD-17** approve TE-6 to TE-10, TE-P1, TE-P2 — recommend yes (no others needed).
 - **OD-18** accept that presets, seeds and derived models written from v11 cannot be read by frozen builds — recommend yes, minting frozen-build experiment seeds and presets with those builds.
+
+---
+
+## Implementation notes
+
+### Failing-first (P1 + P2)
+
+The two runner tests were added to `ResumeEquivalenceTests` against the code before the change (with only `step_line_interval_sec` declared, so they compile) and run:
+- `testAResumedRunsStatsRowsCarryDiagnosticsOnEveryRowAfterTheFirst` failed as predicted: rows at `cum_trainer_step` `[14, 63, 113]` instead of `[14, 50, 100]`; `policy_entropy` null at 63 and 113 (6.4 s).
+- `testAResumedRunSavesAndNamesItsCheckpointsByTrainerStep` failed as predicted: the resumed segment wrote `S-replay-seg1-step30.safetensors`, no `S-replay-step1000` / `S-replay-step1020`, and no stats row at trainer step 1000 (59.0 s).
+
+After the change both pass unmodified (5.9 s and 38.2 s). The 990-step test is a correctness test and is not gated.
+
+### Decisions made during implementation
+
+- **`[BATCH-STATS]` goes to the session log only.** The CLI step lines go through `emit` (session log and stdout); the trainer wrote `[BATCH-STATS]` to the session log only. The runners now write it with `SessionLogger.shared.log`, so stdout of a CLI run does not gain a 72 KB line per step line.
+- **`--derive-model` states the source's step reading as `training_step`.** D5 said derives "write no `training_step`, as today", but `ModelDerivation` copies every source key it does not rewrite, `training_step` included. Copied verbatim into a v11 file, a pre-v11 corpus-replay or train-vs-UCI plain file's segment step would read as a trainer step. `training_step` is now one of `rewrittenMetadataKeys` and the output states the source reading's `trainerStepOrStatedStep` (the same value the output's lineage records as its parent's step; nothing when the source states none). Grafts already wrote none.
+- **The derive and graft source's legacy entry** comes from their full decode of the source (it records the step reading's entry on the source's `DecodeFormat`, which `DeriveModelCLI` already logs), so no second header reading is made.
+- **`ModelCheckpointFile.trainingStepReading`** is a stored property set by both decoders; a file built in memory to be encoded is read under the current format's rule (the version its encode stamps), with no segment step.
+- **`CheckpointManager.legacyFileFactsLine`** is the one formatter both kinds of file go through (`ArchitectureFormat.legacyLogLine`); `logLegacyFileFacts` replaces the loaders' `architectureFormat?.logLegacyResolutions()` so a `.dcmmodel`'s training-step entry is logged too.
+- **`SegmentStartTrainerStepMismatch`** is the internal error both runners throw when the pre-flight start step (from the start file's schedule) differs from the trainer's clock after restore.
+- **`EnumeratedCheckpointNaming`'s legacy parse** builds names through one private static builder with an explicit segment part; a legacy reading is accepted only for `-seg<k>` with `k` a positive index without leading zeros, which is exactly what the earlier `segmentIndex` round-trip accepted (`-seg0-` and `-seg01-` stay unclaimed as segment names).
+- **`table_common.buffer_plies_per_game_by_trainer_step`** reads one log, like `buffer_plies_per_game`; its test uses a resumed segment's log (lines at segment step + 513). A two-segment comparison is two calls.
+- **`vsuci.py`**: a segment's label goes on its first mark (meta 1000 for logs without `trainerStep=`, as before).
+- **GUI `cfgStr`** (`stepLineSec=`, D7 step 6) is done with P3, which rewrites the same ticker.

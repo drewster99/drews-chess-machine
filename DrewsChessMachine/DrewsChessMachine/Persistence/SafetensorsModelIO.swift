@@ -46,6 +46,13 @@ enum SafetensorsModelIO {
         /// A trainer-state file's lineage total disagrees with its trainer
         /// clock (`trainer_completed_steps`), on write.
         case lineageStepDisagreesWithTrainerClock(lineageStep: Int?, trainerClock: Int)
+        /// A trainer-state file's `training_step` is not its trainer clock
+        /// (`trainer_completed_steps`), on write: from format v11 the two are
+        /// one value.
+        case trainingStepDisagreesWithTrainerClock(trainingStep: Int?, trainerClock: Int)
+        /// A format-v11-or-later trainer-state file read with a
+        /// `training_step` that is absent or not its trainer clock.
+        case decodedTrainingStepDisagreesWithTrainerClock(source: String, formatVersion: Int, trainingStep: Int?, trainerClock: Int)
 
         var description: String {
             switch self {
@@ -77,6 +84,14 @@ enum SafetensorsModelIO {
             case .lineageStepDisagreesWithTrainerClock(let lineageStep, let trainerClock):
                 return "safetensors model: lineage cum_trainer_step \(lineageStep.map(String.init) ?? "null") must equal the "
                     + "trainer-state file's trainer_completed_steps \(trainerClock)"
+            case .trainingStepDisagreesWithTrainerClock(let trainingStep, let trainerClock):
+                return "safetensors model: training_step \(trainingStep.map(String.init) ?? "(none)") must equal the "
+                    + "trainer-state file's trainer_completed_steps \(trainerClock) (from format "
+                    + "v\(ArchitectureFormat.trainingStepIsTrainerStepFromVersion) training_step is the trainer step)"
+            case .decodedTrainingStepDisagreesWithTrainerClock(let source, let version, let trainingStep, let trainerClock):
+                return "safetensors model \(source): format v\(version) trainer-state file states training_step "
+                    + "\(trainingStep.map(String.init) ?? "(none)") but trainer_completed_steps \(trainerClock); from format "
+                    + "v\(ArchitectureFormat.trainingStepIsTrainerStepFromVersion) the two are one value"
             }
         }
     }
@@ -155,11 +170,16 @@ enum SafetensorsModelIO {
         // captured alongside; one without the other is not resumable.
         if let schedule = metadata.trainerSchedule {
             guard includesVelocity else { throw IOError.trainerScheduleWithoutVelocity }
-            // The lineage total of a trainer-state file IS its trainer clock;
-            // two values that could disagree would not be one source.
+            // The lineage total of a trainer-state file IS its trainer clock,
+            // and so is its `training_step` (format v11); values that could
+            // disagree would not be one source.
             guard lineage.steps.cumTrainerStep == schedule.completedTrainSteps else {
                 throw IOError.lineageStepDisagreesWithTrainerClock(
                     lineageStep: lineage.steps.cumTrainerStep, trainerClock: schedule.completedTrainSteps)
+            }
+            guard metadata.trainingStep == schedule.completedTrainSteps else {
+                throw IOError.trainingStepDisagreesWithTrainerClock(
+                    trainingStep: metadata.trainingStep, trainerClock: schedule.completedTrainSteps)
             }
             for (key, value) in try schedule.metadataEntries() { md[key] = value }
         }
@@ -349,6 +369,21 @@ enum SafetensorsModelIO {
             trainerSchedule: trainerSchedule,
             trainerPolicyTailPrecision: trainerPolicyTailPrecision
         )
+        // What `training_step` means in this file (format v11 or its
+        // writer's meaning before), checked against the trainer clock from
+        // v11. A file before v11 that states a step is flagged through the
+        // same legacy log as its architecture resolutions, so its loader
+        // writes one `[ARCH]` line for both.
+        let stepReading = try ModelFileStepReading.reading(
+            formatVersion: architectureFormat.formatVersion,
+            creator: metadata.creator,
+            statedTrainingStep: metadata.trainingStep,
+            trainerCompletedSteps: trainerSchedule?.completedTrainSteps,
+            recordSteps: { fileLineage.record?.steps },
+            source: source)
+        if let legacy = stepReading.legacyResolution {
+            architectureFormat.legacyLog.record(legacy)
+        }
         let file = ModelCheckpointFile(
             modelID: try requiredModelID(fromMetadata: md, source: source),
             createdAtUnix: md[Key.createdAt].flatMap { Int64($0) } ?? 0,
@@ -357,7 +392,8 @@ enum SafetensorsModelIO {
             architecture: architecture,
             valueHeadCentering: valueHeadCentering,
             architectureFormat: architectureFormat,
-            safetensorsProvenance: provenance
+            safetensorsProvenance: provenance,
+            trainingStepReading: stepReading
         )
         return Decoded(file: file, architecture: architecture, hasVelocity: hasVelocity,
                        architectureFormat: architectureFormat)
@@ -384,8 +420,10 @@ enum SafetensorsModelIO {
     }
 
     /// Header-only read of a safetensors model file's identity and lineage:
-    /// model ID, content hash, trainer clock (`trainer_completed_steps`, or
-    /// the plain file's `training_step`) and lineage, with no tensor decode.
+    /// model ID, content hash, the step it records as a parent (its step
+    /// reading's `trainerStepOrStatedStep`: the trainer step where the file
+    /// records one, else the step it states) and lineage, with no tensor
+    /// decode.
     static func readParentFile(at url: URL) throws -> LineageTracker.ParentFile {
         try readParentFile(fromMetadata: try ModelFileCatalog.headerMetadata(at: url), source: url.lastPathComponent)
     }
@@ -401,31 +439,10 @@ enum SafetensorsModelIO {
         return LineageTracker.ParentFile(
             modelID: modelID,
             contentSHA256: md[SafetensorsFile.contentHashKey],
-            trainerCompletedSteps: try trainerClock(fromMetadata: md, source: source),
+            trainerCompletedSteps: try trainingStepReading(fromMetadata: md, source: source).trainerStepOrStatedStep,
             lineage: fileLineage,
             derivationHistory: try LineageTracker.ParentFile.derivationHistory(lineage: fileLineage, metadata: md)
         )
-    }
-
-    /// A file's trainer clock: `trainer_completed_steps` on a trainer-state
-    /// file, otherwise the `training_step` its weights were taken at, nil
-    /// when it states neither. A value that is present but not an integer
-    /// is an error, never read as absent.
-    static func trainerClock(fromMetadata md: [String: String], source: String) throws -> Int? {
-        trainerClock(schedule: try TrainerScheduleState.decode(fromMetadata: md),
-                     trainingStep: try trainingStep(fromMetadata: md, source: source))
-    }
-
-    /// The one rule for a file's trainer clock, from its decoded schedule
-    /// and `training_step`: the schedule's completed steps on a
-    /// trainer-state file, else the step a plain file's weights were taken
-    /// at. Shared by the header read above and a decoded file's
-    /// `ModelCheckpointFile.lineageParent`.
-    static func trainerClock(schedule: TrainerScheduleState?, trainingStep: Int?) -> Int? {
-        if let schedule {
-            return schedule.completedTrainSteps
-        }
-        return trainingStep
     }
 
     /// A file's `training_step`, nil when it states none. A value that is

@@ -65,6 +65,16 @@
 //    (v9 included, whose writers still required it to equal the group's
 //    activation) states the group's activation there, never applied by any
 //    graph, and resolves it to `does_not_apply`.
+//  - v11: no new architecture field; a model file's `training_step` is the
+//    trainer step its weights were taken at (on a trainer-state file it must
+//    equal `trainer_completed_steps`), and the writing segment's own step is
+//    the lineage record's `segment_local_step`. Before v11 `training_step`
+//    meant what its writer wrote — the segment's step on corpus-replay and
+//    train-vs-UCI files, the cumulative trainer step on GUI saves — and is
+//    read by its writer and flagged on load; see
+//    `SafetensorsModelIO.trainingStepReading`. Presets and `architecture.json`
+//    are stamped v11 with nothing new in them (as at v7), so a build before
+//    v11 refuses every file written from v11 on instead of misreading it.
 //
 
 import Foundation
@@ -74,7 +84,7 @@ enum ArchitectureFormat {
     /// The version every writer stamps today. Safetensors write it as the
     /// string `dcm_format_version`; presets and `architecture.json` write it
     /// as the integer `format_version`.
-    static let currentVersion = 10
+    static let currentVersion = 11
 
     /// First version whose block groups must carry `se_beta_init`
     /// (`BlockGroup.seBetaInit`). Files older than this resolve a missing
@@ -136,6 +146,13 @@ enum ArchitectureFormat {
     /// applied; it resolves to `does_not_apply`. A value that differs from the
     /// group's activation was refused then and is refused now.
     static let seLessSEActivationDoesNotApplyFromVersion = 10
+
+    /// First version whose model files state the trainer step as
+    /// `training_step` (a trainer-state file's equals its
+    /// `trainer_completed_steps`). A file older than this states what its
+    /// writer wrote there, read by `SafetensorsModelIO.trainingStepReading`
+    /// from the file's `creator` and flagged on load.
+    static let trainingStepIsTrainerStepFromVersion = 11
 
     /// The version reported for a carrier that predates version markers
     /// entirely — a safetensors file with no `dcm_format_version`, or a
@@ -298,10 +315,8 @@ enum ArchitectureFormat {
         /// One `[ARCH]` line describing every legacy resolution made while
         /// decoding this file, or nil when there were none.
         var legacyLogLine: String? {
-            let resolutions = legacyLog.resolutions
-            guard !resolutions.isEmpty else { return nil }
-            return "[ARCH] legacy file (format v\(formatVersion)) \(source): "
-                + resolutions.joined(separator: "; ")
+            ArchitectureFormat.legacyLogLine(formatVersion: formatVersion, source: source,
+                                             resolutions: legacyLog.resolutions)
         }
 
         /// Write `legacyLogLine` to the session log, once. Loaders call this
@@ -310,6 +325,18 @@ enum ArchitectureFormat {
             guard let line = legacyLogLine else { return }
             SessionLogger.shared.log(line)
         }
+    }
+
+    /// The one `[ARCH] legacy file` line for `resolutions` made while
+    /// reading `source` at `formatVersion`, or nil when there were none.
+    /// Shared by `DecodeFormat.legacyLogLine` and the loaders of a legacy
+    /// `.dcmmodel`, which has no `DecodeFormat` (its architecture is a
+    /// compiled-in preset) but whose `training_step` reading is still
+    /// flagged.
+    static func legacyLogLine(formatVersion: Int, source: String, resolutions: [String]) -> String? {
+        guard !resolutions.isEmpty else { return nil }
+        return "[ARCH] legacy file (format v\(formatVersion)) \(source): "
+            + resolutions.joined(separator: "; ")
     }
 
     /// A `JSONDecoder` that decodes architecture JSON under `format`.

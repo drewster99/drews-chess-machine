@@ -1007,7 +1007,7 @@ public enum ArenaSPRTMaxGames: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Batch Stats Interval",
-    description: "Compute and emit [BATCH-STATS] every N training batches. 0 disables. Cost is ~1ms per evaluated batch; default 10 keeps log volume manageable.",
+    description: "Compute the per-batch statistics and the graph diagnostics (policy entropy, value W/D/L, played-move probability) every N training steps, and on every fixed step-line step (every 50 through trainer step 1000, then every 1000). 0: no batch statistics; the diagnostics then run every 10 steps. The [BATCH-STATS] line is written with the step lines ([STATS] / [REPLAY] / [VS-UCI]), not on every statistics step. Cost is ~1ms per evaluated batch.",
     default: 10,
     range: 0...10000,
     category: "Observability",
@@ -1015,6 +1015,17 @@ public enum ArenaSPRTMaxGames: TrainingParameterKey {}
     absentValue: .currentSetting
 )
 public enum BatchStatsInterval: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Step Line Interval (sec)",
+    description: "The step lines ([STATS] in the app, [REPLAY] for corpus replay, [VS-UCI] for train-vs-UCI) are written at a segment's first step, every 50 trainer steps through trainer step 1000, at every trainer step that is a multiple of 1000, and on the first diagnostics step at least this many seconds after the previous line (any line restarts the interval). The [BATCH-STATS] line and the live [LAYER-HEALTH] readout ride the step line. Logging only: it changes no training math. Read live by the app; the command-line paths read it once at start.",
+    default: 180.0,
+    range: 10.0...86400.0,
+    category: "Observability",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum StepLineIntervalSec: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "KL Probe Interval",
@@ -1480,6 +1491,7 @@ public extension TrainingParametersSnapshot {
     var arenaSPRTMaxGames: Int { value(for: ArenaSPRTMaxGames.self) }
     var batchStatsInterval: Int { value(for: BatchStatsInterval.self) }
     var klProbeInterval: Int { value(for: KLProbeInterval.self) }
+    var stepLineIntervalSec: Double { value(for: StepLineIntervalSec.self) }
     var lrCycleEnabled: Bool { value(for: LRCycleEnabled.self) }
     var lrCyclePeriodSteps: Int { value(for: LRCyclePeriodSteps.self) }
     var lrCycleCount: Int { value(for: LRCycleCount.self) }
@@ -1624,6 +1636,7 @@ public final class TrainingParameters {
     public var arenaSPRTMaxGames: Int { didSet { if !Self.commitAssignment(ArenaSPRTMaxGames.self, value: arenaSPRTMaxGames) { arenaSPRTMaxGames = oldValue } } }
     public var batchStatsInterval: Int { didSet { if !Self.commitAssignment(BatchStatsInterval.self, value: batchStatsInterval) { batchStatsInterval = oldValue } } }
     public var klProbeInterval: Int { didSet { if !Self.commitAssignment(KLProbeInterval.self, value: klProbeInterval) { klProbeInterval = oldValue } } }
+    public var stepLineIntervalSec: Double { didSet { if !Self.commitAssignment(StepLineIntervalSec.self, value: stepLineIntervalSec) { stepLineIntervalSec = oldValue } } }
     public var lrCycleEnabled: Bool { didSet { if !Self.commitAssignment(LRCycleEnabled.self, value: lrCycleEnabled) { lrCycleEnabled = oldValue } } }
     public var lrCyclePeriodSteps: Int { didSet { if !Self.commitAssignment(LRCyclePeriodSteps.self, value: lrCyclePeriodSteps) { lrCyclePeriodSteps = oldValue } } }
     public var lrCycleCount: Int { didSet { if !Self.commitAssignment(LRCycleCount.self, value: lrCycleCount) { lrCycleCount = oldValue } } }
@@ -1733,6 +1746,7 @@ public final class TrainingParameters {
         self.arenaSPRTMaxGames = Self.read(ArenaSPRTMaxGames.self)
         self.batchStatsInterval = Self.read(BatchStatsInterval.self)
         self.klProbeInterval = Self.read(KLProbeInterval.self)
+        self.stepLineIntervalSec = Self.read(StepLineIntervalSec.self)
         self.lrCycleEnabled = Self.read(LRCycleEnabled.self)
         self.lrCyclePeriodSteps = Self.read(LRCyclePeriodSteps.self)
         self.lrCycleCount = Self.read(LRCycleCount.self)
@@ -1829,6 +1843,7 @@ public final class TrainingParameters {
         v[ArenaSPRTMaxGames.id] = ArenaSPRTMaxGames.encode(arenaSPRTMaxGames)
         v[BatchStatsInterval.id] = BatchStatsInterval.encode(batchStatsInterval)
         v[KLProbeInterval.id] = KLProbeInterval.encode(klProbeInterval)
+        v[StepLineIntervalSec.id] = StepLineIntervalSec.encode(stepLineIntervalSec)
         v[LRCycleEnabled.id] = LRCycleEnabled.encode(lrCycleEnabled)
         v[LRCyclePeriodSteps.id] = LRCyclePeriodSteps.encode(lrCyclePeriodSteps)
         v[LRCycleCount.id] = LRCycleCount.encode(lrCycleCount)
@@ -2011,6 +2026,8 @@ public final class TrainingParameters {
             try ArenaSPRTMaxGames.definition.validate(raw); arenaSPRTMaxGames = try ArenaSPRTMaxGames.decode(raw)
         case BatchStatsInterval.id:
             try BatchStatsInterval.definition.validate(raw); batchStatsInterval = try BatchStatsInterval.decode(raw)
+        case StepLineIntervalSec.id:
+            try StepLineIntervalSec.definition.validate(raw); stepLineIntervalSec = try StepLineIntervalSec.decode(raw)
         case KLProbeInterval.id:
             try KLProbeInterval.definition.validate(raw); klProbeInterval = try KLProbeInterval.decode(raw)
         case LRCycleEnabled.id:
@@ -2550,6 +2567,7 @@ public final class TrainingParameters {
         ArenaSPRTMinGames.self,
         ArenaSPRTMaxGames.self,
         BatchStatsInterval.self,
+        StepLineIntervalSec.self,
         KLProbeInterval.self,
         LRCycleEnabled.self,
         LRCyclePeriodSteps.self,

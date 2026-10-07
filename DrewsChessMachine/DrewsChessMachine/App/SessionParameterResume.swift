@@ -143,6 +143,7 @@ extension SessionParameterResume {
         restore(ValueLabelSmoothingEpsilon.self, savedFloat: rs.valueLabelSmoothingEpsilon, into: \.valueLabelSmoothingEpsilon)
         restore(BatchStatsInterval.self, saved: rs.batchStatsInterval, into: \.batchStatsInterval)
         restore(KLProbeInterval.self, saved: rs.klProbeInterval, into: \.klProbeInterval)
+        restore(StepLineIntervalSec.self, saved: rs.stepLineIntervalSec, into: \.stepLineIntervalSec)
         restoreArenaPromotionCriterion(from: rs, acceptedReplacements: acceptedReplacements)
         // The session's own interval is restored even when it lies
         // outside today's declared range (`restoreFromSession` warns).
