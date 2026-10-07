@@ -45,6 +45,11 @@ struct LichessBotControllerServices: Sendable {
     /// Reads model files for the bot's generations. The app reads the file
     /// itself; a test counts or scripts the reads.
     var modelFileLoader: LichessBotModelFileLoader = .live
+    /// Lists the models folder for the follow-lineage source. The app scans
+    /// `Models/`; a test scans a folder of its own, never the real one.
+    var makeModelFolderScanner: @Sendable () -> any LichessBotModelFolderScanning = {
+        LichessBotModelsFolderScanner(directory: CheckpointPaths.modelsDir)
+    }
     /// Awaited as going online begins each step. The app does nothing here;
     /// a test holds a step to press Go Offline, apply settings or quit
     /// inside it. Every step is followed by a stop check, so whatever
@@ -185,6 +190,9 @@ final class LichessBotController {
     /// The last model refresh or source switch that failed while online;
     /// nil once one succeeds.
     private(set) var modelRefreshFailure: LichessBotModelRefreshFailure?
+    /// What the follow-lineage source found at its last check, while
+    /// online; nil until a lineage was checked.
+    private(set) var lineageFollowStatus: LichessBotLineageFollowStatus?
     /// Games in progress plus finished games kept for a while, oldest first.
     private(set) var games: [LichessBotLiveGame] = []
     private(set) var activeGameIDs: Set<String> = []
@@ -2701,6 +2709,7 @@ final class LichessBotController {
             for: settingsAtStart.model,
             provider: modelProvider,
             time: time,
+            folderScanner: services.makeModelFolderScanner(),
             loader: services.modelFileLoader,
             log: { line in SessionLogger.shared.log(line) },
             progress: { [weak self] detail in
@@ -2973,9 +2982,45 @@ final class LichessBotController {
         gateSnapshot = nil
         generation = nil
         modelRefreshFailure = nil
+        lineageFollowStatus = nil
+    }
+
+    /// The Overview's "Check Now" for the follow-lineage source (plan
+    /// OD-12): check the followed lineage at once, under every rule the
+    /// poll's checks follow, and build a newer file if there is one. A
+    /// failure raises an alarm; the poll loop's own backoff is untouched.
+    func checkFollowedLineageNow() async {
+        guard let runtime else { return }
+        let generationAtStart = runtimeGeneration
+        let slots = runtime.slots
+        let model = settings.model
+        do {
+            try await slots.checkLineageNow(for: model)
+        } catch {
+            guard runtimeGeneration == generationAtStart else { return }
+            raiseAlarm("Lineage check failed: \(Self.safeDescription(error))")
+        }
+        guard runtimeGeneration == generationAtStart else { return }
+        let info = await slots.current.info
+        let followStatus = await slots.lineageFollowStatus
+        guard runtimeGeneration == generationAtStart else { return }
+        generation = info
+        lineageFollowStatus = followStatus
+    }
+
+    /// "<source> <model_id>", plus the file's step and its run's cumulative
+    /// step for a generation whose file records its lineage: how the session
+    /// log names the model a game starts with.
+    static func describeModel(_ generation: LichessBotGenerationInfo) -> String {
+        var text = "\(generation.sourceKind.rawValue) \(generation.modelID)"
+        if let lineage = generation.lineage {
+            text += " step=\(generation.trainingStep.map(String.init) ?? "-") cum=\(lineage.cumTrainerStep.map(String.init) ?? "null")"
+        }
+        return text
     }
 
     private func pollLoop(slots: LichessBotModelSlots, manager: LichessBotSessionManager, generation runtimeGenerationAtStart: Int) async {
+
         var nextModelRefreshAt = Date.distantPast
         var consecutiveModelRefreshFailures = 0
         // The model settings this loop last saw. Any change is acted on at
@@ -2992,6 +3037,11 @@ final class LichessBotController {
             let info = await slots.current.info
             guard current() else { return }
             generation = info
+            let followStatus = await slots.lineageFollowStatus
+            guard current() else { return }
+            if followStatus != lineageFollowStatus {
+                lineageFollowStatus = followStatus
+            }
             let accepted = await manager.acceptedAwaitingStartIDs()
             guard current() else { return }
             if accepted != acceptedAwaitingStartIDs {
@@ -3232,7 +3282,7 @@ final class LichessBotController {
             updateAutoFollow()
             self.generation = generation
             let modelFields = ["model": generation.modelID, "generation": "\(generation.generationID)"]
-            let model = "\(generation.sourceKind.rawValue) \(generation.modelID)"
+            let model = Self.describeModel(generation)
             switch origin {
             case .new:
                 protocolLog.record(.game, "game started", gameID: gameID, fields: modelFields)

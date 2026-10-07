@@ -155,7 +155,7 @@ final class LichessBotPhase5CoreTests: XCTestCase {
             accountAPI: account,
             gameAPI: server,
             gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
-            slots: try await LichessBotModelSlots.prepare(for: frozen.model, provider: provider, time: time, log: { _ in }),
+            slots: try await LichessBotModelSlots.prepare(for: frozen.model, provider: provider, time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in }),
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,
             settingsProvider: { frozen },

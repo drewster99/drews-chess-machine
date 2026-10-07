@@ -51,6 +51,19 @@ final class LichessBotFollowLineageSettingsTests: XCTestCase {
         XCTAssertEqual(draft.validationProblems(), [])
     }
 
+    func testFollowLineageWithoutALineageIsInvalid() {
+        let baseline = LichessBotSettings.testBaseline()
+        var draft = baseline
+        draft.model.source = .followLineage
+        draft.model.followedLineage = nil
+        XCTAssertTrue(draft.validationProblems().contains("Choose a lineage to follow"), "\(draft.validationProblems())")
+        XCTAssertEqual(LichessBotSettingsTab.tabsWithProblems(in: draft, comparedWith: baseline), [.play])
+        draft.model.followedLineage = LichessBotFollowedLineage(lineageRunID: "", anchorSegmentID: lineage.anchorSegmentID)
+        XCTAssertFalse(draft.validationProblems().isEmpty, "a lineage with no run ID is no lineage")
+        draft.model.followedLineage = lineage
+        XCTAssertEqual(draft.validationProblems(), [])
+    }
+
     func testMinimumCheckIntervalIsThePollInterval() {
         XCTAssertEqual(LichessBotLimits.minimumLineageCheckSeconds, LichessBotLimits.modelRefreshPollSeconds)
     }

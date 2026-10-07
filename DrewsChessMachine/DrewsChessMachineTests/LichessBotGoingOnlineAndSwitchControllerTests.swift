@@ -51,15 +51,24 @@ final class LichessBotGoingOnlineAndSwitchControllerTests: XCTestCase {
     private func makeController(
         _ installation: Installation,
         modelProvider: any LichessBotModelProvider,
+        modelsFolder: URL? = nil,
+        snapshotCount: @escaping @Sendable () -> Int = { 0 },
         goingOnlineStepBegan: @escaping @MainActor @Sendable (LichessBotGoingOnlineStep) async -> Void = { _ in }
     ) -> (LichessBotController, LichessBotModelFirstFakeLichess) {
-        let lichess = LichessBotModelFirstFakeLichess(snapshotCount: { 0 })
+        let lichess = LichessBotModelFirstFakeLichess(snapshotCount: snapshotCount)
         let token = LichessBotResumeFakeLichess.token
         var services = LichessBotControllerServices(
             makeTransport: { lichess },
             readToken: { _ in token }
         )
         services.goingOnlineStepBegan = goingOnlineStepBegan
+        // Never the real Models/: a test that follows a lineage names its
+        // own folder, and any other test lists none.
+        if let modelsFolder {
+            services.makeModelFolderScanner = { LichessBotModelsFolderScanner(directory: modelsFolder) }
+        } else {
+            services.makeModelFolderScanner = { LichessBotNoModelsFolderScanner() }
+        }
         let controller = LichessBotController(
             modelProvider: modelProvider,
             defaults: installation.defaults,
@@ -107,6 +116,52 @@ final class LichessBotGoingOnlineAndSwitchControllerTests: XCTestCase {
         XCTAssertFalse(controller.isRunning)
         XCTAssertEqual(lichess.eventStreamRequestCount, 0)
         XCTAssertEqual(controller.leftoverGamesFromLastRun, ["cbob"], "a cancelled start resumed nothing, so the report stands")
+    }
+
+    // MARK: - Follow lineage
+
+    func testFollowLineageIsBuiltBeforeGoingOnline() async throws {
+        let models = try await LichessBotLineageModelFolder.make(for: self)
+        let run = try LineageTestRuns.fresh(modelID: "20261006-1-RUNA", startedUnix: 1_000)
+        let newest = try models.write(run, localStep: 2000, at: 3_000, name: "run-replay-step2000.safetensors")
+        let followed = LichessBotFollowedLineage(lineageRunID: newest.record.run.lineageRunID, anchorSegmentID: newest.record.run.segmentID)
+        let installation = try makeInstallation { settings in
+            settings.model.source = .followLineage
+            settings.model.followedLineage = followed
+        }
+        let provider = try await LichessBotHoldableModelProvider.make()
+        let scans = SyncBox(0)
+        let (controller, lichess) = makeController(installation, modelProvider: provider, modelsFolder: models.folder, snapshotCount: { scans.value }, goingOnlineStepBegan: { step in
+            if case .preparingModel(.followLineage, _) = step {
+                scans.modify { $0 += 1 }
+            }
+        })
+        await controller.goOnline()
+        XCTAssertEqual(controller.connection, .online)
+        try await waitUntil("the event stream is requested") { lichess.eventStreamRequestCount > 0 }
+        XCTAssertEqual(lichess.snapshotCountsAtEventStreamRequests.value.first, 1, "the lineage was prepared before the event stream")
+        try await waitUntil("the poll publishes the generation") { controller.generation != nil }
+        XCTAssertEqual(controller.generation?.sourceKind, .followLineage)
+        XCTAssertEqual(controller.generation?.lineage?.contentSHA256, newest.contentSHA256)
+        try await waitUntil("the poll publishes the follow status") { controller.lineageFollowStatus != nil }
+        XCTAssertEqual(controller.lineageFollowStatus?.followed, followed)
+    }
+
+    func testFollowLineageWithNoFileStaysOfflineWithTheError() async throws {
+        let models = try await LichessBotLineageModelFolder.make(for: self)
+        let followed = LichessBotFollowedLineage(lineageRunID: "NO-SUCH-RUN", anchorSegmentID: "NO-SUCH-SEGMENT")
+        let installation = try makeInstallation { settings in
+            settings.model.source = .followLineage
+            settings.model.followedLineage = followed
+        }
+        let provider = try await LichessBotHoldableModelProvider.make()
+        let (controller, lichess) = makeController(installation, modelProvider: provider, modelsFolder: models.folder)
+        await controller.goOnline()
+        guard case .error(let text) = controller.connection else {
+            return XCTFail("expected Error, got \(controller.connection)")
+        }
+        XCTAssertTrue(text.contains("no file of the followed lineage"), text)
+        XCTAssertEqual(lichess.eventStreamRequestCount, 0)
     }
 
     // MARK: - Source switches in the poll loop
@@ -194,7 +249,7 @@ final class LichessBotModelSlotsInFlightRefreshTests: XCTestCase {
 
     func testRefreshDuringABuildJoinsItsSuccess() async throws {
         let provider = try await LichessBotHoldableModelProvider.make()
-        let slots = try await LichessBotModelSlots.prepare(for: .testBaseline(), provider: provider, time: LichessBotManualTime(), log: { _ in })
+        let slots = try await LichessBotModelSlots.prepare(for: .testBaseline(), provider: provider, time: LichessBotManualTime(), folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in })
         provider.holdSnapshots()
         let target = liveTrainer()
         let first = Task { try await slots.refreshIfDue(for: target) }
@@ -216,7 +271,7 @@ final class LichessBotModelSlotsInFlightRefreshTests: XCTestCase {
 
     func testRefreshDuringABuildJoinsItsFailure() async throws {
         let provider = try await LichessBotHoldableModelProvider.make()
-        let slots = try await LichessBotModelSlots.prepare(for: .testBaseline(), provider: provider, time: LichessBotManualTime(), log: { _ in })
+        let slots = try await LichessBotModelSlots.prepare(for: .testBaseline(), provider: provider, time: LichessBotManualTime(), folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in })
         provider.trainerExists.value = false
         provider.holdSnapshots()
         let target = liveTrainer()

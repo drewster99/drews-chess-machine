@@ -156,7 +156,7 @@ final class LichessBotSessionManagerTests: XCTestCase {
         let time = LichessBotManualTime()
         let account = LichessBotFakeAccountAPI(script: script)
         let gate = LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in }
-        let slots = try await LichessBotModelSlots.prepare(for: settings.model, provider: provider, time: time, log: { _ in })
+        let slots = try await LichessBotModelSlots.prepare(for: settings.model, provider: provider, time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in })
         let events = SyncBox<[LichessBotManagerEvent]>([])
         let observer = LichessBotRecordingGameObserver()
         let manager = LichessBotSessionManager(
