@@ -51,8 +51,11 @@ import dcm_lineage  # noqa: E402
 MODELS = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")
 SAFETENSORS = ".safetensors"
 
-# Run label -> the name prefixes of its enumerated checkpoints, one per segment
-# (`<stem>-replay-step<N>`, a resumed segment k `<stem>-replay-seg<k>-step<N>`).
+# Run label -> the name prefixes of its enumerated checkpoints, one per segment. A run's
+# first segment writes `<stem>-replay-step<N>`. A resumed segment written before
+# architecture format v11 wrote `<stem>-replay-seg<k>-step<N>` (N its own step); one
+# resumed on a build from v11 on continues `<stem>-replay-step<trainer step>` under its
+# stem, so the run's first prefix covers it.
 RUNS = {
     "A (ReLU, const 0.01)": ("20261005-lrA-const01-replay-step", "20261005-lrA-const01-r1-replay-seg1-step"),
     "B (ReLU)": ("20261005-lrB-cyc1-replay-step", "20261005-lrB-cyc1-r1-replay-seg1-step"),
@@ -249,18 +252,27 @@ def read_bn_parameters(path, header, data_start, sites):
 
 def index_checkpoints(run, entries):
     """Trainer step -> path for one run, from (file name, path, filename step, metadata, lineage
-    record) entries. The step is the record's `cum_trainer_step`; the record's
-    `segment_local_step` must equal the file's `training_step` and its filename step, and two
-    files on one trainer step are refused. That the files are one lineage run whose segments
-    agree (one `model_id` per segment among them) is `checkpoints`' check, through
+    record) entries. The step is the record's `cum_trainer_step`. The file's `training_step` must
+    equal its filename step and agree with the record under the file's step basis
+    (`dcm_lineage.step_reading`): from format v11 it is the trainer step and must equal
+    `cum_trainer_step`; before v11 it is the segment's step and must equal `segment_local_step`.
+    Two files on one trainer step are refused. That the files are one lineage run whose
+    segments agree (one `model_id` per segment among them) is `checkpoints`' check, through
     `dcm_lineage.derive_runs`."""
     found = {}
     for name, path, filename_step, metadata, record in entries:
-        local = record["steps"]["segment_local_step"]
-        if int(metadata["training_step"]) != local or filename_step != local:
-            raise ValueError(f"{name}: filename step {filename_step}, training_step {metadata['training_step']}, "
-                             f"lineage segment_local_step {local} disagree")
+        reading = dcm_lineage.step_reading(metadata, name)
+        stated = reading.stated_training_step
         cum = record["steps"]["cum_trainer_step"]
+        if reading.basis == dcm_lineage.BASIS_TRAINER_STEP:
+            if stated != cum or filename_step != stated:
+                raise ValueError(f"{name}: filename step {filename_step}, training_step {stated}, lineage "
+                                 f"cum_trainer_step {cum} disagree (from format v11 all three are the trainer step)")
+        else:
+            local = record["steps"]["segment_local_step"]
+            if stated != local or filename_step != local:
+                raise ValueError(f"{name}: filename step {filename_step}, training_step {stated}, "
+                                 f"lineage segment_local_step {local} disagree")
         if cum is None:
             raise ValueError(f"{name}: its lineage record holds cum_trainer_step as null (unrecorded history)")
         if cum in found:
@@ -403,7 +415,7 @@ def selftest():
     post = copy.deepcopy(legacy)
     post["block_groups"][0]["activation_style"] = "post"
     refused.append(dict(architecture=json.dumps(post), dcm_format_version="8"))
-    refused.append(dict(architecture=json.dumps(legacy), dcm_format_version="11"))
+    refused.append(dict(architecture=json.dumps(legacy), dcm_format_version="12"))
     for case in refused:
         try:
             bn_site_activations(case, "refused")
@@ -415,12 +427,35 @@ def selftest():
     def entry(name, filename_step, local, cum):
         return (name, name, filename_step, dict(training_step=str(local)),
                 dict(steps=dict(segment_local_step=local, cum_trainer_step=cum)))
+
+    def v11_entry(name, filename_step, stated, local, cum):
+        # A format v11 header: `training_step` is the trainer step, and the segment step is
+        # the record's (which the reading takes from the header's own dcm_lineage).
+        record = dict(schema=dcm_lineage.SUPPORTED_SCHEMA,
+                      run=dict(lineage_run_id="r", segment_index=1, segment_id="s", segment_started_unix=0,
+                               start="resume", exact_resume=True, not_exact_items=[],
+                               continues_unrecorded_history=False, recorded_unix=0),
+                      parent=None, steps=dict(cum_trainer_step=cum, segment_start_trainer_step=None,
+                                              segment_local_step=local),
+                      fed=dict(cum_games=None, cum_positions=None, segment_games=0, segment_positions=0, corpus=None),
+                      time=dict(cum_train_step_sec=None, cum_wall_sec=None, segment_train_step_sec=0.0,
+                                segment_wall_sec=0.0),
+                      device=dict(hw_model="m", chip="c", is_vm=False, os_version="v", gpu_name="g"),
+                      invocation=dict(argv=[], path_kind="replay"), segments=[])
+        metadata = dict(training_step=str(stated), dcm_format_version="11", creator="replay",
+                        dcm_lineage=json.dumps(record))
+        return (name, name, filename_step, metadata, record)
     assert index_checkpoints("t", [entry("a", 1000, 1000, 1000), entry("b", 1000, 1000, 37000)]) == \
+        {1000: "a", 37000: "b"}
+    # A resumed segment on a v11 build: name step = training_step = cum_trainer_step.
+    assert index_checkpoints("t", [entry("a", 1000, 1000, 1000), v11_entry("b", 37000, 37000, 1000, 37000)]) == \
         {1000: "a", 37000: "b"}
     for bad in ([entry("a", 1000, 1000, 1000), entry("b", 2000, 2000, 1000)],
                 [entry("a", 1000, 999, 1000)],
                 [entry("a", 999, 1000, 1000)],
-                [entry("a", 1000, 1000, None)]):
+                [entry("a", 1000, 1000, None)],
+                [v11_entry("a", 1000, 1000, 1000, 37000)],
+                [v11_entry("a", 1000, 37000, 1000, 37000)]):
         try:
             index_checkpoints("t", bad)
         except ValueError:

@@ -25,6 +25,11 @@ The rules mirror the app and CLAUDE.md "Run tracking: three axes":
   filled from anywhere else.
 - The flat mirror keys (`lineage_run_id`, `cum_trainer_step`, ...) are never
   read; the JSON value is the only source.
+- What a header's `training_step` means is read by `step_reading` only: from
+  format v11 the trainer step (the segment step is the record's
+  `segment_local_step`); before v11 what the file's writer (`creator`) wrote —
+  the segment's step for corpus replay and train-vs-UCI, the cumulative trainer
+  step for the GUI. Every in-repo tool that reads a step goes through it.
 
 Import from anywhere in the repository with
 
@@ -480,13 +485,15 @@ def derive_runs(recorded):
 
 def checkpoint_facts(path):
     """The per-row facts a tracker takes from one checkpoint's record: the
-    measured cumulative games fed and trainer-step seconds, and the record's
-    own step clock. Returns None for a file without a record. Values the record
-    holds as null are returned as None, never filled."""
+    measured cumulative games fed and trainer-step seconds, the record's own
+    step clock, and the file's step reading (`step_reading`: `trainer_step`,
+    `segment_step`, `step_basis`). Returns None for a file without a record.
+    Values the record holds as null are returned as None, never filled."""
     metadata = read_metadata(path)
     lineage = lineage_of(metadata, display_name(path))
     if isinstance(lineage, Unrecorded):
         return None
+    reading = step_reading(metadata, display_name(path))
     return dict(lineage_run_id=lineage["run"]["lineage_run_id"],
                 segment_id=lineage["run"]["segment_id"],
                 segment_index=lineage["run"]["segment_index"],
@@ -496,7 +503,143 @@ def checkpoint_facts(path):
                 cum_games=lineage["fed"]["cum_games"],
                 segment_games=lineage["fed"]["segment_games"],
                 cum_train_step_sec=lineage["time"]["cum_train_step_sec"],
-                cum_wall_sec=lineage["time"]["cum_wall_sec"])
+                cum_wall_sec=lineage["time"]["cum_wall_sec"],
+                trainer_step=reading.trainer_step,
+                segment_step=reading.segment_step,
+                step_basis=reading.basis)
+
+
+# ---------- what a header's training_step means ----------
+#
+# Mirror of `SafetensorsModelIO.trainingStepReading` (Persistence/
+# ModelFileStepReading.swift): the same table, the same constants, the writer
+# taken from the file's `creator` only. From format v11 every writer states the
+# trainer step there (on a trainer-state file it equals trainer_completed_steps,
+# and a file where it does not is refused) and the segment step is the lineage
+# record's segment_local_step. Before v11 the value is what its writer wrote:
+# corpus replay and train-vs-UCI wrote the segment's own step, the GUI its
+# cumulative trainer step; any other writer keeps the reading every tool used
+# before v11 and is flagged.
+
+# ArchitectureFormat.trainingStepIsTrainerStepFromVersion.
+TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION = 11
+# ModelCheckpointMetadata.segmentStepCreators: the writers whose pre-v11
+# training_step is the writing segment's step.
+SEGMENT_STEP_CREATORS = frozenset({"replay", "train-vs-uci"})
+# ModelCheckpointMetadata.guiCreators: the GUI save tags, whose pre-v11
+# training_step is the GUI's cumulative trainer step.
+GUI_CREATORS = frozenset({"manual", "periodic", "promote", "sigusr2"})
+# The header keys the reading takes.
+CREATOR_KEY = "creator"
+TRAINING_STEP_KEY = "training_step"
+TRAINER_COMPLETED_STEPS_KEY = "trainer_completed_steps"
+
+# TrainingStepBasis raw values.
+BASIS_TRAINER_STEP = "trainer_step"
+BASIS_LEGACY_SEGMENT_STEP = "legacy_segment_step"
+BASIS_LEGACY_GUI_TRAINER_STEP = "legacy_gui_trainer_step"
+BASIS_LEGACY_UNKNOWN_WRITER = "legacy_unknown_writer"
+
+
+class StepReading:
+    """What one header says about its step. `stated_training_step` is the
+    header value as written (None when it states none), `trainer_step` the
+    trainer step its weights were taken at (None when never recorded — never
+    reconstructed), `segment_step` the steps its writing segment had trained
+    (None when unknown), `basis` one of the BASIS_* values, and `legacy_note`
+    the one-line flag for a pre-v11 file that states a step (None otherwise)."""
+
+    def __init__(self, basis, stated_training_step, trainer_step, segment_step, legacy_note):
+        self.basis = basis
+        self.stated_training_step = stated_training_step
+        self.trainer_step = trainer_step
+        self.segment_step = segment_step
+        self.legacy_note = legacy_note
+
+    @property
+    def trainer_step_or_stated_step(self):
+        """The trainer step where one is known, else the stated step: what
+        catalogs order and display by."""
+        return self.trainer_step if self.trainer_step is not None else self.stated_training_step
+
+    def __repr__(self):
+        return (f"StepReading({self.basis}, stated={self.stated_training_step}, "
+                f"trainer={self.trainer_step}, segment={self.segment_step})")
+
+
+def _header_int(metadata, key, source):
+    """An integer header value parsed as Swift's `Int(String)` parses it, None
+    when absent; anything else is refused."""
+    value = metadata.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not dcm_arch.SWIFT_INT_TEXT.fullmatch(value):
+        raise LineageError(f"{source}: {key} {value!r} is not an integer")
+    return int(value)
+
+
+def step_reading(metadata, source):
+    """The `StepReading` of one header (see the table above). Reads the format
+    version through `dcm_arch.checked_format_version`, so a file newer than
+    these tools is refused rather than read under the v11 rules; refuses a v11
+    trainer-state header whose training_step is not its trainer_completed_steps,
+    as the app's decode does. The lineage record is read only when the reading
+    needs it."""
+    try:
+        checked = dcm_arch.checked_format_version(metadata.get(FORMAT_VERSION_KEY))
+    except dcm_arch.ArchitectureError as error:
+        raise LineageError(f"{source}: {error}") from None
+    version = UNVERSIONED_LEGACY_VERSION if checked is None else checked
+    stated = _header_int(metadata, TRAINING_STEP_KEY, source)
+    clock = _header_int(metadata, TRAINER_COMPLETED_STEPS_KEY, source)
+    creator = metadata.get(CREATOR_KEY, "")
+
+    def record_steps():
+        lineage = lineage_of(metadata, source)
+        return None if isinstance(lineage, Unrecorded) else lineage["steps"]
+
+    if version >= TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION:
+        if clock is not None and stated != clock:
+            raise LineageError(f"{source}: format v{version} trainer-state file states training_step "
+                               f"{stated} but trainer_completed_steps {clock}; from format "
+                               f"v{TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION} the two are one value")
+        if stated is None:
+            return StepReading(BASIS_TRAINER_STEP, None, clock, None, None)
+        steps = record_steps()
+        return StepReading(BASIS_TRAINER_STEP, stated, stated,
+                           None if steps is None else steps["segment_local_step"], None)
+    if creator in SEGMENT_STEP_CREATORS:
+        basis = BASIS_LEGACY_SEGMENT_STEP
+    elif creator in GUI_CREATORS:
+        basis = BASIS_LEGACY_GUI_TRAINER_STEP
+    else:
+        basis = BASIS_LEGACY_UNKNOWN_WRITER
+    if stated is None:
+        return StepReading(basis, None, clock, None, None)
+    if basis == BASIS_LEGACY_SEGMENT_STEP:
+        steps = None if clock is not None else record_steps()
+        if clock is not None:
+            trainer, origin = clock, "trainer_completed_steps"
+        elif steps is not None and steps["cum_trainer_step"] is not None:
+            trainer, origin = steps["cum_trainer_step"], "lineage cum_trainer_step"
+        else:
+            trainer, origin = None, None
+        writer = "corpus replay" if creator == "replay" else "train-vs-UCI"
+        note = (f"training_step {stated} is the writing segment's step ({writer} before format "
+                f"v{TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION}); "
+                + (f"trainer step {trainer} ({origin})" if trainer is not None else "trainer step not recorded"))
+        return StepReading(basis, stated, trainer, stated, note)
+    steps = record_steps()
+    trainer = clock if clock is not None else stated
+    if basis == BASIS_LEGACY_GUI_TRAINER_STEP:
+        segment = None if steps is None else steps["segment_local_step"]
+        note = (f"training_step {stated} is the GUI's trainer step (written by '{creator}' before format "
+                f"v{TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION})")
+    else:
+        segment = stated if steps is None else steps["segment_local_step"]
+        note = (f"training_step {stated} was stated by writer '{creator}', read as the trainer step as "
+                f"before format v{TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION}")
+    return StepReading(basis, stated, trainer, segment, note)
 
 
 def segment_table(derived):

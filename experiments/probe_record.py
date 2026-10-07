@@ -14,6 +14,14 @@ needs its own file). On success it prints one JSON line, `"step"` first, for the
 caller to append, carrying `probe_build` (scripts/dcm_probe_build.py) so measurements
 from different builds are never mistaken for comparable ones. Nothing is written here.
 
+What the step means depends on the file's format (`dcm_lineage.step_reading`): from
+format v11 the name's step and `training_step` are both the trainer step; before v11
+a corpus-replay or train-vs-UCI file's are both the writing segment's own step. The
+identity rule is the same in both eras. Each record also carries `trainer_step`,
+`segment_step` and `step_basis` from that reading, after the four leading keys, so a
+record says which of the two its `step` is. A probes file holds one `model_id`, which
+one process of one build wrote, so its records share one basis.
+
 Exit status (the constants below; probe_loop.sh relies on them):
   success            record printed
   usage error        wrong arguments
@@ -33,6 +41,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 import dcm_arch  # noqa: E402
+import dcm_lineage  # noqa: E402
 from dcm_probe_build import UNRECORDED  # noqa: E402
 
 EXIT_PROBE_FAILED = 3
@@ -84,7 +93,11 @@ def build_record(checkpoint_path, expected_step, probe_stdout, probes_path, prob
         if key not in metadata:
             return EXIT_IDENTITY, f"{checkpoint_path}: header has no {key}"
     model_id = metadata["model_id"]
-    training_step = int(metadata["training_step"])
+    try:
+        reading = dcm_lineage.step_reading(metadata, os.path.basename(checkpoint_path))
+    except dcm_lineage.LineageError as error:
+        return EXIT_IDENTITY, f"{checkpoint_path}: {error}"
+    training_step = reading.stated_training_step
     if training_step != expected_step:
         return EXIT_IDENTITY, (f"{checkpoint_path}: file name says step {expected_step}, "
                                f"header training_step is {training_step}")
@@ -99,6 +112,9 @@ def build_record(checkpoint_path, expected_step, probe_stdout, probes_path, prob
     record = {"step": expected_step, "training_step": training_step, "model_id": model_id}
     if "parent_model_id" in metadata:
         record["parent_model_id"] = metadata["parent_model_id"]
+    record["trainer_step"] = reading.trainer_step
+    record["segment_step"] = reading.segment_step
+    record["step_basis"] = reading.basis
     record["probe_build"] = probe_build
     record.update(summary)
     if "pElo" not in summary:

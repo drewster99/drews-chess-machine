@@ -663,3 +663,11 @@ After the change both pass unmodified (5.9 s and 38.2 s). The 990-step test is a
 - **`table_common.buffer_plies_per_game_by_trainer_step`** reads one log, like `buffer_plies_per_game`; its test uses a resumed segment's log (lines at segment step + 513). A two-segment comparison is two calls.
 - **`vsuci.py`**: a segment's label goes on its first mark (meta 1000 for logs without `trainerStep=`, as before).
 - **GUI `cfgStr`** (`stepLineSec=`, D7 step 6) is done with P3, which rewrites the same ticker.
+
+### Validation done on the branch (read-only)
+
+- **V-7 survey** (`dcm_lineage.step_reading` over 4,537 headers in `Models/` and `Sessions/*/`, 2026-10-06): `legacy_segment_step` 4,436 `replay` + 31 `train-vs-uci`; `legacy_gui_trainer_step` 33 stating a step (`manual` 13, `promote` 10, `sigusr2` 8, `periodic` 2) + 8 `manual` stating none; `legacy_unknown_writer` only for files stating no step (`new-model` 22, `derive-model` 5, `handcraft` 2). No file stating a step reads as an unknown writer; every file with a schedule and a record has `trainer_completed_steps` = `cum_trainer_step`; no header errors.
+- **V-5 `bn_liveness.py`**: the new script and the one on `main` give byte-identical output over every arm at trainer steps 1000, 6000, 18000 and 20000.
+- **V-5 `vsuci.py`**: a dry rebuild (nothing written) of the registered run gives the committed CSV's 1,536 rows; the one differing cell (a segment label in `note`) differs identically with the `main` script — the registry's label was edited after the CSV was written.
+- `--show-default-parameters` lists `step_line_interval_sec: 180`; `--create-parameters-file` writes it into `parameters.json` and `parameters.md`.
+- Not run: V-2 / V-3 (live CLI runs; the two runner tests cover V-2's checks in-process), V-4 against real v11 files (the Python tests cover it on synthetic headers), V-6 (the GUI; launching it would offer the auto-resume of the last session), and the live LR probe loops' next checkpoint after the merge.
