@@ -1,6 +1,6 @@
 # Relative gradient-norm cap plan: clip each step at min(hard max, max(floor, k × recent median))
 
-Status (2026-10-07): **approved by the owner** ("ok approved keep it going", 2026-10-07 ~03:55). Every owner decision below is recorded as decided as recommended. Not implemented. Phases P1–P4 are implementation; P5 (flip the default mode to `clip`) waits on validation V-1 and V-3.
+Status (2026-10-07): **approved by the owner** ("ok approved keep it going", 2026-10-07 ~03:55). Every owner decision below is recorded as decided as recommended. **P1–P4 implemented** (CHANGELOG 2026-10-07 "Relative gradient-norm cap"); the arena capture and rewind of the history (T12) landed in P1 so no intermediate commit breaks a GUI promotion. P5 (flip the default mode to `clip`) waits on validation V-1 and V-3.
 - Every `file:line` was checked against `main` at `9e344de2`.
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachine/` (project folder), `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`), `documentation/` or `experiments/`.
 - Session logs are under `~/Library/Logs/DrewsChessMachine/`. Every number quoted from a log was re-measured for this plan from the log itself (script: Part E, "Reproduce").

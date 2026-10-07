@@ -9,6 +9,17 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 — Relative gradient-norm cap (P1–P4; default `log_only`)
+
+Plan: `documentation/plans-active/RELATIVE_GRADIENT_CAP_PLAN.md` (P5, the flip to `clip`, waits on validation runs V-1 and V-3).
+
+- Each real-data SGD step can be clipped at `min(grad_clip_max_norm, max(floor, k × median of the last N pre-clip norms))` once the window holds W entries (`GradientCapPolicy`, `Training/RelativeGradientCap.swift`). The cap is fed through the existing `gradClipMaxNorm` placeholder; the graph is unchanged, and a step at or below the fed cap is bit-identical whatever cap was fed (`GradientCapGraphTests`).
+- Five parameters (Optimizer category, live-tunable): `relative_grad_clip_mode` (0 off, 1 log only — the default — 2 clip; absent from a checkpoint → off), `relative_grad_clip_multiple` (k, 3), `relative_grad_clip_window_steps` (N, 1,000), `relative_grad_clip_min_history_steps` (W, 100), `relative_grad_clip_floor` (0.5). W > N is refused at CLI start (exit 2), at GUI trainer setup and in the settings popover.
+- `ChessTrainer` keeps every real-data step's pre-clip norm and fed cap (`GradientNormHistory`), decided, fed, recorded and clock-incremented in one block on its queue. A clock moved without the history stops the next step before it trains. The history is saved in every trainer-state file (`trainer_grad_norm_history`), restored by every exact resume, and rewound with the clock by a GUI promotion. A trainer file without it reads as before; resuming one in mode `clip` is the new `grad_norm_history` resume gap (`--accept-inexact grad_norm_history`).
+- The cap's median and the `gradient_spike` rule's reference are one function (`TrainingHealthReference.make(_:windowStart:policy:)`, `TrailingReferencePolicy`).
+- Logs: one `[GRAD-CLIP]` line per clipped step (and per would-be clip in log-only mode), `[GRAD-CLIP] config …` at each run start, `relClip=` on `[REPLAY-HPARAMS]` / `[VS-UCI-HPARAMS]`, and `gNormMax=` / `clips=` / `gCap=` on `[REPLAY]`, `[VS-UCI]` and `[STATS]`. `results.json` rows carry `grad_norm_max`, `grad_clip_events`, `grad_clip_cap` and the five settings.
+- Test edits: `TrainingHealthTestSupport` and `TrainingLiveStatsGatingTests` pass the new `TrainStepTiming.gradientCap` (OD-10); `TrainingParametersTests.test_registry_size` counts 107 parameters.
+
 ## 2026-10-07 — Integration: step-line cadence (format v11), hyperparameter recording P4–P6 (lineage schema 3), training-health alarms P2–P5, Lichess record statistics, follow-lineage and challenge log on main
 
 - Merged in order: main (follow-lineage P0–P6, challenge log P1–P7 and the decline-key fix), hyperparameter recording P4–P6, training-health alarms P2–P5, Lichess record statistics P1–P8 + D1. Format v11 (`training_step` = trainer step) and lineage schema 3 are independent fields; both Swift and the Python mirrors (`scripts/dcm_arch.py` v11, `scripts/dcm_lineage.py` schema 2…3 with `step_reading`) read both.
