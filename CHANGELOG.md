@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Lichess bot challenge log P6: the outcome log is a fold of the challenge log
+
+- `LichessBotChallengeOutcomeLog.fold`: the Overview's credit and outcome counts come from the challenge log's last day (plus rows rebuilt from the protocol log for the time before the live log began), refolded on every change. `challenge-outcomes.json` is no longer read or written; an existing file stays on disk as it was, and `LichessBotChallengeOutcomeLog.load` still reads it.
+- The protocol log keeps its "challenge outcome: …" lines with the rolling credit counts.
+- New tests: `LichessBotChallengeOutcomeFoldTests`, `LichessBotOutcomeLogFromChallengeLogTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §16.
+
 ## 2026-10-06 — Lichess bot challenge log P4: back-fill from the protocol log
 
 - Algorithm v1 rebuilds past challenges from `Protocol/events-*.jsonl` into `Challenges/reconstructed-from-protocol.json` (derived, regenerable, written only when its bytes change). On this Mac it reproduces the plan's numbers exactly: 206 games = incoming 12, matchmaking 132, operator (inferred) 62, unknown 0; today's files give 222 = 12 / 148 / 62 / 0.

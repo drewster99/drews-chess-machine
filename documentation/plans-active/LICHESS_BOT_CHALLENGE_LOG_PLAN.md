@@ -1044,6 +1044,34 @@ Tests (new files; no existing test changed):
 - `LichessBotGameOriginDisplayTests` (8): each step of the order; step 5's split, including no live log; every category from an origin; the cutoff from the oldest day file, and from an older left-out file's day start.
 - `LichessBotChallengeHistoryControllerTests` (1): loading the challenge log rebuilds the history into the temporary data folder, and a rerun writes nothing (the modification time is unchanged).
 
+## 16. Implementation notes: P6 outcome log from the challenge log (2026-10-06)
+
+OD-2 was decided, so P6 is in.
+
+Implemented:
+- **`Stats/LichessBotChallengeOutcomeFold.swift`** (new): `LichessBotChallengeOutcomeLog.fold(ledger:history:liveLogFirstEntryAt:now:)`. It takes the challenge log's rows, plus the rebuilt rows from before the live log's first entry (live rows win on an id), pruned to the rolling day.
+- `LichessBotChallengeOutcomeLog` gains `init()` and `init(records:)`. Its type, `load(from:)`, `save(to:)`, `summary` and `prune` are unchanged, and `LichessBotChallengeOutcomeTests` passes unchanged.
+- **Controller:**
+  - `challengeOutcomeLog` is refolded whenever a challenge fact is recorded, the ledger loads, or the history is rebuilt, and is assigned only on a change.
+  - `loadChallengeOutcomes()` now loads the challenge log and folds it, so the bot window and going online are unchanged.
+  - `updateChallengeOutcomeLog` (and its save of `challenge-outcomes.json`) is gone. Its protocol lines stay: `logChallengeOutcome` writes "challenge outcome: …" with the rolling credit counts, after the fact it describes is recorded.
+  - The old file is never read or written again, and stays on disk as it was.
+  - The quit check also counts a loaded challenge log as "used the bot".
+
+Mapping (the old log's meaning kept):
+- A created challenge is pending until accepted (its game started), declined, or withdrawn or canceled (both `.canceled`). A started game outranks a withdrawal, as `resolve` let an acceptance replace an inferred cancel.
+- Offline → `.offline`, costing nothing. A refused POST → `.refused`, with the recorded charge.
+- **Not folded, as before:** sends with no answer (the old log left them out; whether a challenge exists is unknown), echo-only rows and incoming challenges.
+- **Rebuilt rows carry no cost or kind.** A challenge to a `BOT` is a bot's cost, and anything else the worst case (a human's). A bot-vs-bot limit refusal is a bot's. A pre-outcome-line bot-limit line maps to a `botDailyGameLimit` refusal: it was logged only from a 400 refusal. Its answer time stands in as its first evidence.
+- **Record ids:** the attempt id for a not-created send. Otherwise a SHA-256-derived UUID of the challenge id or the protocol line, so a refold keeps ids stable for the Overview's lists.
+
+Decision:
+- **Resolution lines are written on every answer**, not only when the old log's `canResolve` would have changed a record. The fold already holds the fact by then, so that check no longer means anything. A challenge canceled and then accepted gets both lines, as its facts say.
+
+Tests (new files; no existing test changed):
+- `LichessBotChallengeOutcomeFoldTests` (5): each state mapped; not-created attempts and what stays out; the rolling day; stable ids across refolds; rebuilt rows only before the live log, with live rows winning on a shared id.
+- `LichessBotOutcomeLogFromChallengeLogTests` (1, fake Lichess): the outcome log follows a send and a lowercased-key decline (`nobot` → `.known(.noBot)`), and an old `challenge-outcomes.json` is left byte for byte.
+
 ## Appendix A. Measured data (2026-10-06, read-only)
 
 - Protocol files:

@@ -264,9 +264,11 @@ final class LichessBotController {
     /// Favorites and bot limit times (plan §7.2); nil until loaded.
     private(set) var playerNotes: LichessBotPlayerNotes?
     /// Every outgoing challenge attempt of the rolling day and how it
-    /// ended: the single source of the challenge-credit and outcome counts
-    /// on the Overview. Nil until loaded; persisted to
-    /// `challenge-outcomes.json`.
+    /// ended: the challenge-credit and outcome counts on the Overview. A
+    /// fold of the challenge log (`LichessBotChallengeOutcomeLog.fold`,
+    /// challenge-log plan P6), refolded whenever the challenge log or the
+    /// rebuilt history changes; nil until the challenge log loads.
+    /// `challenge-outcomes.json` is no longer read or written.
     private(set) var challengeOutcomeLog: LichessBotChallengeOutcomeLog?
     /// Online and playing flags by lowercased user id, from
     /// `/api/users/status`: the single store every Challenge-sheet tab reads.
@@ -521,10 +523,12 @@ final class LichessBotController {
         challengeLogRecorder.onRecorded = { [weak self] event in
             self?.challengeFactRecorded(event)
             self?.refreshGameOrigins()
+            self?.refreshChallengeOutcomeLog()
         }
         challengeLogRecorder.onLoaded = { [weak self] in
             self?.decideWaitingGameOrigins()
             self?.refreshGameOrigins()
+            self?.refreshChallengeOutcomeLog()
         }
         challengeLogRecorder.alarmSink = { [weak self] text in
             if let self {
@@ -1234,7 +1238,7 @@ final class LichessBotController {
             // loaded the bot's notes has none of that, and quits at once
             // rather than have the shutdown's own protocol-log line create
             // the data folder of someone who never used the bot.
-            guard runtimeGeneration > 0 || playerNotes != nil || challengeOutcomeLog != nil else {
+            guard runtimeGeneration > 0 || playerNotes != nil || challengeOutcomeLog != nil || challengeLedger != nil else {
                 return .terminateNow
             }
             quitReplyPending = true
@@ -1529,6 +1533,7 @@ final class LichessBotController {
             challengeHistoryLookup = lookup
             challengeHistory = result.reconstruction
             challengeHistoryStatus = .ready(result.outcome, at: Date())
+            refreshChallengeOutcomeLog()
             if let rows = index?.rows {
                 SessionLogger.shared.log(LichessBotChallengeReconstructionStore.summaryLine(result, games: lookup.gameCounts(gameIDs: rows.map(\.gameID))))
             } else {
@@ -1620,64 +1625,42 @@ final class LichessBotController {
 
     // MARK: - Challenge outcomes
 
-    /// Load the outgoing-challenge outcome log. A missing file is an empty
-    /// log; an unreadable one raises an alarm and leaves the log unloaded,
-    /// so nothing overwrites the file. Loaded once, like the player notes
-    /// (`loadPlayerNotes`): the log in memory is the truth from then on.
+    /// Load the outcome log: since P6 a fold of the challenge log, so this
+    /// loads the challenge log (once) and folds it. The old
+    /// `challenge-outcomes.json` stays on disk as it was.
     func loadChallengeOutcomes() async {
-        guard challengeOutcomeLog == nil else { return }
-        let url = dataDirectory.challengeOutcomesURL
-        do {
-            var log = try await fileQueue.run {
-                try LichessBotChallengeOutcomeLog.load(from: url)
-            }
-            // Another load finished first; its log may have changed since.
-            guard challengeOutcomeLog == nil else { return }
-            log.prune(now: Date())
-            challengeOutcomeLog = log
-        } catch {
-            raiseAlarm("Loading challenge outcomes failed (\(url.lastPathComponent)): \(error.localizedDescription)")
+        await loadChallengeLog()
+        refreshChallengeOutcomeLog()
+    }
+
+    /// Refold the outcome log from the challenge log and the rebuilt
+    /// history. Assigned only on a change: every assignment redraws the
+    /// Overview.
+    private func refreshChallengeOutcomeLog() {
+        guard let ledger = challengeLedger else { return }
+        let folded = LichessBotChallengeOutcomeLog.fold(
+            ledger: ledger, history: challengeHistory,
+            liveLogFirstEntryAt: challengeLogRecorder.liveLogFirstEntryAt, now: Date())
+        if folded != challengeOutcomeLog {
+            challengeOutcomeLog = folded
         }
     }
 
-    /// Apply `change` to the outcome log, prune it, and save it. Saves are
-    /// enqueued on the serial file queue from the main actor, so they land
-    /// in the order the changes were made.
-    private func updateChallengeOutcomeLog(_ what: String, _ change: (inout LichessBotChallengeOutcomeLog) -> Void) {
-        guard var log = challengeOutcomeLog else {
-            protocolLog.record(.anomaly, "challenge outcome log isn't loaded; not recorded: \(what)")
-            return
-        }
-        let now = Date()
-        change(&log)
-        log.prune(now: now)
-        challengeOutcomeLog = log
-        let summary = log.summary(now: now)
+    /// Write an outcome to the protocol log with the rolling credit counts,
+    /// after the fact it describes is in the challenge log.
+    private func logChallengeOutcome(_ what: String) {
+        refreshChallengeOutcomeLog()
+        let summary = challengeOutcomeLog?.summary(now: Date())
         protocolLog.record(.challenge, "challenge outcome: \(what)", fields: [
-            "credits_day": "\(summary.creditsLastDay)/\(LichessBotChallengeCredits.perDay)",
-            "credits_minute": "\(summary.creditsLastMinute)/\(LichessBotChallengeCredits.perMinute)",
+            "credits_day": summary.map { "\($0.creditsLastDay)/\(LichessBotChallengeCredits.perDay)" } ?? "not loaded",
+            "credits_minute": summary.map { "\($0.creditsLastMinute)/\(LichessBotChallengeCredits.perMinute)" } ?? "not loaded",
         ])
-        let url = dataDirectory.challengeOutcomesURL
-        let snapshot = log
-        fileQueue.enqueue("save \(url.lastPathComponent) after: \(what)") {
-            do {
-                try snapshot.save(to: url)
-            } catch {
-                let text = "Saving challenge outcomes failed (\(url.lastPathComponent)): \(error.localizedDescription)"
-                Task { @MainActor [weak self] in
-                    self?.raiseAlarm(text)
-                }
-            }
-        }
     }
 
-    /// Resolve a created challenge's record, if `resolve` would change it.
+    /// Log a created challenge's answer (the challenge log already holds
+    /// the fact; the outcome log is its fold).
     private func resolveChallengeOutcome(challengeID: String, _ outcome: LichessBotChallengeOutcome) {
-        guard let log = challengeOutcomeLog,
-              log.canResolve(challengeID: challengeID, outcome: outcome) else { return }
-        updateChallengeOutcomeLog("\(challengeID) \(Self.describe(outcome))") { log in
-            log.resolve(challengeID: challengeID, outcome: outcome, at: Date())
-        }
+        logChallengeOutcome("\(challengeID) \(Self.describe(outcome))")
     }
 
     nonisolated static func describe(_ outcome: LichessBotChallengeOutcome) -> String {
@@ -1971,12 +1954,10 @@ final class LichessBotController {
             }
             guard status.online == true else {
                 let offlineKind = Self.challengeOpponentKind(title: status.title)
-                updateChallengeOutcomeLog("\(opponentID) offline") { log in
-                    log.recordNotCreated(opponentID: opponentID, kind: offlineKind, outcome: .offline, at: Date())
-                }
                 recordChallengeEvent(.outgoingNotCreated(
                     attemptID: UUID(), opponentID: opponentID, sender: origin.sender, request: request,
                     opponentKind: offlineKind, reason: .opponentOffline, creditCost: 0))
+                logChallengeOutcome("\(opponentID) offline")
                 throw LichessBotControllerError.opponentOffline(status.name)
             }
             // The status check was awaited, so the bot may have gone
@@ -1996,12 +1977,10 @@ final class LichessBotController {
                 if let refusal = LichessBotChallengeRefusal.classify(postError: error) {
                     let outcome = LichessBotChallengeOutcome.refused(refusal)
                     let charged = LichessBotChallengeOutcomeLog.creditCost(notCreated: outcome, kind: opponentKind)
-                    updateChallengeOutcomeLog("\(opponentID) \(Self.describe(outcome)); counted \(charged) credits (worst case)") { log in
-                        log.recordNotCreated(opponentID: opponentID, kind: opponentKind, outcome: outcome, at: Date())
-                    }
                     recordChallengeEvent(.outgoingNotCreated(
                         attemptID: UUID(), opponentID: opponentID, sender: origin.sender, request: request,
                         opponentKind: opponentKind, reason: .refused(refusal), creditCost: charged))
+                    logChallengeOutcome("\(opponentID) \(Self.describe(outcome)); counted \(charged) credits (worst case)")
                 } else if Self.challengePostMayHaveReachedLichess(error) {
                     protocolLog.record(.anomaly, "challenge to \(opponentID) failed without an answer from Lichess; outcome not recorded: \(Self.safeDescription(error))")
                     // A challenge may exist after all; its echo, if one comes,
@@ -2016,12 +1995,10 @@ final class LichessBotController {
                 }
                 throw error
             }
-            updateChallengeOutcomeLog("\(opponentID) challenge \(created.id) created; counted \(LichessBotChallengeCredits.cost(for: opponentKind)) credits (worst case: Lichess charges nothing if they follow DCM)") { log in
-                log.recordCreated(challengeID: created.id, opponentID: opponentID, kind: opponentKind, at: Date())
-            }
             recordChallengeEvent(.outgoingCreated(
                 challenge: LichessBotChallengeSnapshot(created), sender: origin.sender, request: request,
                 opponentKind: opponentKind, creditCost: LichessBotChallengeCredits.cost(for: opponentKind)))
+            logChallengeOutcome("\(opponentID) challenge \(created.id) created; counted \(LichessBotChallengeCredits.cost(for: opponentKind)) credits (worst case: Lichess charges nothing if they follow DCM)")
             guard self.runtime?.manager === manager, connection == .online else {
                 // The bot went offline, or began going offline, while the
                 // challenge was being sent: withdraw it, or an acceptance

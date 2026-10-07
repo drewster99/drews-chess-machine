@@ -250,6 +250,14 @@ struct LichessBotChallengeOutcomeLog: Sendable, Codable, Equatable {
     /// Oldest first.
     private(set) var records: [LichessBotChallengeOutcomeRecord] = []
 
+    init() {}
+
+    /// A log holding `records`, oldest first (the challenge-log fold,
+    /// `fold(ledger:history:liveLogFirstEntryAt:now:)`).
+    init(records: [LichessBotChallengeOutcomeRecord]) {
+        self.records = records
+    }
+
     /// Rolling counts over the last day (the credits also over the last
     /// minute), for the Overview.
     struct Summary: Sendable, Equatable {
