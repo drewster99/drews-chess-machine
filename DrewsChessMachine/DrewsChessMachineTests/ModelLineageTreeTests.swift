@@ -65,6 +65,28 @@ final class ModelLineageTreeTests: XCTestCase {
         XCTAssertTrue(bTip)
     }
 
+    /// A seed's own file is untrained, so its row counts what was trained
+    /// below it: every trained segment at any depth and every session
+    /// champion, but not an untrained child segment.
+    func testTrainedBelowCountsTrainedSegmentsAndChampionsAtAnyDepth() throws {
+        let lines = [
+            line("20260901-1-SEED", [entry("20260901-1-SEED", step: nil, parent: nil, modified: 1)]),
+            line("S-a", [entry("S-a", step: 100, parent: "20260901-1-SEED", modified: 2), entry("S-a", step: 50, parent: "20260901-1-SEED", modified: 1.5)]),
+            line("S-b", [entry("S-b", step: 10, parent: "S-a", modified: 3)]),
+            line("S-copy", [entry("S-copy", step: nil, parent: "20260901-1-SEED", modified: 4)]),
+            line("L-lone", [entry("L-lone", step: nil, parent: nil, modified: 5)]),
+        ]
+        let champion = SessionChampion(sessionName: "sess", entry: entry("20260901-1-SEED-3", step: 900, parent: nil, modified: 6))
+        let tree = ModelLineageTree.build(lines: lines, champions: [champion])
+
+        let seed = try XCTUnwrap(node("20260901-1-SEED", in: tree))
+        XCTAssertEqual(seed.trainedBelow, ModelLineageNode.TrainedBelow(trainedSegments: 2, sessionChampions: 1))
+        XCTAssertEqual(try XCTUnwrap(node("S-a", in: tree)).trainedBelow, ModelLineageNode.TrainedBelow(trainedSegments: 1, sessionChampions: 0))
+        XCTAssertTrue(try XCTUnwrap(node("S-b", in: tree)).trainedBelow.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(node("S-copy", in: tree)).trainedBelow.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(node("L-lone", in: tree)).trainedBelow.isEmpty)
+    }
+
     func testMissingParentMakesARootAndUntrainedSeedsSortLast() {
         let lines = [
             line("X-lone-seed", [entry("X-lone-seed", step: nil, parent: nil, modified: 9)]),

@@ -138,7 +138,7 @@ struct LichessBotLineageNodeRow: View {
     var body: some View {
         switch node.kind {
         case .segment(let line, let path, let isUntrained, let isBranchTip):
-            LichessBotLineageSegmentRow(line: line, path: path, isUntrained: isUntrained, isBranchTip: isBranchTip)
+            LichessBotLineageSegmentRow(line: line, path: path, isUntrained: isUntrained, isBranchTip: isBranchTip, trainedBelow: node.trainedBelow)
         case .file(let entry):
             LichessBotModelFileRow(file: entry, showsModelID: false)
         case .sessionChampion(let champion):
@@ -164,6 +164,7 @@ struct LichessBotLineageSegmentRow: View {
     let path: [String]
     let isUntrained: Bool
     let isBranchTip: Bool
+    let trainedBelow: ModelLineageNode.TrainedBelow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -171,7 +172,7 @@ struct LichessBotLineageSegmentRow: View {
                 LichessBotModelFileRow(file: line.latest, showsModelID: true)
                 Text(tagText)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(isUntrained ? Color.orange : Color.green)
+                    .foregroundStyle(isUntrained && trainedBelow.isEmpty ? Color.orange : Color.green)
             }
             Text(chainText)
                 .font(.system(.caption, design: .monospaced))
@@ -183,7 +184,17 @@ struct LichessBotLineageSegmentRow: View {
 
     private var tagText: String {
         if isUntrained {
-            return "untrained (no training_step)"
+            guard !trainedBelow.isEmpty else {
+                return "untrained (no training_step)"
+            }
+            var below: [String] = []
+            if trainedBelow.trainedSegments > 0 {
+                below.append("\(trainedBelow.trainedSegments) trained segment\(trainedBelow.trainedSegments == 1 ? "" : "s")")
+            }
+            if trainedBelow.sessionChampions > 0 {
+                below.append("\(trainedBelow.sessionChampions) session champion\(trainedBelow.sessionChampions == 1 ? "" : "s")")
+            }
+            return "untrained seed · \(below.joined(separator: " · ")) below"
         }
         let steps = line.files.compactMap(\.trainingStep)
         var range = ""
@@ -221,9 +232,10 @@ struct LichessBotUnreadableModelFilesSection: View {
                     content: {
                         ForEach(files) { file in
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(file.url.lastPathComponent)
+                                Text(file.displayName)
                                     .font(.system(.callout, design: .monospaced))
                                     .textSelection(.enabled)
+                                    .help(file.url.path)
                                 Text(file.reason)
                                     .font(.callout)
                                     .foregroundStyle(.secondary)

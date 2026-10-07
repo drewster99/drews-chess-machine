@@ -143,16 +143,27 @@ struct SessionChampion: Sendable, Equatable {
     let entry: ModelFileEntry
 }
 
-/// A `.safetensors` file the catalog could not read, and why.
+/// A model file the catalog could not read, and why.
 struct UnreadableModelFile: Sendable, Identifiable, Equatable {
     var id: URL { url }
     let url: URL
     let reason: String
+
+    /// The file name, prefixed by its session folder when it is a session's
+    /// file: every session's champion has the same name, so the name alone
+    /// does not say which session failed.
+    var displayName: String {
+        let folder = url.deletingLastPathComponent()
+        guard folder.pathExtension == "dcmsession" else { return url.lastPathComponent }
+        return "\(folder.lastPathComponent)/\(url.lastPathComponent)"
+    }
 }
 
 enum ModelFileCatalogError: LocalizedError, Equatable {
     case notSafetensors(file: String, detail: String)
     case missingModelID(file: String)
+    case notLegacyModel(file: String, detail: String)
+    case noSessionChampion
 
     var errorDescription: String? {
         switch self {
@@ -160,6 +171,10 @@ enum ModelFileCatalogError: LocalizedError, Equatable {
             return "\(file) is not a readable safetensors model: \(detail)"
         case .missingModelID(let file):
             return "\(file) records no model_id"
+        case .notLegacyModel(let file, let detail):
+            return "\(file) is not a readable .dcmmodel model: \(detail)"
+        case .noSessionChampion:
+            return "The session holds neither \(SessionCheckpointLayout.championFilename) nor \(SessionCheckpointLayout.legacyChampionFilename)"
         }
     }
 }
@@ -294,6 +309,44 @@ enum ModelFileCatalog {
         )
     }
 
+    /// The entry for a legacy `.dcmmodel` file. The format has no separate
+    /// header — its identity sits in front of the weights and the trailing
+    /// SHA-256 covers the whole file — so the file is read and decoded in
+    /// full, through the one `.dcmmodel` decoder. Only session champions
+    /// saved before safetensors are read this way, a handful of files. The
+    /// value head is decoded as stored: nothing here plays the weights.
+    static func legacyEntry(for url: URL) throws -> ModelFileEntry {
+        let name = url.lastPathComponent
+        let file: ModelCheckpointFile
+        do {
+            file = try ModelCheckpointFile.decode(try CheckpointManager.readModelFileBytes(at: url), valueHead: .asStored)
+        } catch {
+            throw ModelFileCatalogError.notLegacyModel(file: name, detail: error.localizedDescription)
+        }
+        guard !file.modelID.isEmpty else {
+            throw ModelFileCatalogError.missingModelID(file: name)
+        }
+        let values = try url.resourceValues(forKeys: [.contentModificationDateKey])
+        guard let modified = values.contentModificationDate else {
+            throw ModelFileCatalogError.notLegacyModel(file: name, detail: "no modification date")
+        }
+        return ModelFileEntry(
+            url: url,
+            modelID: file.modelID,
+            trainingStep: file.trainingStepReading.trainerStepOrStatedStep,
+            createdAt: Date(timeIntervalSince1970: TimeInterval(file.createdAtUnix)),
+            architectureLabel: file.architecture.shortLabel,
+            fileModifiedAt: modified,
+            parentModelID: file.metadata.parentModelID.isEmpty ? nil : file.metadata.parentModelID,
+            creator: file.metadata.creator.isEmpty ? nil : file.metadata.creator,
+            // A `.dcmmodel` states no content hash and predates lineage
+            // records (`ModelCheckpointFile.lineageParent` reads it the same
+            // way).
+            contentSHA256: nil,
+            lineage: .unrecorded(formatVersion: ArchitectureFormat.unversionedLegacyVersion)
+        )
+    }
+
     /// The `__metadata__` map from a safetensors header, reading only the
     /// header.
     static func headerMetadata(at url: URL) throws -> [String: String] {
@@ -343,9 +396,11 @@ enum ModelFileCatalog {
         }
     }
 
-    /// Every session's champion (`<session>.dcmsession/champion.safetensors`),
-    /// newest session first. A session without a readable champion is
-    /// reported, not skipped.
+    /// Every session's champion, newest session first: its
+    /// `champion.safetensors`, or the legacy `champion.dcmmodel` of a session
+    /// saved before safetensors (the same resolution a session load uses,
+    /// `SessionCheckpointLayout.existingChampionURL`). A session without a
+    /// readable champion is reported, not skipped.
     static func scanSessionChampions(directory: URL) throws -> (champions: [SessionChampion], unreadable: [UnreadableModelFile]) {
         let sessions = try FileManager.default.contentsOfDirectory(
             at: directory,
@@ -355,9 +410,14 @@ enum ModelFileCatalog {
         var champions: [SessionChampion] = []
         var unreadable: [UnreadableModelFile] = []
         for session in sessions {
-            let champion = session.appendingPathComponent("champion.safetensors")
+            let champion = SessionCheckpointLayout.existingChampionURL(in: session)
             do {
-                champions.append(SessionChampion(sessionName: session.deletingPathExtension().lastPathComponent, entry: try entry(for: champion)))
+                guard FileManager.default.fileExists(atPath: champion.path) else {
+                    throw ModelFileCatalogError.noSessionChampion
+                }
+                let isLegacy = champion.lastPathComponent == SessionCheckpointLayout.legacyChampionFilename
+                let championEntry = isLegacy ? try legacyEntry(for: champion) : try entry(for: champion)
+                champions.append(SessionChampion(sessionName: session.deletingPathExtension().lastPathComponent, entry: championEntry))
             } catch {
                 unreadable.append(UnreadableModelFile(url: champion, reason: error.localizedDescription))
             }

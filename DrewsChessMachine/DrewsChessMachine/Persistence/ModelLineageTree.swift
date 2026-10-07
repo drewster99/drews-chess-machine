@@ -16,10 +16,46 @@ struct ModelLineageNode: Identifiable, Sendable, Equatable {
         case conflict(modelID: String, parents: [String])
     }
 
+    /// What was trained anywhere below a row. A seed's own file is untrained
+    /// (a fresh build records no step) while its trained segments sit
+    /// collapsed under it, so its row has to say what is under it or it
+    /// reads as if the whole lineage were untrained.
+    struct TrainedBelow: Sendable, Equatable {
+        /// Descendant segments with at least one file that records a step.
+        var trainedSegments = 0
+        /// Self-play session champions placed anywhere below.
+        var sessionChampions = 0
+
+        var isEmpty: Bool { trainedSegments == 0 && sessionChampions == 0 }
+    }
+
     let id: String
     let kind: Kind
     /// nil for a leaf, so `OutlineGroup` shows no disclosure arrow.
     let children: [ModelLineageNode]?
+    /// Counted once here from the children, which are built first, since
+    /// every row's label reads it.
+    let trainedBelow: TrainedBelow
+
+    init(id: String, kind: Kind, children: [ModelLineageNode]?) {
+        self.id = id
+        self.kind = kind
+        self.children = children
+        var below = TrainedBelow()
+        for child in children ?? [] {
+            below.trainedSegments += child.trainedBelow.trainedSegments
+            below.sessionChampions += child.trainedBelow.sessionChampions
+            switch child.kind {
+            case .segment(_, _, let isUntrained, _):
+                if !isUntrained { below.trainedSegments += 1 }
+            case .sessionChampion:
+                below.sessionChampions += 1
+            case .file, .conflict:
+                break
+            }
+        }
+        self.trainedBelow = below
+    }
 
     /// The file selecting this row chooses, if any.
     var selectableEntry: ModelFileEntry? {
