@@ -401,8 +401,9 @@ enum ArchitectureFormat {
     /// marked resolved; else `missingRequiredField`. A file allowed to
     /// resolve that has no `activation_function` either throws
     /// `legacyActivationFunctionMissing`, naming every site key it lacks
-    /// (`allSiteKeys` absent from the container), so the error lists all of
-    /// them however many there are and makes nothing up.
+    /// (each of `allSiteKeys` that is absent or stated as JSON `null`), so
+    /// the error lists all of them however many there are and makes nothing
+    /// up.
     /// In the uniform-tower form the caller has already required
     /// `activation_function` and always passes it, so
     /// `legacyActivationFunctionMissing` arises only for a block-groups file
@@ -427,8 +428,16 @@ enum ArchitectureFormat {
                 source: format.source)
         }
         guard let legacyTowerActivation else {
+            // Unresolved means "decodeIfPresent gives nil", the test that
+            // sent this key here, not "absent from the container":
+            // `contains` is true for a key stated as JSON `null`, which is
+            // just as unresolved and must be named too (as
+            // `dcm_arch.site_activations` names it).
+            let unresolvedSites = try allSiteKeys.filter { siteKey in
+                try container.decodeIfPresent(ActivationFunction.self, forKey: siteKey) == nil
+            }
             throw FormatError.legacyActivationFunctionMissing(
-                unresolvedSites: allSiteKeys.filter { !container.contains($0) }.map(\.stringValue),
+                unresolvedSites: unresolvedSites.map(\.stringValue),
                 location: location(of: decoder),
                 formatVersion: format.formatVersion,
                 source: format.source)
