@@ -13,7 +13,7 @@ struct LichessBotModelRecordRow: View {
             LichessBotModelRowLabel(row: row)
             Text("\(row.tally.scored)")
             LichessBotTallyText(tally: row.tally, countWidth: countWidth)
-            Text("\(LichessBotStatsFormat.percent(row.tally.score)) (\(LichessBotStatsFormat.interval(row.interval)))")
+            Text("\(LichessBotStatsFormat.score(row.tally.score)) (\(LichessBotStatsFormat.interval(row.interval)))")
                 .help("Score, with its 95% Wilson interval (draws count half)")
             Text(LichessBotStatsFormat.estimate(row.performance))
                 .help("Performance rating over \(row.ratedOpponentGames) game(s) with a rated opponent")

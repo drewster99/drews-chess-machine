@@ -15,7 +15,7 @@ struct LichessBotOriginRowView: View {
                 .help(LichessBotGameOriginStyle.longLabel(for: row.category))
             Text("\(row.tally.scored)")
             LichessBotTallyText(tally: row.tally, countWidth: countWidth)
-            Text(LichessBotStatsFormat.percent(row.tally.score))
+            Text(LichessBotStatsFormat.score(row.tally.score))
             Text(LichessBotStatsFormat.estimate(row.performance))
                 .help("Performance rating over \(row.ratedOpponentGames) game(s) with a rated opponent")
         }

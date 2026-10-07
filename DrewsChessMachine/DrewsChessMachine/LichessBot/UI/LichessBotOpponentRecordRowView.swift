@@ -13,7 +13,7 @@ struct LichessBotOpponentRecordRowView: View {
                 .foregroundStyle(LichessBotStatsStyle.neutral)
             Text("\(row.tally.games)")
             LichessBotTallyText(tally: row.tally, countWidth: countWidth)
-            Text(LichessBotStatsFormat.percent(row.tally.score))
+            Text(LichessBotStatsFormat.score(row.tally.score))
             Text(row.lastPlayedAt.formatted(date: .numeric, time: .omitted))
         }
         .font(LichessBotStatsStyle.numberFont)

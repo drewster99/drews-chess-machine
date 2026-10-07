@@ -23,7 +23,7 @@ struct LichessBotRecordPeriodColumnWidths: Sendable, Equatable {
             let record = row.record
             return [record.all, record.versusBots, record.versusHumans, record.asWhite, record.asBlack]
         })
-        score = widest { LichessBotStatsFormat.percent($0.record.all.score) }
+        score = widest { LichessBotStatsFormat.score($0.record.all.score) }
         performance = widest { LichessBotStatsFormat.estimate($0.performance) }
         opponentAverage = widest { LichessBotStatsFormat.average($0.opponentAverage) }
     }

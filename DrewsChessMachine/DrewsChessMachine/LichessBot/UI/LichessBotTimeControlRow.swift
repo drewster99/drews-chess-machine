@@ -25,7 +25,7 @@ struct LichessBotTimeControlRow: View {
                 .help(LichessBotStatsFormat.ratingChangeHelp(week?.ratingChange ?? LichessBotRatingChange()))
             Text("\(tally.scored)")
             LichessBotTallyText(tally: tally, countWidth: countWidth)
-            Text(LichessBotStatsFormat.percent(tally.score))
+            Text(LichessBotStatsFormat.score(tally.score))
             Text(LichessBotStatsFormat.estimate(selected?.performance ?? .none))
                 .help("Performance rating over \(selected?.ratedOpponentGames ?? 0) game(s) with a rated opponent, within this pool")
             Text(LichessBotStatsFormat.ratingChange(selected?.ratingChange ?? LichessBotRatingChange()))

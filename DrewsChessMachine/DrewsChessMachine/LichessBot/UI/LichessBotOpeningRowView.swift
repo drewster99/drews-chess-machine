@@ -10,9 +10,9 @@ struct LichessBotOpeningRowView: View {
             LichessBotRowLabel(text: row.family)
             Text(row.ecoRange)
             LichessBotTallyText(tally: row.asWhite, countWidth: countWidth)
-            Text(LichessBotStatsFormat.percent(row.asWhite.score))
+            Text(LichessBotStatsFormat.score(row.asWhite.score))
             LichessBotTallyText(tally: row.asBlack, countWidth: countWidth)
-            Text(LichessBotStatsFormat.percent(row.asBlack.score))
+            Text(LichessBotStatsFormat.score(row.asBlack.score))
         }
         .font(LichessBotStatsStyle.numberFont)
         .lineLimit(1)

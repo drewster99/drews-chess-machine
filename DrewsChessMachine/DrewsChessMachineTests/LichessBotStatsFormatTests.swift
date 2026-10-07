@@ -30,6 +30,17 @@ final class LichessBotStatsFormatTests: XCTestCase {
         XCTAssertEqual(LichessBotStatsFormat.ratingChange(LichessBotRatingChange(ratedGames: 3, gamesWithChange: 2, total: 15)), "+15*")
     }
 
+    func testScoreIsAWholePercentThatNeverRoundsToPerfectOrZero() {
+        XCTAssertEqual(LichessBotStatsFormat.score(nil), "–")
+        XCTAssertEqual(LichessBotStatsFormat.score(0), "0%")
+        XCTAssertEqual(LichessBotStatsFormat.score(1), "100%")
+        XCTAssertEqual(LichessBotStatsFormat.score(0.306), "31%")
+        XCTAssertEqual(LichessBotStatsFormat.score(0.302), "30%")
+        XCTAssertEqual(LichessBotStatsFormat.score(0.625), "63%")
+        XCTAssertEqual(LichessBotStatsFormat.score(0.004), "1%")
+        XCTAssertEqual(LichessBotStatsFormat.score(0.996), "99%")
+    }
+
     func testPercentagesIntervalsAndDecimals() {
         XCTAssertEqual(LichessBotStatsFormat.percent(nil), "–")
         XCTAssertEqual(LichessBotStatsFormat.percent(0.625), "62.5%")

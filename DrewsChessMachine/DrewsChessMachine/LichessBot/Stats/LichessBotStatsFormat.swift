@@ -71,6 +71,24 @@ enum LichessBotStatsFormat {
         return String(format: "%.1f%%", 100 * fraction)
     }
 
+    /// A game score (points over games, draws half) as a whole percentage:
+    /// "31%", or "–" for no games. A tenth of a percent is noise at the
+    /// game counts these tables hold. Only a perfect or a zero score reads
+    /// "100%" / "0%": a score short of either is held at "99%" / "1%", so
+    /// rounding never claims every game was won or lost (the distinction
+    /// the Perf column's ≥ / ≤ bounds rest on).
+    static func score(_ fraction: Double?) -> String {
+        guard let fraction else { return missing }
+        let rounded = Int((100 * fraction).rounded())
+        let whole: Int
+        if fraction > 0 && fraction < 1 {
+            whole = min(max(rounded, 1), 99)
+        } else {
+            whole = rounded
+        }
+        return "\(whole)%"
+    }
+
     /// A Wilson interval as whole percentages: "41–80%".
     static func interval(_ interval: LichessBotScoreInterval?) -> String {
         guard let interval else { return missing }

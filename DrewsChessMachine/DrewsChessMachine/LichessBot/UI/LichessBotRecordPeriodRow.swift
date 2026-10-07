@@ -14,7 +14,7 @@ struct LichessBotRecordPeriodRow: View {
                 .help(period.help)
             Text(LichessBotStatsFormat.padded(row.record.all.scored, width: widths.games))
             LichessBotTallyText(tally: row.record.all, countWidth: widths.count)
-            Text(LichessBotStatsFormat.padded(LichessBotStatsFormat.percent(row.record.all.score), width: widths.score))
+            Text(LichessBotStatsFormat.padded(LichessBotStatsFormat.score(row.record.all.score), width: widths.score))
             Text(LichessBotStatsFormat.padded(LichessBotStatsFormat.estimate(row.performance), width: widths.performance))
                 .help("Performance rating (Elo maximum likelihood) over \(row.ratedOpponentGames) game(s) with a rated opponent; ≥ / ≤ for a perfect / zero score. Mixes Lichess' per-speed rating pools; Time controls has each pool's own.")
             Text(LichessBotStatsFormat.padded(LichessBotStatsFormat.average(row.opponentAverage), width: widths.opponentAverage))
