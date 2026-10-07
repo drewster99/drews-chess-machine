@@ -42,6 +42,14 @@ struct LichessBotControllerServices: Sendable {
     var replyToTerminate: @MainActor @Sendable (_ shouldTerminate: Bool) -> Void = { shouldTerminate in
         NSApp.reply(toApplicationShouldTerminate: shouldTerminate)
     }
+    /// Reads model files for the bot's generations. The app reads the file
+    /// itself; a test counts or scripts the reads.
+    var modelFileLoader: LichessBotModelFileLoader = .live
+    /// Awaited as going online begins each step. The app does nothing here;
+    /// a test holds a step to press Go Offline, apply settings or quit
+    /// inside it. Every step is followed by a stop check, so whatever
+    /// happens while this waits is honoured before any stream opens.
+    var goingOnlineStepBegan: @MainActor @Sendable (_ step: LichessBotGoingOnlineStep) async -> Void = { _ in }
 
     static let live = LichessBotControllerServices(
         makeTransport: { LichessBotURLSessionTransport() },
@@ -379,8 +387,7 @@ final class LichessBotController {
     /// append, so this queue carries nothing else. One for the controller's
     /// whole life, shared by every runtime: a torn-down journal writer and a
     /// new one may both still be appending to the same live game's journal.
-    /// Not private: a test holds it to stop going online at a known step.
-    let journalQueue = LichessBotFileQueue(label: "drewschess.lichessbot.journals", qos: .userInitiated)
+    private let journalQueue = LichessBotFileQueue(label: "drewschess.lichessbot.journals", qos: .userInitiated)
     private let modelProvider: any LichessBotModelProvider
     private let services: LichessBotControllerServices
     let protocolLog: LichessBotProtocolLog
@@ -849,7 +856,7 @@ final class LichessBotController {
         connection = .connecting
         goingOnlineAttempt += 1
         goingOnlineCancelRequested = false
-        goingOnlineStep = .verifyingAccount
+        goingOnlineStep = .loadingPlayerNotes
         defer {
             goingOnlineStep = nil
             goingOnlineCancelRequested = false
@@ -892,8 +899,8 @@ final class LichessBotController {
             tearDownRuntime()
             oneGameRequested = false
             connection = .offline
-            protocolLog.record(.lifecycle, "going online cancelled by the operator (\(step))")
-            SessionLogger.shared.log("[LICHESS-BOT] going online cancelled by the operator (\(step))")
+            protocolLog.record(.lifecycle, "going online cancelled by the operator (\(step.logText))")
+            SessionLogger.shared.log("[LICHESS-BOT] going online cancelled by the operator (\(step.logText))")
         } catch LichessBotControllerError.shutDownWhileGoingOnline {
             tearDownRuntime(reason: "the bot shut down while going online")
             oneGameRequested = false
@@ -2712,7 +2719,7 @@ final class LichessBotController {
     /// point where the runtime's tasks start: from there to Online nothing
     /// suspends, so a cancel is honoured before any stream opens or arrives
     /// once the bot is online, where Go Offline works as usual.
-    private func throwIfGoingOnlineStopped(at step: String) throws {
+    private func throwIfGoingOnlineStopped(after step: LichessBotGoingOnlineStep) throws {
         if isShutDown {
             throw LichessBotControllerError.shutDownWhileGoingOnline
         }
@@ -2721,14 +2728,24 @@ final class LichessBotController {
         }
     }
 
+    /// Show `step` as what going online is doing, and let the services'
+    /// hook see it. A suspension point: the caller checks
+    /// `throwIfGoingOnlineStopped(after:)` once the step's work is done.
+    private func beginGoingOnlineStep(_ step: LichessBotGoingOnlineStep) async {
+        goingOnlineStep = step
+        await services.goingOnlineStepBegan(step)
+    }
+
     private func startRuntime(oneGame: Bool) async throws {
-        try throwIfGoingOnlineStopped(at: "loading player notes")
+        try throwIfGoingOnlineStopped(after: .loadingPlayerNotes)
         let settings = self.settings
         let accountID = self.accountID
+        await beginGoingOnlineStep(.readingToken)
         guard let token = try await readToken() else {
             throw LichessBotControllerError.noToken
         }
-        try throwIfGoingOnlineStopped(at: "reading the token")
+        try throwIfGoingOnlineStopped(after: .readingToken)
+        await beginGoingOnlineStep(.takingInstanceLock)
         let directory = dataDirectory
         // On the journal queue, where the previous runtime's release runs,
         // so going straight back online never finds our own lock still held.
@@ -2737,7 +2754,7 @@ final class LichessBotController {
             return try LichessBotInstanceLock.acquire(at: directory.lockURL, holder: .current)
         }
         do {
-            try throwIfGoingOnlineStopped(at: "taking the instance lock")
+            try throwIfGoingOnlineStopped(after: .takingInstanceLock)
             try await startRuntime(oneGame: oneGame, settings: settings, accountID: accountID, token: token, lock: lock)
         } catch {
             gateEventSink.value = nil
@@ -2752,13 +2769,14 @@ final class LichessBotController {
         let gate = self.gate
         runtimeGeneration += 1
         let generation = runtimeGeneration
+        await beginGoingOnlineStep(.checkingRequestGate)
         if case .closed(let reason) = await gate.snapshot().phase {
             // Going online is the operator's explicit action after a
             // breaker trip (plan §5.4).
             protocolLog.record(.lifecycle, "reopening the request gate (closed: \(reason))")
             await gate.reopen()
         }
-        try throwIfGoingOnlineStopped(at: "checking the request gate")
+        try throwIfGoingOnlineStopped(after: .checkingRequestGate)
         gateEventSink.value = continuation
         let client = LichessBotAPIClient(
             baseURL: try LichessBotAPIClient.lichessBaseURL(),
@@ -2769,15 +2787,17 @@ final class LichessBotController {
         )
 
         // Verify the token and the account before holding any stream.
+        await beginGoingOnlineStep(.verifyingToken)
         guard let info = try await client.testToken() else {
             throw LichessBotControllerError.tokenInvalid
         }
-        try throwIfGoingOnlineStopped(at: "verifying the token")
+        try throwIfGoingOnlineStopped(after: .verifyingToken)
         guard info.userId == accountID else {
             throw LichessBotControllerError.tokenForWrongAccount(info.userId)
         }
+        await beginGoingOnlineStep(.readingAccount)
         let account = try await client.account()
-        try throwIfGoingOnlineStopped(at: "reading the account")
+        try throwIfGoingOnlineStopped(after: .readingAccount)
         guard account.isBot else {
             throw LichessBotControllerError.notABot
         }
@@ -2788,15 +2808,16 @@ final class LichessBotController {
         // the bot is online a generation always exists, so no challenge is
         // ever accepted, declined for want of a model or sent before one is
         // ready (follow-lineage plan §3.10, OD-18). A failed build throws:
-        // the bot stays offline with its error. It runs before the leftover
-        // report below is cleared, so a failed start leaves that report up.
+        // the bot stays offline with its error.
         let modelSource = settingsAtStart.model.source
-        goingOnlineStep = .preparingModel(modelSource, detail: "starting")
+        let modelStep = LichessBotGoingOnlineStep.preparingModel(modelSource, detail: "starting")
+        await beginGoingOnlineStep(modelStep)
         let attempt = goingOnlineAttempt
         let slots = try await LichessBotModelSlots.prepare(
             for: settingsAtStart.model,
             provider: modelProvider,
             time: time,
+            loader: services.modelFileLoader,
             log: { line in SessionLogger.shared.log(line) },
             progress: { [weak self] detail in
                 Task { @MainActor in
@@ -2804,19 +2825,14 @@ final class LichessBotController {
                 }
             }
         )
-        try throwIfGoingOnlineStopped(at: "preparing the model")
-        goingOnlineStep = .startingSession
-        // Going online resumes (or files) whatever the last run left.
-        leftoverGamesFromLastRun = []
-        finishedGamesAwaitingFilingFromLastRun = []
+        try throwIfGoingOnlineStopped(after: modelStep)
+        await beginGoingOnlineStep(.startingSession)
 
-        // Settings applied while the model was built reach the runtime: the
-        // box starts from the settings in force now, not the copy taken when
-        // going online began (`apply` writes only a box that exists). If the
-        // model source changed meanwhile, the first poll switches to it.
-        let settings = self.settings
-        let settingsBox = SyncBox(settings)
-        self.settingsBox = settingsBox
+        // The manager and reconciler read the runtime's settings through
+        // this box. It becomes the controller's (so `apply` writes it) only
+        // after the last stop check below, and is brought up to date there:
+        // a cancelled start must leave no box behind with no runtime.
+        let settingsBox = SyncBox(self.settings)
         let settingsProvider: @Sendable () async -> LichessBotSettings = { settingsBox.value }
         let recordStore = LichessBotRecordStore(directory: dataDirectory, journalQueue: journalQueue, indexQueue: fileQueue, ourAccountID: accountID)
         let journal = LichessBotJournalWriter(
@@ -2862,15 +2878,28 @@ final class LichessBotController {
         )
         if oneGame {
             await manager.setOneGameMode(true)
-            try throwIfGoingOnlineStopped(at: "starting the session")
+            try throwIfGoingOnlineStopped(after: .startingSession)
         }
         if rateLimitHoldUntil != nil {
             await manager.setRateLimitHold(true)
-            try throwIfGoingOnlineStopped(at: "starting the session")
+            try throwIfGoingOnlineStopped(after: .startingSession)
         }
+        await beginGoingOnlineStep(.readingTodaysGames)
         await seedDailyCounts(manager: manager, store: recordStore)
-        // The last suspension before the runtime's tasks start.
-        try throwIfGoingOnlineStopped(at: "starting the session")
+        // The last suspension before the runtime's tasks start: from here to
+        // Online nothing suspends, so nothing below can be cancelled.
+        try throwIfGoingOnlineStopped(after: .readingTodaysGames)
+
+        // Going online now resumes (or files) whatever the last run left;
+        // until here a cancel or a failure left that report standing.
+        leftoverGamesFromLastRun = []
+        finishedGamesAwaitingFilingFromLastRun = []
+        // Settings applied while going online (the model build, today's
+        // games) reach the runtime: the box takes the settings in force now.
+        // If the model source changed meanwhile, the first poll switches.
+        let settings = self.settings
+        settingsBox.value = settings
+        self.settingsBox = settingsBox
 
         let sleepActivity = ProcessInfo.processInfo.beginActivity(
             // `.userInitiated` alone already includes idle-sleep prevention;
@@ -3111,9 +3140,12 @@ final class LichessBotController {
             }
             challengeLogRecorder.writeExpiredEchoes()
             if settings.model != lastSeenModelSettings {
+                // A new attempt for the new settings: the last failure (its
+                // text and retry time) was about the old ones.
                 lastSeenModelSettings = settings.model
                 consecutiveModelRefreshFailures = 0
                 nextModelRefreshAt = .distantPast
+                modelRefreshFailure = nil
             }
             if Date() >= nextModelRefreshAt {
                 // A source switch or a refresh builds here, inside this
@@ -3126,7 +3158,7 @@ final class LichessBotController {
                     guard current() else { return }
                     consecutiveModelRefreshFailures = 0
                     modelRefreshFailure = nil
-                    nextModelRefreshAt = Date().addingTimeInterval(Self.modelRefreshInterval)
+                    nextModelRefreshAt = Date().addingTimeInterval(TimeInterval(LichessBotLimits.modelRefreshPollSeconds))
                 } catch {
                     guard current() else { return }
                     // Each failure rebuilds a network; back off so a missing
@@ -3156,8 +3188,6 @@ final class LichessBotController {
         }
     }
 
-    /// How often a working model source is checked for a newer generation.
-    private static let modelRefreshInterval: TimeInterval = 15
     /// Retry spacing after a failed model refresh.
     private static let modelRefreshBackoff = LichessBotBackoff(initial: .seconds(30), multiplier: 2, cap: .seconds(900))
 
@@ -3790,7 +3820,7 @@ enum LichessBotControllerError: LocalizedError, Equatable {
     case chatNotSendable(String)
     /// The operator pressed Go Offline while going online; `step` is the
     /// step that had just finished.
-    case goingOnlineCancelled(step: String)
+    case goingOnlineCancelled(step: LichessBotGoingOnlineStep)
     /// The bot shut down (the app is quitting) while going online.
     case shutDownWhileGoingOnline
 
@@ -3819,7 +3849,7 @@ enum LichessBotControllerError: LocalizedError, Equatable {
         case .chatNotSendable(let problem):
             return "Chat not sent: \(problem)"
         case .goingOnlineCancelled(let step):
-            return "Going online was cancelled by the operator (\(step))"
+            return "Going online was cancelled by the operator (\(step.logText))"
         case .shutDownWhileGoingOnline:
             return "The bot has shut down"
         }
