@@ -1,6 +1,6 @@
 # Lichess bot: record statistics on the Overview
 
-Status (2026-10-07): **IMPLEMENTED on a branch, awaiting merge:** P0 merged (`01fe2f62`); P1–P8 and the later phases L1–L6 implemented, with the follow-lineage plan merged in and wired (see "Implementation notes" at the end). Not done: D1 (needs the challenge-log plan's resolver on `main`) and the live checks of §8.3, §8.4 and §8.6.
+Status (2026-10-07): **IMPLEMENTED on a branch, awaiting merge:** P0 merged (`01fe2f62`); P1–P8, the later phases L1–L6 and D1 implemented, with the follow-lineage and challenge-log plans merged in (see "Implementation notes" at the end). Not done: the live checks of §8.3, §8.4 and §8.6.
 - Every `file:line` was checked against `main` at `c1a36294`. The working tree held uncommitted follow-lineage edits to `LichessBotModelSlots.swift`, `LichessBotModelSwitchStatusView.swift` and `CheckpointManager.swift`; nothing below cites those files' uncommitted lines.
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`), `documentation/` or `scripts/`.
 - Numbers about the bot's data were measured on this Mac on 2026-10-06 from `~/Library/Application Support/DrewsChessMachine/LichessBot/` itself (sizes base-2).
