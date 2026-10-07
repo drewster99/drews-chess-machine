@@ -35,6 +35,8 @@ struct LichessBotRecordPanel: View {
                     LichessBotEndingsTable(endings: breakdowns.endings)
                 }
                 .shown(pane == .endings)
+                LichessBotOpponentStrengthPane(strength: breakdowns.opponentStrength)
+                    .shown(pane == .opponentStrength)
             }
         }
     }

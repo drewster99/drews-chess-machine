@@ -21,6 +21,15 @@ final class LichessBotSelfAssessmentFormatTests: XCTestCase {
         XCTAssertEqual(LichessBotStatsFormat.countWithShare(0, of: 0), "–", "an empty column has no share")
     }
 
+    func testOpponentStrengthText() {
+        XCTAssertEqual(LichessBotStatsFormat.signedPoints(0.052), "+5.2")
+        XCTAssertEqual(LichessBotStatsFormat.signedPoints(-0.12), "\u{2212}12.0")
+        XCTAssertEqual(LichessBotStatsFormat.signedPoints(-0.0001), "0.0", "no sign on a value that rounds to zero")
+        XCTAssertEqual(LichessBotStatsFormat.fiftyPercentPoint(.estimate(-175.4), games: 222), "Scores 50% against opponents rated \u{2212}175 (222 games)")
+        XCTAssertEqual(LichessBotStatsFormat.fiftyPercentPoint(.atLeast(120), games: 1), "Scores 50% against opponents rated ≥+120 (1 game)")
+        XCTAssertEqual(LichessBotStatsFormat.fiftyPercentPoint(.none, games: 0), "No game with both ratings")
+    }
+
     func testTriplesAndHeldCounts() {
         XCTAssertEqual(LichessBotStatsFormat.triple(LichessBotOutcomeTriple(win: 0.4123, draw: 0.2, loss: 0.3877)), "0.41/0.20/0.39")
         XCTAssertEqual(LichessBotStatsFormat.triple(nil), "–")

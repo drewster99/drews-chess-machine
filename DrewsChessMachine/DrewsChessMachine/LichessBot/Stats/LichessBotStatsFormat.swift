@@ -145,6 +145,21 @@ enum LichessBotStatsFormat {
         return "\(count) (\(percent(Double(count) / Double(total))))"
     }
 
+    /// A difference of two score fractions in percentage points, signed
+    /// with a true minus: "+5.2", "−12.0", "0.0".
+    static func signedPoints(_ difference: Double) -> String {
+        let text = String(format: "%.1f", abs(100 * difference))
+        if text == "0.0" { return text }
+        return (difference > 0 ? "+" : minus) + text
+    }
+
+    /// The Opponent strength header (§3.7): "Scores 50% at +37 (222 games)",
+    /// a bound when every game was won or lost, or why there is none.
+    static func fiftyPercentPoint(_ estimate: LichessBotRatingEstimate, games: Int) -> String {
+        guard estimate != .none else { return "No game with both ratings" }
+        return "Scores 50% against opponents rated \(signedEstimate(estimate)) (\(games) game\(games == 1 ? "" : "s"))"
+    }
+
     /// "x blown of y held wins (z%)".
     static func held(turned: Int, held: Int, verb: String, noun: String) -> String {
         guard held > 0 else { return "No \(noun)" }

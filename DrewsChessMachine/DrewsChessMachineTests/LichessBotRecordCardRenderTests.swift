@@ -136,6 +136,7 @@ final class LichessBotRecordCardRenderTests: XCTestCase {
             let breakdowns = statistics[.all].byPeriod.allTime
             try render(LichessBotModelRecordTable(models: breakdowns.models), size: narrow, name: "table-models", scheme: scheme)
             try render(LichessBotTimeControlTable(statistics: statistics, filter: .all, period: .allTime, account: nil), size: CGSize(width: 680, height: 200), name: "table-time-controls", scheme: scheme)
+            try render(LichessBotRatingBandTable(bands: breakdowns.opponentStrength.bands), size: CGSize(width: 680, height: 300), name: "table-bands", scheme: scheme)
             try render(LichessBotEndingsTable(endings: breakdowns.endings), size: CGSize(width: 680, height: 260), name: "table-endings", scheme: scheme)
             try render(LichessBotCalibrationTable(rows: breakdowns.selfAssessment.calibration), size: CGSize(width: 680, height: 200), name: "table-calibration", scheme: scheme)
             try renderPanes(statistics, controller: controller, scheme: scheme)
