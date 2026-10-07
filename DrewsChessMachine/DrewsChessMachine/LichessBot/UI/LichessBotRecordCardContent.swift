@@ -7,7 +7,7 @@ struct LichessBotRecordCardContent: View {
 
     var body: some View {
         LichessBotRecordCardLayout<LichessBotRecordStatisticsColumn, LichessBotRecentGamesSection>(
-            statistics: LichessBotRecordStatisticsColumn(controller: controller, pipeline: controller.recordStatistics),
+            statistics: LichessBotRecordStatisticsColumn(account: controller.account, pipeline: controller.recordStatistics),
             recentGames: LichessBotRecentGamesSection(controller: controller)
         )
     }

@@ -5,7 +5,8 @@ import SwiftUI
 /// for its state (no `switch` in the body), so the statistics keep their
 /// identity — and the panes their state — across recomputes.
 struct LichessBotRecordStatisticsColumn: View {
-    let controller: LichessBotController
+    /// Nil while the account is not loaded.
+    let account: LichessBotAccount?
     let pipeline: LichessBotRecordStatisticsPipeline
 
     var body: some View {
@@ -17,7 +18,7 @@ struct LichessBotRecordStatisticsColumn: View {
                 .foregroundStyle(LichessBotStatsStyle.failure)
                 .shown(pipeline.state.failureText != nil)
             ForEach(pipeline.state.readyItems) { item in
-                LichessBotRecordStatisticsContent(controller: controller, pipeline: pipeline, statistics: item.statistics)
+                LichessBotRecordStatisticsContent(account: account, pipeline: pipeline, statistics: item.statistics)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

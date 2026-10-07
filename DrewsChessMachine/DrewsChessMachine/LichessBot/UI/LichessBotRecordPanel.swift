@@ -4,17 +4,27 @@ import SwiftUI
 /// in the hierarchy, shown only when selected, so switching tabs keeps each
 /// pane's state (the Models table's expanded groups).
 struct LichessBotRecordPanel: View {
-    let controller: LichessBotController
+    /// Nil while the account is not loaded.
+    let account: LichessBotAccount?
     let pipeline: LichessBotRecordStatisticsPipeline
     let statistics: LichessBotRecordStatistics
 
     var body: some View {
-        let filtered = statistics[pipeline.rememberedFilter]
-        ZStack(alignment: .topLeading) {
+        let filter = pipeline.rememberedFilter
+        let period = pipeline.rememberedPeriod
+        let pane = pipeline.rememberedPane
+        let hasGames = statistics[filter].periodRows[period].record.all.games > 0
+        VStack(alignment: .leading, spacing: LichessBotStatsStyle.sectionSpacing) {
             // One "empty" line for every pane: a period without a single
             // game (scored or not) has nothing to break down.
             LichessBotPaneEmptyNote(text: "No games in this period")
-                .shown(filtered.periodRows[pipeline.rememberedPeriod].record.all.games == 0)
+                .shown(!hasGames)
+            ZStack(alignment: .topLeading) {
+                // Time controls also lists speeds the account is rated in,
+                // so it shows even in an empty period.
+                LichessBotTimeControlTable(statistics: statistics, filter: filter, period: period, account: account)
+                    .shown(pane == .timeControls)
+            }
         }
     }
 }

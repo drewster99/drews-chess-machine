@@ -140,7 +140,7 @@ final class LichessBotRecordCardRenderTests: XCTestCase {
         for pane in LichessBotRecordPane.allCases {
             controller.recordStatistics.rememberedPane = pane
             try render(
-                LichessBotRecordPanel(controller: controller, pipeline: controller.recordStatistics, statistics: statistics),
+                LichessBotRecordPanel(account: controller.account, pipeline: controller.recordStatistics, statistics: statistics),
                 size: CGSize(width: 680, height: 900), name: "pane-\(pane.rawValue)", scheme: scheme
             )
         }
@@ -157,7 +157,7 @@ final class LichessBotRecordCardRenderTests: XCTestCase {
         XCTAssertNotNil(pipeline.state.failureText)
         for scheme in [ColorScheme.light, .dark] {
             try render(
-                LichessBotRecordCardLayout(statistics: LichessBotRecordStatisticsColumn(controller: controller, pipeline: pipeline), recentGames: LichessBotRecentGamesSection(controller: controller)).frame(height: 400),
+                LichessBotRecordCardLayout(statistics: LichessBotRecordStatisticsColumn(account: nil, pipeline: pipeline), recentGames: LichessBotRecentGamesSection(controller: controller)).frame(height: 400),
                 size: narrow, name: "failed-680", scheme: scheme
             )
         }
