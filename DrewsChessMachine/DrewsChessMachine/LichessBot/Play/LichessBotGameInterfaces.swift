@@ -23,8 +23,10 @@ struct LichessBotGenerationInfo: Sendable, Equatable, Codable {
     let generationID: Int
     let sourceKind: LichessBotModelSourceKind
     let modelID: String
-    /// The trainer's completed step count when snapshotted; nil for sources
-    /// without one (a champion or a file).
+    /// The step the weights were taken at: the trainer's completed step
+    /// count for a trainer snapshot, a file's `training_step` (segment-local
+    /// on the CLI paths) for a file; nil when the source records none (a
+    /// champion, a file that states no step).
     let trainingStep: Int?
     let snapshotAt: Date
     let architectureSummary: String
@@ -37,11 +39,57 @@ struct LichessBotGenerationInfo: Sendable, Equatable, Codable {
     /// before this field existed. The default keeps memberwise construction
     /// that predates it compiling; the production builder always passes it.
     var valueHeadRecenteredOnLoad: Bool? = nil
+    /// Where the file played sits in its training run, for a file that
+    /// records a lineage (follow-lineage plan §3.6). Nil for in-memory
+    /// sources, files written before lineage records, and records written
+    /// before this field existed (the default keeps them decoding).
+    var lineage: LichessBotGenerationLineage? = nil
 
     /// The weights this generation was built from, comparable with the
     /// settings' `LichessBotModelSettings.generationSource`.
     var generationSource: LichessBotGenerationSource {
-        LichessBotGenerationSource(kind: sourceKind, filePath: sourceKind == .file ? filePath : nil)
+        LichessBotGenerationSource(
+            kind: sourceKind,
+            filePath: sourceKind == .file ? filePath : nil,
+            followedLineage: sourceKind == .followLineage ? lineage?.followed : nil)
+    }
+}
+
+/// A generation's file's place in its run, from the file's `dcm_lineage`
+/// record (follow-lineage plan §3.6): every move it chose is traceable to a
+/// run, a segment and a cumulative step.
+struct LichessBotGenerationLineage: Sendable, Equatable, Codable {
+    let lineageRunID: String
+    let segmentID: String
+    let segmentIndex: Int
+    /// Earlier segments' IDs, oldest first, then `segmentID` — with
+    /// `segmentLocalStep` and `recordedUnix`, the rank key the follow-lineage
+    /// source compares a newer file against (never backward, a fork against
+    /// what plays).
+    let segmentChain: [String]
+    let segmentLocalStep: Int
+    let recordedUnix: Int64
+    /// Nil when the run continues history no record counted.
+    let cumTrainerStep: Int?
+    /// The header's `content_sha256` of the file played.
+    let contentSHA256: String
+    /// The followed lineage this generation was built for; nil for the
+    /// fixed-file source.
+    let followed: LichessBotFollowedLineage?
+}
+
+extension LichessBotGenerationLineage {
+    init(position: ModelFileLineagePosition, contentSHA256: String, followed: LichessBotFollowedLineage?) {
+        self.init(
+            lineageRunID: position.lineageRunID,
+            segmentID: position.segmentID,
+            segmentIndex: position.segmentIndex,
+            segmentChain: position.segmentChain,
+            segmentLocalStep: position.segmentLocalStep,
+            recordedUnix: position.recordedUnix,
+            cumTrainerStep: position.cumTrainerStep,
+            contentSHA256: contentSHA256,
+            followed: followed)
     }
 }
 

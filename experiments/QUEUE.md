@@ -9,7 +9,6 @@ conversation.
 | started | experiment | ends (est.) |
 |---|---|---|
 | 2026-10-05 23:44 | LR arm B-leakyall: B with leaky ReLU at every activation, to 40k | shares the GPU with two other runs |
-| 2026-10-05 23:44 | LR arm B-silu: B with SiLU in the tower (blocks + tower end) and leaky ReLU in the heads, to 40k | shares the GPU with two other runs |
 | 2026-10-06 17:00 | LR arm B-silu-clip1: exact resume of B-silu from its step-18000 checkpoint with `grad_clip_max_norm` 1.0 (B-silu: 15), to trainer step 40k | shares the GPU with two other runs |
 
 
@@ -34,6 +33,9 @@ conversation.
 
 ## Finished
 
+- 2026-10-05 23:44 → 2026-10-06 23:10 — LR arm B-silu (`20261005-lr-schedule-ab/`, E-0021): SiLU tower + leaky heads on B's
+  LR cycle at cap 15. Tracked B to 19k (mean −3.7 pElo), blew up at 20,600 (E-0020); 20 of 128 policy pre-BN channels
+  stayed parked from 21k to the end; pElo 1250.0 at 36k vs B 1620.7. Stopped by the owner at 36,066 (clean abort save).
 - 2026-10-06 18:15 → 21:57 — LR arm B-silu-ctl15 (`20261005-lr-schedule-ab/`, E-0020): exact resume of B-silu from 18k with its own cap 15;
   reproduced B-silu bit for bit through the step-20,600 blowup (equal probes to the last digit at 19k–22k), stopped by the owner after
   the 22k probe matched; clean abort save at 22,030. B-silu-clip1 (cap 1.0, same resume) did not blow up (0 dead channels at 22k).

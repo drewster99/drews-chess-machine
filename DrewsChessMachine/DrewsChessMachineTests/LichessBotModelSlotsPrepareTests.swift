@@ -121,7 +121,7 @@ final class LichessBotModelSlotsPrepareTests: XCTestCase {
     }
 
     private func prepare(_ settings: LichessBotModelSettings, provider: any LichessBotModelProvider, time: LichessBotManualTime = LichessBotManualTime()) async throws -> LichessBotModelSlots {
-        try await LichessBotModelSlots.prepare(for: settings, provider: provider, time: time, log: { _ in })
+        try await LichessBotModelSlots.prepare(for: settings, provider: provider, time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in })
     }
 
     private func waitUntil(_ description: String, _ condition: () async -> Bool) async throws {

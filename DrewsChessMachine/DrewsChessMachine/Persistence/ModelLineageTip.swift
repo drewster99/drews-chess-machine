@@ -46,6 +46,12 @@ struct ModelLineageRank: Sendable, Equatable {
 /// file below what is already playing is reported, never selected.
 enum ModelLineageTip {
 
+    /// The path kinds a lineage is followed through (follow-lineage plan
+    /// OD-4): the CLI training paths. A GUI run's clock rewinds on
+    /// promotion and the GUI has its own sources; derived and new models
+    /// are no training.
+    static let followablePathKinds: Set<LineageRecord.PathKind> = [.replay, .vsuci]
+
     /// A file of the followed lineage.
     struct Candidate: Sendable, Equatable {
         let entry: ModelFileEntry
@@ -133,7 +139,7 @@ enum ModelLineageTip {
             case .recorded(let position)?:
                 guard position.lineageRunID == followed.lineageRunID,
                       position.segmentChain.contains(followed.anchorSegmentID) else { continue }
-                guard position.pathKind == .replay || position.pathKind == .vsuci else {
+                guard followablePathKinds.contains(position.pathKind) else {
                     excluded[.otherPathKind, default: 0] += 1
                     continue
                 }

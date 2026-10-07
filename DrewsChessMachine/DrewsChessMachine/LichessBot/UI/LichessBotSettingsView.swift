@@ -158,7 +158,7 @@ struct LichessBotSettingsTabForm: View {
                 LichessBotMatchmakingSettingsSection(settings: $draft.matchmaking)
             case .play:
                 LichessBotPlaySettingsSection(settings: $draft.play)
-                LichessBotModelSettingsSection(settings: $draft.model)
+                LichessBotModelSettingsSection(settings: $draft.model, controller: controller)
             case .chat:
                 LichessBotChatSettingsSection(settings: $draft.chat)
             case .alerts:
@@ -392,6 +392,9 @@ struct LichessBotChatSettingsSection: View {
 /// Which model plays (plan §9).
 struct LichessBotModelSettingsSection: View {
     @Binding var settings: LichessBotModelSettings
+    let controller: LichessBotController
+    /// The models folder the lineage row reads (`Models/` in the app).
+    var modelsDirectory: URL = CheckpointPaths.modelsDir
     @State private var showingLinePicker = false
 
     var body: some View {
@@ -419,14 +422,17 @@ struct LichessBotModelSettingsSection: View {
             }
             .disabled(settings.source != .file)
             .sheet(isPresented: $showingLinePicker) {
-                LichessBotModelLinePicker(isPresented: $showingLinePicker) { url in
-                    settings.filePath = url.path
+                LichessBotModelLinePicker(isPresented: $showingLinePicker, purpose: .chooseFile) { entry in
+                    settings.filePath = entry.url.path
                 }
             }
             LichessBotIntegerField(label: "Live-trainer refresh every", value: $settings.liveTrainerRefreshIntervalSeconds, unit: "s")
                 .disabled(settings.source != .liveTrainer)
-            Toggle("Live trainer: games in progress switch to each new snapshot", isOn: $settings.midGameRefresh)
-                .disabled(settings.source != .liveTrainer)
+            LichessBotFollowedLineageRow(followedLineage: $settings.followedLineage, isEnabled: settings.source == .followLineage, controller: controller, modelsDirectory: modelsDirectory)
+            LichessBotIntegerField(label: "Check for new files every", value: $settings.lineageCheckIntervalSeconds, unit: "s")
+                .disabled(settings.source != .followLineage)
+            Toggle("Games in progress switch to each new generation (live trainer, followed lineage)", isOn: $settings.midGameRefresh)
+                .disabled(settings.source != .liveTrainer && settings.source != .followLineage)
         }
     }
 

@@ -22,7 +22,7 @@ final class LichessBotReadyBeforePlayManagerTests: XCTestCase {
         let frozen = settings
         let time = LichessBotManualTime()
         let account = LichessBotFakeAccountAPI(script: [.open(lines: lines)])
-        let slots = try await LichessBotModelSlots.prepare(for: frozen.model, provider: provider, time: time, log: { _ in })
+        let slots = try await LichessBotModelSlots.prepare(for: frozen.model, provider: provider, time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in })
         let events = SyncBox<[LichessBotManagerEvent]>([])
         let server = try LichessBotFakeGameServer()
         await server.setScript(afterOurMoves: [.opponentThinks])
