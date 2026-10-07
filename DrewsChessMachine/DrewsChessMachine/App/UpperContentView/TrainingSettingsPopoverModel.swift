@@ -47,6 +47,14 @@ final class TrainingSettingsPopoverModel {
     var entropyText = "" { didSet { entropyError = false } }
     var illegalMassWeightText = "" { didSet { illegalMassWeightError = false } }
     var gradClipText = "" { didSet { gradClipError = false } }
+    /// Pending relative gradient cap mode and its four values. The values
+    /// are validated and committed whatever the mode (they are inert while
+    /// Off), W ≤ N as a pair.
+    var relativeGradClipModeValue: RelativeGradientCapMode = .logOnly
+    var relativeGradClipMultipleText = "" { didSet { relativeGradClipMultipleError = false } }
+    var relativeGradClipWindowStepsText = "" { didSet { relativeGradClipWindowStepsError = false } }
+    var relativeGradClipMinHistoryStepsText = "" { didSet { relativeGradClipMinHistoryStepsError = false } }
+    var relativeGradClipFloorText = "" { didSet { relativeGradClipFloorError = false } }
     var weightDecayText = "" { didSet { weightDecayError = false } }
     var dropoutRateText = "" { didSet { dropoutRateError = false } }
     var policyLossWeightText = "" { didSet { policyLossWeightError = false } }
@@ -71,6 +79,10 @@ final class TrainingSettingsPopoverModel {
     private(set) var entropyError = false
     private(set) var illegalMassWeightError = false
     private(set) var gradClipError = false
+    private(set) var relativeGradClipMultipleError = false
+    private(set) var relativeGradClipWindowStepsError = false
+    private(set) var relativeGradClipMinHistoryStepsError = false
+    private(set) var relativeGradClipFloorError = false
     private(set) var weightDecayError = false
     private(set) var dropoutRateError = false
     private(set) var policyLossWeightError = false
@@ -388,6 +400,8 @@ final class TrainingSettingsPopoverModel {
     private static let seededTextFields: [ReferenceWritableKeyPath<TrainingSettingsPopoverModel, String>] = [
         \.lrText, \.warmupText, \.momentumText,
         \.entropyText, \.illegalMassWeightText, \.gradClipText, \.weightDecayText,
+        \.relativeGradClipMultipleText, \.relativeGradClipWindowStepsText,
+        \.relativeGradClipMinHistoryStepsText, \.relativeGradClipFloorText,
         \.dropoutRateText, \.policyLossWeightText, \.valueLossWeightText,
         \.valueLabelSmoothingText, \.drawPenaltyText,
         \.policyLabelSmoothingText, \.policyLabelSmoothingPerMoveText, \.policyLabelSmoothingPerMoveCapText,
@@ -475,6 +489,15 @@ final class TrainingSettingsPopoverModel {
         entropyText = String(format: "%.2e", p.entropyBonus)
         illegalMassWeightText = String(format: "%.2f", p.illegalMassWeight)
         gradClipText = String(format: "%.1f", p.gradClipMaxNorm)
+        guard let relativeMode = RelativeGradientCapMode(rawValue: p.relativeGradClipMode) else {
+            // The singleton validates the declared range 0...2 on every write.
+            preconditionFailure("relative_grad_clip_mode \(p.relativeGradClipMode) is outside its validated range")
+        }
+        relativeGradClipModeValue = relativeMode
+        relativeGradClipMultipleText = String(format: "%.1f", p.relativeGradClipMultiple)
+        relativeGradClipWindowStepsText = String(p.relativeGradClipWindowSteps)
+        relativeGradClipMinHistoryStepsText = String(p.relativeGradClipMinHistorySteps)
+        relativeGradClipFloorText = String(format: "%.2f", p.relativeGradClipFloor)
         weightDecayText = String(format: "%.2e", p.weightDecay)
         dropoutRateText = String(format: "%.2f", p.dropoutRate)
         policyLossWeightText = String(format: "%.2f", p.policyLossWeight)
@@ -578,6 +601,10 @@ final class TrainingSettingsPopoverModel {
         entropyError = false
         illegalMassWeightError = false
         gradClipError = false
+        relativeGradClipMultipleError = false
+        relativeGradClipWindowStepsError = false
+        relativeGradClipMinHistoryStepsError = false
+        relativeGradClipFloorError = false
         weightDecayError = false
         dropoutRateError = false
         policyLossWeightError = false
@@ -882,6 +909,58 @@ final class TrainingSettingsPopoverModel {
         p.policyLabelSmoothingMode = policyLabelSmoothingModeValue
     }
 
+    /// Validate and write the relative gradient cap's mode and four values,
+    /// with one `[PARAM]` line per change.
+    private func commitRelativeGradientCap(to p: TrainingParameters, anyError: inout Bool) {
+        if relativeGradClipModeValue.rawValue != p.relativeGradClipMode {
+            SessionLogger.shared.log("[PARAM] relativeGradClipMode: \(p.relativeGradClipMode) -> \(relativeGradClipModeValue.rawValue) (\(relativeGradClipModeValue.token))")
+            p.relativeGradClipMode = relativeGradClipModeValue.rawValue
+        }
+        if let v = editedValue(RelativeGradClipMultiple.self, \.relativeGradClipMultipleText, current: p.relativeGradClipMultiple) {
+            relativeGradClipMultipleError = false
+            if abs(v - p.relativeGradClipMultiple) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] relativeGradClipMultiple: %.6g -> %.6g", p.relativeGradClipMultiple, v))
+                p.relativeGradClipMultiple = v
+            }
+        } else {
+            relativeGradClipMultipleError = true
+            anyError = true
+        }
+        if let v = editedValue(RelativeGradClipFloor.self, \.relativeGradClipFloorText, current: p.relativeGradClipFloor) {
+            relativeGradClipFloorError = false
+            if abs(v - p.relativeGradClipFloor) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] relativeGradClipFloor: %.6g -> %.6g", p.relativeGradClipFloor, v))
+                p.relativeGradClipFloor = v
+            }
+        } else {
+            relativeGradClipFloorError = true
+            anyError = true
+        }
+        let window = editedValue(RelativeGradClipWindowSteps.self, \.relativeGradClipWindowStepsText,
+                                 current: p.relativeGradClipWindowSteps)
+        let minimumHistory = editedValue(RelativeGradClipMinHistorySteps.self, \.relativeGradClipMinHistoryStepsText,
+                                         current: p.relativeGradClipMinHistorySteps)
+        relativeGradClipWindowStepsError = window == nil
+        relativeGradClipMinHistoryStepsError = minimumHistory == nil
+        guard let n = window, let w = minimumHistory else {
+            anyError = true
+            return
+        }
+        guard w <= n else {
+            relativeGradClipMinHistoryStepsError = true
+            anyError = true
+            return
+        }
+        if n != p.relativeGradClipWindowSteps {
+            SessionLogger.shared.log("[PARAM] relativeGradClipWindowSteps: \(p.relativeGradClipWindowSteps) -> \(n)")
+            p.relativeGradClipWindowSteps = n
+        }
+        if w != p.relativeGradClipMinHistorySteps {
+            SessionLogger.shared.log("[PARAM] relativeGradClipMinHistorySteps: \(p.relativeGradClipMinHistorySteps) -> \(w)")
+            p.relativeGradClipMinHistorySteps = w
+        }
+    }
+
     // MARK: - Save
 
     /// Validate every field against its parameter range and write valid values
@@ -1150,6 +1229,12 @@ final class TrainingSettingsPopoverModel {
             gradClipError = true
             anyError = true
         }
+
+        // Relative gradient cap — each value in its declared range, and W ≤ N
+        // as a pair: neither N nor W is written unless both are valid
+        // together, so the settings never hold a pair the trainer would
+        // refuse (`RelativeGradientCapConfiguration`).
+        commitRelativeGradientCap(to: p, anyError: &anyError)
 
         // Weight decay — Double in the declared range.
         if let v = editedValue(WeightDecay.self, \.weightDecayText, current: p.weightDecay) {

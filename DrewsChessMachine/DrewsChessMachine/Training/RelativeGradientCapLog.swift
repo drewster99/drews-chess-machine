@@ -73,11 +73,17 @@ struct GradientCapStepLineReading: Sendable, Equatable {
     let maxPreClipNorm: Float?
     let clipped: Int
     let steps: Int
-    let fedCap: Float
+    /// The fed cap of the line's step; nil only when no real-data step has
+    /// been recorded yet (a GUI line before the first step).
+    let fedCap: Float?
 
-    /// ` gNormMax=… clips=… gCap=…`.
+    /// ` gNormMax=… clips=… gCap=…` (`gCap=none` before any step).
     var logFields: String {
-        RelativeGradientCapLogFormat.stepLineFields(
+        guard let fedCap else {
+            let maxText = maxPreClipNorm.map { String(format: "%.4f", $0) } ?? "none"
+            return " gNormMax=\(maxText) clips=\(clipped) gCap=none"
+        }
+        return RelativeGradientCapLogFormat.stepLineFields(
             summary: (maxPreClipNorm: maxPreClipNorm, clipped: clipped, steps: steps), fedCap: fedCap)
     }
 }
@@ -96,10 +102,13 @@ struct GradientCapStepLineWindow: Sendable {
     }
 
     /// The reading for the steps after the previous line through
-    /// `trainerStep`, from the trainer's `history`; advances the window.
+    /// `trainerStep`, from the trainer's `history`; advances the window. A
+    /// clock behind the previous line (a GUI promotion rewound the trainer)
+    /// restarts the window at the line's own step.
     mutating func take(history: GradientNormHistory, throughTrainerStep trainerStep: Int,
-                       fedCap: Float) -> GradientCapStepLineReading {
-        let lower = lastCoveredTrainerStep + 1
+                       fedCap: Float?) -> GradientCapStepLineReading {
+        let lower = trainerStep <= lastCoveredTrainerStep ? trainerStep : lastCoveredTrainerStep + 1
+        if trainerStep < lastCoveredTrainerStep { lastCoveredTrainerStep = trainerStep }
         let summary = lower <= trainerStep
             ? history.summary(trainerSteps: lower...trainerStep)
             : (maxPreClipNorm: nil, clipped: 0, steps: 0)

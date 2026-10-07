@@ -138,6 +138,11 @@ extension SessionController {
             }
             trainingStats = initialTrainingStats
         }
+        // The relative gradient cap this run starts with (every start,
+        // including a continue after Stop); edits during the run are logged
+        // as `[PARAM]` lines by the settings popover.
+        SessionLogger.shared.log(RelativeGradientCapLogFormat.configLine(
+            trainer.relativeGradientCap, hardMax: trainer.gradClipMaxNorm))
         // Snap the live N into the [1, absoluteMaxSelfPlayWorkers] range,
         // after a resume restored the session's worker count, so the run's
         // worker-count box and board mode start from the count it runs
@@ -1338,6 +1343,17 @@ extension SessionController {
 
                         box.recordStep(timing)
                         pStatsBox.recordTrainingStep()
+                        // Every clip (and every would-be clip in log-only
+                        // mode) is one `[GRAD-CLIP]` line; the `[STATS]`
+                        // cadence would miss them. The LR is the one this step
+                        // was fed (the clock before its increment).
+                        let clipStep = trainer.completedTrainSteps
+                        if let clipLine = RelativeGradientCapLogFormat.eventLine(
+                            trainerStep: clipStep, preClipNorm: timing.gradGlobalNorm, decision: timing.gradientCap,
+                            learningRate: Double(trainer.effectiveLearningRate(
+                                forBatchSize: sessionTrainingBatchSize, completedSteps: clipStep - 1))) {
+                            SessionLogger.shared.log(clipLine)
+                        }
                         segmentLineage.recordTrainingStep(totalMs: timing.totalMs)
                         // Training health: record the step; every 50 trainer
                         // steps the live evaluation; the value-FC1 read when
@@ -1513,6 +1529,11 @@ extension SessionController {
                     var prevRssBytes: UInt64 = 0
                     var prevVmTotal: UInt32 = 0
                     var prevVmIoAccel: UInt32 = 0
+                    // Each `[STATS]` line's `gNormMax=` / `clips=` cover the
+                    // trainer steps since the previous line; nil until the
+                    // first line, which covers every step the trainer's
+                    // history holds (on a resume, the restored steps too).
+                    var gradientCapWindow: GradientCapStepLineWindow? = nil
 
                     func logOne(elapsedTarget: TimeInterval, legalMassOverride: ChessTrainer.LegalMassSnapshot?,
                                 stepLineIntervalSec: Double) async {
@@ -1935,7 +1956,26 @@ extension SessionController {
                             let ratio = klMean > 0 ? sd / klMean : 0
                             return String(format: " kl=%.3e klSd=%.3e klSd/kl=%.2f", klMean, sd, ratio)
                         }()
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr)\(klStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) pLogitMean=\(pLogitMeanStr) vLogitMean=\(vLogitMeanStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) sampBatch=(\(sampBatchStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        // The relative gradient cap over the steps since the
+                        // previous line, from the trainer's own history (read
+                        // on its queue between steps). A failed read is
+                        // reported on the line, never papered over.
+                        let gradientCapReading: GradientCapStepLineReading?
+                        let gradientCapFields: String
+                        do {
+                            let history = try await trainer.exportGradNormHistory()
+                            let through = history.lastTrainerStep ?? completedSteps
+                            var window = gradientCapWindow ?? GradientCapStepLineWindow(
+                                startTrainerStep: (history.firstTrainerStep ?? (through + 1)) - 1)
+                            let reading = window.take(history: history, throughTrainerStep: through, fedCap: history.lastFedCap)
+                            gradientCapWindow = window
+                            gradientCapReading = reading
+                            gradientCapFields = reading.logFields
+                        } catch {
+                            gradientCapReading = nil
+                            gradientCapFields = " gCap=unavailable(\(error.localizedDescription))"
+                        }
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr)\(gradientCapFields) vNorm=\(vNormStr) μ=\(muStr)\(klStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) pLogitMean=\(pLogitMeanStr) vLogitMean=\(vLogitMeanStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) sampBatch=(\(sampBatchStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // [DRAW-WATCH] summary — piggyback on the same
@@ -1971,7 +2011,7 @@ extension SessionController {
                             if let lineageNow {
                                 recorder.setFinalLineage(lineageNow.record, checkpointSHA256: nil)
                             }
-                            let entry = CliTrainingRecorder.StatsLine(
+                            var entry = CliTrainingRecorder.StatsLine(
                                 elapsedSec: elapsedTarget,
                                 steps: trainingSnap.stats.steps,
                                 selfPlayGames: parallelSnap.selfPlayGames,
@@ -2111,6 +2151,10 @@ extension SessionController {
                                 cumTrainStepSec: lineageNow?.totals.cumTrainStepSec,
                                 cumGames: lineageNow?.totals.cumGames
                             )
+                            if let gradientCapReading {
+                                entry.recordGradientCap(gradientCapReading,
+                                                        configuration: policySmoothingConfig.relativeGradientCap)
+                            }
                             recorder.appendStats(entry)
                         }
 

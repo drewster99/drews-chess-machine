@@ -1192,7 +1192,7 @@ extension CliTrainingRecorder.StatsLine {
                                     configuration: RelativeGradientCapConfiguration) {
         gradNormMax = reading.maxPreClipNorm.map(Double.init)
         gradClipEvents = reading.clipped
-        gradClipCap = Double(reading.fedCap)
+        gradClipCap = reading.fedCap.map(Double.init)
         relativeGradClipMode = configuration.mode.rawValue
         relativeGradClipMultiple = configuration.multiple
         relativeGradClipWindowSteps = configuration.windowSteps

@@ -56,6 +56,15 @@ enum RelativeGradientCapMode: Int, Sendable, CaseIterable, Equatable {
         case .clip: return "clip"
         }
     }
+
+    /// The settings popover's segment label.
+    var displayName: String {
+        switch self {
+        case .off: return "Off"
+        case .logOnly: return "Log only"
+        case .clip: return "Clip"
+        }
+    }
 }
 
 // MARK: - Configuration

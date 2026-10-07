@@ -547,6 +547,16 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat; absent → the loader falls through to the
     /// current `TrainingParameters.klProbeInterval`.
     var klProbeInterval: Int?
+    /// The relative gradient cap's five settings in effect at save time
+    /// (`relative_grad_clip_*`). Optional because sessions written before
+    /// the cap do not state them; absent → the mode resolves to its
+    /// pre-feature value (`off`, held for the run) and the other four to the
+    /// current settings (`SessionParameterResume`).
+    var relativeGradClipMode: Int?
+    var relativeGradClipMultiple: Double?
+    var relativeGradClipWindowSteps: Int?
+    var relativeGradClipMinHistorySteps: Int?
+    var relativeGradClipFloor: Double?
     /// Step-line time interval in seconds (`step_line_interval_sec`) in
     /// effect at save time. Logging only. Optional because sessions written
     /// before the parameter existed do not state it; absent → the resume
