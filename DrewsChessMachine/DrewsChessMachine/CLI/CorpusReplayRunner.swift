@@ -1745,7 +1745,8 @@ enum CorpusReplayRunner {
                     parentModelID: parentModelID,
                     notes: "corpus replay \(reason) @ trainer step \(snapshot.schedule.completedTrainSteps) (segment step \(step))",
                     schedule: snapshot.schedule,
-                    policyTailPrecision: trainer.policyTailPrecision
+                    policyTailPrecision: trainer.policyTailPrecision,
+                    gradNormHistory: snapshot.gradNormHistory.history
                 )
                 // The corpus position (what `--resume-exact` resumes from)
                 // and the build that wrote it travel in the lineage record.

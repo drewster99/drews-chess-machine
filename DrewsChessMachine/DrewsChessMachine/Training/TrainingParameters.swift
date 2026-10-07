@@ -457,6 +457,77 @@ public enum ValueLabelSmoothingEpsilon: TrainingParameterKey {}
 )
 public enum GradClipMaxNorm: TrainingParameterKey {}
 
+// MARK: Relative gradient cap
+//
+// A per-step cap relative to the run's own recent pre-clip gradient norms:
+// cap = min(Gradient Clip Max Norm, max(floor, k × median of the last N
+// real-data steps' pre-clip norms)), applied once the window holds W entries.
+// The hard max stays in force; the relative term only tightens it. The mode is
+// the feature switch, so it alone is `.preFeature(0)` (`off` is what every run
+// before it did); k, N, W and the floor are inert while the mode resolves to
+// `off`, the LR-cycle dependents' convention (`.currentSetting`). Design and
+// evidence: `documentation/plans-active/RELATIVE_GRADIENT_CAP_PLAN.md`.
+
+@TrainingParameter(
+    name: "Relative Gradient Cap Mode",
+    description: "Relative gradient-norm cap: 0 = off (only Gradient Clip Max Norm clips), 1 = log only (the relative cap is computed and every step it would clip is logged as [GRAD-CLIP] … applied=false, but the hard max is what is fed), 2 = clip (the step's cap is min(Gradient Clip Max Norm, max(Relative Gradient Cap Floor, k × median)), where the median is of the pre-clip global gradient norms of the last N real-data SGD steps; applied once the window holds at least W entries).",
+    default: 1,
+    range: 0...2,
+    category: "Optimizer",
+    id: "relative_grad_clip_mode",
+    liveTunable: true,
+    absentValue: .preFeature(0)
+)
+public enum RelativeGradClipMode: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Relative Gradient Cap k",
+    description: "Multiple k of the trailing median pre-clip gradient norm in the relative cap min(Gradient Clip Max Norm, max(floor, k × median)). Read only when Relative Gradient Cap Mode is log only or clip.",
+    default: 3.0,
+    range: 1.0...20.0,
+    category: "Optimizer",
+    id: "relative_grad_clip_multiple",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum RelativeGradClipMultiple: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Relative Gradient Cap Window N",
+    description: "Number of most recent real-data SGD steps N whose pre-clip global gradient norms the relative cap takes the median of. Must be ≥ Relative Gradient Cap Min History W.",
+    default: 1000,
+    range: 100...10000,
+    category: "Optimizer",
+    id: "relative_grad_clip_window_steps",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum RelativeGradClipWindowSteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Relative Gradient Cap Min History W",
+    description: "Warm-up: the relative cap applies only once the window holds at least W recorded steps (until then only Gradient Clip Max Norm clips); until the window fills it takes the median of the steps it has. Must be ≤ Relative Gradient Cap Window N.",
+    default: 100,
+    range: 10...10000,
+    category: "Optimizer",
+    id: "relative_grad_clip_min_history_steps",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum RelativeGradClipMinHistorySteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Relative Gradient Cap Floor",
+    description: "Lower bound on the relative term: cap = min(Gradient Clip Max Norm, max(floor, k × median)). Keeps a run whose gradients have shrunk (a nearly dead network) from being clipped at a tiny multiple of its tiny norms. A floor at or above Gradient Clip Max Norm makes the relative term inert.",
+    default: 0.5,
+    range: 0.01...100.0,
+    category: "Optimizer",
+    id: "relative_grad_clip_floor",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum RelativeGradClipFloor: TrainingParameterKey {}
+
 @TrainingParameter(
     name: "Weight Decay",
     description: "L2 weight decay coefficient. Couples with batch size and the number of update steps per epoch.",

@@ -607,7 +607,8 @@ enum TrainVsUciRunner {
                 parentModelID: parentModelID,
                 notes: "train-vs-uci \(reason) @ trainer step \(snapshot.schedule.completedTrainSteps) (segment step \(step))",
                 schedule: snapshot.schedule,
-                policyTailPrecision: trainer.policyTailPrecision)
+                policyTailPrecision: trainer.policyTailPrecision,
+                gradNormHistory: snapshot.gradNormHistory.history)
             // Games and plies the driver flushed into the buffer.
             let slots = driver.statsSnapshot()
             // Each pool's engine identity, from its first instance that has

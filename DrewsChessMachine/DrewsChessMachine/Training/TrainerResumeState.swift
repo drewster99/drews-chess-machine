@@ -200,6 +200,26 @@ struct TrainerResumeSnapshot: Sendable {
     var trainerWeights: [[Float]]
     var schedule: TrainerScheduleState
     var dropoutRNG: DropoutRNGResumeState
+    /// The relative gradient cap's per-step history
+    /// (`trainer_grad_norm_history`), or `.notInCheckpoint` for a source
+    /// written before it existed.
+    var gradNormHistory: GradNormHistoryResumeState
+
+    init(trainerWeights: [[Float]], schedule: TrainerScheduleState,
+         dropoutRNG: DropoutRNGResumeState, gradNormHistory: GradNormHistoryResumeState) {
+        self.trainerWeights = trainerWeights
+        self.schedule = schedule
+        self.dropoutRNG = dropoutRNG
+        self.gradNormHistory = gradNormHistory
+    }
+
+    /// A snapshot whose source carries no gradient-norm history — a source
+    /// that predates the relative cap. Every production path that has one
+    /// passes it through the four-argument init.
+    init(trainerWeights: [[Float]], schedule: TrainerScheduleState, dropoutRNG: DropoutRNGResumeState) {
+        self.init(trainerWeights: trainerWeights, schedule: schedule, dropoutRNG: dropoutRNG,
+                  gradNormHistory: .notInCheckpoint)
+    }
 }
 
 /// Where a resume's dropout Philox state comes from.
@@ -268,7 +288,20 @@ extension TrainerResumeSnapshot {
             throw TrainerResumeError.notExactlyResumable(file: fileName, missing: missing)
         }
         self.init(trainerWeights: file.weights, schedule: schedule,
-                  dropoutRNG: DropoutRNGResumeState(lineage: file.safetensorsProvenance?.lineage))
+                  dropoutRNG: DropoutRNGResumeState(lineage: file.safetensorsProvenance?.lineage),
+                  gradNormHistory: GradNormHistoryResumeState(file.metadata.trainerGradNormHistory))
+    }
+}
+
+extension GradNormHistoryResumeState {
+    /// `.restored` when a file carries a history, `.notInCheckpoint`
+    /// otherwise.
+    init(_ history: GradientNormHistory?) {
+        if let history {
+            self = .restored(history)
+        } else {
+            self = .notInCheckpoint
+        }
     }
 }
 
@@ -279,10 +312,16 @@ extension ChessTrainer {
     func exportResumeSnapshot() async throws -> TrainerResumeSnapshot {
         let weights = try await exportTrainerWeights()
         let dropoutState = try await captureDropoutState()
+        let history = try await exportGradNormHistory()
+        let schedule = TrainerScheduleState(currentlyRunningOn: self)
+        // Training is paused, so the history ends at the clock the schedule
+        // read; a mismatch is a bug, refused here rather than saved.
+        try history.checkEnds(atTrainerClock: schedule.completedTrainSteps)
         return TrainerResumeSnapshot(
             trainerWeights: weights,
-            schedule: TrainerScheduleState(currentlyRunningOn: self),
-            dropoutRNG: .philox(dropoutState)
+            schedule: schedule,
+            dropoutRNG: .philox(dropoutState),
+            gradNormHistory: .restored(history)
         )
     }
 
@@ -309,6 +348,23 @@ extension ChessTrainer {
             SessionLogger.shared.log(
                 "[RESUME] rng: dropout=not restored (the checkpoint predates saved dropout RNG state; "
                 + "masks continue from this run's own dropout seed)"
+            )
+        }
+        switch snapshot.gradNormHistory {
+        case .restored(let history):
+            // Throws unless the history ends at the clock just restored: a
+            // file whose history and clock disagree is internally
+            // inconsistent and is not resumed from.
+            try await restoreGradNormHistory(history)
+            SessionLogger.shared.log(
+                "[RESUME] grad-norm history: restored entries=\(history.count) "
+                + "last_trainer_step=\(history.lastTrainerStep.map(String.init) ?? "none")"
+            )
+        case .notInCheckpoint:
+            try await restoreGradNormHistory(GradientNormHistory())
+            SessionLogger.shared.log(
+                "[RESUME] grad-norm history: not in checkpoint (relative cap mode=\(relativeGradientCap.mode.token); "
+                + "the relative cap warms up from an empty history)"
             )
         }
     }

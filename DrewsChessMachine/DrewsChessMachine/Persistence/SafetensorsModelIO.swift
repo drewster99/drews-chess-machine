@@ -33,6 +33,7 @@ enum SafetensorsModelIO {
         /// Trainer schedule metadata (`trainer_*`) without optimizer velocity
         /// tensors, on write or read.
         case trainerScheduleWithoutVelocity
+        case gradNormHistoryWithoutTrainerSchedule
         /// `trainer_policy_tail_precision` holds a value no precision spells.
         case malformedTrainerPolicyTailPrecision(String)
         /// A file at a format version that requires `dcm_lineage` has none.
@@ -76,6 +77,9 @@ enum SafetensorsModelIO {
             case .trainerScheduleWithoutVelocity:
                 return "safetensors model: trainer schedule metadata (trainer_*) without optimizer velocity "
                     + "tensors — exact-resume state must travel with the velocity it was captured alongside"
+            case .gradNormHistoryWithoutTrainerSchedule:
+                return "safetensors model: \(GradientNormHistory.metadataKey) without trainer schedule metadata — "
+                    + "the history is indexed by the trainer clock the schedule carries"
             case .malformedTrainerPolicyTailPrecision(let raw):
                 let allowed = ChessNetwork.PolicyTailPrecision.allCases.map(\.rawValue).joined(separator: ", ")
                 return "safetensors model: trainer_policy_tail_precision is '\(raw)', expected one of \(allowed)"
@@ -179,6 +183,9 @@ enum SafetensorsModelIO {
         if let step = metadata.trainingStep { md[Key.trainingStep] = String(step) }
         // Exact-resume state travels only with the optimizer velocity it was
         // captured alongside; one without the other is not resumable.
+        if metadata.trainerGradNormHistory != nil && metadata.trainerSchedule == nil {
+            throw IOError.gradNormHistoryWithoutTrainerSchedule
+        }
         if let schedule = metadata.trainerSchedule {
             guard includesVelocity else { throw IOError.trainerScheduleWithoutVelocity }
             // The lineage total of a trainer-state file IS its trainer clock,
@@ -193,6 +200,14 @@ enum SafetensorsModelIO {
                     trainingStep: metadata.trainingStep, trainerClock: schedule.completedTrainSteps)
             }
             for (key, value) in try schedule.metadataEntries() { md[key] = value }
+            // The relative cap's history, when the writer has one (every
+            // production trainer-file writer does), must end at the clock the
+            // schedule states — the same one-source rule as the lineage step
+            // and `training_step` above.
+            if let history = metadata.trainerGradNormHistory {
+                try history.checkEnds(atTrainerClock: schedule.completedTrainSteps)
+                md[GradientNormHistory.metadataKey] = try history.metadataValue()
+            }
             // The record's schedule keys are composed from this same value
             // (gap 5's rule), so a disagreement is a writer that bypassed the
             // rule; refused, never written.
@@ -391,6 +406,13 @@ enum SafetensorsModelIO {
         if trainerSchedule != nil && !hasVelocity {
             throw IOError.trainerScheduleWithoutVelocity
         }
+        // Decoded on its own: a trainer file written before the relative cap
+        // has the schedule keys but no history, and reads as such (nil).
+        let trainerGradNormHistory = try GradientNormHistory.decode(fromMetadata: md)
+        if let history = trainerGradNormHistory {
+            guard let schedule = trainerSchedule else { throw IOError.gradNormHistoryWithoutTrainerSchedule }
+            try history.checkEnds(atTrainerClock: schedule.completedTrainSteps)
+        }
         let trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision?
         if let raw = md[Key.trainerPolicyTailPrecision] {
             guard let precision = ChessNetwork.PolicyTailPrecision(rawValue: raw) else {
@@ -412,7 +434,8 @@ enum SafetensorsModelIO {
             parentModelID: md[Key.parentModelID] ?? "",
             notes: md[Key.notes] ?? "",
             trainerSchedule: trainerSchedule,
-            trainerPolicyTailPrecision: trainerPolicyTailPrecision
+            trainerPolicyTailPrecision: trainerPolicyTailPrecision,
+            trainerGradNormHistory: trainerGradNormHistory
         )
         // What `training_step` means in this file (format v11 or its
         // writer's meaning before), checked against the trainer clock from

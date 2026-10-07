@@ -199,19 +199,29 @@ extension SessionController {
         // rewinds the trainer's masks with its weights and clock, and the
         // post-promotion save records the state that goes with them.
         let trainerSnapshotDropoutState: DropoutPhiloxState
+        // And the relative gradient cap's history, which is indexed by that
+        // clock: a promotion rewinds it with the clock, or the next step's
+        // contiguity check would (rightly) refuse a history that ends at the
+        // post-arena step.
+        let trainerSnapshotGradNormHistory: GradientNormHistory
         do {
-            let snapshot: ([[Float]], [[Float]], Int, DropoutPhiloxState) = try await Task.detached(priority: .userInitiated) {
+            let snapshot: ([[Float]], [[Float]], Int, DropoutPhiloxState, GradientNormHistory) = try await Task.detached(priority: .userInitiated) {
                 let weights = try await trainer.network.exportWeights()
                 let velocity = try await trainer.exportVelocitySnapshot()
                 let completedSteps = trainer.completedTrainSteps
                 let dropoutState = try await trainer.captureDropoutState()
+                let gradNormHistory = try await trainer.exportGradNormHistory()
+                // Training is paused, so the history ends at the clock just
+                // read; a mismatch is a bug, refused before the arena runs.
+                try gradNormHistory.checkEnds(atTrainerClock: completedSteps)
                 try await candidateInference.loadWeights(weights)
-                return (weights, velocity, completedSteps, dropoutState)
+                return (weights, velocity, completedSteps, dropoutState, gradNormHistory)
             }.value
             trainerSnapshotWeights = snapshot.0
             trainerSnapshotVelocity = snapshot.1
             trainerSnapshotCompletedSteps = snapshot.2
             trainerSnapshotDropoutState = snapshot.3
+            trainerSnapshotGradNormHistory = snapshot.4
         } catch {
             trainingBox?.recordError("Arena candidate sync failed: \(error.localizedDescription)")
             trainingGate.resume()
@@ -502,6 +512,9 @@ extension SessionController {
                         // the rewound trainer draws the dropout sequence
                         // from where the candidate's training left it.
                         try await trainer.restoreDropoutState(trainerSnapshotDropoutState)
+                        // The gradient-norm history rewinds with the clock it
+                        // is indexed by (set just above).
+                        try await trainer.restoreGradNormHistory(trainerSnapshotGradNormHistory)
                         return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
@@ -784,7 +797,10 @@ extension SessionController {
                 // promotion record composes its schedule keys from; its clock
                 // is `promotionSaveTrainerStep` (training was paused).
                 schedule: arenaStartCut.schedule,
-                policyTailPrecision: trainer.policyTailPrecision
+                policyTailPrecision: trainer.policyTailPrecision,
+                // The history captured with the arena-start weights and
+                // clock, which the trainer was rewound to.
+                gradNormHistory: trainerSnapshotGradNormHistory
             )
             let saveDate = Date()
             let createdAtUnix = Int64(saveDate.timeIntervalSince1970)

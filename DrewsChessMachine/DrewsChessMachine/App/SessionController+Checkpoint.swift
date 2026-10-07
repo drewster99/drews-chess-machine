@@ -479,7 +479,8 @@ extension SessionController {
                 // then come from the same value as the record's.
                 trainerSnapshot = TrainerResumeSnapshot(trainerWeights: snapshot.trainerWeights,
                                                         schedule: configurationCut.schedule,
-                                                        dropoutRNG: snapshot.dropoutRNG)
+                                                        dropoutRNG: snapshot.dropoutRNG,
+                                                        gradNormHistory: snapshot.gradNormHistory)
             case .failure(let trainerError):
                 trainingGate.resume()
                 clearInFlight()
@@ -582,7 +583,8 @@ extension SessionController {
                 parentModelID: championID,
                 notes: "Trainer lineage at session checkpoint (\(diskTag))",
                 schedule: trainerSnapshot.schedule,
-                policyTailPrecision: trainer.policyTailPrecision
+                policyTailPrecision: trainer.policyTailPrecision,
+                gradNormHistory: trainerSnapshot.gradNormHistory.history
             )
             let now = Int64(Date().timeIntervalSince1970)
             // Champion and trainer share a topology; the trainer was built to

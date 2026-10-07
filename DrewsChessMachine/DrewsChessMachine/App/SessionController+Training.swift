@@ -904,6 +904,11 @@ extension SessionController {
             let resumedTrainerDropoutRNG: DropoutRNGResumeState = await MainActor.run {
                 DropoutRNGResumeState(lineage: pendingLoadedSession?.trainerFile.safetensorsProvenance?.lineage)
             }
+            // The relative gradient cap's history, from the trainer file;
+            // `.notInCheckpoint` for one written before it existed.
+            let resumedTrainerGradNormHistory: GradNormHistoryResumeState = await MainActor.run {
+                GradNormHistoryResumeState(pendingLoadedSession?.trainerFile.metadata.trainerGradNormHistory)
+            }
             let resumedBufferURL: URL? = await MainActor.run {
                 pendingLoadedSession?.replayBufferURL
             }
@@ -941,7 +946,8 @@ extension SessionController {
                         // this run's own dropout seed.
                         let snapshot = TrainerResumeSnapshot(
                             trainerWeights: trainerWeights, schedule: schedule,
-                            dropoutRNG: resumedTrainerDropoutRNG
+                            dropoutRNG: resumedTrainerDropoutRNG,
+                            gradNormHistory: resumedTrainerGradNormHistory
                         )
                         try await Task.detached(priority: .userInitiated) {
                             try await trainer.restoreExactly(from: snapshot)

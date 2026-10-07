@@ -142,6 +142,11 @@ struct TrainStepTiming: Sendable {
     /// clip event; steady values above it signal persistent overshoot
     /// that warrants a lower LR.
     let gradGlobalNorm: Float
+    /// The cap this step was fed and why (relative gradient cap,
+    /// `GradientCapPolicy`). Every consumer — step lines, `[GRAD-CLIP]`
+    /// events, the recorder — reads the step's cap from here rather than from
+    /// the trainer's live settings, which may have changed since the step ran.
+    let gradientCap: GradientCapDecision
     /// Mean of the derived scalar value `p_win − p_loss` across the
     /// batch. No tanh — the scalar is a difference of two softmax
     /// probabilities, naturally in [-1, +1]. A healthy batch of
@@ -1350,6 +1355,20 @@ final class ChessTrainer: @unchecked Sendable {
     /// single-step blowups; under heavy policy-collapse pressure the natural
     /// norm can far exceed it, which is why it is live-tunable.
     var gradClipMaxNorm: Float
+    /// Live relative gradient-cap settings (mode, k, N, W, floor), set like
+    /// `gradClipMaxNorm` (through `TrainerHyperparameters.apply(to:)`) and
+    /// read once per real-data step on `executionQueue` when the step's cap
+    /// is decided, so an edit takes effect on the next step. Validated by
+    /// construction (`RelativeGradientCapConfiguration`'s throwing init), so
+    /// the trainer never sees W > N.
+    var relativeGradientCap: RelativeGradientCapConfiguration
+    /// Every real-data step's pre-clip global gradient norm and fed cap — the
+    /// relative cap's input, and trainer state like the clock it is indexed
+    /// by. Read and written ONLY on `executionQueue`: the decision, the feed,
+    /// the step, the append and the clock increment are one block there, so
+    /// an export (`exportGradNormHistory`, itself enqueued) can never see a
+    /// history and a clock from different steps.
+    private var gradNormHistory = GradientNormHistory()
     /// Live policy-loss coefficient. Multiplied into `policyLoss`
     /// before it joins the (similarly weighted) `valueLoss` term
     /// and `−entropyCoeff·policyEntropy` in `total_loss`. Fed via
@@ -2090,6 +2109,7 @@ final class ChessTrainer: @unchecked Sendable {
         drawPenalty: Float = Float(DrawPenalty.declaredDefault),
         weightDecayC: Float = Float(WeightDecay.declaredDefault),
         gradClipMaxNorm: Float = Float(GradClipMaxNorm.declaredDefault),
+        relativeGradientCap: RelativeGradientCapConfiguration? = nil,
         policyLossWeight: Float = ChessTrainer.policyLossWeightDefault,
         valueLossWeight: Float = ChessTrainer.valueLossWeightDefault,
         illegalMassPenaltyWeight: Float = Float(IllegalMassWeight.declaredDefault),
@@ -2118,6 +2138,10 @@ final class ChessTrainer: @unchecked Sendable {
         self.drawPenalty = drawPenalty
         self.weightDecayC = weightDecayC
         self.gradClipMaxNorm = gradClipMaxNorm
+        // nil = the five parameters' declared defaults (tests and timing
+        // sweeps, like the other defaulted arguments above); production
+        // trainers are configured through `TrainerHyperparameters`.
+        self.relativeGradientCap = try relativeGradientCap ?? RelativeGradientCapConfiguration.declaredDefaults()
         self.policyLossWeight = policyLossWeight
         self.valueLossWeight = valueLossWeight
         self.illegalMassPenaltyWeight = illegalMassPenaltyWeight
@@ -2523,6 +2547,9 @@ final class ChessTrainer: @unchecked Sendable {
         // `_completedTrainSteps / lrWarmupSteps`) jumps ahead of the
         // immature network and drives oversized first-step updates.
         _completedTrainSteps.value = 0
+        // The gradient-norm history belongs to the trajectory these weights
+        // replace; a fresh network starts its own (warm-up from empty).
+        gradNormHistory = GradientNormHistory()
 
         // Seed the fp32 masters from the new network's freshly-built working
         // weights. Already on `executionQueue` (via `enqueue`), so run
@@ -4590,7 +4617,11 @@ final class ChessTrainer: @unchecked Sendable {
                                 moves: movesBase,
                                 zs: zsBase,
                                 vBaselines: vBaseBase,
-                                legalMasks: legalMasksBase
+                                legalMasks: legalMasksBase,
+                                // The synthetic path records nothing in the
+                                // gradient-norm history, so only the hard max
+                                // applies.
+                                gradientCapFeed: gradClipMaxNorm
                             ))
                             let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
                             return try runPreparedStep(
@@ -4602,7 +4633,8 @@ final class ChessTrainer: @unchecked Sendable {
                                 // Random-data sweep: keep the full readback so
                                 // its measured step matches historical sweeps.
                                 includeDiagnostics: true,
-                                klProbeStepIndex: stepIndex
+                                klProbeStepIndex: stepIndex,
+                                gradientCap: .hardMaxOnly(hardMax: gradClipMaxNorm)
                             )
                         }
                     }
@@ -4928,13 +4960,28 @@ final class ChessTrainer: @unchecked Sendable {
 //                )
 //            }
 
+            // The step's gradient cap, decided here — on this queue, in the
+            // same block as the feed, the run, the history append and the
+            // clock increment below — so the decision reads exactly the
+            // history of the steps before this one and an export can never
+            // fall between them. The contiguity check runs first, before the
+            // step can move any weight: a history that does not end at the
+            // clock belongs to another trajectory.
+            try self.gradNormHistory.checkContinues(toTrainerStep: self._completedTrainSteps.value + 1)
+            let gradientCap = GradientCapPolicy.decide(
+                configuration: self.relativeGradientCap,
+                hardMax: self.gradClipMaxNorm,
+                history: self.gradNormHistory,
+                nextTrainerStep: self._completedTrainSteps.value + 1
+            )
             let feeds = self.buildFeeds(BatchFeedsInput(
                 batchSize: batchSize,
                 boards: UnsafePointer(boards),
                 moves: UnsafePointer(moves),
                 zs: UnsafePointer(zs),
                 vBaselines: nil,   // fed via GPU→GPU handoff; bound in runPreparedStep
-                legalMasks: UnsafePointer(masks)
+                legalMasks: UnsafePointer(masks),
+                gradientCapFeed: gradientCap.fedCap
             ))
             let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
 
@@ -4954,7 +5001,20 @@ final class ChessTrainer: @unchecked Sendable {
                 // The step's position in the run, read on this queue before
                 // the increment below: the same index on resume as in the
                 // uninterrupted run.
-                klProbeStepIndex: self._completedTrainSteps.value
+                klProbeStepIndex: self._completedTrainSteps.value,
+                gradientCap: gradientCap
+            )
+
+            // Record the step's pre-clip norm (read back and checked finite
+            // inside `runPreparedStep`) and the cap it was fed, before the
+            // clock increment and in the same block, so history and clock
+            // move together. A discontinuity means some path moved the clock
+            // without the history — a bug; the error stops training rather
+            // than mixing two trajectories in one median.
+            try self.gradNormHistory.append(
+                trainerStep: self._completedTrainSteps.value + 1,
+                preClipNorm: baseTiming.gradGlobalNorm,
+                fedCap: gradientCap.fedCap
             )
 
             // Count a successfully-completed real-data SGD step, for
@@ -5072,6 +5132,7 @@ final class ChessTrainer: @unchecked Sendable {
                 policyNonNegligibleCount: baseTiming.policyNonNegligibleCount,
                 policyNonNegligibleIllegalCount: baseTiming.policyNonNegligibleIllegalCount,
                 gradGlobalNorm: baseTiming.gradGlobalNorm,
+                gradientCap: baseTiming.gradientCap,
                 valueMean: baseTiming.valueMean,
                 valueAbsMean: baseTiming.valueAbsMean,
                 valueProbWin: baseTiming.valueProbWin,
@@ -5541,6 +5602,9 @@ final class ChessTrainer: @unchecked Sendable {
             try await writeMasterValues(weights)
         }
         try await resetVelocitiesToZero()
+        // A branch: new weights and zero velocity start a new trajectory, so
+        // the previous one's gradient norms are not this run's reference.
+        try await enqueue { self.gradNormHistory = GradientNormHistory() }
     }
 
     /// Overwrite all velocity buffers with zeros. Retained as an
@@ -6069,6 +6133,25 @@ final class ChessTrainer: @unchecked Sendable {
         try await enqueue { try self.writeDropoutStateOnQueue(state) }
     }
 
+    /// The gradient-norm history the next real-data step decides its cap
+    /// from. Serialized behind any step in flight on `executionQueue`; for a
+    /// history consistent with saved weights and clock the caller pauses
+    /// training first, as for `captureDropoutState()`.
+    func exportGradNormHistory() async throws -> GradientNormHistory {
+        try await enqueue { self.gradNormHistory }
+    }
+
+    /// Make `history` the one the next real-data step decides its cap from.
+    /// It must be empty or end exactly at the trainer's current clock (set
+    /// the clock first): a history from another point of the trajectory
+    /// would give caps the saved run never fed. Caller pauses training first.
+    func restoreGradNormHistory(_ history: GradientNormHistory) async throws {
+        try await enqueue {
+            try history.checkEnds(atTrainerClock: self._completedTrainSteps.value)
+            self.gradNormHistory = history
+        }
+    }
+
     /// Begin a run's dropout mask sequence: `stream` (the run's `dropout`
     /// stream) replaces the trainer's, and its first draw seeds the graph's
     /// Philox state, exactly as a newly built trainer seeds itself. The GUI's
@@ -6167,6 +6250,10 @@ final class ChessTrainer: @unchecked Sendable {
         /// on the random-data sweep path, which has no baseline forward.
         let vBaselines: UnsafePointer<Float>?
         let legalMasks: UnsafePointer<Float>
+        /// What the `gradClipMaxNorm` placeholder is fed this step: the
+        /// relative cap decision's `fedCap` on the real-data path, the hard
+        /// max on the synthetic one. One writer, one placeholder.
+        let gradientCapFeed: Float
     }
 
     /// `@unchecked Sendable` wrapper so the value-only forward's GPU result
@@ -6246,7 +6333,7 @@ final class ChessTrainer: @unchecked Sendable {
         writeScalarFeed(lrNDArray, value: lr)
         writeScalarFeed(entropyCoeffNDArray, value: entropyRegularizationCoeff)
         writeScalarFeed(weightDecayNDArray, value: weightDecayC)
-        writeScalarFeed(gradClipMaxNormNDArray, value: gradClipMaxNorm)
+        writeScalarFeed(gradClipMaxNormNDArray, value: input.gradientCapFeed)
         writeScalarFeed(policyLossWeightNDArray, value: policyLossWeight)
         writeScalarFeed(valueLossWeightNDArray, value: valueLossWeight)
         writeScalarFeed(illegalMassWeightNDArray, value: illegalMassPenaltyWeight)
@@ -6746,7 +6833,8 @@ final class ChessTrainer: @unchecked Sendable {
         batchSize: Int,
         vBaselineOverride: MPSGraphTensorData? = nil,
         includeDiagnostics: Bool,
-        klProbeStepIndex: Int
+        klProbeStepIndex: Int,
+        gradientCap: GradientCapDecision
     ) throws -> TrainStepTiming {
         // The training step is the ONE execution that applies dropout, so it is
         // the one that binds the live rate; every other consumer of this graph
@@ -7335,6 +7423,7 @@ final class ChessTrainer: @unchecked Sendable {
             policyNonNegligibleCount: nonNegBufValue,
             policyNonNegligibleIllegalCount: nonNegIllegalBufValue,
             gradGlobalNorm: gradNormBufValue,
+            gradientCap: gradientCap,
             valueMean: valueMeanBufValue,
             valueAbsMean: valueAbsMeanBufValue,
             valueProbWin: valueProbWinBufValue,

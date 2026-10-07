@@ -157,6 +157,7 @@ enum TrainingHealthTestSupport {
             policyNonNegligibleCount: .nan,
             policyNonNegligibleIllegalCount: .nan,
             gradGlobalNorm: gradient,
+            gradientCap: .hardMaxOnly(hardMax: 15),
             valueMean: .nan,
             valueAbsMean: .nan,
             valueProbWin: .nan, valueProbDraw: .nan, valueProbLoss: .nan,

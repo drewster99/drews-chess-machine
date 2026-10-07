@@ -804,6 +804,32 @@ struct TrainingHealthReferenceEntry: Sendable, Equatable {
     let gradGlobalNorm: Float?
 }
 
+/// How far back a trailing reference looks and how much data it needs
+/// before it reports a median. The one trailing-median definition is
+/// `TrainingHealthReference.make(_:windowStart:policy:)`; its two users name
+/// their policy explicitly rather than share a default, because they want
+/// different evidence: the spike rules (6 and 9) read sparse every-50-step
+/// rows and need a span, while the relative gradient cap
+/// (`GradientCapPolicy`) reads a contiguous per-step history and needs only a
+/// minimum entry count (its warm-up).
+struct TrailingReferencePolicy: Sendable, Equatable {
+    /// Values at trainer steps `windowStart - lookbackSteps ..< windowStart`
+    /// count.
+    let lookbackSteps: Int
+    /// Fewer finite values than this give no reference.
+    let minimumRecords: Int
+    /// The counted values must span at least this many trainer steps (first
+    /// to last); 0 means any span.
+    let minimumSpanSteps: Int
+
+    /// Rules 6 and 9's reference (owner decision 2026-10-06).
+    static let spikeRules = TrailingReferencePolicy(
+        lookbackSteps: TrainingHealthThresholds.spikeReferenceLookbackSteps,
+        minimumRecords: TrainingHealthThresholds.spikeReferenceMinimumRecords,
+        minimumSpanSteps: TrainingHealthThresholds.spikeReferenceMinimumSpanSteps
+    )
+}
+
 /// The median of one field over the records in the look-back span before a
 /// window.
 struct TrainingHealthReference: Sendable, Equatable {
@@ -811,17 +837,28 @@ struct TrainingHealthReference: Sendable, Equatable {
     let recordCount: Int
     let spanSteps: Int
 
-    /// The reference of `values` (trainer step, value) in the look-back span
-    /// before `windowStart`: nil unless at least
-    /// `spikeReferenceMinimumRecords` finite values span at least
-    /// `spikeReferenceMinimumSpanSteps` trainer steps (first to last) — a
-    /// span, not a record count, so per-step history and sparse offline rows
-    /// share one definition.
+    /// Rules 6 and 9's reference: `make(_:windowStart:policy: .spikeRules)`.
+    /// Kept as its own entry point so the rules' call sites name no policy
+    /// and their tests pin the rules' definition unchanged.
     static func make(
         _ values: [(trainerStep: Int, value: Float?)],
         windowStart: Int
     ) -> TrainingHealthReference? {
-        let lowerBound = windowStart - TrainingHealthThresholds.spikeReferenceLookbackSteps
+        make(values, windowStart: windowStart, policy: .spikeRules)
+    }
+
+    /// The reference of `values` (trainer step, value) in the look-back span
+    /// before `windowStart`: nil unless at least `policy.minimumRecords`
+    /// finite values span at least `policy.minimumSpanSteps` trainer steps
+    /// (first to last) — a span as well as a record count, so per-step
+    /// history and sparse offline rows share one definition. Missing and
+    /// non-finite values are skipped, never counted.
+    static func make(
+        _ values: [(trainerStep: Int, value: Float?)],
+        windowStart: Int,
+        policy: TrailingReferencePolicy
+    ) -> TrainingHealthReference? {
+        let lowerBound = windowStart - policy.lookbackSteps
         var steps: [Int] = []
         var finite: [Double] = []
         for entry in values where entry.trainerStep >= lowerBound && entry.trainerStep < windowStart {
@@ -829,9 +866,9 @@ struct TrainingHealthReference: Sendable, Equatable {
             steps.append(entry.trainerStep)
             finite.append(Double(value))
         }
-        guard finite.count >= TrainingHealthThresholds.spikeReferenceMinimumRecords,
+        guard finite.count >= policy.minimumRecords,
               let lo = steps.min(), let hi = steps.max(),
-              hi - lo >= TrainingHealthThresholds.spikeReferenceMinimumSpanSteps,
+              hi - lo >= policy.minimumSpanSteps,
               let median = TrainingHealthWindowStatistics.median(finite) else {
             return nil
         }
