@@ -9,6 +9,31 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 11:25 — Analyses describe the weights they analyzed `86825cbc`
+
+- One weights snapshot per network (`AnalyzedNetworkSnapshot`), shared by the weight analysis, the value-head analysis and the numerics audit of one request; the trainer's is paired with its step (`exportWeightsWithCompletedSteps`), the champion's step is what its origin states. Before, each analyzer exported separately while SGD ran and the files' steps came from two counters read at the button press.
+- Every init figure comes from `AnalysisInitReference`: the architecture built by `ChessMPSNetwork(.randomWeights)` itself, under the model's recorded init seed when known (exact drift), else under two other seeds (deterministic tensors exact). Replaces the analyzers' hard-coded He / `[0, ln 6, 0]` / γ = 1 / bias = 0 rules.
+- Weight-analysis section totals over trainables, running statistics apart; value-head `currentSoftmax` → `biasOnlySoftmax`; numerics audit reads trainer velocity when training is stopped and notes when bf16/fp32 fitness is zero by construction.
+- Export metadata v4: `analyzedWeights` replaces the top-level champion `architecture` and the hard-coded `architectureNotes`.
+
+## 2026-10-07 11:24 — Arena SPRT fed in game-start order `82e1b785`
+
+- The test was fed games as they finished; short threefold draws finish first, so it decided on the shortest games (arenas #2, #4, #5 rejected on W/D/L 0/181/1, 0/124/1, 0/55/1; #4's full tally was W239/D223/L62, +122 Elo). `ArenaSPRTStartOrderFeed` releases results to the test only as an unbroken start-order prefix.
+
+## 2026-10-07 11:24 — Policy KL charts filled `386cc701`
+
+- KL probe values were appended only on diagnostics steps, which the probe's schedule (trainer steps 1, 101, …) never hits after step 1; they are now recorded on every probe step, so `[STATS] kl=` and the Policy KL charts show them.
+
+## 2026-10-07 11:23 — Lichess bot: fixed bot-game window, reserves, decline memory, Record card `88cb3a55`
+
+- Lichess' bot-vs-bot limit is a fixed 24 h window cleared all at once (lila `BotLimit`); `LichessBotBotGameWindow` models it and matchmaking's pause names the resume time. Reserves for incoming challenges and the challenge queue.
+- Matchmaking remembers declines from the challenge log: noBot 30 days, casual/rated 30 days, clock reasons 14 days (settings); prefers bots not contacted in 24 h.
+- Record card: Yesterday / Last week / Last month / Last year; the cross-speed rating sum removed (per-speed Δ in Time controls); stable column widths across filters; the pane always visible. Window title, alarms first, today / 24 h game counts.
+
+## 2026-10-07 10:55 — Model picker: seed rows, legacy session champions `b4ffd99b`
+
+- Seed rows show the trained segments and session champions below them; `champion.dcmmodel` sessions are listed; unreadable rows name their session.
+
 ## 2026-10-07 — Relative gradient-norm cap (P1–P4; default `log_only`)
 
 Plan: `documentation/plans-active/RELATIVE_GRADIENT_CAP_PLAN.md` (P5, the flip to `clip`, waits on validation runs V-1 and V-3).
