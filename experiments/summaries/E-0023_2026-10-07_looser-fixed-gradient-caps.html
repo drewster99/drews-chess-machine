@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0023">
+<meta name="dcm-date" content="2026-10-07">
+<meta name="dcm-title" content="Looser fixed gradient caps (2.0 and 5.0) vs B-silu's step-20,600 blowup">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="gradient-clipping, silu, lr-schedule, training-stability, exact-resume, basic24">
+<meta name="dcm-takeaway" content="Exact reruns of B-silu from 18k with grad_clip_max_norm 2.0 and 5.0 both left B-silu's path at 19,800, exactly where the 1.0 cap did, and neither blew up (21k pElo 1373.2 and 1353.6 vs 457.4; 0 parked channels; 1560.6 and 1567.3 at 23k vs ReLU B's 1573.4). So B-silu had one unlogged step with a pre-clip norm above 5, more than 13x its usual 0.33-0.38, and any cap from 1 to 5 cut it. A cap at about 3x the recent median catches such a step without binding in normal training: the relative gradient cap, now on main, defaults to log only until its validation runs pass.">
+<meta name="dcm-related" content="E-0020, E-0021">
+<meta name="dcm-superseded-by" content="">
+<title>E-0023 · Looser fixed gradient caps (2.0 and 5.0) vs B-silu's step-20,600 blowup</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0023</span><span>2026-10-07</span><span class="status complete">complete</span></div>
+<h1>Looser fixed gradient caps (2.0 and 5.0) vs B-silu's step-20,600 blowup</h1>
+<div class="tags"><span class="tag">gradient-clipping</span><span class="tag">silu</span><span class="tag">lr-schedule</span><span class="tag">training-stability</span><span class="tag">exact-resume</span><span class="tag">basic24</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>E-0020 showed that an exact rerun of B-silu from its 18k checkpoint with <code>grad_clip_max_norm</code> 1.0 avoided the step-20,600 blowup that its own cap 15 reproduced bit for bit. A fixed 1.0 cap cannot be used everywhere: gNorm is about 30 at step 1 and 1–3 for the first few hundred steps, so it would clip nearly every early step. How loose can a fixed cap be and still avoid the blowup? This bounds the size of the unlogged precursor step and tells us whether a cap tied to the recent median is enough.</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Start</dt><dd>B-silu's step-18,000 checkpoint <code>20261005-lrBsilu-cyc1-replay-step18000</code> (lineage run <code>085EF48A…</code>, ModelID <code>20261006-44-8ipq</code>, sha <code>4697674c64a7</code>). Both arms <code>--resume-exact --accept-inexact params</code> (<code>[RESUME] EXACT</code>), corpus <code>20260624-192615-w3aA5b</code>, <code>--seed 20261005</code>, <code>--policy-tail-precision fp32_from_pre_bn</code>, frozen build 2330 (<code>DCM-2331-4e70c615-p1headact.app</code>, sha256 prefix <code>1ae960792717</code>), to trainer step 23,000 (segment limit 5,000).</dd><dt>clip2</dt><dd><code>parameters-Bsilu-clip2.json</code> = <code>parameters-B.json</code> with <code>grad_clip_max_norm</code> 2.0. Stem <code>20261006-lrBsilu-clip2</code>, ModelID <code>20261007-38-EHwm</code>, log <code>dcm_log_20261007-035017-2.txt</code>. 2026-10-07 03:50 → 05:46:51, rc 0.</dd><dt>clip5</dt><dd>Same with <code>grad_clip_max_norm</code> 5.0 (<code>parameters-Bsilu-clip5.json</code>). Stem <code>20261006-lrBsilu-clip5</code>, ModelID <code>20261007-38-hdjU</code>, log <code>dcm_log_20261007-035017.txt</code>. 03:50 → 05:47:04, rc 0.</dd><dt>Compared with</dt><dd>B-silu (cap 15), the cap-15 control ctl15 (identical to B-silu), clip1 (cap 1.0) from E-0020, and ReLU B.</dd><dt>Measured</dt><dd><code>[REPLAY]</code> lines every 50 steps (loss, gNorm before clipping, illegal-move mass); wide-set policy probes every 1,000 steps; <code>bn_liveness.py</code> per site at 21k–23k.</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<figure class="chart">
+<script type="application/json">{"x": {"label": "trainer step"}, "y": {"label": "pElo (wide probe set)"}, "series": [{"name": "B (ReLU, cap 15)", "points": [[18000, 1573.9], [19000, 1558.5], [20000, 1471.3], [21000, 1332.5], [22000, 1372.2], [23000, 1573.4]]}, {"name": "B-silu (cap 15) = ctl15", "points": [[18000, 1560.1], [19000, 1571.9], [20000, 1390.2], [21000, 457.4], [22000, 833.8], [23000, 927.2]]}, {"name": "clip1 (cap 1.0)", "points": [[19000, 1571.9], [20000, 1442.5], [21000, 1386.6], [22000, 1412.8], [23000, 1567.8]]}, {"name": "clip2 (cap 2.0)", "points": [[19000, 1571.9], [20000, 1462.1], [21000, 1373.2], [22000, 1457.9], [23000, 1560.6]]}, {"name": "clip5 (cap 5.0)", "points": [[19000, 1571.9], [20000, 1436.9], [21000, 1353.6], [22000, 1407.1], [23000, 1567.3]]}], "vlines": [{"x": 18000, "label": "resume"}, {"x": 20600, "label": "blowup"}]}</script>
+<figcaption>Policy pElo every 1,000 steps. All capped runs resume from B-silu's 18k checkpoint; at 19k they are still identical to it.</figcaption>
+</figure>
+<div class="tablebox"><table><caption>Probe pElo (wide set, 4,435 puzzles). ctl15 stopped at 22,030.</caption><thead><tr><th>trainer step</th><th class="n">B (ReLU)</th><th class="n">B-silu</th><th class="n">ctl15</th><th class="n">clip1</th><th class="n">clip2</th><th class="n">clip5</th></tr></thead><tbody><tr><td>19,000</td><td class="n">1558.5</td><td class="n">1571.9</td><td class="n">1571.9</td><td class="n">1571.9</td><td class="n">1571.9</td><td class="n">1571.9</td></tr><tr><td>20,000</td><td class="n">1471.3</td><td class="n">1390.2</td><td class="n">1390.2</td><td class="n">1442.5</td><td class="n">1462.1</td><td class="n">1436.9</td></tr><tr><td>21,000</td><td class="n">1332.5</td><td class="n">457.4</td><td class="n">457.4</td><td class="n">1386.6</td><td class="n">1373.2</td><td class="n">1353.6</td></tr><tr><td>22,000</td><td class="n">1372.2</td><td class="n">833.8</td><td class="n">833.8</td><td class="n">1412.8</td><td class="n">1457.9</td><td class="n">1407.1</td></tr><tr><td>23,000</td><td class="n">1573.4</td><td class="n">927.2</td><td class="n"></td><td class="n">1567.8</td><td class="n">1560.6</td><td class="n">1567.3</td></tr></tbody></table></div>
+<div class="tablebox"><table><caption>Logged lines (loss · gNorm before clipping · illegal-move mass). All four equal on every line from 18,050 to 19,750.</caption><thead><tr><th>trainer step</th><th>B-silu (cap 15)</th><th>clip1 (1.0)</th><th>clip2 (2.0)</th><th>clip5 (5.0)</th></tr></thead><tbody><tr><td>19,750</td><td>3.5110 · 0.327 · 0.0036</td><td>3.5110 · 0.327 · 0.0036</td><td>3.5110 · 0.327 · 0.0036</td><td>3.5110 · 0.327 · 0.0036</td></tr><tr><td>19,800</td><td>3.5357 · 0.379 · 0.0046</td><td>3.5356 · 0.332 · 0.0042</td><td>3.5374 · 0.330 · 0.0040</td><td>3.5337 · 0.367 · 0.0042</td></tr><tr><td>20,600</td><td>4.1303 · <strong>2.566</strong> · 0.0095</td><td>3.5584 · 0.364 · 0.0065</td><td>3.5899 · 0.403 · 0.0068</td><td>3.5682 · 0.354 · 0.0064</td></tr><tr><td>20,650</td><td>7.7890 · 0.264 · <strong>0.7988</strong></td><td>3.5245 · 0.364 · 0.0075</td><td>3.5141 · 0.372 · 0.0080</td><td>3.5341 · 0.417 · 0.0068</td></tr><tr><td>23,000</td><td>3.8331 · 0.338 · 0.0462</td><td>3.5242 · 0.246 · 0.0020</td><td>3.5254 · 0.241 · 0.0021</td><td>3.5216 · 0.246 · 0.0021</td></tr></tbody></table></div>
+<p>Largest logged gNorm over 18k–23k: clip2 0.453 (21,350), clip5 0.475 (20,900), clip1 0.462 (21,150), B-silu 2.566 (20,600); largest logged illegal-move mass: clip2 0.0084, clip5 0.0087, clip1 0.0088, B-silu 0.7988. <code>bn_liveness.py</code> finds no parked channel at any site in clip1, clip2 or clip5 at 21k, 22k or 23k, and no mostly-off channel except 2 in clip5's <code>value.bn</code> at 23k; B-silu has 20, 21 and 20 parked policy pre-BN channels at those steps. Policy pre-BN lowest pass-through at 23k: clip2 0.1944, clip5 0.2020, clip1 0.2024.</p>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>A cap that never binds leaves the run identical to B-silu bit for bit (ctl15), so clip5 leaving B-silu's path at 19,800 means some step in 19,751–19,799 had a pre-clip norm above 5: more than 13× the 0.33–0.38 logged around it, invisible on the 50-step lines. Any cap from 1 to 5 cut that step and the run never blew up, so the cause was one step far outside the normal range, not a gradual rise. Because every capped run left B-silu's path at 19,800, their batches at 20,600 met different weights and none logged a spike there; this shows the caps avoided the blowup, not what a cap of 2 or 5 would have done at 20,600 itself. The three caps differ by 7.2–50.8 pElo per probe with no consistent order, and at 23k all are within 12.8 of ReLU B. One start state, one seed, four probes per arm.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Exact reruns of B-silu from 18k with grad_clip_max_norm 2.0 and 5.0 both left B-silu's path at 19,800, exactly where the 1.0 cap did, and neither blew up (21k pElo 1373.2 and 1353.6 vs 457.4; 0 parked channels; 1560.6 and 1567.3 at 23k vs ReLU B's 1573.4). So B-silu had one unlogged step with a pre-clip norm above 5, more than 13x its usual 0.33-0.38, and any cap from 1 to 5 cut it. A cap at about 3x the recent median catches such a step without binding in normal training: the relative gradient cap, now on main, defaults to log only until its validation runs pass.</p>
+</section>
+
+<section>
+<h2>Reproduce</h2>
+<p>Binary <code>~/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2331-4e70c615-p1headact.app</code> (build 2330, git <code>4e70c615</code>, dirty). clip2 (for clip5 replace <code>clip2</code> with <code>clip5</code>): <code>"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/20261005-lrBsilu-cyc1-replay-step18000.safetensors" --resume-exact --accept-inexact params --out-model "$M/20261006-lrBsilu-clip2-replay-latest.safetensors" --parameters experiments/20261005-lr-schedule-ab/parameters-Bsilu-clip2.json --epochs 12 --training-step-limit 5000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005</code>, with <code>M</code> = <code>~/Library/Application Support/DrewsChessMachine/Models</code>. Probes: <code>PROBE_BIN="$BIN" PROBE_SEGMENT=1 TRAINER_PID=&lt;pid&gt; experiments/probe_loop.sh 20261006-lrBsilu-clip2 experiments/20261005-lr-schedule-ab/probes-Bsilu-clip2-seg1.jsonl</code>. Analysis: compare the four logs' <code>[REPLAY]</code> lines by <code>trainerStep=</code>; <code>bn_liveness.analyze()</code> on <code>20261006-lrBsilu-clip{1,2,5}-replay-seg1-step{3000,4000,5000}</code>. A rerun on this GPU should match every line up to 19,750; after the split, MPSGraph numerics on a shared GPU need not repeat.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261005-lr-schedule-ab/README.md">experiments/20261005-lr-schedule-ab/</a> — "Arms B-silu-clip2 and B-silu-clip5" and its results subsection</li><li><a href="../20261005-lr-schedule-ab/parameters-Bsilu-clip2.json">parameters-Bsilu-clip2.json</a>, <a href="../20261005-lr-schedule-ab/parameters-Bsilu-clip5.json">parameters-Bsilu-clip5.json</a> — the recipes</li><li><a href="../20261005-lr-schedule-ab/probes-Bsilu-clip2-seg1.jsonl">probes-Bsilu-clip2-seg1.jsonl</a>, <a href="../20261005-lr-schedule-ab/probes-Bsilu-clip5-seg1.jsonl">probes-Bsilu-clip5-seg1.jsonl</a> — probes (segment steps; trainer step = +18,000)</li><li><a href="../../documentation/plans-active/RELATIVE_GRADIENT_CAP_PLAN.md">RELATIVE_GRADIENT_CAP_PLAN.md</a> — the relative cap and its validation runs</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

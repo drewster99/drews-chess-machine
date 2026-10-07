@@ -8,8 +8,6 @@ conversation.
 
 | started | experiment | ends (est.) |
 |---|---|---|
-| 2026-10-07 03:50 | LR arm B-silu-clip2: exact resume of B-silu from 18k with grad_clip_max_norm 2.0, to 23k | ~2026-10-07 07:30 |
-| 2026-10-07 03:50 | LR arm B-silu-clip5: exact resume of B-silu from 18k with grad_clip_max_norm 5.0, to 23k | ~2026-10-07 07:30 |
 
 
 ## Next (in order)
@@ -33,6 +31,10 @@ conversation.
 
 ## Finished
 
+- 2026-10-07 03:50 → 05:47 — LR arms B-silu-clip2 and B-silu-clip5 (`20261005-lr-schedule-ab/`, E-0023): exact resumes of B-silu
+  from 18k with `grad_clip_max_norm` 2.0 / 5.0, to 23k (both clean finishes, rc 0). Both left B-silu's path at 19,800 like clip1
+  (so B-silu had an unlogged step with a pre-clip norm above 5) and neither blew up: 21k pElo 1373.2 / 1353.6 vs B-silu 457.4,
+  0 parked channels at 21k–23k, 23k 1560.6 / 1567.3 vs ReLU B 1573.4. Largest logged gNorm 0.453 / 0.475.
 - 2026-10-06 17:00 → 2026-10-07 02:45 — LR arm B-silu-clip1 (`20261005-lr-schedule-ab/`, E-0020): exact resume of B-silu
   from 18k with `grad_clip_max_norm` 1.0, to 40k (clean finish). Never blew up (the cap-15 control reproduced the 20,600 blowup
   bit for bit); low-LR probes −5.3 ± 6.7 pElo vs ReLU B, best 1639.2 at 38k (B 1632.0); 0 parked / 0 mostly-off BN channels at

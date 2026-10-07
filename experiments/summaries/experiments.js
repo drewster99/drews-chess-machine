@@ -368,7 +368,8 @@ window.DCM_EXPERIMENTS = [
   "takeaway": "An exact rerun of B-silu from 18k with its own cap 15 reproduced the step-20,600 blowup bit for bit, while the same rerun with grad_clip_max_norm 1.0 never blew up (0 dead channels at 22k vs 22, pElo 1597.5 at 24k vs 951.9, equal to ReLU B); it finished at 40k level with ReLU B (−5.3 ± 6.7 pElo at low LR, best 1639.2 vs 1632.0) with no dead channels. The precursor spike fell between 50-step log lines, so log the per-window maximum; a fixed 1.0 cap binds too hard early in training, so the general fix to test is a relative cap (k × running median).",
   "related": [
    "E-0017",
-   "E-0019"
+   "E-0019",
+   "E-0023"
   ],
   "supersededBy": null
  },
@@ -409,6 +410,27 @@ window.DCM_EXPERIMENTS = [
   "related": [
    "E-0017",
    "E-0019",
+   "E-0021"
+  ],
+  "supersededBy": null
+ },
+ {
+  "id": "E-0023",
+  "date": "2026-10-07",
+  "file": "E-0023_2026-10-07_looser-fixed-gradient-caps.html",
+  "title": "Looser fixed gradient caps (2.0 and 5.0) vs B-silu's step-20,600 blowup",
+  "status": "complete",
+  "tags": [
+   "gradient-clipping",
+   "silu",
+   "lr-schedule",
+   "training-stability",
+   "exact-resume",
+   "basic24"
+  ],
+  "takeaway": "Exact reruns of B-silu from 18k with grad_clip_max_norm 2.0 and 5.0 both left B-silu's path at 19,800, exactly where the 1.0 cap did, and neither blew up (21k pElo 1373.2 and 1353.6 vs 457.4; 0 parked channels; 1560.6 and 1567.3 at 23k vs ReLU B's 1573.4). So B-silu had one unlogged step with a pre-clip norm above 5, more than 13x its usual 0.33-0.38, and any cap from 1 to 5 cut it. A cap at about 3x the recent median catches such a step without binding in normal training: the relative gradient cap, now on main, defaults to log only until its validation runs pass.",
+  "related": [
+   "E-0020",
    "E-0021"
   ],
   "supersededBy": null

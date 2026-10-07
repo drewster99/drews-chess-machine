@@ -568,6 +568,95 @@ B-silu at 22,000; at its 22,030 abort save, value.bn has 1 more channel mostly o
 - Stems `20261006-lrBsilu-clip2` / `20261006-lrBsilu-clip5`; logs `dcm_log_20261007-035017-2.txt` (clip2), `dcm_log_20261007-035017.txt` (clip5); probes `probes-Bsilu-clip2-seg1.jsonl` / `probes-Bsilu-clip5-seg1.jsonl`.
 - Reading: a cap that is never exceeded leaves the run bit-identical to B-silu (the ctl15 control), so blowup or not is decided by whether the precursor spike exceeds the cap. A relative cap (k × running median of recent pre-clip norms) is the general form; it is being planned separately.
 
+### B-silu-clip2 and B-silu-clip5: results (both finished 2026-10-07 05:47; E-0023)
+
+- **Both finished cleanly** at trainer step 23,000 (segment limit 5,000): clip2 `[REPLAY] done: steps=5000 positionsFed=43422410
+  gamesFed=649460` at 05:46:51, final save `20261006-lrBsilu-clip2-replay-latest` (ModelID `20261007-38-EHwm`); clip5 the same
+  counts at 05:47:04, `20261006-lrBsilu-clip5-replay-latest` (ModelID `20261007-38-hdjU`). Both are segment 1 of B-silu's lineage
+  run `085EF48A…` (parent ModelID `20261006-44-8ipq`, sha `4697674c64a7`), `[RESUME] EXACT`, rc 0 (chain.log). Wall time 1 h 56 min
+  each, sharing the GPU with each other and with test suites.
+- **Neither blew up.** No logged line in either run shows a gNorm above 0.475 or an illegal-move mass above 0.0087 (B-silu at
+  20,650: 0.7988), and neither has a parked or mostly-off policy pre-BN channel at 21k, 22k or 23k (B-silu: 20, 21, 20 parked).
+
+| trainer step | B (ReLU, cap 15) | B-silu (cap 15) | ctl15 (cap 15) | clip1 (cap 1.0) | clip2 (cap 2.0) | clip5 (cap 5.0) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 19,000 | 1558.5 | 1571.9 | 1571.9 | 1571.9 | 1571.9 | 1571.9 |
+| 20,000 | 1471.3 | 1390.2 | 1390.2 | 1442.5 | 1462.1 | 1436.9 |
+| 21,000 | 1332.5 | 457.4 | 457.4 | 1386.6 | 1373.2 | 1353.6 |
+| 22,000 | 1372.2 | 833.8 | 833.8 | 1412.8 | 1457.9 | 1407.1 |
+| 23,000 | 1573.4 | 927.2 | | 1567.8 | 1560.6 | 1567.3 |
+
+  pElo on the wide probe set (4,435 puzzles); ctl15 stopped at 22,030. NLL at 23,000: B 2.1207, clip1 2.1558, clip2 2.1605,
+  clip5 2.1574 (B-silu 3.0834).
+
+- **Logged lines** (loss · gNorm before clipping · illegal-move mass):
+
+| trainer step | B-silu (cap 15) | clip1 (cap 1.0) | clip2 (cap 2.0) | clip5 (cap 5.0) |
+|---:|---|---|---|---|
+| 19,750 | 3.5110 · 0.327 · 0.0036 | 3.5110 · 0.327 · 0.0036 | 3.5110 · 0.327 · 0.0036 | 3.5110 · 0.327 · 0.0036 |
+| 19,800 | 3.5357 · 0.379 · 0.0046 | 3.5356 · 0.332 · 0.0042 | 3.5374 · 0.330 · 0.0040 | 3.5337 · 0.367 · 0.0042 |
+| 20,550 | 3.5416 · 0.363 · 0.0078 | 3.5256 · 0.368 · 0.0072 | 3.5525 · 0.407 · 0.0059 | 3.5358 · 0.475 · 0.0063 |
+| 20,600 | 4.1303 · **2.566** · 0.0095 | 3.5584 · 0.364 · 0.0065 | 3.5899 · 0.403 · 0.0068 | 3.5682 · 0.354 · 0.0064 |
+| 20,650 | 7.7890 · 0.264 · **0.7988** | 3.5245 · 0.364 · 0.0075 | 3.5141 · 0.372 · 0.0080 | 3.5341 · 0.417 · 0.0068 |
+| 23,000 | 3.8331 · 0.338 · 0.0462 | 3.5242 · 0.246 · 0.0020 | 3.5254 · 0.241 · 0.0021 | 3.5216 · 0.246 · 0.0021 |
+
+- **The precursor was above 5.** clip2 and clip5 match B-silu on every 50-step line from 18,050 to 19,750 and first differ at
+  19,800, the same place clip1 did; the three capped runs also differ from each other there. The ctl15 control showed that a cap
+  that never binds leaves the run identical to B-silu bit for bit, so clip5 differing means some step in 19,751–19,799 had a
+  pre-clip norm above 5 (the 19,750 line's own norm is 0.327, and the 19,800 line's loss already differs, so the update that
+  changed the weights came between them). That is more than 13× the 0.33–0.38 logged around it, and no 50-step line showed it.
+  B-silu's largest logged gNorm before 20,600 (18k–20,550) was 0.424.
+- **What the comparison does and does not show.** Each capped run leaves B-silu's trajectory at 19,800, so their batches at
+  20,600 meet different weights: none of them logs a spike there (0.364, 0.403, 0.354). The caps avoided the blowup; this does not
+  show that a cap of 2 or 5 would have been enough at 20,600 itself had the 19,751–19,799 step gone through unclipped.
+- **Largest logged gNorm, 18k–23k:** clip2 0.453 (21,350), clip5 0.475 (20,900), clip1 0.462 (21,150, whole run), B-silu 2.566
+  (20,600).
+- **Layer health** (`bn_liveness.py`, parked / mostly off / lowest pass-through at 23,000):
+
+| site | clip2 | clip5 | clip1 |
+|---|---|---|---|
+| blocks.0.bn1 | silu 0 / 0 / 0.3067 | silu 0 / 0 / 0.3049 | silu 0 / 0 / 0.3015 |
+| blocks.0.bn2 | silu 0 / 0 / 0.1901 | silu 0 / 0 / 0.1878 | silu 0 / 0 / 0.1893 |
+| blocks.1.bn1 | silu 0 / 0 / 0.1619 | silu 0 / 0 / 0.1622 | silu 0 / 0 / 0.1611 |
+| blocks.1.bn2 | silu 0 / 0 / 0.1383 | silu 0 / 0 / 0.1422 | silu 0 / 0 / 0.1362 |
+| blocks.2.bn1 | silu 0 / 0 / 0.0596 | silu 0 / 0 / 0.0578 | silu 0 / 0 / 0.0593 |
+| blocks.2.bn2 | silu 0 / 0 / 0.1208 | silu 0 / 0 / 0.1197 | silu 0 / 0 / 0.1152 |
+| tower_final_bn | silu 0 / 0 / 0.3243 | silu 0 / 0 / 0.3463 | silu 0 / 0 / 0.3236 |
+| policy.pre_bn | leaky_relu 0 / 0 / 0.1944 | leaky_relu 0 / 0 / 0.2020 | leaky_relu 0 / 0 / 0.2024 |
+| value.bn | leaky_relu 0 / 0 / 0.0409 | leaky_relu 0 / 2 / 0.0271 | leaky_relu 0 / 0 / 0.0416 |
+
+  At 21k and 22k all three have 0 parked and 0 mostly off at every site.
+- **Strength.** Across the three caps the spread per probe is 25.2 (20k), 33.0 (21k), 50.8 (22k) and 7.2 (23k) pElo, with no
+  consistent order (clip2 best at 20k and 22k, clip1 at 21k and 23k); at 23k all three are within 12.8 of ReLU B (1560.6–1567.8
+  vs 1573.4).
+  One start, one seed, four probes per arm.
+- **Reading.** A fixed cap anywhere from 1 to 5 was enough here, so the blowup came from one step far outside the run's normal
+  range, not from a gradual rise; the cap only has to cut that one step. A cap set at a multiple of the recent median catches
+  that step without binding in normal training: the relative gradient cap (`documentation/plans-active/RELATIVE_GRADIENT_CAP_PLAN.md`,
+  cap = min(hard max, max(floor, k × median of the last N pre-clip norms)), k = 3, about 1.0 here) is now implemented and merged
+  on main, defaulting to log only. Its validation runs V-1 (log only from B-silu's 18k checkpoint, measuring the per-step ratio
+  distribution) and V-3 (fresh start on B's recipe with the cap on) come next.
+- **Reproduce:** binary `~/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2331-4e70c615-p1headact.app` (build
+  2330, git `4e70c615`, dirty; sha256 prefix `1ae960792717`); corpus `20260624-192615-w3aA5b`; start checkpoint
+  `20261005-lrBsilu-cyc1-replay-step18000.safetensors` (ModelID `20261006-44-8ipq`). clip2 (clip5: replace `clip2` with `clip5`):
+
+```
+BIN="$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2331-4e70c615-p1headact.app/Contents/MacOS/DrewsChessMachine"
+M="$HOME/Library/Application Support/DrewsChessMachine/Models"; E=experiments/20261005-lr-schedule-ab
+"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/20261005-lrBsilu-cyc1-replay-step18000.safetensors" \
+  --resume-exact --accept-inexact params \
+  --out-model "$M/20261006-lrBsilu-clip2-replay-latest.safetensors" --parameters $E/parameters-Bsilu-clip2.json --epochs 12 \
+  --training-step-limit 5000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005
+PROBE_BIN="$BIN" PROBE_SEGMENT=1 TRAINER_PID=<trainer pid> experiments/probe_loop.sh 20261006-lrBsilu-clip2 $E/probes-Bsilu-clip2-seg1.jsonl
+```
+
+  `parameters-Bsilu-clip2.json` / `parameters-Bsilu-clip5.json` are `parameters-B.json` with only `grad_clip_max_norm` changed
+  (2.0 / 5.0). Analysis: the `[REPLAY]` lines of `dcm_log_20261005-234437.txt` (B-silu), `dcm_log_20261006-170000.txt` (clip1),
+  `dcm_log_20261007-035017-2.txt` (clip2) and `dcm_log_20261007-035017.txt` (clip5), compared by `trainerStep=`;
+  `bn_liveness.analyze()` on `20261006-lrBsilu-clip{1,2,5}-replay-seg1-step{3000,4000,5000}` (trainer steps 21k–23k). A rerun on
+  this GPU should match these lines exactly up to 19,750 (ctl15 matched B-silu bit for bit); after the split, MPSGraph's
+  numerics on a shared GPU are not guaranteed to repeat.
+
 ## Arm C-leaky (added 2026-10-05 23:13, owner)
 
 - Owner: "let's do a leaky version of C with the crazy high LR schedule". C's damage was not confined to the value head
