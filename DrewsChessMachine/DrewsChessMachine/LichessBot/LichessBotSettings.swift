@@ -114,6 +114,19 @@ enum LichessBotModelSourceKind: String, Sendable, Equatable, Codable, CaseIterab
     }
 }
 
+/// The lineage the follow-lineage source plays: one training run, from one
+/// of its segments on (follow-lineage plan §3.1). Identified by the
+/// `dcm_lineage` record every current model file carries, never by a
+/// filename.
+struct LichessBotFollowedLineage: Sendable, Equatable, Hashable, Codable {
+    /// `LineageRecord.Run.lineageRunID` of the run.
+    let lineageRunID: String
+    /// `LineageRecord.Run.segmentID` of the segment the operator chose.
+    /// Files of this segment and of every later segment descending from it
+    /// (each exact resume of the run) are candidates.
+    let anchorSegmentID: String
+}
+
 /// What selects a model generation's weights: the source kind, plus the
 /// file for the file source. Settings with equal generation sources play the
 /// same weights; the other model fields (refresh interval, mid-game toggle)
@@ -133,6 +146,13 @@ struct LichessBotModelSettings: Sendable, Equatable, Codable {
     /// Live trainer only: whether games already in progress switch to each
     /// new snapshot, or keep the one they started with.
     var midGameRefresh = false
+    /// The lineage the follow-lineage source plays. Optional, nil by
+    /// default: settings saved before it existed load as nil.
+    var followedLineage: LichessBotFollowedLineage? = nil
+    /// How often the follow-lineage source looks for a newer file of its
+    /// lineage. A check lists the models folder and reads only new or
+    /// changed headers.
+    var lineageCheckIntervalSeconds = 60
 
     /// The weights these settings select.
     var generationSource: LichessBotGenerationSource {
@@ -284,6 +304,7 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         if model.source == .file {
             require(!(model.filePath ?? "").isEmpty, "Choose a model file")
         }
+        require(model.lineageCheckIntervalSeconds >= LichessBotLimits.minimumLineageCheckSeconds, "Lineage checks must be at least \(LichessBotLimits.minimumLineageCheckSeconds) seconds apart")
 
         let n = connection
         require(!n.expectedAccountID.isEmpty, "Set the Lichess account the token must belong to")
@@ -321,6 +342,11 @@ enum LichessBotLimits {
     /// A live-trainer snapshot briefly holds the lock SGD needs, so it may
     /// not run too often.
     static let minimumLiveTrainerRefreshSeconds = 30
+    /// How often the online bot's poll loop asks its model source whether a
+    /// newer generation is due. The one source of that cadence.
+    static let modelRefreshPollSeconds = 15
+    /// A lineage check runs from that poll, so it can't run more often.
+    static let minimumLineageCheckSeconds = modelRefreshPollSeconds
     /// The most bots `GET /api/bot/online` returns in one request.
     static let onlineBotsMaximum = 512
     /// The most players `GET /player/online` returns (lila caps `nb`).

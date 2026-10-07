@@ -103,6 +103,7 @@ struct LichessBotBuiltModel: Sendable {
 struct LichessBotGenerationBuilder: Sendable {
     let provider: any LichessBotModelProvider
     let time: any LichessBotTimeSource
+    let loader: LichessBotModelFileLoader
 
     func build(for settings: LichessBotModelSettings, progress: LichessBotModelBuildProgress?) async throws -> LichessBotBuiltModel {
         let started = time.now()
@@ -124,7 +125,7 @@ struct LichessBotGenerationBuilder: Sendable {
             }
             let url = URL(fileURLWithPath: path)
             progress?("loading \(url.lastPathComponent)")
-            let loaded = try await LichessBotModelFileLoader.live.load(at: url)
+            let loaded = try await loader.load(at: url)
             snapshot = loaded.snapshot
             filePath = path
             fileSHA256 = loaded.sha256
@@ -255,14 +256,18 @@ actor LichessBotModelSlots {
     /// Build the first generation for `settings` and return slots holding
     /// it. Throws whatever the build throws (no champion, no trainer, a file
     /// that won't load): the caller stays offline with that error.
+    ///
+    /// `loader` reads model files; the app passes `.live` (the file itself),
+    /// a test may count or script the reads.
     static func prepare(
         for settings: LichessBotModelSettings,
         provider: any LichessBotModelProvider,
         time: any LichessBotTimeSource,
+        loader: LichessBotModelFileLoader = .live,
         log: @escaping @Sendable (String) -> Void,
         progress: LichessBotModelBuildProgress? = nil
     ) async throws -> LichessBotModelSlots {
-        let builder = LichessBotGenerationBuilder(provider: provider, time: time)
+        let builder = LichessBotGenerationBuilder(provider: provider, time: time, loader: loader)
         let built = try await builder.build(for: settings, progress: progress)
         let firstID = 1
         let slots = LichessBotModelSlots(builder: builder, first: built.generation(id: firstID), settings: settings, log: log)
@@ -309,11 +314,25 @@ actor LichessBotModelSlots {
     /// elapsed). Cheap to call often; does nothing otherwise. Throws when a
     /// switch or refresh fails, or the champion is gone; `current` keeps
     /// playing either way.
-    func refreshIfDue(for settings: LichessBotModelSettings) async throws {
-        guard pendingBuild == nil else { return }
+    ///
+    /// A build already in flight for the same weights is joined: the result
+    /// (or error) is that build's, never a success reported before it ends.
+    /// One for other weights is waited out first, then these settings are
+    /// handled as usual.
+    @discardableResult
+    func refreshIfDue(for settings: LichessBotModelSettings) async throws -> LichessBotModelRefreshOutcome {
+        if let pendingBuild {
+            if pendingBuild.source == settings.generationSource {
+                let joined = try await pendingBuild.task.value
+                return .joinedBuildInFlight(joined.info)
+            }
+            // Its outcome is its own caller's to report; these settings
+            // are handled below, after it.
+            _ = await pendingBuild.task.result
+        }
         guard currentSettings.generationSource == settings.generationSource else {
-            _ = try await rebuild(for: settings, reason: "source changed to \(settings.source.rawValue)")
-            return
+            let built = try await rebuild(for: settings, reason: "source changed to \(settings.source.rawValue)")
+            return .built(built.info)
         }
         // Same weights: the interval and the mid-game toggle in force are
         // the newest, with no rebuild.
@@ -324,19 +343,29 @@ actor LichessBotModelSlots {
                 throw LichessBotModelError.noChampion
             }
             if championID != current.info.modelID {
-                _ = try await rebuild(for: settings, reason: "champion changed to \(championID)")
+                let built = try await rebuild(for: settings, reason: "champion changed to \(championID)")
+                return .built(built.info)
             }
         case .liveTrainer:
             if builder.time.now() - lastSnapshotAt >= .seconds(settings.liveTrainerRefreshIntervalSeconds) {
-                _ = try await rebuild(for: settings, reason: "live-trainer interval elapsed")
+                let built = try await rebuild(for: settings, reason: "live-trainer interval elapsed")
+                return .built(built.info)
             }
         case .trainerSnapshot, .file:
             break
         }
+        return .unchanged
     }
+}
 
-    /// The operator's "Re-snapshot now".
-    func forceRefresh(for settings: LichessBotModelSettings) async throws -> LichessBotModelGeneration {
-        try await rebuild(for: settings, reason: "operator re-snapshot")
-    }
+/// What `LichessBotModelSlots.refreshIfDue` did. Every case is a success;
+/// a failure throws.
+enum LichessBotModelRefreshOutcome: Equatable, Sendable {
+    /// Nothing was due: the current generation is up to date.
+    case unchanged
+    /// This call built a new generation, now current.
+    case built(LichessBotGenerationInfo)
+    /// A build already in flight for the same weights finished with this
+    /// generation, now current.
+    case joinedBuildInFlight(LichessBotGenerationInfo)
 }

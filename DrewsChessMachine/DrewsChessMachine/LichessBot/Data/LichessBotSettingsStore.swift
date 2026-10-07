@@ -174,7 +174,10 @@ enum LichessBotSettingsStore {
     /// Whether `keyPath`, absent from the default object, is still a field of
     /// the current settings — an optional whose default is nil. Decoding the
     /// default object with a deliberately wrong-typed value at that path fails
-    /// with a type mismatch exactly when the decoder reads that key.
+    /// exactly when the decoder reads that key: with a type mismatch for a
+    /// scalar, or, for a struct-typed optional, with a missing key inside the
+    /// probe object — the decoder entered the probe, so the field exists. A
+    /// missing key anywhere else is a real error and propagates.
     private static func isKnownOptionalKey(_ keyPath: [String], defaultRoot: [String: Any]) throws -> Bool {
         let probe = setting(keyPath, to: ["__probe__": true], in: defaultRoot)
         let data = try JSONSerialization.data(withJSONObject: probe)
@@ -184,6 +187,8 @@ enum LichessBotSettingsStore {
         } catch DecodingError.typeMismatch {
             return true
         } catch DecodingError.dataCorrupted {
+            return true
+        } catch DecodingError.keyNotFound(_, let context) where context.codingPath.map(\.stringValue) == keyPath {
             return true
         }
     }

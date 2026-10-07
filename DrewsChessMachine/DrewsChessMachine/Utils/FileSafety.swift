@@ -55,6 +55,12 @@ import Foundation
 ///   check is on the open descriptor. The cost is the one the other
 ///   operations avoid — the file is rewritten in place, so a crash mid-write
 ///   leaves it torn.
+/// - **Appending only to a regular file**: the same `O_NOFOLLOW |
+///   O_NONBLOCK` open and descriptor type check, with `O_APPEND` so every
+///   write lands at the end, creating the file when absent (exclusively, so
+///   the caller learns whether it made the file). No window. Several writers
+///   (processes) may share such a file; they take turns through
+///   `waitForExclusiveLock` on their own descriptors.
 /// - **Removing only what the caller created**, proven by identity (device
 ///   and inode recorded at creation), never by name alone. A regular file is
 ///   checked with `lstat` and then `unlink`ed by path; any non-directory item
@@ -201,6 +207,37 @@ enum FileSafety {
             throw FileSafetyError.systemCallFailed(path: url.path, call: "stat", errnoValue: code)
         }
         return FileIdentity(device: info.st_dev, inode: info.st_ino)
+    }
+
+    /// What a path resolves to, following symbolic links: its kind,
+    /// identity, size and modification time.
+    struct ResolvedItem: Equatable, Sendable {
+        let kind: ItemKind
+        let identity: FileIdentity
+        let size: Int64
+        let modifiedAt: Date
+    }
+
+    /// What `url` resolves to, following symbolic links (as reading the path
+    /// does), or nil when nothing exists there (including a dangling link).
+    /// Read-only. A cache keyed on this describes the bytes a read of the
+    /// path would see — unlike `existingItem(at:)`, which describes a link
+    /// itself. Kind and identity come from the same `stat` as size and time,
+    /// so the four always describe one file.
+    static func resolvedItem(at url: URL) throws -> ResolvedItem? {
+        var info = stat()
+        guard stat(url.path, &info) == 0 else {
+            let code = errno
+            if code == ENOENT { return nil }
+            throw FileSafetyError.systemCallFailed(path: url.path, call: "stat", errnoValue: code)
+        }
+        let modified = info.st_mtimespec
+        return ResolvedItem(
+            kind: ItemKind(mode: info.st_mode),
+            identity: FileIdentity(device: info.st_dev, inode: info.st_ino),
+            size: Int64(info.st_size),
+            modifiedAt: Date(timeIntervalSince1970: TimeInterval(modified.tv_sec) + TimeInterval(modified.tv_nsec) / 1_000_000_000)
+        )
     }
 
     /// The identity of the file open on `descriptor`. `path` only labels a
@@ -516,6 +553,151 @@ enum FileSafety {
         // O_NONBLOCK stays set: it has no effect on reads or writes of a
         // regular file.
         return .locked(handle: FileHandle(fileDescriptor: descriptor, closeOnDealloc: true), identity: identity)
+    }
+
+    // MARK: - Appending (log files several writers share)
+
+    /// A regular file opened for appending by `openForAppending` or
+    /// `openExistingRegularFileForAppending`.
+    struct OpenedForAppending {
+        /// Open read-write with `O_APPEND`: every write lands at the file's
+        /// end as of that write, and the same descriptor can read the file's
+        /// tail and truncate it. Closes the descriptor when released.
+        let handle: FileHandle
+        /// The open file's identity, read from the open descriptor.
+        let identity: FileIdentity
+        /// True only when this call created the file. A caller that makes a
+        /// new file durable must also flush its directory, or the name can be
+        /// lost in a power failure even though the contents were flushed.
+        let createdByThisCall: Bool
+    }
+
+    /// How many times `openForAppending` tries its open-then-create pair. It
+    /// tries again when another process creates the file between the two;
+    /// running out takes that process removing the file again before every
+    /// next open, which never happens in practice. It bounds the loop rather
+    /// than trusting that.
+    private static let appendOpenAttemptLimit = 8
+
+    /// Open the regular file at `url` for appending, creating it (empty) when
+    /// nothing is there. A symbolic link — even a dangling one — directory,
+    /// FIFO, socket or device is refused with `.notARegularFile` and left
+    /// untouched: the open uses `O_NOFOLLOW`, so a link is never followed to
+    /// its target, and `O_NONBLOCK`, so a FIFO is an error rather than a hang
+    /// inside `open`. The type is then checked on the descriptor (`fstat`),
+    /// so nothing non-regular is ever written. No window: every check is on
+    /// the open descriptor.
+    ///
+    /// The file is first opened without `O_CREAT` (the common case: it
+    /// exists); only when nothing is there is it created exclusively
+    /// (`O_CREAT | O_EXCL`), so `createdByThisCall` is exact — a plain
+    /// `O_CREAT` open can't tell. Should another process create it between
+    /// the two, or remove it again, the pair is retried.
+    ///
+    /// The descriptor is opened `O_RDWR`, not write-only, so a caller can
+    /// check and cut the file's tail through the very descriptor it then
+    /// appends with (after taking `waitForExclusiveLock`), instead of opening
+    /// the path a second time — a second open is a second chance to reach
+    /// something else.
+    static func openForAppending(at url: URL) throws -> OpenedForAppending {
+        for _ in 0..<appendOpenAttemptLimit {
+            switch try openRegularFileForAppending(at: url, additionalOpenFlags: 0) {
+            case .opened(let handle, let identity):
+                return OpenedForAppending(handle: handle, identity: identity, createdByThisCall: false)
+            case .failed(let code) where code == ENOENT:
+                break
+            case .failed(let code):
+                throw failureForAppendOpen(at: url, errnoValue: code)
+            }
+            switch try openRegularFileForAppending(at: url, additionalOpenFlags: O_CREAT | O_EXCL) {
+            case .opened(let handle, let identity):
+                return OpenedForAppending(handle: handle, identity: identity, createdByThisCall: true)
+            case .failed(let code) where code == EEXIST:
+                continue
+            case .failed(let code):
+                throw failureForAppendOpen(at: url, errnoValue: code)
+            }
+        }
+        throw FileSafetyError.systemCallFailed(path: url.path, call: "open", errnoValue: EEXIST)
+    }
+
+    /// `openForAppending` for a file that must already exist: nothing is
+    /// ever created, and a missing file is an error (`.systemCallFailed`
+    /// with `ENOENT`). The same refusals apply.
+    static func openExistingRegularFileForAppending(at url: URL) throws -> OpenedForAppending {
+        switch try openRegularFileForAppending(at: url, additionalOpenFlags: 0) {
+        case .opened(let handle, let identity):
+            return OpenedForAppending(handle: handle, identity: identity, createdByThisCall: false)
+        case .failed(let code):
+            throw failureForAppendOpen(at: url, errnoValue: code)
+        }
+    }
+
+    /// What one `open` for appending did.
+    private enum AppendOpenAttempt {
+        case opened(handle: FileHandle, identity: FileIdentity)
+        /// `open` itself failed with this `errno`; the caller decides what
+        /// it means (`EEXIST` and `ENOENT` drive `openForAppending`'s loop).
+        case failed(errnoValue: Int32)
+    }
+
+    /// One `open` of `url` for appending, refusing anything but a regular
+    /// file once it is open. A failure of `open` itself is returned, not
+    /// thrown, so the callers can tell "already there" and "gone" apart from
+    /// a refusal.
+    private static func openRegularFileForAppending(at url: URL, additionalOpenFlags: Int32) throws -> AppendOpenAttempt {
+        let descriptor = Darwin.open(url.path,
+                                     O_RDWR | O_APPEND | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | additionalOpenFlags,
+                                     newFileMode)
+        guard descriptor >= 0 else {
+            return .failed(errnoValue: errno)
+        }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else {
+            let code = errno
+            closeDescriptorAfterFailure(descriptor, path: url.path)
+            throw FileSafetyError.systemCallFailed(path: url.path, call: "fstat", errnoValue: code)
+        }
+        // `O_NONBLOCK` lets the open succeed on a FIFO, so the type is
+        // checked on the descriptor before anything is read or written.
+        let kind = ItemKind(mode: info.st_mode)
+        guard kind == .regularFile else {
+            closeDescriptorAfterFailure(descriptor, path: url.path)
+            throw FileSafetyError.notARegularFile(path: url.path, kind: kind)
+        }
+        // O_NONBLOCK stays set: it only guarded the open against a FIFO, and
+        // it has no effect on reads, writes or `flock` of a regular file.
+        return .opened(handle: FileHandle(fileDescriptor: descriptor, closeOnDealloc: true),
+                       identity: FileIdentity(device: info.st_dev, inode: info.st_ino))
+    }
+
+    /// The error for an append open that failed. When the item at the path
+    /// is not a regular file — a symbolic link (`O_NOFOLLOW` fails with
+    /// `ELOOP`), a directory (`EISDIR`), a socket — it is named, with its kind
+    /// read by `lstat` rather than guessed from `errno` (`ELOOP` also means a
+    /// loop in an earlier path component); otherwise the system error is
+    /// reported.
+    private static func failureForAppendOpen(at url: URL, errnoValue: Int32) -> FileSafetyError {
+        if let existing = existingItemForDiagnosis(at: url), existing.kind != .regularFile {
+            return .notARegularFile(path: url.path, kind: existing.kind)
+        }
+        return .systemCallFailed(path: url.path, call: "open", errnoValue: errnoValue)
+    }
+
+    /// Take the exclusive `flock` of the file open on `descriptor`, waiting
+    /// as long as another open file holds it. The lock belongs to this one
+    /// open file (BSD `flock` semantics) and is released when it is closed —
+    /// explicitly, or by the kernel when the process ends however it ends —
+    /// so two descriptors opened separately contend for it exactly as two
+    /// processes do. An interrupted wait (`EINTR`) is resumed; a volume that
+    /// cannot lock is an error, never treated as locked. `path` only labels
+    /// a failure.
+    static func waitForExclusiveLock(onOpenFile descriptor: Int32, path: String) throws {
+        while flock(descriptor, LOCK_EX) != 0 {
+            let code = errno
+            if code == EINTR { continue }
+            throw FileSafetyError.systemCallFailed(path: path, call: "flock", errnoValue: code)
+        }
     }
 
     // MARK: - Writing whole files
