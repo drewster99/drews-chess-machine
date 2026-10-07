@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Lichess bot challenge log P3: how each game started
+
+- `LichessBotGameOrigin` (incoming, DCM's challenge with its sender, sender not recorded, tournament, undetermined with its gap) and `LichessBotGameOriginResolver`: decided at session start from the challenge ledger and the `gameStart`, later when the challenge's facts arrive (the POST race), or written as undetermined at session end. Once per game per run.
+- The journal gains `.gameOrigin`; the record builder, the resumed journal and the live view keep the first determined origin. `LichessBotGameRecord`, `LichessBotGameSummary` and `LichessBotLiveGame` gain an optional `origin`; `LichessBotIndex.schemaVersion` 2 → 3 (the cache rebuilds once); new PGNs carry `DCMOrigin`. `gameStart.source` is an open value from lila's `Source` list.
+- New tests: `LichessBotGameOriginResolverTests`, `LichessBotGameOriginJournalTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §14.
+
 ## 2026-10-06 — Lichess bot challenge log P2: every challenge fact recorded
 
 - New `LichessBotChallengeLogRecorder` (owned by the controller): the ledger, its one funnel, loading (go-online and the bot window, once), held echoes of our own challenges (written only when unmatched, attributed to a single unanswered send), game starts, and replays that write nothing.

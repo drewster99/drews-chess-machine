@@ -60,7 +60,7 @@ struct LichessBotGameSessionCarryover: Sendable, Equatable {
                     carryover.farewellSent = true
                 }
             case .header, .streamOpened, .streamLine, .streamLineBytes, .keepAlive, .request, .streamEnded,
-                 .movePosted, .moveRejected, .action, .chatFetched, .anomaly, .finished:
+                 .movePosted, .moveRejected, .action, .chatFetched, .anomaly, .finished, .gameOrigin:
                 break
             }
         }
@@ -135,6 +135,11 @@ struct LichessBotResumedJournal: Sendable {
     /// following the game.
     let lastJournaledAt: Date
     let carryover: LichessBotGameSessionCarryover
+    /// How the game began, as the journal records it
+    /// (`LichessBotGameOrigin.recorded(from:)`): nil when it holds none — a
+    /// journal from before origins were recorded, or a game whose origin
+    /// was still unknown.
+    let recordedOrigin: LichessBotGameOrigin?
 
     /// Check a leftover journal and prepare it, or refuse it with a reason.
     static func make(gameID: String, journal: LichessBotJSONLines.Decoded<LichessBotJournalEntry>, ourAccountID: String) throws -> LichessBotResumedJournal {
@@ -177,7 +182,11 @@ struct LichessBotResumedJournal: Sendable {
             firstJournaledAt: first.at,
             // Not empty: it starts with the header checked above.
             lastJournaledAt: journal.elements[journal.elements.count - 1].at,
-            carryover: .fold(journal.elements)
+            carryover: .fold(journal.elements),
+            recordedOrigin: LichessBotGameOrigin.recorded(from: journal.elements.compactMap { entry in
+                if case .gameOrigin(let origin) = entry.event { return origin }
+                return nil
+            }).origin
         )
     }
 }

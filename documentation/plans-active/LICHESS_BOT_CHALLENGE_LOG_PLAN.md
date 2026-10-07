@@ -972,6 +972,39 @@ Tests (new files; no existing test changed):
 - `LichessBotUnmatchedEchoTests` (11): echo matched → nothing written; one no-answer send (case-insensitive) → attributed; none or two → not recorded; teardown writes every held echo; an echo of an id already on disk is not held; a game start before the created line is written right after it; a game start with its echo held is written at once and not again; an unknown game start writes nothing; a replayed incoming challenge is written once; a fact recorded during the load is in the ledger once; a failed load keeps this run's facts and raises an alarm.
 - `LichessBotChallengeLogControllerTests` (8, fake Lichess): sheet, queue and Fill Open Slots senders; the operator's Resend as Casual; operator cancel (and a cancel of a non-pending id writes nothing); going-offline withdrawal; game start → accepted; our echo after the created line never written; an incoming challenge, DCM's decision and the challenger's cancel; files only under the temporary data folder.
 
+## 14. Implementation notes: P3 game origin (2026-10-06)
+
+Implemented:
+- **`Play/LichessBotGameOrigin.swift`** (new):
+  - `LichessBotGameSourceName`, taken from lila's `Source` enum (`modules/core/src/main/game/misc.scala`, read 2026-10-06): lobby, friend, ai, api, arena, position, import, importlive, simul, pool, swiss. There is no `relay`.
+  - `LichessBotGameOrigin` and `LichessBotGameOriginGap` as in §3.5.
+  - `LichessBotGameOrigin.token`: the one place the PGN / protocol tokens are spelled.
+  - `LichessBotGameOrigin.recorded(from:)`: first determined, else last undetermined, plus the conflicting later ones. It is the one rule shared by the record builder and the resumed journal.
+  - `LichessBotGameOriginResolver` (pure).
+- `LichessBotGameEventInfo.source` is `LichessBotOpenValue<LichessBotGameSourceName>?`, so an unknown value is kept verbatim.
+- **The journal** gains `.gameOrigin`, and `LichessBotJournalWriter.recordOrigin(_:gameID:)` writes it with `.fsync`, the `recordRequest` pattern.
+- **The three exhaustive switches:**
+  - the record builder keeps the recorded origin and adds an anomaly per conflicting later determined origin;
+  - the carryover fold ignores the case;
+  - the live view's replay applies the same rule.
+- `LichessBotResumedJournal.recordedOrigin`.
+- **Optional `origin` fields** on `LichessBotGameRecord` (schema stays 1), `LichessBotGameSummary` and `LichessBotLiveGame` (with `setOrigin`). `LichessBotIndex.schemaVersion` is 2 → 3, the +1 rule of §7, since record-stats has not landed.
+- The PGN gets `DCMOrigin` only when the record has an origin, so new games only.
+- **Controller:**
+  - The resolver gets the `gameStart`s, the session starts (with a resumed journal's recorded origin) and the session ends.
+  - The recorder's `onRecorded` / `onLoaded` hooks decide waiting games as their challenge facts arrive, or when the ledger lands.
+  - `writeGameOrigin` sets the live game, logs protocol `.game` "game origin: <token>" (fields `origin`, and `challenge` when there is one) and the session line, and journals it through the runtime's writer. With no runtime it logs that it was not written.
+
+Decisions:
+- **The live game holds the decided `LichessBotGameOrigin?`**, not a `LichessBotGameOriginDisplay?`. The display (category, detail, basis) is derived by the §3.6 resolver, which P4 adds with its reconstruction step. A live game's origin is always "recorded" or not yet known, so it has no basis of its own to store.
+- **No `basis` field on the protocol line.** Every line written there is a recorded origin. The basis belongs to the display (§3.6).
+- **Once per run, explicitly:** the resolver remembers each game's known origin, whether a resumed journal held it or this run wrote it. A second session for the same game in the same run shows it and writes nothing.
+- **An incoming row with no snapshot** (only decisions, which this build never writes alone) is treated as not known yet, rather than inventing a challenger id.
+
+Tests (new files; no existing test changed):
+- `LichessBotGameOriginResolverTests` (13): incoming whatever DCM decided; each of the six senders; the POST race (waiting, then decided once); echo-only, attributed and not; arena and swiss; an unknown source kept verbatim; partial, failed and not-loaded ledgers → `challengeLogIncomplete`; resumed with determined, none, and undetermined later decided or not rewritten; decided once per run; the tokens; the source as an open value.
+- `LichessBotGameOriginJournalTests` (9): first determined kept; conflicting determined → anomaly; an old journal → no origin, no row origin, no PGN tag; the resumed journal's origin; carryover unchanged; live replay; a new record's origin in its row and PGN; a record written before origins decodes with none; an index stored at `LichessBotIndex.schemaVersion - 1` is rebuilt and stored at `LichessBotIndex.schemaVersion`.
+
 ## Appendix A. Measured data (2026-10-06, read-only)
 
 - Protocol files:

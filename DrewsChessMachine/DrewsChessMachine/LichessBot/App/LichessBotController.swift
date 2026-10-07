@@ -394,6 +394,8 @@ final class LichessBotController {
     /// The challenge log and its ledger (challenge-log plan §3.4). Every
     /// challenge fact goes through `recordChallengeEvent`, its one funnel.
     let challengeLogRecorder: LichessBotChallengeLogRecorder
+    /// Decides each game's origin while the bot follows it (§3.5).
+    @ObservationIgnored private var gameOriginResolver = LichessBotGameOriginResolver()
     private var nextAlarmID = 0
 
     // MARK: - Runtime
@@ -490,6 +492,12 @@ final class LichessBotController {
         ) { event in
             log.record(LichessBotController.kind(of: event), LichessBotController.describe(event))
             sink.value?.yield(.gate(event))
+        }
+        challengeLogRecorder.onRecorded = { [weak self] event in
+            self?.challengeFactRecorded(event)
+        }
+        challengeLogRecorder.onLoaded = { [weak self] in
+            self?.decideWaitingGameOrigins()
         }
         challengeLogRecorder.alarmSink = { [weak self] text in
             if let self {
@@ -1457,6 +1465,46 @@ final class LichessBotController {
     /// change only here (through the recorder), in one synchronous step.
     private func recordChallengeEvent(_ event: LichessBotChallengeLogEvent) {
         challengeLogRecorder.record(event)
+    }
+
+    // MARK: - Game origin (challenge-log plan §3.5)
+
+    /// A challenge fact was recorded: a game waiting for its origin may now
+    /// be decided.
+    private func challengeFactRecorded(_ event: LichessBotChallengeLogEvent) {
+        guard case .challenge(let id)? = LichessBotChallengeLedgerRowKey(event),
+              let origin = gameOriginResolver.challengeKnown(gameID: id, ledger: challengeLedger) else { return }
+        writeGameOrigin(origin, gameID: id)
+    }
+
+    /// The ledger loaded: decide every game that waited for it.
+    private func decideWaitingGameOrigins() {
+        for gameID in gameOriginResolver.waitingGameIDs.sorted() {
+            if let origin = gameOriginResolver.challengeKnown(gameID: gameID, ledger: challengeLedger) {
+                writeGameOrigin(origin, gameID: gameID)
+            }
+        }
+    }
+
+    /// Show, log and journal a game's origin. The journal write goes through
+    /// the runtime's journal writer; with no runtime (the bot went offline)
+    /// it is not written, and the game's origin shows through the challenge
+    /// log instead.
+    private func writeGameOrigin(_ origin: LichessBotGameOrigin, gameID: String) {
+        listedGame(gameID)?.setOrigin(origin)
+        var fields = ["origin": origin.token]
+        if let challengeID = origin.challengeID {
+            fields["challenge"] = challengeID
+        }
+        protocolLog.record(.game, "game origin: \(origin.token)", gameID: gameID, fields: fields)
+        SessionLogger.shared.log("[LICHESS-BOT] game \(gameID) origin: \(origin.token) (\(String(describing: origin)))")
+        guard let journal = runtime?.journal else {
+            SessionLogger.shared.log("[LICHESS-BOT] game \(gameID): origin \(origin.token) not written to the journal: the bot is offline")
+            return
+        }
+        Task {
+            await journal.recordOrigin(origin, gameID: gameID)
+        }
     }
 
     // MARK: - Challenge outcomes
@@ -3355,6 +3403,7 @@ final class LichessBotController {
                 recordChallengeEvent(.canceledOnLichess(challengeID: reference.id))
             }
         case .gameStartReceived(let info):
+            gameOriginResolver.noteGameStart(info)
             challengeLogRecorder.noteGameStart(gameID: info.gameId)
         case .gameSessionStarted(let gameID, let generation, let origin):
             if let pending = pendingChallenges.first(where: { $0.id == gameID }) {
@@ -3371,6 +3420,20 @@ final class LichessBotController {
             // Counted from here as a game in progress, not as starting.
             acceptedAwaitingStartIDs.remove(gameID)
             listStartedGame(gameID, origin: origin)
+            let recordedOrigin: LichessBotGameOrigin?
+            if case .resumed(let journal) = origin {
+                recordedOrigin = journal.recordedOrigin
+            } else {
+                recordedOrigin = nil
+            }
+            switch gameOriginResolver.sessionStarted(gameID: gameID, recordedOrigin: recordedOrigin, ledger: challengeLedger) {
+            case .alreadyRecorded(let recorded):
+                listedGame(gameID)?.setOrigin(recorded)
+            case .decided(let decided):
+                writeGameOrigin(decided, gameID: gameID)
+            case .waiting:
+                break
+            }
             updateAutoFollow()
             self.generation = generation
             let modelFields = ["model": generation.modelID, "generation": "\(generation.generationID)"]
@@ -3390,6 +3453,9 @@ final class LichessBotController {
                 raiseAlarm("Game \(gameID) was resumed without its history: \(reason). Takebacks, command replies, greeting and goodbye are off for it, since there is no telling what was already done.")
             }
         case .gameSessionEnded(let gameID, let finished):
+            if let undetermined = gameOriginResolver.sessionEnded(gameID: gameID, ledger: challengeLedger) {
+                writeGameOrigin(undetermined, gameID: gameID)
+            }
             activeGameIDs.remove(gameID)
             if let game = games.first(where: { $0.id == gameID }) {
                 game.markSessionEnded("the game session ended")

@@ -57,6 +57,10 @@ final class LichessBotChallengeLogRecorder {
     private let clock: () -> Date
     /// Where alarms go (the controller's alarm list); set by the owner.
     @ObservationIgnored var alarmSink: ((String) -> Void)?
+    /// Called after each fact is recorded, and after the ledger loads: the
+    /// game-origin resolver decides waiting games from them (§3.5).
+    @ObservationIgnored var onRecorded: ((LichessBotChallengeLogEvent) -> Void)?
+    @ObservationIgnored var onLoaded: (() -> Void)?
 
     /// How long an echo may wait for its created line: twice the longest a
     /// request can run, so no POST of this run can still answer after it.
@@ -137,6 +141,7 @@ final class LichessBotChallengeLogRecorder {
         loaded.apply(contentsOf: eventsAwaitingLedger)
         eventsAwaitingLedger = []
         ledger = loaded
+        onLoaded?()
     }
 
     // MARK: - The funnel
@@ -152,6 +157,7 @@ final class LichessBotChallengeLogRecorder {
         }
         log.record(event, at: entry.at)
         afterRecording(event)
+        onRecorded?(event)
     }
 
     /// The bookkeeping a recorded fact settles: its echo is matched, an
