@@ -1,6 +1,6 @@
 # Lichess bot: follow the newest checkpoint of one lineage on disk
 
-Status (2026-10-06): **IN PROGRESS.** Implemented: P-ready (a7803ac0, review fixes 52fde131), P0 (4cc8b84b), P1 (ae658dc7), P2 (f03e5c5d), P3 (488bb178), P4 (94d3e277), P5. OD-19 and the §5.1 test edits were decided by the owner on 2026-10-06 (§10); implementation follows the phase order of §7.
+Status (2026-10-06): **IMPLEMENTED** (P-ready a7803ac0 + review fixes 52fde131, P0 4cc8b84b, P1 ae658dc7, P2 f03e5c5d, P3 488bb178, P4 94d3e277, P5 7a64663e, P6 docs). Not yet run: the live checks of §6 (1–12), which need the bot online against a running replay. OD-19 and the §5.1 test edits were decided by the owner on 2026-10-06 (§10); implementation follows the phase order of §7.
 - **Owner decisions recorded 2026-10-06** (§10). They amend OD-6, OD-8, OD-9 and OD-17 (keep playing + alarm instead of declining) and add a rule for every source: **the bot builds its model generation before it goes online** (§3.10, OD-18, OD-19). The design, tests, validation and phasing below follow them.
 - Every `file:line` was checked against `main` at `f5be524b`.
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`) or `documentation/`.
@@ -773,3 +773,8 @@ Decisions taken while implementing, where the plan left a choice open or the cod
 - **`LichessBotModelSettingsSection` takes the controller and a models folder** (default `Models/`), so the row can show the bot's status and a render test points it at a temporary folder.
 - **`LichessBotLineageFollowStatusView` takes the controller's state as values** (followed lineage, status, playing generation, running, Check Now action), so every outcome is drawn in tests without a running bot; the model card passes them.
 - **The picker decides selectability through `LichessBotModelLinePickerPurpose`** (selectable entry, the reason a row isn't offered, title, prompt, button). `ModelLineageNode.selectableURL` became `selectableEntry` (the picker hands back the entry; the file source stores its URL), and the follow-mode rules are unit-tested; the picker itself isn't drawn in tests because it reads the real `Models/` when it appears.
+
+**P6 and the pending cadence change (format v11, `training_step` = overall trainer step)**
+- Implemented as written against format v10. Where v11 changes what is shown: the generation's `trainingStep` (and the ready line's and game-start line's `step=`) is the file's `training_step` as the loader reads it, so it becomes the trainer step with no change here, but its doc comment in `LichessBotGameInterfaces.swift` ("segment-local on the CLI paths") must be updated with v11. Ranking and the follow lines use the record's `steps.segmentLocalStep` (`seg k step s`, `step=` in `lineage follow:`), which v11 keeps segment-local; with v11 those labels should say which step they are (the plan's display text at §1.3, §1.4, §2.3 and §3.6).
+- Documentation: `LICHESS_BOT_PLAN.md` §9 gained the Follow lineage row and §9.2; its "Unavailable source … declined with `later`" paragraph is kept and marked superseded by §3.10, with the new rule beside it. `CHANGELOG.md` and the ROADMAP entry (marked complete, nothing removed) are updated.
+
