@@ -512,23 +512,23 @@ final class TrainingHealthMonitorTests: XCTestCase {
         checkpoint(m, at: step, digest: S.valueFC1Digest(zero: 0), config: try S.config(), sink: sink)
     }
 
-    func testValueFC1ReadDueAfterOneThousandStepsFromStart() {
+    func testValueFC1ReadDueAfterOneThousandStepsFromStart() throws {
         let fresh = monitor()
-        XCTAssertFalse(fresh.valueFC1ReadDue(trainerStep: 5000), "nothing recorded yet")
+        XCTAssertFalse(fresh.valueFC1ReadDue(trainerStep: 5000, config: try S.config()), "nothing recorded yet")
         record(fresh, 1...999)
-        XCTAssertFalse(fresh.valueFC1ReadDue(trainerStep: 999))
+        XCTAssertFalse(fresh.valueFC1ReadDue(trainerStep: 999, config: try S.config()))
         record(fresh, 1000...1000)
-        XCTAssertTrue(fresh.valueFC1ReadDue(trainerStep: 1000))
+        XCTAssertTrue(fresh.valueFC1ReadDue(trainerStep: 1000, config: try S.config()))
 
         let resumed = monitor()
         record(resumed, 514...1512)
-        XCTAssertFalse(resumed.valueFC1ReadDue(trainerStep: 1512))
+        XCTAssertFalse(resumed.valueFC1ReadDue(trainerStep: 1512, config: try S.config()))
         record(resumed, 1513...1513)
-        XCTAssertTrue(resumed.valueFC1ReadDue(trainerStep: 1513))
+        XCTAssertTrue(resumed.valueFC1ReadDue(trainerStep: 1513, config: try S.config()))
 
         let other = monitor(.doesNotApply(activation: .silu))
         record(other, 1...5000)
-        XCTAssertFalse(other.valueFC1ReadDue(trainerStep: 5000), "rule 3 does not apply: no read is ever due")
+        XCTAssertFalse(other.valueFC1ReadDue(trainerStep: 5000, config: try S.config()), "rule 3 does not apply: no read is ever due")
     }
 
     func testValueFC1ObservationsNeverMoreThanOneThousandApart() throws {
@@ -537,9 +537,9 @@ final class TrainingHealthMonitorTests: XCTestCase {
         record(m, 1...1001)
         try evaluateValueFC1(m, at: 1001, sink: sink)
         record(m, 1002...2000)
-        XCTAssertFalse(m.valueFC1ReadDue(trainerStep: 2000))
+        XCTAssertFalse(m.valueFC1ReadDue(trainerStep: 2000, config: try S.config()))
         record(m, 2001...2001)
-        XCTAssertTrue(m.valueFC1ReadDue(trainerStep: 2001))
+        XCTAssertTrue(m.valueFC1ReadDue(trainerStep: 2001, config: try S.config()))
     }
 
     func testValueFC1ReadNeverDueOnCorpusReplaySaveCadence() throws {
@@ -557,7 +557,7 @@ final class TrainingHealthMonitorTests: XCTestCase {
                     if isSave {
                         try evaluateValueFC1(m, at: step, sink: sink)
                     }
-                    XCTAssertFalse(m.valueFC1ReadDue(trainerStep: step),
+                    XCTAssertFalse(m.valueFC1ReadDue(trainerStep: step, config: try S.config()),
                                    "start \(start) overall grid \(overallGrid) step \(step)")
                 }
             }
@@ -571,12 +571,12 @@ final class TrainingHealthMonitorTests: XCTestCase {
             m.recordStep(S.record(step))
             if step == 1000 {
                 // The save failed (or its health pass did): no observation.
-                XCTAssertTrue(m.valueFC1ReadDue(trainerStep: step))
+                XCTAssertTrue(m.valueFC1ReadDue(trainerStep: step, config: try S.config()))
                 try evaluateValueFC1(m, at: step, sink: sink)   // the dedicated read
-                XCTAssertFalse(m.valueFC1ReadDue(trainerStep: step))
+                XCTAssertFalse(m.valueFC1ReadDue(trainerStep: step, config: try S.config()))
             }
         }
-        XCTAssertTrue(m.valueFC1ReadDue(trainerStep: 2000))
+        XCTAssertTrue(m.valueFC1ReadDue(trainerStep: 2000, config: try S.config()))
     }
 
     func testValueFC1ReadDueAnchorsOnTheRestoredClockAfterARewind() throws {
@@ -586,9 +586,9 @@ final class TrainingHealthMonitorTests: XCTestCase {
         try evaluateValueFC1(m, at: 1500, sink: sink)
         m.noteTrainerClockRewind(to: 1200, log: sink.sink)
         record(m, 1201...2199)
-        XCTAssertFalse(m.valueFC1ReadDue(trainerStep: 2199))
+        XCTAssertFalse(m.valueFC1ReadDue(trainerStep: 2199, config: try S.config()))
         record(m, 2200...2200)
-        XCTAssertTrue(m.valueFC1ReadDue(trainerStep: 2200), "1,000 after the restored clock 1,200")
+        XCTAssertTrue(m.valueFC1ReadDue(trainerStep: 2200, config: try S.config()), "1,000 after the restored clock 1,200")
     }
 
     // MARK: Segment summary (OD-10)
@@ -641,5 +641,158 @@ final class TrainingHealthMonitorTests: XCTestCase {
         checkpoint(m, at: 100, digest: S.deadDigest(dead: 500, tier: .checkpoint), config: config, sink: sink)
         XCTAssertEqual(m.segmentSummary(), TrainingHealthSegmentSummary(evaluations: 0, raised: []))
         XCTAssertTrue(sink.texts.isEmpty)
+    }
+
+    // MARK: Review fixes
+
+    /// Review M2: with alarms disabled no evaluation moves the D6 anchor, so a
+    /// due test that ignored the config would ask for a 512 KB GPU read on
+    /// every step past the first 1,000. Disabled means nothing is due.
+    func testValueFC1ReadNeverDueWhenDisabled() throws {
+        let m = monitor()
+        let disabled = try S.config(enabled: false)
+        let sink = S.LineSink()
+        var due = 0
+        for step in 1...3000 {
+            m.recordStep(S.record(step))
+            if m.valueFC1ReadDue(trainerStep: step, config: disabled) {
+                due += 1
+                checkpoint(m, at: step, digest: S.valueFC1Digest(zero: 0), config: disabled, sink: sink)
+            }
+        }
+        XCTAssertEqual(due, 0)
+        XCTAssertTrue(m.valueFC1ReadDue(trainerStep: 3000, config: try S.config()), "enabled again, the read is due")
+    }
+
+    /// Review minor 2: an unannounced rewind that no evaluation has logged yet
+    /// is logged by the announced rewind that follows it, in order.
+    func testUnannouncedRewindIsLoggedWhenAnAnnouncedOneFollows() throws {
+        let m = monitor()
+        let sink = S.LineSink()
+        record(m, 1...100)
+        record(m, 51...60)   // unannounced rewind 100 -> 50
+        m.noteTrainerClockRewind(to: 40, log: sink.sink)
+        XCTAssertEqual(sink.texts, [
+            "[HEALTH] trainer clock rewind detected by recordStep (not announced): 100 -> 50; generation 1",
+            "[HEALTH] trainer clock rewound 60 -> 40; generation 2; windows reset",
+        ])
+        record(m, 41...50)
+        live(m, at: 50, config: try S.config(), sink: sink)
+        XCTAssertEqual(sink.texts.filter { $0.contains("not announced") }.count, 1, "logged once")
+    }
+
+    /// Review minor 3: a disabled config judges, counts and logs nothing —
+    /// not a failed live read, not a stale stamp. A rewind detected meanwhile
+    /// is logged by the first enabled evaluation.
+    func testDisabledConfigLogsAndCountsNothingForAFailedReadOrAStaleStamp() throws {
+        let m = monitor()
+        let disabled = try S.config(enabled: false)
+        let sink = S.LineSink()
+        record(m, 1...50)
+        m.evaluateLive(stamp: m.observationStamp(), layerHealth: .readFailed, learningRate: nil, momentum: nil,
+                       config: disabled, log: sink.sink)
+        record(m, 51...60)
+        let stale = m.observationStamp()
+        m.recordStep(S.record(55))   // unannounced rewind 60 -> 54
+        m.evaluateLive(stamp: stale, layerHealth: .read(S.deadDigest(dead: 0), trainerStep: 60), learningRate: nil,
+                       momentum: nil, config: disabled, log: sink.sink)
+        m.evaluateCheckpoint(stamp: stale, layerHealth: S.deadDigest(dead: 0, tier: .checkpoint), digestTrainerStep: 60,
+                             config: disabled, log: sink.sink)
+        XCTAssertEqual(sink.texts, [])
+
+        record(m, 56...100)
+        live(m, at: 100, config: try S.config(), sink: sink)
+        XCTAssertEqual(sink.texts.first,
+                       "[HEALTH] trainer clock rewind detected by recordStep (not announced): 60 -> 54; generation 1")
+        m.writeFinalCheck(log: sink.sink)
+        let final = try XCTUnwrap(sink.texts.last)
+        XCTAssertTrue(final.contains(" evaluations=1 live=1 checkpoint=0 stale=0 "), final)
+        XCTAssertTrue(final.contains(" liveReadFailed=0 "), final)
+    }
+
+    /// Review minor 4: `nodata=` counts a rule only on evaluations whose
+    /// source is meant to feed it — never the window rules on a checkpoint
+    /// pass, never rule 3 on a live read, nothing but rule 3 on a dedicated
+    /// value-FC1 read — so a healthy run's check line says `nodata=none`.
+    func testNoDataCountsOnlyRulesTheEvaluationsSourceFeeds() throws {
+        let m = monitor()
+        let config = try S.config()
+        let sink = S.LineSink()
+        let base = S.deadDigest(dead: 0)
+        let runningVariance = LayerHealthDigest.RunningVarianceRunaway(maxOverMedian: 5, site: "blocks.0.bn1")
+        let liveDigest = LayerHealthDigest(
+            tier: .live, deadChannels: base.deadChannels, nonFiniteValueCount: 0, runningVariance: runningVariance,
+            valueFC1: nil)
+        let checkpointDigest = LayerHealthDigest(
+            tier: .checkpoint, deadChannels: base.deadChannels, nonFiniteValueCount: 0, runningVariance: runningVariance,
+            valueFC1: LayerHealthDigest.ValueFC1Velocity(zeroVelocityUnitCount: 0, unitCount: 128))
+        for step in 1...2000 {
+            m.recordStep(S.record(step, offset: 0.1, ms: 1))
+            if step % 50 == 0 {
+                live(m, at: step, digest: liveDigest, config: config, sink: sink)
+            }
+            if step % 1000 == 0 {
+                checkpoint(m, at: step, digest: checkpointDigest, config: config, sink: sink)
+            }
+            if step == 1500 {
+                checkpoint(m, at: step, digest: S.valueFC1Digest(zero: 0), config: config, sink: sink)
+            }
+        }
+        let checks = sink.texts.filter { $0.hasPrefix("[HEALTH] check ") }
+        XCTAssertEqual(checks.count, 2, sink.texts.joined(separator: "\n"))
+        let first = try XCTUnwrap(checks.first)
+        XCTAssertFalse(first.contains("value_fc1_zero_velocity:"), first)
+        let second = try XCTUnwrap(checks.last)
+        XCTAssertTrue(second.contains(" live=20 checkpoint=2 "), second)
+        XCTAssertTrue(second.contains(" nodata=none "), second)
+        XCTAssertTrue(sink.texts.filter { $0.hasPrefix("[ALARM] health") }.isEmpty, sink.texts.joined(separator: "\n"))
+    }
+
+    /// Review minor 5: the final check line names the newest step the
+    /// monitor knows — recorded or evaluated — and `none` when it knows none;
+    /// never a made-up 0.
+    func testFinalCheckLineNamesTheNewestKnownStep() throws {
+        let m = monitor()
+        let sink = S.LineSink()
+        checkpoint(m, at: 5000, digest: S.deadDigest(dead: 0, tier: .checkpoint), config: try S.config(), sink: sink)
+        m.writeFinalCheck(log: sink.sink)
+        let final = try XCTUnwrap(sink.texts.last)
+        XCTAssertTrue(final.hasPrefix("[HEALTH] check trainerStep=5000 "), final)
+
+        let empty = monitor()
+        let emptySink = S.LineSink()
+        empty.writeFinalCheck(log: emptySink.sink)
+        let emptyFinal = try XCTUnwrap(emptySink.texts.last)
+        XCTAssertTrue(emptyFinal.hasPrefix("[HEALTH] check trainerStep=none "), emptyFinal)
+    }
+
+    func testStaleLiveObservationWithoutAnyStepSaysNone() throws {
+        let m = monitor()
+        let sink = S.LineSink()
+        let stale = m.observationStamp()
+        m.noteTrainerClockRewind(to: 0, log: sink.sink)
+        m.evaluateLive(stamp: stale, layerHealth: .readFailed, learningRate: nil, momentum: nil,
+                       config: try S.config(), log: sink.sink)
+        XCTAssertTrue(sink.texts.contains { $0.hasPrefix("[HEALTH] stale live observation ignored: trainerStep=none generation=0") },
+                      sink.texts.joined(separator: "\n"))
+    }
+
+    /// Review minor 1: while a `dead_channels` clear is pending, the reminder
+    /// and the check line still name the sites (none now), and every check
+    /// field is `key=value`.
+    func testCheckLineNamesTheSitesWhileAClearIsPending() throws {
+        let m = monitor()
+        let config = try S.config()
+        let sink = S.LineSink()
+        record(m, 1...950)
+        live(m, at: 950, digest: S.deadDigest(dead: 5, sites: [("value.bn", 5, 16)]), config: config, sink: sink)
+        record(m, 951...1000)
+        live(m, at: 1000, digest: S.deadDigest(dead: 0), config: config, sink: sink)
+        let check = try XCTUnwrap(sink.texts.first { $0.hasPrefix("[HEALTH] check ") })
+        let fields = check.dropFirst("[HEALTH] check ".count).split(separator: " ")
+        XCTAssertTrue(fields.allSatisfy { $0.contains("=") }, check)
+        XCTAssertTrue(check.hasSuffix(" active=dead_channels:critical dead_channels_sites=none"), check)
+        let reminder = try XCTUnwrap(sink.texts.first { $0.hasPrefix("[ALARM] health active rule=dead_channels") })
+        XCTAssertTrue(reminder.hasSuffix(" value=dead=0/1040 sites=none"), reminder)
     }
 }

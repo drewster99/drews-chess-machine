@@ -245,6 +245,109 @@ final class TrainingHealthLogReplayTests: XCTestCase {
         XCTAssertTrue(final.contains("policy_offset_drift:5"), final)
     }
 
+    // MARK: The overall arm's denominator (review M1)
+
+    private let batchNormTableHeader = [
+        "[LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only",
+        "[LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]",
+    ]
+
+    func testOverallArmDividesByEveryActivatedChannelOfTheRunsTable() throws {
+        // A mixed tower logged before the parked counts: the live line counts
+        // the two leaky_relu sites only (144 channels); the run's table says
+        // activations consume 128 + 128 + 16 = 272 channels (stem.bn feeds
+        // none). 12/272 = 4.4% overall and 12/128 = 9.4% at the site: a
+        // warning, not the 12/144 = 8.3% critical.
+        let text = ([
+            "[RUN] path=replay build=2330",
+            "[REPLAY] step=50 loss=3.9 pIllM=0.005 gNorm=0.4 pLogitMean=0.1 lr=0.5 ms=2000.0 mom=0.85 trainerStep=50",
+            "[LAYER-HEALTH] live trainerStep=50 scope=batch_norm_state_only reluSites=2/4 ch=144 dead=12 off=0 alwaysOn=0 worst=policy.pre_bn(dead 12 off 0 on 0) rvMaxOverMedian=3.0@stem.bn[1] rezero=none nonFinite=0",
+            "[LAYER-HEALTH] checkpoint replay-autosave step=1000 trainerStep=1000 scope=all_tensors reluSites=2/4 ch=144 dead=12 off=0 alwaysOn=0 rvMaxOverMedian=3.0@stem.bn[1] rezero=none nonFinite=0 seZeroVel=none valueFC1ZeroVel=0/128",
+        ] + batchNormTableHeader + [
+            "[LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.00 [1]          +1.00 [2]              3.0 [1]",
+            "[LAYER-HEALTH]     blocks.0.bn1    silu          128    n/a    n/a    n/a      0      0     -1.00 [1]          +1.00 [2]              1.0 [3]",
+            "[LAYER-HEALTH]     policy.pre_bn   leaky_relu    128     12      0      0      0      0     -9.00 [1]          +1.00 [2]              1.0 [3]",
+            "[LAYER-HEALTH]     value.bn        leaky_relu     16      0      0      0      0      0     -1.00 [1]          +1.00 [2]              1.0 [3]",
+        ]).joined(separator: "\n")
+        let output = try replay([text])
+        let raise = try XCTUnwrap(output.events.first { $0.rule == .deadChannels && $0.kind == .raise })
+        XCTAssertEqual(raise.trainerStep, 50)
+        XCTAssertEqual(raise.severity, .warning)
+        XCTAssertEqual(raise.value, "dead=12/272")
+    }
+
+    func testOverallArmHasNoDataWhenTheRunHasNoChannelTable() throws {
+        // No checkpoint table in the run: the denominator of every activated
+        // channel is unknown, so the overall arm has no data (never 20/144).
+        // policy.pre_bn's channel count is unknown too, so only the warning
+        // (any parked channel) can be judged.
+        let text = [
+            "[RUN] path=replay build=2330",
+            "[REPLAY] step=50 loss=3.9 pIllM=0.005 gNorm=0.4 pLogitMean=0.1 lr=0.5 ms=2000.0 mom=0.85 trainerStep=50",
+            "[LAYER-HEALTH] live trainerStep=50 scope=batch_norm_state_only reluSites=2/10 ch=144 dead=20 off=12 alwaysOn=0 worst=policy.pre_bn(dead 19 off 7 on 0) rvMaxOverMedian=3.0@stem.bn[1] rezero=none nonFinite=0",
+        ].joined(separator: "\n")
+        let output = try replay([text])
+        let raise = try XCTUnwrap(output.events.first { $0.rule == .deadChannels && $0.kind == .raise })
+        XCTAssertEqual(raise.severity, .warning)
+        XCTAssertEqual(raise.value, "dead=20/--")
+        XCTAssertEqual(raise.detail, "sites=policy.pre_bn(19/?) coverage=relu_leaky_relu_only")
+    }
+
+    func testConflictingActivationsWithinOneRunAreRefused() {
+        // The pre-scan's activation per site is the overall denominator's
+        // source, so two answers within one run are refused, not merged.
+        let text = ([
+            "[RUN] path=replay build=1",
+            "[LAYER-HEALTH] checkpoint replay-autosave step=1000 trainerStep=1000 reluSites=1/1 ch=16 dead=0 nonFinite=0",
+        ] + batchNormTableHeader + [
+            "[LAYER-HEALTH]     value.bn        relu           16      0      0      0      0      0     -1.00 [1]          +1.00 [2]              1.0 [3]",
+            "[LAYER-HEALTH] checkpoint replay-autosave step=2000 trainerStep=2000 reluSites=0/1 dead=n/a nonFinite=0",
+        ] + batchNormTableHeader + [
+            "[LAYER-HEALTH]     value.bn        silu           16    n/a    n/a    n/a      0      0     -1.00 [1]          +1.00 [2]              1.0 [3]",
+        ]).joined(separator: "\n")
+        XCTAssertThrowsError(try replay([text])) { error in
+            XCTAssertEqual(error as? TrainingHealthLogReplayError,
+                           .conflictingActivations(site: "value.bn", first: "log0.txt:5 (relu)", second: "log0.txt:9 (silu)"))
+        }
+    }
+
+    // MARK: The dedicated value-FC1 line (review M3)
+
+    func testValueFC1LinesCarryTheTrainedCountSoGuiLogsReplayRule3() throws {
+        // A GUI log has no step rows; its dedicated value-FC1 reads carry the
+        // steps this process trained, which is rule 3's gate.
+        let text = [
+            "[RUN] path=gui build=2400",
+            "[LAYER-HEALTH] value-fc1 trainerStep=5000 trained=150 valueFC1ZeroVel=128/128 lowVel=0 readMs=1.00 summaryMs=0.50",
+            "[LAYER-HEALTH] value-fc1 trainerStep=6000 trained=1150 valueFC1ZeroVel=128/128 lowVel=0 readMs=1.00 summaryMs=0.50",
+        ].joined(separator: "\n")
+        let output = try replay([text])
+        let raise = try XCTUnwrap(output.events.first { $0.rule == .valueFC1ZeroVelocity && $0.kind == .raise })
+        XCTAssertEqual(raise.trainerStep, 6000, "150 trained is below the 200-step gate; 1,150 is past it")
+        XCTAssertEqual(raise.severity, .critical)
+    }
+
+    func testValueFC1LineWithoutTheTrainedCountIsMalformed() {
+        XCTAssertThrowsError(try parse(
+            "[LAYER-HEALTH] value-fc1 trainerStep=5000 valueFC1ZeroVel=0/128 lowVel=0 readMs=1.00 summaryMs=0.50")) { error in
+            guard case .malformedLine(_, let line, _) = error as? TrainingHealthLogReplayError else {
+                return XCTFail("\(error)")
+            }
+            XCTAssertEqual(line, 7)
+        }
+    }
+
+    func testHeaderNamesRule3sOnlySourceInALogWithoutStepRows() throws {
+        let text = [
+            "[RUN] path=gui build=2400",
+            "[LAYER-HEALTH] live trainerStep=50 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none rvMaxOverMedian=3.0@stem.bn[1] rezero=none nonFinite=0",
+        ].joined(separator: "\n")
+        let output = try replay([text])
+        XCTAssertTrue(output.header.contains(
+            "log0.txt: no [REPLAY]/[VS-UCI] step rows: layer-health rules only (non_finite, dead_channels, bn_running_variance_runaway); value_fc1_zero_velocity only from [LAYER-HEALTH] value-fc1 lines and replay-/vsuci- checkpoints (0 value-fc1 lines in this log)"),
+            output.header.joined(separator: "\n"))
+    }
+
     func testLogsPassedTogetherAreOneEvaluatorAndLaterRunsAreFresh() throws {
         let first = "[RUN] path=replay build=1\n[REPLAY] step=50 loss=3 pIllM=0.4 gNorm=1 ms=1.0 trainerStep=50\n[REPLAY] step=100 loss=3 pIllM=0.9 gNorm=1 ms=1.0 trainerStep=100"
         let second = "[RUN] path=replay build=1\n[REPLAY] step=1 loss=3 pIllM=0.9 gNorm=1 ms=1.0 trainerStep=150"
