@@ -658,6 +658,24 @@ class StepReadingTests(unittest.TestCase):
         with self.assertRaises(dcm_lineage.LineageError):
             dcm_lineage.step_reading(header, "bad")
 
+    def test_a_negative_trainer_clock_is_refused(self):
+        for header in (v11_header(), {"dcm_format_version": "10", "model_id": "m", "creator": "replay",
+                                      "training_step": "5"}):
+            header = dict(header, trainer_completed_steps="-5")
+            if header["dcm_format_version"] == "11":
+                header["training_step"] = "-5"
+            with self.subTest(version=header["dcm_format_version"]), \
+                    self.assertRaisesRegex(dcm_lineage.LineageError, "below 0"):
+                dcm_lineage.step_reading(header, "negative")
+
+    def test_trainer_schedule_keys_without_the_clock_are_refused(self):
+        for key in ("trainer_lr_warmup_steps", "trainer_lr_momentum_cycle", "trainer_lr_momentum_cycle_envelope"):
+            header = v11_header(clock=False)
+            header[key] = "0" if key == "trainer_lr_warmup_steps" else "{}"
+            with self.subTest(key=key), self.assertRaisesRegex(dcm_lineage.LineageError,
+                                                               f"trainer_completed_steps is missing beside {key}"):
+                dcm_lineage.step_reading(header, "half")
+
     def test_a_version_newer_than_the_tools_is_refused(self):
         import dcm_arch
         header = v11_header()

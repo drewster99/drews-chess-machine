@@ -9,6 +9,7 @@ temporary .app bundle; no real model, log or dashboard file is touched.
 """
 import csv
 import importlib
+import io
 import json
 import os
 import runpy
@@ -221,7 +222,7 @@ class TrainerStepNamedFilesTests(unittest.TestCase):
         self.load({"r": {"frozen_glob": "r-step*-frozen.safetensors", "out_model": "T-replay-latest.safetensors",
                          "segments": [{"log": "a.txt", "cumstep_base": 0, "date": "20261006", "enum_stem": "S"},
                                       {"log": "b.txt", "cumstep_base": 1000, "date": "20261006",
-                                       "enum_stem": "T"}]}})
+                                       "enum_stem": "T", "model_id": "20261006-2-TTTT"}]}})
         self.assertEqual(self.replay.meta_step_of(path), 487)
         self.assertEqual(self.replay._ckpt_index([self.root]), {("20261006-2-TTTT", 487): path})
         self.assertIsNone(self.backfill("r"))
@@ -271,6 +272,149 @@ class TrainerStepNamedFilesTests(unittest.TestCase):
                          "another model's file under the name is not this mark's checkpoint")
         write_header(enumerated, rolling)
         self.assertEqual(self.replay.freeze("r", cfg, 500, rolling), (2000, enumerated))
+
+    # ----- a resumed v11 segment keeps its stem: earlier segments' files sit under the same name -----
+
+    def resumed_registry(self, latest_segment_fields=None):
+        """Run `r`: segment 0 ended at trainer step 1000 and segment 1 has just resumed from it under the
+        same stem, `S` (base 1000, no file of its own yet). `latest_segment_fields` are added to segment 1."""
+        latest = {"log": "b.txt", "cumstep_base": 1000, "date": "20261006"}
+        latest.update(latest_segment_fields or {})
+        self.load({"r": {"frozen_glob": "r-step*-frozen.safetensors", "out_model": "S-replay-latest.safetensors",
+                         "segments": [{"log": "a.txt", "cumstep_base": 0, "date": "20261006"}, latest]}})
+
+    def test_backfill_does_not_file_an_earlier_segments_v11_file_under_the_latest_segment(self):
+        write_header(os.path.join(self.root, "S-replay-step1000.safetensors"),
+                     v11_header(local_step=1000, cum=1000, model_id="20261006-1-SEG0"))
+        self.resumed_registry()
+        raised = self.backfill("r")
+        self.assertEqual(self.probed("r"), [], "segment 0's file is not segment 1's step 1000 (cum 2000)")
+        self.assertIsInstance(raised, self.replay.BackfillIncomplete)
+        self.assertIn("S-replay-step1000.safetensors", str(raised))
+        self.assertIn("derive-registry", str(raised))
+
+    def test_backfill_does_not_file_a_v11_file_under_a_segment_naming_another_model_id(self):
+        write_header(os.path.join(self.root, "S-replay-step1000.safetensors"),
+                     v11_header(local_step=1000, cum=1000, model_id="20261006-1-SEG0"))
+        self.resumed_registry({"model_id": "20261006-2-SEG1"})
+        raised = self.backfill("r")
+        self.assertEqual(self.probed("r"), [])
+        self.assertIsInstance(raised, self.replay.BackfillIncomplete)
+        self.assertIn("S-replay-step1000.safetensors", str(raised))
+
+    def track(self, run):
+        """replay.track(run), returning what it printed to stderr."""
+        printed = io.StringIO()
+        with mock.patch.object(self.replay, "internals_cells", lambda path: dict(bn1Mean=0.5, sae2="", eff_alpha="")), \
+                mock.patch.object(sys, "stderr", printed):
+            self.replay.track(run)
+        return printed.getvalue()
+
+    def write_rolling(self, model_id="20261006-1-SEG0"):
+        """The rolling file and its enumerated twin, both at local step 1000 of a segment whose record
+        names segment `seg-b`."""
+        for name in ("S-replay-latest.safetensors", "S-replay-step1000.safetensors"):
+            write_header(os.path.join(self.root, name), v11_header(local_step=1000, cum=1000, model_id=model_id))
+
+    def test_track_refuses_a_rolling_file_the_latest_segment_does_not_name(self):
+        self.write_rolling()
+        self.resumed_registry()
+        printed = self.track("r")
+        self.assertEqual(self.probed("r"), [], "the previous segment's final state is not a mark of segment 1")
+        self.assertIn("derive-registry", printed)
+
+    def test_track_refuses_a_rolling_file_of_another_segment_id_or_model_id(self):
+        self.write_rolling()
+        for fields in ({"segment_id": "seg-c"}, {"model_id": "20261006-2-SEG1"}):
+            with self.subTest(fields=fields):
+                self.resumed_registry(fields)
+                printed = self.track("r")
+                self.assertEqual(self.probed("r"), [])
+                self.assertIn("derive-registry", printed)
+
+    def test_track_files_a_rolling_file_the_latest_segment_names(self):
+        self.write_rolling(model_id="20261006-2-SEG1")
+        for fields in ({"segment_id": "seg-b"}, {"model_id": "20261006-2-SEG1"}):
+            with self.subTest(fields=fields):
+                data = os.path.join(self.root, "data", "r.csv")
+                if os.path.exists(data):
+                    os.remove(data)
+                self.resumed_registry(fields)
+                self.track("r")
+                self.assertEqual(self.probed("r"), [(2000, 1000)])
+
+    def import_records(self, records):
+        """import_probes of `records` (without --ckpt-dir) into segment 1 of a run whose segment 1
+        (model M) begins at 1513; returns the CSV's rows as (cum_step, meta_step)."""
+        self.load({"r": {"frozen_glob": "r-step*-frozen.safetensors", "out_model": "S-replay-latest.safetensors",
+                         "segments": [{"log": "a.txt", "cumstep_base": 0, "date": "20261006"},
+                                      {"log": "b.txt", "cumstep_base": 1513, "date": "20261006", "model_id": "M"}]}})
+        probes = os.path.join(self.root, "p.jsonl")
+        with open(probes, "w") as handle:
+            for record in records:
+                handle.write(json.dumps(record) + "\n")
+        with mock.patch.object(sys, "stdout", io.StringIO()), mock.patch.object(sys, "stderr", io.StringIO()):
+            self.replay.import_probes("r", probes, 1, ckpt_dirs=(), verbose=True)
+        path = os.path.join(self.root, "data", "r.csv")
+        if not os.path.exists(path):
+            return []
+        with open(path, newline="") as handle:
+            return [(int(row["cum_step"]), int(row["meta_step"])) for row in csv.DictReader(handle)]
+
+    def probe_record(self, **fields):
+        record = {"step": 2000, "training_step": 2000, "model_id": "M", "modelID": "M", "pElo": 1000.0,
+                  "nll": 2.0, "model": "/x/S-replay-step2000.safetensors"}
+        record.update(fields)
+        return record
+
+    def test_import_probes_files_a_trainer_step_record_by_its_segment_step(self):
+        rows = self.import_records([self.probe_record(trainer_step=2000, segment_step=487,
+                                                      step_basis="trainer_step")])
+        self.assertEqual(rows, [(2000, 487)], "base 1513 + segment step 487, not base + trainer step 2000")
+
+    def test_import_probes_rejects_a_trainer_step_record_without_a_segment_step(self):
+        rows = self.import_records([self.probe_record(trainer_step=2000, segment_step=None,
+                                                      step_basis="trainer_step")])
+        self.assertEqual(rows, [])
+
+    def test_import_probes_files_a_legacy_segment_step_record_by_its_name_step(self):
+        rows = self.import_records([self.probe_record(step=487, training_step=487, trainer_step=2000,
+                                                      segment_step=487, step_basis="legacy_segment_step",
+                                                      model="/x/S-replay-step487.safetensors")])
+        self.assertEqual(rows, [(2000, 487)])
+
+    def test_import_probes_rejects_a_record_whose_named_file_has_an_unreadable_header(self):
+        with open(os.path.join(self.root, "S-replay-step300.safetensors"), "wb") as handle:
+            handle.write(struct.pack("<Q", 4096) + b'{"__metadata__": {')
+        future = v11_header(local_step=400, cum=1913, model_id="M")
+        future["dcm_format_version"] = "99"
+        write_header(os.path.join(self.root, "S-replay-step400.safetensors"), future)
+        self.load({"r": {"frozen_glob": "r-step*-frozen.safetensors", "out_model": "S-replay-latest.safetensors",
+                         "segments": [{"log": "a.txt", "cumstep_base": 0, "date": "20261006"},
+                                      {"log": "b.txt", "cumstep_base": 1513, "date": "20261006", "model_id": "M"}]}})
+        probes = os.path.join(self.root, "p.jsonl")
+        with open(probes, "w") as handle:
+            for step in (300, 400, 500):
+                handle.write(json.dumps({"step": step, "training_step": step, "modelID": "M", "pElo": 1000.0,
+                                         "nll": 2.0, "model": f"/x/S-replay-step{step}.safetensors"}) + "\n")
+        printed = io.StringIO()
+        with mock.patch.object(sys, "stdout", io.StringIO()), mock.patch.object(sys, "stderr", printed):
+            added = self.replay.import_probes("r", probes, 1, ckpt_dirs=(self.root,), verbose=True)
+        self.assertEqual(added, 1, "the record whose file is not there is imported; the import is not aborted")
+        self.assertEqual(self.probed("r"), [(2013, 500)])
+        self.assertIn("S-replay-step300.safetensors: header cannot be read", printed.getvalue())
+        self.assertIn("S-replay-step400.safetensors: header cannot be read", printed.getvalue())
+
+    def test_import_probes_rejects_a_record_stating_an_unknown_step_basis(self):
+        self.load({"r": {"frozen_glob": "r-step*-frozen.safetensors", "out_model": "S-replay-latest.safetensors",
+                         "segments": [{"log": "a.txt", "cumstep_base": 0, "date": "20261006"},
+                                      {"log": "b.txt", "cumstep_base": 1513, "date": "20261006", "model_id": "M"}]}})
+        probes = os.path.join(self.root, "p.jsonl")
+        with open(probes, "w") as handle:
+            handle.write(json.dumps({"step": 500, "modelID": "M", "pElo": 1000.0, "segment_step": 500,
+                                     "step_basis": "wall_clock", "model": "/x/S-replay-step500.safetensors"}) + "\n")
+        with mock.patch.object(sys, "stdout", io.StringIO()), mock.patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(self.replay.import_probes("r", probes, 1, ckpt_dirs=(), verbose=True), 0)
 
 
 class TickTests(unittest.TestCase):

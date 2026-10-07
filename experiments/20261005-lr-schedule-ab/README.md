@@ -559,6 +559,15 @@ B-silu at 22,000; at its 22,030 abort save, value.bn has 1 more channel mostly o
   troughs. E-0020 shows the same start with a 1.0 gradient cap avoids the blowup entirely. A SiLU-tower comparison with
   B therefore needs the cap; this arm answers only "SiLU tower at cap 15", and the answer is no.
 
+## Arms B-silu-clip2 and B-silu-clip5: how loose can a fixed cap be? (added 2026-10-07 03:50)
+
+- Owner question after E-0020: a fixed cap of 1.0 prevented B-silu's step-20,600 blowup, but it cannot be used everywhere: early-training gNorm is ~30 at step 1 and 1–3 for hundreds of steps, so 1.0 would clip nearly every early step.
+  These two arms bracket the blowup's precursor (a pre-clip norm above 1.0 somewhere in 19,751–19,799, against a median near 0.35, and 2.566 logged at 20,600).
+- Same recipe as B-silu-ctl15 and B-silu-clip1: `--resume-exact` from `20261005-lrBsilu-cyc1-replay-step18000.safetensors`, `--accept-inexact params`, `--training-step-limit 5000` (to trainer step 23,000), same frozen build 2330, flags and seed;
+  `parameters-Bsilu-clip2.json` / `parameters-Bsilu-clip5.json` (`parameters-B.json` with only `grad_clip_max_norm` changed). Both resumes logged `[RESUME] EXACT`.
+- Stems `20261006-lrBsilu-clip2` / `20261006-lrBsilu-clip5`; logs `dcm_log_20261007-035017-2.txt` (clip2), `dcm_log_20261007-035017.txt` (clip5); probes `probes-Bsilu-clip2-seg1.jsonl` / `probes-Bsilu-clip5-seg1.jsonl`.
+- Reading: a cap that is never exceeded leaves the run bit-identical to B-silu (the ctl15 control), so blowup or not is decided by whether the precursor spike exceeds the cap. A relative cap (k × running median of recent pre-clip norms) is the general form; it is being planned separately.
+
 ## Arm C-leaky (added 2026-10-05 23:13, owner)
 
 - Owner: "let's do a leaky version of C with the crazy high LR schedule". C's damage was not confined to the value head

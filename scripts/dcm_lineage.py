@@ -200,7 +200,50 @@ def validated_record(record, source, field=METADATA_KEY):
             if key not in summary:
                 raise LineageError(f"{source}: {field}.segments[{position}] has no {key}")
         _check_schema_keys(summary, _SCHEMA_3_SEGMENT_SUMMARY, schema, source, f"{field}.segments[{position}]")
+    _check_corpus_position(record["fed"]["corpus"], schema, source, f"{field}.fed.corpus")
+    _check_seed_origin(record, schema, source, field)
     return record
+
+
+# CorpusPosition's keys by schema (LineageRecord.swift, `CorpusPosition.init(from:schema:)`):
+# a schema-3 position names its corpora in `corpus_identity` and records its
+# `segment_start`; a schema-2 position named one corpus by `corpus_id` and
+# `corpus_path`. Each schema refuses the other's keys.
+_SCHEMA_3_CORPUS = ("corpus_identity", "segment_start")
+_SCHEMA_2_CORPUS = ("corpus_id", "corpus_path")
+
+
+def _check_corpus_position(corpus, schema, source, where):
+    """A record's corpus position (`fed.corpus`; None when the run fed no
+    corpus) has its schema's keys and none of the other schema's."""
+    if corpus is None:
+        return
+    if not isinstance(corpus, dict):
+        raise LineageError(f"{source}: {where} is not an object")
+    _check_schema_keys(corpus, _SCHEMA_3_CORPUS, schema, source, where)
+    for key in _SCHEMA_2_CORPUS:
+        if schema >= 3 and key in corpus:
+            raise LineageError(f"{source}: {where} carries {key}, but a schema-{schema} corpus position names "
+                               f"its corpora in corpus_identity")
+        if schema < 3 and key not in corpus:
+            raise LineageError(f"{source}: {where} has no {key} (schema {schema})")
+
+
+# The schema-3 value of `rng.streams.seed_origin` a schema-2 record never wrote
+# (LineageRecord.swift: "seed_origin command_line is a schema-3 value").
+_SCHEMA_3_SEED_ORIGIN = "command_line"
+
+
+def _check_seed_origin(record, schema, source, field):
+    """A schema-2 record's run-seed streams do not name a seed origin only
+    schema 3 has."""
+    if schema >= 3:
+        return
+    rng = record.get("rng")
+    streams = rng.get("streams") if isinstance(rng, dict) else None
+    if isinstance(streams, dict) and streams.get("seed_origin") == _SCHEMA_3_SEED_ORIGIN:
+        raise LineageError(f"{source}: {field}.rng.streams.seed_origin {_SCHEMA_3_SEED_ORIGIN} is a schema-3 "
+                           f"value in a schema-{schema} record")
 
 
 def _check_schema_keys(holder, keys, schema, source, where):
@@ -626,6 +669,10 @@ BASIS_TRAINER_STEP = "trainer_step"
 BASIS_LEGACY_SEGMENT_STEP = "legacy_segment_step"
 BASIS_LEGACY_GUI_TRAINER_STEP = "legacy_gui_trainer_step"
 BASIS_LEGACY_UNKNOWN_WRITER = "legacy_unknown_writer"
+# Every TrainingStepBasis raw value: what a stated basis (a probe record's
+# `step_basis`) must be one of.
+STEP_BASES = frozenset({BASIS_TRAINER_STEP, BASIS_LEGACY_SEGMENT_STEP, BASIS_LEGACY_GUI_TRAINER_STEP,
+                        BASIS_LEGACY_UNKNOWN_WRITER})
 
 
 class StepReading:
@@ -665,20 +712,44 @@ def _header_int(metadata, key, source):
     return int(value)
 
 
+# TrainerScheduleState.MetadataKey.all (Training/TrainerResumeState.swift): the
+# trainer schedule keys, of which `trainer_completed_steps` is the clock.
+TRAINER_SCHEDULE_KEYS = (TRAINER_COMPLETED_STEPS_KEY, "trainer_lr_warmup_steps", "trainer_lr_momentum_cycle",
+                         "trainer_lr_momentum_cycle_envelope")
+
+
+def _trainer_clock(metadata, source):
+    """The header's `trainer_completed_steps`, None when the header carries no
+    trainer schedule. Refuses what `TrainerScheduleState.decode` refuses of the
+    clock: a header carrying schedule keys without it (half a schedule), and a
+    value below 0."""
+    clock = _header_int(metadata, TRAINER_COMPLETED_STEPS_KEY, source)
+    if clock is None:
+        present = [key for key in TRAINER_SCHEDULE_KEYS if key in metadata]
+        if present:
+            raise LineageError(f"{source}: trainer schedule metadata is incomplete: {TRAINER_COMPLETED_STEPS_KEY} "
+                               f"is missing beside {', '.join(present)}")
+        return None
+    if clock < 0:
+        raise LineageError(f"{source}: {TRAINER_COMPLETED_STEPS_KEY} {clock} is below 0")
+    return clock
+
+
 def step_reading(metadata, source):
     """The `StepReading` of one header (see the table above). Reads the format
     version through `dcm_arch.checked_format_version`, so a file newer than
     these tools is refused rather than read under the v11 rules; refuses a v11
     trainer-state header whose training_step is not its trainer_completed_steps,
-    as the app's decode does. The lineage record is read only when the reading
-    needs it."""
+    as the app's decode does, and (any version) a negative trainer_completed_steps
+    or trainer schedule keys without it (`_trainer_clock`). The lineage record is
+    read only when the reading needs it."""
     try:
         checked = dcm_arch.checked_format_version(metadata.get(FORMAT_VERSION_KEY))
     except dcm_arch.ArchitectureError as error:
         raise LineageError(f"{source}: {error}") from None
     version = UNVERSIONED_LEGACY_VERSION if checked is None else checked
     stated = _header_int(metadata, TRAINING_STEP_KEY, source)
-    clock = _header_int(metadata, TRAINER_COMPLETED_STEPS_KEY, source)
+    clock = _trainer_clock(metadata, source)
     creator = metadata.get(CREATOR_KEY, "")
 
     def record_steps():

@@ -138,6 +138,72 @@ class SchemaThreeKeyTests(unittest.TestCase):
             dcm_lineage.validated_record(record, "mixed-summary.safetensors")
 
 
+SCHEMA_2_CORPUS = {"corpus_id": "a", "corpus_path": "/a", "epoch": 0}
+SCHEMA_3_CORPUS = {"corpus_identity": {"first_only": {"corpus_id": "a", "corpus_path": "/a"}},
+                   "segment_start": {"recorded": False}, "epoch": 0}
+
+
+class CorpusPositionSchemaTests(unittest.TestCase):
+    """`validated_record` checks a corpus position's keys by schema, as CorpusPosition's decoder does."""
+
+    def record(self, schema, corpus):
+        record = test_lineage.record_for(1, 500)
+        if schema == 3:
+            record = schema_three(record)
+        record["fed"]["corpus"] = copy.deepcopy(corpus)
+        return record
+
+    def test_each_schemas_corpus_position_is_read(self):
+        dcm_lineage.validated_record(self.record(2, SCHEMA_2_CORPUS), "two")
+        dcm_lineage.validated_record(self.record(3, SCHEMA_3_CORPUS), "three")
+
+    def test_a_schema_three_position_with_schema_two_keys_is_refused(self):
+        for key in ("corpus_id", "corpus_path"):
+            corpus = dict(SCHEMA_3_CORPUS, **{key: SCHEMA_2_CORPUS[key]})
+            with self.subTest(key=key), self.assertRaisesRegex(dcm_lineage.LineageError, f"carries {key}"):
+                dcm_lineage.validated_record(self.record(3, corpus), "three")
+
+    def test_a_schema_three_position_without_its_keys_is_refused(self):
+        for key in ("corpus_identity", "segment_start"):
+            corpus = {k: v for k, v in SCHEMA_3_CORPUS.items() if k != key}
+            with self.subTest(key=key), self.assertRaisesRegex(dcm_lineage.LineageError, f"has no {key}"):
+                dcm_lineage.validated_record(self.record(3, corpus), "three")
+
+    def test_a_schema_two_position_with_schema_three_keys_is_refused(self):
+        for key in ("corpus_identity", "segment_start"):
+            corpus = dict(SCHEMA_2_CORPUS, **{key: SCHEMA_3_CORPUS[key]})
+            with self.subTest(key=key), self.assertRaisesRegex(dcm_lineage.LineageError, "never wrote"):
+                dcm_lineage.validated_record(self.record(2, corpus), "two")
+
+    def test_a_schema_two_position_without_its_keys_is_refused(self):
+        for key in ("corpus_id", "corpus_path"):
+            corpus = {k: v for k, v in SCHEMA_2_CORPUS.items() if k != key}
+            with self.subTest(key=key), self.assertRaisesRegex(dcm_lineage.LineageError, f"has no {key}"):
+                dcm_lineage.validated_record(self.record(2, corpus), "two")
+
+    def test_a_corpus_position_that_is_not_an_object_is_refused(self):
+        with self.assertRaisesRegex(dcm_lineage.LineageError, "not an object"):
+            dcm_lineage.validated_record(self.record(2, ["a"]), "two")
+
+
+class SeedOriginSchemaTests(unittest.TestCase):
+    def record(self, schema, seed_origin):
+        record = test_lineage.record_for(1, 500)
+        if schema == 3:
+            record = schema_three(record)
+        record["rng"]["streams"] = {"master_seed": "1", "seed_origin": seed_origin}
+        return record
+
+    def test_a_schema_two_record_with_a_command_line_seed_origin_is_refused(self):
+        with self.assertRaisesRegex(dcm_lineage.LineageError, "seed_origin command_line is a schema-3 value"):
+            dcm_lineage.validated_record(self.record(2, "command_line"), "two")
+
+    def test_other_seed_origins_are_read(self):
+        dcm_lineage.validated_record(self.record(2, "configured"), "two")
+        dcm_lineage.validated_record(self.record(2, "drawn"), "two")
+        dcm_lineage.validated_record(self.record(3, "command_line"), "three")
+
+
 class CorpusShapeTests(unittest.TestCase):
     def test_corpus_ids_read_every_shape(self):
         self.assertEqual(dcm_lineage.corpus_ids({"corpus_id": "a", "corpus_path": "/a"}), ["a"])
