@@ -153,7 +153,15 @@ enum LichessBotIndex {
     /// Build the index from the record files. A record that doesn't decode
     /// is left out and reported, never thrown: one bad file must not stop the
     /// index — and with it the filing of every later game — from working.
-    static func rebuild(_ directory: LichessBotDataDirectory) throws -> File {
+    ///
+    /// Every rebuild logs how long it took and why it ran
+    /// (`[LICHESS-BOT] index rebuilt: <n> records in <s> s (<reason>)`):
+    /// it decodes every record on the controller's general file queue,
+    /// which also carries the Keychain, the instance lock and the protocol
+    /// log, so its real cost at scale must be visible
+    /// (`LICHESS_BOT_RECORD_STATS_PLAN.md` §4.2).
+    static func rebuild(_ directory: LichessBotDataDirectory, reason: String) throws -> File {
+        let started = DispatchTime.now().uptimeNanoseconds
         let files = try recordFiles(in: directory)
         var rows: [LichessBotGameSummary] = []
         var unreadable: [UnreadableRecord] = []
@@ -167,6 +175,7 @@ enum LichessBotIndex {
         if !unreadable.isEmpty {
             SessionLogger.shared.log("[ALARM] LICHESS-BOT index: \(unreadable.count) record file(s) don't decode and are left out: \(unreadable.map(\.path).joined(separator: ", "))")
         }
+        SessionLogger.shared.log("[LICHESS-BOT] index rebuilt: \(files.count) records in \(seconds(since: started)) s (\(reason))")
         return File(
             schemaVersion: schemaVersion,
             recordCount: files.count,
@@ -179,13 +188,24 @@ enum LichessBotIndex {
     /// The index, rebuilt and rewritten first if it is missing, stale or
     /// from another schema.
     static func load(_ directory: LichessBotDataDirectory) throws -> File {
+        let started = DispatchTime.now().uptimeNanoseconds
         let files = try recordFiles(in: directory)
-        if let stored = readStored(directory),
-           stored.recordCount == files.count,
-           stored.recordSignature == signature(of: files) {
-            return stored
+        let reason: String
+        switch readStored(directory) {
+        case .usable(let stored):
+            if stored.recordCount == files.count, stored.recordSignature == signature(of: files) {
+                SessionLogger.shared.log("[LICHESS-BOT] index loaded: \(stored.rows.count) rows in \(seconds(since: started)) s")
+                return stored
+            }
+            reason = "stale: the record files changed"
+        case .missing:
+            reason = "no index"
+        case .unreadable(let error):
+            reason = "unreadable: \(error)"
+        case .otherSchema(let version):
+            reason = "schema \(version), now \(schemaVersion)"
         }
-        let rebuilt = try rebuild(directory)
+        let rebuilt = try rebuild(directory, reason: reason)
         try write(rebuilt, to: directory)
         return rebuilt
     }
@@ -195,15 +215,16 @@ enum LichessBotIndex {
     /// record; otherwise (a stale index, or a record written again) a full
     /// rebuild — either way the result equals `rebuild`.
     static func upsert(_ summary: LichessBotGameSummary, recordURL: URL, in directory: LichessBotDataDirectory) throws -> File {
+        let started = DispatchTime.now().uptimeNanoseconds
         let files = try recordFiles(in: directory)
         let target = recordURL.standardizedFileURL.path
         let others = files.filter { $0.url.standardizedFileURL.path != target }
         guard others.count == files.count - 1,
-              let stored = readStored(directory),
+              case .usable(let stored) = readStored(directory),
               !stored.rows.contains(where: { $0.gameID == summary.gameID }),
               stored.recordCount == others.count,
               stored.recordSignature == signature(of: others) else {
-            let rebuilt = try rebuild(directory)
+            let rebuilt = try rebuild(directory, reason: "filing \(summary.gameID): the stored index does not cover the other records exactly")
             try write(rebuilt, to: directory)
             return rebuilt
         }
@@ -215,15 +236,26 @@ enum LichessBotIndex {
             unreadableRecords: stored.unreadableRecords
         )
         try write(updated, to: directory)
+        SessionLogger.shared.log("[LICHESS-BOT] index updated: \(summary.gameID) added, \(updated.rows.count) rows in \(seconds(since: started)) s")
         return updated
     }
 
+    /// What `index.json` holds, as `load` and `upsert` judge it.
+    private enum StoredIndex {
+        case usable(File)
+        case missing
+        case unreadable(String)
+        case otherSchema(Int)
+    }
+
     /// The stored index if it exists, decodes and has the current schema;
-    /// otherwise nil, and the caller rebuilds (the records are the source
-    /// of truth). An unreadable cache is logged so a recurring cause shows.
-    private static func readStored(_ directory: LichessBotDataDirectory) -> File? {
+    /// otherwise why not, and the caller rebuilds (the records are the
+    /// source of truth). An unreadable cache is logged so a recurring cause
+    /// shows. An index of an older schema still decodes (every field added
+    /// since is optional) and is then rejected by its version.
+    private static func readStored(_ directory: LichessBotDataDirectory) -> StoredIndex {
         guard FileManager.default.fileExists(atPath: directory.indexURL.path) else {
-            return nil
+            return .missing
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601withFractionalSeconds
@@ -232,9 +264,14 @@ enum LichessBotIndex {
             stored = try decoder.decode(File.self, from: Data(contentsOf: directory.indexURL))
         } catch {
             SessionLogger.shared.log("[LICHESS-BOT] index.json unreadable (\(error.localizedDescription)); rebuilding")
-            return nil
+            return .unreadable(error.localizedDescription)
         }
-        return stored.schemaVersion == schemaVersion ? stored : nil
+        return stored.schemaVersion == schemaVersion ? .usable(stored) : .otherSchema(stored.schemaVersion)
+    }
+
+    /// Seconds since `started` (a `DispatchTime` uptime), three decimals.
+    private static func seconds(since started: UInt64) -> String {
+        String(format: "%.3f", Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000)
     }
 
     static func write(_ file: File, to directory: LichessBotDataDirectory) throws {

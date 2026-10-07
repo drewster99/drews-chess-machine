@@ -310,7 +310,7 @@ final class LichessBotRecordStore: Sendable {
     func rebuildIndex() async throws -> LichessBotIndex.File {
         let directory = self.directory
         return try await indexQueue.run {
-            let rebuilt = try LichessBotIndex.rebuild(directory)
+            let rebuilt = try LichessBotIndex.rebuild(directory, reason: "rebuild requested")
             try LichessBotIndex.write(rebuilt, to: directory)
             return rebuilt
         }

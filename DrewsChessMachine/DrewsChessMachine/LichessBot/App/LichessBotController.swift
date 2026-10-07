@@ -217,6 +217,9 @@ final class LichessBotController {
         didSet {
             recordsByOpponent = LichessBotRecordSummary.byOpponent(rows: index?.rows ?? [])
             pastOpponents = LichessBotRecordSummary.pastOpponents(rows: index?.rows ?? [])
+            if let index {
+                recordStatistics.indexChanged(rows: index.rows)
+            }
             // Reported whenever the set of undecodable records changes (and so
             // at least once per launch): they are left out of every count.
             if let index, !index.unreadableRecords.isEmpty, index.unreadableRecords != oldValue?.unreadableRecords {
@@ -366,6 +369,10 @@ final class LichessBotController {
     /// Everything on disk except game journals and filing: index, protocol
     /// log, player notes, Keychain, the instance lock.
     private let fileQueue = LichessBotFileQueue()
+    /// The Record card's statistics, computed on their own queue from each
+    /// new games index, and the panel's remembered selections
+    /// (`LICHESS_BOT_RECORD_STATS_PLAN.md` §4.3).
+    let recordStatistics: LichessBotRecordStatisticsPipeline
     /// Game journals and filing. Every game-stream line waits for its journal
     /// append, so this queue carries nothing else. One for the controller's
     /// whole life, shared by every runtime: a torn-down journal writer and a
@@ -428,6 +435,7 @@ final class LichessBotController {
         self.challengeWithdrawalShutdownLimit = challengeWithdrawalShutdownLimit
         self.modelProvider = modelProvider
         self.defaults = defaults
+        self.recordStatistics = LichessBotRecordStatisticsPipeline(defaults: defaults)
         self.dataDirectory = dataDirectory
         self.services = services
         self.finishedGameHoldDuration = finishedGameHold
@@ -1263,6 +1271,10 @@ final class LichessBotController {
 
     private func performShutdown(reason: String) async {
         protocolLog.record(.lifecycle, "shutting down: \(reason)")
+        // First, so an index change during the rest of the shutdown
+        // schedules no computation (synchronous: nothing is awaited before
+        // the runtime stops).
+        recordStatistics.stopScheduling()
         stopRuntime(reason: reason)
         await awaitOutstandingChallengeTraffic()
         cancelAutoFollowHold()
@@ -1272,6 +1284,7 @@ final class LichessBotController {
         // journal lines it already queued are on it.
         await journalQueue.close(reason: "the bot shut down: \(reason)")
         await fileQueue.close(reason: "the bot shut down: \(reason)")
+        await recordStatistics.shutdown(reason: reason)
         SessionLogger.shared.log("[LICHESS-BOT] shut down: \(reason)")
     }
 
