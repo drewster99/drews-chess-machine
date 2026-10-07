@@ -83,7 +83,7 @@ struct LichessBotRecordGrid: View {
                 ForEach(LichessBotRecordSummary.Period.allCases, id: \.self) { period in
                     let record = records[period]
                     GridRow {
-                        Text(period.rawValue)
+                        Text(period.label)
                             .font(.callout.weight(.medium))
                             .gridColumnAlignment(.leading)
                         Text("\(record.all.games)")

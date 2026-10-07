@@ -1,6 +1,6 @@
 # Lichess bot: record statistics on the Overview
 
-Status (2026-10-06): **PLAN ONLY.** Nothing here is implemented. Implementation starts after `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` lands (it edits the controller and the generation info this plan reads; §9 P-gate), except P0, which touches none of its files and should land first (§4.5).
+Status (2026-10-06): **IMPLEMENTING.** P0 merged (`01fe2f62`); P1 onward in progress on a branch, started before `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` landed by the team lead's decision (see "Implementation notes" at the end).
 - Every `file:line` was checked against `main` at `c1a36294`. The working tree held uncommitted follow-lineage edits to `LichessBotModelSlots.swift`, `LichessBotModelSwitchStatusView.swift` and `CheckpointManager.swift`; nothing below cites those files' uncommitted lines.
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`), `documentation/` or `scripts/`.
 - Numbers about the bot's data were measured on this Mac on 2026-10-06 from `~/Library/Application Support/DrewsChessMachine/LichessBot/` itself (sizes base-2).
@@ -490,6 +490,14 @@ Phases P3–P8 follow the recommended item order of OD-21; if the owner orders t
 - **OD-17: fold.** P0 is part of this plan, regression test first (§4.5, §7 P0).
 - **R-5 (Review): unchanged.** The PGN's per-move `gen=` comments stay per-session generation IDs; the `DCMModelIDs` tag still names every model.
 
+**Decided (team lead, 2026-10-06, owner delegation).** The owner delegated the remaining decisions ("solve the problem yourself").
+- **OD-1 … OD-20: as recommended.** Tabs in the Record card; scored games only with a not-counted footnote; Rated / Casual / All filter; ML performance rating with ≥ / ≤ bounds; pool-mixing tooltip; periods anchored on game start in the system calendar; one remembered period picker; summed per-game rating changes with coverage; record-based sparkline; gap bands and the 50% offset; file-hash model key with majority attribution; 30-game progression bins; calibration at 10 / 20 / 40 with Brier skill and reliability buckets; two-move holds; decisive ply; facts in the index; P0 folded in; "Agreed / other draw"; default card height 560; Account card unchanged.
+- **OD-21: as recommended.** First pass in the order 1, 2, 4, 6, then 5 and 3 (P3 … P8 as listed in §9). Items 7–12 and the origin breakdown follow as later phases if time allows; D1 only once the challenge-log plan's resolver is on `main`.
+- **R-1: Wilson.** Every score interval is the Wilson score interval at 95% (z = 1.96) on `p̂ = (W + ½D) / n`, `n = W + D + L` (`LichessBotEloMath.scoreInterval`): center `(p̂ + z²/2n) / (1 + z²/n)`, half-width `z / (1 + z²/n) · √(p̂(1 − p̂)/n + z²/4n²)`, clamped to 0…1. Draws are half points in `p̂`; the binomial variance `p(1 − p)` bounds a game score's variance (a score in 0…1 has `E[s²] ≤ E[s]`), so with draws the interval is slightly conservative, never too narrow. It replaces `± 1.96 · sd / √n` everywhere: the Models table's score interval, the progression chart's intervals, and the opponent bands (each band shows the Wilson interval of its actual score next to its mean expected score, so "actual − expected" reads against that interval).
+- **R-2: `AnyLayout` with a width threshold** (§5.1, `LichessBotStatsStyle.wideCardWidth`).
+- **R-3: remembered selections in the controller's defaults** (§4.3), as `rememberedSettingsTab`.
+- **R-4: the index schema takes `main`'s current version + 1 when this plan's index change lands.** `main` held 2 when P1 landed here, so this plan uses 3; tests name the version only as `LichessBotIndex.schemaVersion` / `LichessBotIndex.schemaVersion - 1`. If the challenge-log plan's index change reaches `main` first, the merge moves this plan to the next number.
+
 ---
 
 ## Review (2026-10-06, against `main` at `dad00b85`)
@@ -528,3 +536,21 @@ Every claim below was checked in the code; the data figures were re-measured fro
 - **R-5 PGN `gen=` comments** stay per-session IDs, ambiguous across a relaunch (§4.5). Changing them would be a PGN format change; not proposed.
 
 **Second pass (2026-10-06).** Rechecked for claims of owner approval: the first-pass order was already reworded as a recommendation with OD-21 in `f622a327`; every OD is a recommendation, and no other line claims approval. Index tests now name the schema only as `LichessBotIndex.schemaVersion` and `LichessBotIndex.schemaVersion - 1`, matching the challenge-log plan's §7.
+
+## Implementation notes
+
+Decisions taken while implementing, where the plan left a choice open or the code needed something it did not spell out.
+
+**Sequencing.** The team lead started P1 before the follow-lineage plan landed (time). This plan's changes stay in `LichessBot/Stats/`, `LichessBot/Data/LichessBotIndex.swift`, the Record card's UI files, the controller's statistics pipeline and new files.
+
+**P1**
+- **The `facts` row field and the schema bump land in P1, not P2,** because `LichessBotRecordStatistics.compute` reads `row.facts`; a commit with the field but without the bump would accept an older index and read every row's facts as nil. P2 adds the index tests, the rebuild timing log and the pipeline.
+- **`LichessBotGameFacts` nests its ply-based part** as `moves: LichessBotGameMoveFacts?` instead of one flat struct with zeros: nil for a game that did not start from the standard position, so "no move data" is never a set of meaningless zeros. `localDrawCondition` stays at the top level (the Endings pane needs it for every game).
+- **A `draw` row without facts is "Draw (rule not recorded)",** not "Agreed / other draw": without facts the local draw condition is unknown, and calling it an agreement would be a silent default. Such rows exist only in hand-written fixtures.
+- **A decision whose generation reference names no listed generation is counted** (`decisionsWithoutGeneration`, shown in the Models pane when non-zero), never given to a neighbor. An old record whose `generationID` matches several generations (impossible from the builder) counts the same way.
+- **Rating ± counts scored rated games only.** An aborted rated game changes no rating, so it is not a game "missing" its change; counting it would inflate the "*" coverage gap.
+- **The progression chart's trailing bin** (fewer than 30 games after the last full bin) stays its own point, labeled with its game count; a checkpoint with neither a lineage cumulative step nor a training step (a champion snapshot) cannot be placed on the x axis and appears in the table only.
+- **The ML solver sums over distinct ratings weighted by their counts** (sorted, so the result is bit-identical for the same games in any order): the same root, at the cost of the distinct ratings per bisection step, which keeps the 10,000-row compute well inside the scale bound.
+- **`nextChange` is inclusive at the rolling hour's edge:** a game counts through `createdAt + 3,600 s` inclusive (the plan's `≥`), so a game exactly at the edge yields `now` and the next tick drops it.
+- **Ending and band labels, the time-control row order and the score interval are pure functions in `LichessBot/Stats/`** (`LichessBotGameEnding.label`, `LichessBotRatingBand.label`, `LichessBotTimeControlOrder.speeds`, `LichessBotEloMath.scoreInterval`) so the views only lay out text.
+- **`scripts/lichess_bot_record_stats.py`** reads the records read-only and prints, per period, the numbers of the app's `record stats` log line (ASCII signs), so §8.1 compares line by line. First run (2026-10-06 21:24 CDT, 222 records): all time 222 games, 53–37–132, 32.2%, Perf 1412, rating −6330* (5 rated games without a change), Brier@20 0.653 (n 206).

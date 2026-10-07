@@ -52,38 +52,44 @@ struct LichessBotPeriodRecord: Sendable, Equatable {
     var asBlack = LichessBotResultTally()
 }
 
-/// Today / this week / all time records from the games index. Pure, so the
+/// DCM's record per period (last hour … all time) from the games index,
+/// and the per-opponent views the Challenge sheet reads. Pure, so the
 /// period boundaries and tallies are testable.
 enum LichessBotRecordSummary {
-    enum Period: String, CaseIterable, Sendable {
-        case today = "Today"
-        case thisWeek = "This week"
-        case allTime = "All time"
-    }
+    /// The one period type (`LichessBotStatsPeriod`), under the name the
+    /// Record card first used.
+    typealias Period = LichessBotStatsPeriod
 
-    enum ComputeError: LocalizedError {
-        case noWeekInterval(Date)
-
-        var errorDescription: String? {
-            switch self {
-            case .noWeekInterval(let date):
-                return "The calendar gives no week containing \(date)"
-            }
-        }
-    }
+    /// A calendar without an interval for a period's unit.
+    typealias ComputeError = LichessBotStatsPeriods.CalendarError
 
     /// One record per period.
     struct Records: Sendable, Equatable {
+        var lastHour = LichessBotPeriodRecord()
         var today = LichessBotPeriodRecord()
         var thisWeek = LichessBotPeriodRecord()
+        var thisMonth = LichessBotPeriodRecord()
+        var thisYear = LichessBotPeriodRecord()
         var allTime = LichessBotPeriodRecord()
 
         subscript(period: Period) -> LichessBotPeriodRecord {
             switch period {
+            case .lastHour: return lastHour
             case .today: return today
             case .thisWeek: return thisWeek
+            case .thisMonth: return thisMonth
+            case .thisYear: return thisYear
             case .allTime: return allTime
             }
+        }
+
+        fileprivate mutating func add(_ row: LichessBotGameSummary, starts: LichessBotStatsPeriodStarts) {
+            allTime.add(row)
+            if starts.contains(row.createdAt, in: .thisYear) { thisYear.add(row) }
+            if starts.contains(row.createdAt, in: .thisMonth) { thisMonth.add(row) }
+            if starts.contains(row.createdAt, in: .thisWeek) { thisWeek.add(row) }
+            if starts.contains(row.createdAt, in: .today) { today.add(row) }
+            if starts.contains(row.createdAt, in: .lastHour) { lastHour.add(row) }
         }
     }
 
@@ -123,16 +129,13 @@ enum LichessBotRecordSummary {
         rows.filter { $0.opponentKind == .bot && $0.createdAt >= since }.count
     }
 
+    /// Each period's record. The boundaries come from
+    /// `LichessBotStatsPeriods`, their one definition.
     static func compute(rows: [LichessBotGameSummary], now: Date, calendar: Calendar) throws -> Records {
-        let startOfToday = calendar.startOfDay(for: now)
-        guard let startOfWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start else {
-            throw ComputeError.noWeekInterval(now)
-        }
+        let starts = try LichessBotStatsPeriods.starts(now: now, calendar: calendar)
         var records = Records()
         for row in rows {
-            records.allTime.add(row)
-            if row.createdAt >= startOfWeek { records.thisWeek.add(row) }
-            if row.createdAt >= startOfToday { records.today.add(row) }
+            records.add(row, starts: starts)
         }
         return records
     }
