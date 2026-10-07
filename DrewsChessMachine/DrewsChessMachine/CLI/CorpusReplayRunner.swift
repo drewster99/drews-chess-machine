@@ -295,9 +295,17 @@ enum CorpusReplayError: LocalizedError {
 // MARK: - Trainer-model output safety (shared by corpus replay and train-vs-UCI)
 
 /// Which model a trainer-model file holds, as recorded in its safetensors
-/// `__metadata__`: the `model_id` plus the segment-local `training_step`.
-/// Checkpoints are identified by these, never by filename (see CLAUDE.md,
-/// "Identify checkpoints by safetensors `__metadata__`").
+/// `__metadata__`: the `model_id` plus its step — the step reading's
+/// `trainerStepOrStatedStep` (`ModelFileStepReading`): the trainer step where
+/// the file records one, else the step it states. Checkpoints are identified
+/// by these, never by filename (see CLAUDE.md, "Identify checkpoints by
+/// safetensors `__metadata__`").
+///
+/// A rolling file and the start model it may replace share a `model_id`,
+/// and one `model_id` is written by one process of one build (or, in the
+/// GUI, kept across GUI saves, which read the same under both rules), so
+/// both sides are always read under the same rule; different `model_id`s
+/// are refused before steps are compared.
 struct TrainerModelFileIdentity: Equatable, Sendable, CustomStringConvertible {
     let modelID: String
     /// Nil when the file records no step (a fresh build, a champion export).
@@ -313,15 +321,22 @@ struct TrainerModelFileIdentity: Equatable, Sendable, CustomStringConvertible {
         guard let modelID = metadata[SafetensorsModelIO.Key.modelID], !modelID.isEmpty else {
             throw ModelFileCatalogError.missingModelID(file: url.lastPathComponent)
         }
-        var trainingStep: Int? = nil
-        if let text = metadata[SafetensorsModelIO.Key.trainingStep] {
-            guard let step = Int(text) else {
-                throw ModelFileCatalogError.notSafetensors(
-                    file: url.lastPathComponent, detail: "training_step \"\(text)\" is not an integer")
-            }
-            trainingStep = step
+        let reading: ModelFileStepReading
+        do {
+            reading = try SafetensorsModelIO.trainingStepReading(fromMetadata: metadata, source: url.lastPathComponent)
+        } catch {
+            throw ModelFileCatalogError.notSafetensors(
+                file: url.lastPathComponent, detail: "unreadable training step: \(String(describing: error))")
         }
-        return TrainerModelFileIdentity(modelID: modelID, trainingStep: trainingStep)
+        return TrainerModelFileIdentity(modelID: modelID, trainingStep: reading.trainerStepOrStatedStep)
+    }
+}
+
+extension TrainerModelFileIdentity {
+    /// The identity of a model file already decoded (the run's start model),
+    /// under the same reading as `read(from:)`.
+    init(file: ModelCheckpointFile) {
+        self.init(modelID: file.modelID, trainingStep: file.trainingStepReading.trainerStepOrStatedStep)
     }
 }
 
@@ -358,10 +373,10 @@ enum TrainerOutputFileError: LocalizedError, Equatable {
         case let .enumeratedStepsAlreadyPresent(firstPath, count, steps, reachable, suggestion):
             return "refusing to start: --enumerate-checkpoints would write step files this run can reach "
                 + "(\(reachable)), but \(count) step file(s) of this --out-model stem already exist there "
-                + "(steps \(steps); first: \(firstPath)). Step numbers restart in every segment and step "
-                + "names carry the segment's lineage index, so these files belong to another run that used "
-                + "this stem at the same segment index. Give this run its own --out-model stem, e.g. "
-                + "\(suggestion)."
+                + "(steps \(steps); first: \(firstPath)). Step files are named by the trainer step, and a "
+                + "segment writes only above the trainer step it starts from, so these files belong to "
+                + "another run of this stem (or to a later segment of this run, written after the point "
+                + "this resume starts from). Give this run its own --out-model stem, e.g. \(suggestion)."
         case let .outModelNamedLikeAnEnumeratedCheckpoint(path, step):
             return "refusing to start: --out-model \(path) is named like the step-\(step) checkpoint that "
                 + "--enumerate-checkpoints writes. The rolling output is rewritten on every save, so under that "
@@ -409,19 +424,25 @@ struct RollingOutputPlan: Equatable, Sendable {
 
 /// The name of a step-enumerated checkpoint (`--enumerate-checkpoints`),
 /// derived from the rolling output file's stem: `<base>-<tag>-latest` becomes
-/// `<base>-<tag>-step<N>`, any other stem gains `-step<N>`. The one place the
-/// name is built and the only parser of it, so the pre-flight scan and the
-/// writes cannot disagree about which files are a stem's step files.
+/// `<base>-<tag>-step<T>`, any other stem gains `-step<T>`, where `T` is the
+/// trainer step at the save. The one place the name is built and the only
+/// parser of it, so the pre-flight scan and the writes cannot disagree about
+/// which files are a stem's step files.
 ///
-/// Step numbers restart in every segment, so a resumed segment's step files
-/// carry the segment's lineage index: segment `k > 0` writes
-/// `<base>-<tag>-seg<k>-step<N>` (`<stem>-seg<k>-step<N>` without a tag
-/// marker). Segment 0 — every run's first segment — carries no marker, so
-/// its names are the ones runs have always written. A resumed segment can
-/// therefore keep its stem without its step files ever colliding with, or
-/// being mistaken for, an earlier segment's; the index comes from
-/// `LineageTracker.segmentIndex(exactResumeOf:)`, the same rule the
-/// segment's lineage records use.
+/// Why the trainer step: every segment of a lineage run continues one series
+/// under its stem — an exact resume from `…-step36000` writes `…-step37000`
+/// — so a resumed segment's files sort and glob with the rest of its run,
+/// and the name's step equals the header's `training_step` (format v11).
+/// A segment writes only above the trainer step it starts from, so it never
+/// reaches an earlier segment's names.
+///
+/// Before this, step numbers restarted in every segment and a resumed
+/// segment `k > 0` wrote `<base>-<tag>-seg<k>-step<N>` with its own step
+/// `N`. Those files keep their names; this type still *recognizes* that
+/// shape (`step(ofEnumeratedFileNameUnderAnyStem:)`, so a rolling
+/// `--out-model` is never named like one) but never writes it — a kept
+/// marker would give one name shape two meanings (a segment step in files
+/// on disk, a trainer step in new ones), undecidable from the name.
 struct EnumeratedCheckpointNaming: Equatable, Sendable {
     /// Corpus replay's run tag (`--replay-corpus`).
     static let corpusReplayRunTag = "replay"
@@ -435,67 +456,81 @@ struct EnumeratedCheckpointNaming: Equatable, Sendable {
 
     /// What precedes the step number in every enumerated name.
     private static let stepMarker = "-step"
-    /// What precedes the segment index in a later segment's names.
-    private static let segmentMarker = "-seg"
+    /// What preceded the segment index in a resumed segment's names before
+    /// they carried the trainer step. Recognized, never written.
+    private static let legacySegmentMarker = "-seg"
     private static let fileExtension = "safetensors"
 
     let rollingOutputURL: URL
     /// `corpusReplayRunTag` or `trainVsUciRunTag`: the run kind in the
     /// rolling file's `-<tag>-latest` marker.
     let runTag: String
-    /// The writing segment's lineage index (`LineageTracker.segmentIndex(exactResumeOf:)`).
-    let segmentIndex: Int
 
-    init(rollingOutputURL: URL, runTag: String, segmentIndex: Int) {
-        precondition(segmentIndex >= 0, "a lineage segment index is never negative (got \(segmentIndex))")
+    init(rollingOutputURL: URL, runTag: String) {
         self.rollingOutputURL = rollingOutputURL
         self.runTag = runTag
-        self.segmentIndex = segmentIndex
     }
 
     private var rollingStem: String { rollingOutputURL.deletingPathExtension().lastPathComponent }
     private var rollingMarker: String { "-\(runTag)-latest" }
-    /// `-seg<k>` for a later segment; empty for segment 0.
-    private var segmentPart: String { segmentIndex == 0 ? "" : "\(Self.segmentMarker)\(segmentIndex)" }
     var directory: URL { rollingOutputURL.deletingLastPathComponent() }
 
-    func fileName(step: Int) -> String {
-        let stem = rollingStem
+    func fileName(trainerStep: Int) -> String {
+        Self.fileName(rollingStem: rollingStem, runTag: runTag, segmentPart: "", step: trainerStep)
+    }
+
+    func url(trainerStep: Int) -> URL {
+        directory.appendingPathComponent(fileName(trainerStep: trainerStep))
+    }
+
+    /// The trainer step `name` is the enumerated checkpoint for, or nil when
+    /// it is not exactly one of this stem's step files.
+    func trainerStep(ofFileName name: String) -> Int? {
+        Self.step(ofFileName: name, rollingStem: rollingStem, runTag: runTag, segmentPart: "")
+    }
+
+    /// The one name builder: `<base>-<tag><segmentPart>-step<N>` from a
+    /// `<base>-<tag>-latest` stem, `<stem><segmentPart>-step<N>` from any
+    /// other. `segmentPart` is empty for every name written now; the legacy
+    /// `-seg<k>` part is passed only by the any-stem parser below.
+    private static func fileName(rollingStem stem: String, runTag: String, segmentPart: String, step: Int) -> String {
+        let rollingMarker = "-\(runTag)-latest"
         let enumeratedStem = stem.contains(rollingMarker)
-            ? stem.replacingOccurrences(of: rollingMarker, with: "-\(runTag)\(segmentPart)\(Self.stepMarker)\(step)")
-            : "\(stem)\(segmentPart)\(Self.stepMarker)\(step)"
-        return "\(enumeratedStem).\(Self.fileExtension)"
+            ? stem.replacingOccurrences(of: rollingMarker, with: "-\(runTag)\(segmentPart)\(stepMarker)\(step)")
+            : "\(stem)\(segmentPart)\(stepMarker)\(step)"
+        return "\(enumeratedStem).\(fileExtension)"
     }
 
-    func url(step: Int) -> URL {
-        directory.appendingPathComponent(fileName(step: step))
-    }
-
-    /// The step `name` is the enumerated checkpoint for, or nil when it is
-    /// not exactly one of this stem's step files.
-    func step(ofFileName name: String) -> Int? {
-        let stem = rollingStem
+    /// The step `name` is the enumerated file for under `fileName(rollingStem:…)`,
+    /// confirmed by rebuilding it; nil otherwise.
+    private static func step(ofFileName name: String, rollingStem stem: String, runTag: String,
+                             segmentPart: String) -> Int? {
+        let rollingMarker = "-\(runTag)-latest"
         let prefix: String
         if let marker = stem.range(of: rollingMarker) {
-            prefix = String(stem[..<marker.lowerBound]) + "-\(runTag)\(segmentPart)\(Self.stepMarker)"
+            prefix = String(stem[..<marker.lowerBound]) + "-\(runTag)\(segmentPart)\(stepMarker)"
         } else {
-            prefix = "\(stem)\(segmentPart)\(Self.stepMarker)"
+            prefix = "\(stem)\(segmentPart)\(stepMarker)"
         }
         guard name.hasPrefix(prefix) else { return nil }
         let digits = name.dropFirst(prefix.count).prefix { $0.isASCII && $0.isNumber }
-        guard !digits.isEmpty, let step = Int(digits), fileName(step: step) == name else { return nil }
+        guard !digits.isEmpty, let step = Int(digits),
+              fileName(rollingStem: stem, runTag: runTag, segmentPart: segmentPart, step: step) == name else {
+            return nil
+        }
         return step
     }
 
     /// The step `name` is the enumerated checkpoint for under *some* rolling
     /// stem of either run kind, or nil when no rolling file this naming
     /// knows of would enumerate to it — e.g. `x-replay-step29000.safetensors`
-    /// (stem `x-replay-latest`), `x-vsuci-step7.safetensors`, or
-    /// `x-step3000.safetensors` (stem `x`). Every candidate is confirmed by
-    /// rebuilding the name with `fileName(step:)` / `step(ofFileName:)`, so
-    /// a name is only ever claimed when this naming would really produce it.
-    /// Used to keep a rolling `--out-model` off an enumerated checkpoint's
-    /// name.
+    /// (stem `x-replay-latest`), `x-vsuci-step7.safetensors`,
+    /// `x-step3000.safetensors` (stem `x`), or a legacy resumed segment's
+    /// `x-replay-seg1-step1000.safetensors`. Every candidate is confirmed by
+    /// rebuilding the name, so a name is only ever claimed when a writer
+    /// would really have produced it. Used to keep a rolling `--out-model`
+    /// off an enumerated checkpoint's name — including the `-seg<k>` names
+    /// files on disk still carry.
     static func step(ofEnumeratedFileNameUnderAnyStem name: String) -> Int? {
         let suffix = ".\(fileExtension)"
         guard name.hasSuffix(suffix) else { return nil }
@@ -510,12 +545,15 @@ struct EnumeratedCheckpointNaming: Equatable, Sendable {
             // a segment-0 base, and — when it ends in `-seg<k>` — the part
             // before that as a later segment's base. Each candidate is
             // confirmed by rebuilding the name, so only a real reading counts.
-            var readings: [(base: String, segmentIndex: Int, segmentPart: String)] = [(beforeMarker, 0, "")]
-            if let segmentRange = beforeMarker.range(of: segmentMarker, options: .backwards) {
+            // A legacy reading's segment part is confirmed as `-seg<k>` with
+            // `k` a positive index written without leading zeros, as the
+            // writers of that scheme wrote it (segment 0 carried no marker).
+            var readings: [(base: String, segmentPart: String)] = [(beforeMarker, "")]
+            if let segmentRange = beforeMarker.range(of: legacySegmentMarker, options: .backwards) {
                 let segmentDigits = beforeMarker[segmentRange.upperBound...]
                 if !segmentDigits.isEmpty, segmentDigits.allSatisfy({ $0.isASCII && $0.isNumber }),
-                   let parsed = Int(segmentDigits) {
-                    readings.append((String(beforeMarker[..<segmentRange.lowerBound]), parsed,
+                   let parsed = Int(segmentDigits), parsed > 0, String(parsed) == segmentDigits {
+                    readings.append((String(beforeMarker[..<segmentRange.lowerBound]),
                                      String(beforeMarker[segmentRange.lowerBound...])))
                 }
             }
@@ -531,11 +569,10 @@ struct EnumeratedCheckpointNaming: Equatable, Sendable {
                         of: "-\(runTag)\(reading.segmentPart)\(stepMarker)\(step)", with: "-\(runTag)-latest")
                     candidateRollingStems.append((stem: rollingStem, runTag: runTag))
                 }
-                for candidate in candidateRollingStems {
-                    let naming = EnumeratedCheckpointNaming(
-                        rollingOutputURL: URL(fileURLWithPath: "/").appendingPathComponent("\(candidate.stem)\(suffix)"),
-                        runTag: candidate.runTag, segmentIndex: reading.segmentIndex)
-                    if naming.step(ofFileName: name) == step { return step }
+                for candidate in candidateRollingStems
+                where Self.step(ofFileName: name, rollingStem: candidate.stem, runTag: candidate.runTag,
+                                segmentPart: reading.segmentPart) == step {
+                    return step
                 }
             }
         }
@@ -581,9 +618,10 @@ final class RollingTrainerModelWriter {
 }
 
 /// Writes step-enumerated checkpoints, never over a file this run did not
-/// write. A step this run already wrote (the final save landing on the same
-/// step as the last autosave) replaces this run's own file — checked by
-/// identity — so the enumerated copy matches the rolling file's final state.
+/// write. A trainer step this run already wrote (the final save landing on
+/// the same step as the last autosave) replaces this run's own file —
+/// checked by identity — so the enumerated copy matches the rolling file's
+/// final state.
 final class EnumeratedCheckpointWriter {
     enum Outcome: Equatable {
         case created
@@ -597,18 +635,41 @@ final class EnumeratedCheckpointWriter {
         self.naming = naming
     }
 
-    func write(_ data: Data, step: Int) throws -> (url: URL, outcome: Outcome) {
-        let url = naming.url(step: step)
-        if let owned = writtenByThisRun[step] {
-            writtenByThisRun[step] = try FileSafety.replaceRegularFile(data, at: url, expectedIdentity: owned)
+    func write(_ data: Data, trainerStep: Int) throws -> (url: URL, outcome: Outcome) {
+        let url = naming.url(trainerStep: trainerStep)
+        if let owned = writtenByThisRun[trainerStep] {
+            writtenByThisRun[trainerStep] = try FileSafety.replaceRegularFile(data, at: url, expectedIdentity: owned)
             return (url, .replacedThisRunsEarlierSave)
         }
         do {
-            writtenByThisRun[step] = try FileSafety.publishNewFile(data, to: url)
+            writtenByThisRun[trainerStep] = try FileSafety.publishNewFile(data, to: url)
         } catch FileSafetyError.alreadyExists(path: let path, kind: _) {
-            throw TrainerOutputFileError.enumeratedCheckpointExists(path: path, step: step)
+            throw TrainerOutputFileError.enumeratedCheckpointExists(path: path, step: trainerStep)
         }
         return (url, .created)
+    }
+}
+
+/// The segment's start trainer step as the pre-flight read it (from the
+/// start file's schedule, before the trainer exists) disagrees with the
+/// trainer's clock after it was built or restored. Every enumerated name and
+/// the pre-flight collision scan are computed from the pre-flight value, so
+/// a run whose two values differ is stopped before it trains: an internal
+/// error, never expected.
+struct SegmentStartTrainerStepMismatch: LocalizedError, Equatable {
+    let preflightTrainerStep: Int
+    let trainerClock: Int
+
+    var errorDescription: String? {
+        "internal error: the segment's start trainer step read before the trainer was built "
+            + "(\(preflightTrainerStep)) is not the trainer's clock after it was built (\(trainerClock))"
+    }
+
+    /// Throw unless the two agree.
+    static func require(preflight: Int, trainerClock: Int) throws {
+        guard preflight == trainerClock else {
+            throw SegmentStartTrainerStepMismatch(preflightTrainerStep: preflight, trainerClock: trainerClock)
+        }
     }
 }
 
@@ -739,19 +800,32 @@ enum TrainerOutputFileGuard {
         }
     }
 
-    /// The stem's existing step files this run could write over: every step
-    /// file when the run has no step limit, else those at steps
-    /// `0...stepLimit` (the final save can land on any step up to the limit —
-    /// an abort, the end of the corpus, a time limit). Sorted by step. An
-    /// absent output directory has none (it is created at the first save).
+    /// The highest trainer step a segment starting at
+    /// `segmentStartTrainerStep` can save at: the start plus its
+    /// `--training-step-limit` (which stays segment-local), or — without a
+    /// limit, or when the sum overflows — any step an `Int` can hold.
+    static func lastReachableTrainerStep(segmentStartTrainerStep: Int, stepLimit: Int?) -> Int {
+        guard let stepLimit else { return Int.max }
+        let (sum, overflowed) = segmentStartTrainerStep.addingReportingOverflow(max(stepLimit, 0))
+        return overflowed ? Int.max : sum
+    }
+
+    /// The stem's existing step files this run could write over. A segment
+    /// writes only at trainer steps above the one it starts from
+    /// (`enumeratedCopyIsWritten`), up to `lastReachableTrainerStep` (the
+    /// final save can land on any step up to the limit — an abort, the end
+    /// of the corpus, a time limit). Sorted by step. An absent output
+    /// directory has none (it is created at the first save).
     static func reachableEnumeratedCheckpoints(naming: EnumeratedCheckpointNaming,
+                                               segmentStartTrainerStep: Int,
                                                stepLimit: Int?) throws -> [EnumeratedCheckpointFile] {
         guard try FileSafety.existingItem(at: naming.directory) != nil else { return [] }
+        let last = lastReachableTrainerStep(segmentStartTrainerStep: segmentStartTrainerStep, stepLimit: stepLimit)
         let names = try FileManager.default.contentsOfDirectory(atPath: naming.directory.path)
         var found: [EnumeratedCheckpointFile] = []
         for name in names {
-            guard let step = naming.step(ofFileName: name) else { continue }
-            if let stepLimit, step > stepLimit { continue }
+            guard let step = naming.trainerStep(ofFileName: name) else { continue }
+            guard step > segmentStartTrainerStep, step <= last else { continue }
             found.append(EnumeratedCheckpointFile(step: step, url: naming.directory.appendingPathComponent(name)))
         }
         return found.sorted { $0.step < $1.step }
@@ -759,19 +833,34 @@ enum TrainerOutputFileGuard {
 
     /// Refuse the run when its stem already has step files it could reach, or
     /// when a step file it could write has a name too long to stage. Every
-    /// save step is at most the step limit, so the limit's step name is the
-    /// longest; with no limit, any step an `Int` can hold is possible.
+    /// save step is at most `lastReachableTrainerStep`, so that step's name
+    /// is the longest.
     static func requireNoReachableEnumeratedCheckpoints(naming: EnumeratedCheckpointNaming,
+                                                        segmentStartTrainerStep: Int,
                                                         stepLimit: Int?) throws {
-        try FileSafety.requireStageableDestination(naming.url(step: stepLimit.map { max($0, 0) } ?? Int.max))
-        let collisions = try reachableEnumeratedCheckpoints(naming: naming, stepLimit: stepLimit)
-        guard let first = collisions.first, let last = collisions.last else { return }
+        let last = lastReachableTrainerStep(segmentStartTrainerStep: segmentStartTrainerStep, stepLimit: stepLimit)
+        try FileSafety.requireStageableDestination(naming.url(trainerStep: last))
+        let collisions = try reachableEnumeratedCheckpoints(
+            naming: naming, segmentStartTrainerStep: segmentStartTrainerStep, stepLimit: stepLimit)
+        guard let first = collisions.first, let lastFound = collisions.last else { return }
+        let reachableFrom = segmentStartTrainerStep + 1
         throw TrainerOutputFileError.enumeratedStepsAlreadyPresent(
             firstPath: first.url.path,
             count: collisions.count,
-            steps: first.step == last.step ? "\(first.step)" : "\(first.step)…\(last.step)",
-            reachable: stepLimit.map { "steps 0…\($0)" } ?? "any step: the run has no step limit",
+            steps: first.step == lastFound.step ? "\(first.step)" : "\(first.step)…\(lastFound.step)",
+            reachable: last == Int.max
+                ? "trainer steps \(reachableFrom) and above: the run has no step limit"
+                : "trainer steps \(reachableFrom)…\(last)",
             suggestion: "--out-model \(naming.newStemSuggestion)")
+    }
+
+    /// Whether a save at `trainerStep` writes an enumerated copy: only when
+    /// the segment trained at least one step. A segment that trained none
+    /// holds its start model's state, and at its start step the name is
+    /// usually the start model's own file (a resume from `…-step36000`
+    /// stopped before any step would otherwise collide with it).
+    static func enumeratedCopyIsWritten(trainerStep: Int, segmentStartTrainerStep: Int) -> Bool {
+        trainerStep > segmentStartTrainerStep
     }
 }
 
@@ -1089,6 +1178,7 @@ enum CorpusReplayRunner {
             + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
+            + " stepLineSec=" + String(format: "%g", p.parameters.stepLineIntervalSec)
             + p.samplingConstraints.logFields(batchSize: p.trainingBatchSize)
         emit(hparamsLine)
         // Rolling trainer-model output file. The same file is overwritten by
@@ -1129,29 +1219,35 @@ enum CorpusReplayRunner {
             let corpusName = config.corpusDirectories[0].lastPathComponent
             return CheckpointPaths.modelsDir.appendingPathComponent("\(corpusName)-replay-latest.safetensors")
         }()
-        // Every save lands on a multiple of this (plus the final save).
-        let autosaveEvery = 1000
+        // The trainer step this segment starts from: the checkpoint's clock on
+        // an exact resume, 0 for a fresh run or a branch (whose trainer
+        // clock starts at 0). Known here, before the trainer is built, so
+        // the enumerated-name scan below can use it; checked against the
+        // trainer once it exists. Saves land on its trainer-step multiples
+        // of `TrainingStepLineSchedule.checkpointIntervalSteps` (plus the
+        // final save), and enumerated names carry the trainer step.
+        let segmentStartTrainerStep = resumeSnapshot?.schedule.completedTrainSteps ?? 0
         let rollingPlan = try TrainerOutputFileGuard.checkRollingOutput(
             outModelURL: outModelURL,
             startModelURL: config.startModelPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) },
-            startModel: startModelFile.map {
-                TrainerModelFileIdentity(modelID: $0.modelID, trainingStep: $0.metadata.trainingStep)
-            },
+            startModel: startModelFile.map { TrainerModelFileIdentity(file: $0) },
             overwriteAuthorized: config.overwriteOutModel)
         let rollingWriter = RollingTrainerModelWriter(url: outModelURL, plan: rollingPlan)
         emit("[REPLAY] trainer-model output: \(outModelURL.path) (\(rollingPlan.logDescription))")
-        // Step numbers restart in every run, so a stem reused across segments
-        // would collide with the earlier segment's step files. Refuse now,
-        // before any GPU work, rather than halt at the first colliding save.
+        // Enumerated names carry the trainer step and a segment writes only
+        // above the step it starts from, so a stem another run (or a later
+        // segment of this one) already wrote into within this segment's
+        // reach would collide. Refuse now, before any GPU work, rather than
+        // halt at the first colliding save.
         let enumeratedWriter: EnumeratedCheckpointWriter?
         if config.enumerateCheckpoints {
             let naming = EnumeratedCheckpointNaming(
-                rollingOutputURL: outModelURL, runTag: EnumeratedCheckpointNaming.corpusReplayRunTag,
-                segmentIndex: LineageTracker.segmentIndex(
-                    exactResumeOf: resumeSnapshot != nil ? startModelFile?.lineageParent : nil))
-            try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(naming: naming, stepLimit: config.stepLimit)
+                rollingOutputURL: outModelURL, runTag: EnumeratedCheckpointNaming.corpusReplayRunTag)
+            try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(
+                naming: naming, segmentStartTrainerStep: segmentStartTrainerStep, stepLimit: config.stepLimit)
             enumeratedWriter = EnumeratedCheckpointWriter(naming: naming)
-            emit("[REPLAY] enumerated checkpoints: \(naming.url(step: autosaveEvery).path) and siblings (never overwritten)")
+            let firstSave = TrainingStepLineSchedule.firstCheckpointStep(after: segmentStartTrainerStep)
+            emit("[REPLAY] enumerated checkpoints: \(naming.url(trainerStep: firstSave).path) and siblings (never overwritten)")
         } else {
             enumeratedWriter = nil
         }
@@ -1540,6 +1636,11 @@ enum CorpusReplayRunner {
         emit("[REPLAY-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
             + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
 
+        try SegmentStartTrainerStepMismatch.require(
+            preflight: segmentStartTrainerStep, trainerClock: trainer.completedTrainSteps)
+        emit("[REPLAY] " + TrainingStepLineSchedule.cadenceDescription(
+            intervalSec: p.parameters.stepLineIntervalSec, startTrainerStep: segmentStartTrainerStep))
+
         let lineageTracker = try LineageTracker(
             start: lineageStart, pathKind: .replay, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
@@ -1574,14 +1675,17 @@ enum CorpusReplayRunner {
             // failure re-throws (fatal, halts the run); any other failure is a
             // non-fatal WARNING and we skip the enumerated copy (it would fail too).
             let encoded: Data
+            // The trainer step the save holds (what the enumerated copy is
+            // named by), set with `encoded`.
+            var savedTrainerStep = 0
             do {
                 // The complete trainer state — fp32 masters, optimizer velocity
                 // and the schedule clock — so any of these files can be
-                // continued exactly with `--resume-exact`. `training_step`
-                // stays segment-local (the replay tracker adds each segment's
-                // `cumstep_base` to it); the cumulative clock is
-                // `trainer_completed_steps`. The loop is sequential, so no SGD
-                // step is in flight during the export.
+                // continued exactly with `--resume-exact`. `training_step` is
+                // the trainer step (format v11; the same value as
+                // `trainer_completed_steps`); the segment's own step is the
+                // lineage record's `segment_local_step`. The loop is
+                // sequential, so no SGD step is in flight during the export.
                 let snapshot = try await trainer.exportResumeSnapshot()
                 // The run's stream positions, in the same cut as the trainer
                 // state: the loop is sequential, so no batch is drawn and no
@@ -1592,10 +1696,10 @@ enum CorpusReplayRunner {
                     nextGameSerial: nil, arenasStarted: nil, opponentGameIndices: nil)
                 let weights = snapshot.trainerWeights
                 let metadata = ModelCheckpointMetadata.trainerFile(
-                    creator: "replay",
-                    trainingStep: step,
+                    creator: ModelCheckpointMetadata.corpusReplayCreator,
+                    trainingStep: snapshot.schedule.completedTrainSteps,
                     parentModelID: parentModelID,
-                    notes: "corpus replay \(reason) @ step \(step)",
+                    notes: "corpus replay \(reason) @ trainer step \(snapshot.schedule.completedTrainSteps) (segment step \(step))",
                     schedule: snapshot.schedule,
                     policyTailPrecision: trainer.policyTailPrecision
                 )
@@ -1628,6 +1732,7 @@ enum CorpusReplayRunner {
                     includesVelocity: true,
                     lineage: lineage
                 )
+                savedTrainerStep = snapshot.schedule.completedTrainSteps
                 try FileManager.default.createDirectory(
                     at: outModelURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
@@ -1668,13 +1773,20 @@ enum CorpusReplayRunner {
             // caught by the rolling-save catch above (which would misclassify our
             // own halt error as "some other failure" and swallow it). A file this
             // run did not write at the step's name is a hard error, never an
-            // overwrite.
+            // overwrite. A segment that trained no step writes none: its state
+            // is the start model's, usually under the very name it would take.
             if let enumeratedWriter {
+                guard TrainerOutputFileGuard.enumeratedCopyIsWritten(
+                    trainerStep: savedTrainerStep, segmentStartTrainerStep: segmentStartTrainerStep) else {
+                    emit("[REPLAY] enumerated checkpoint not written: the segment trained no step "
+                        + "(trainerStep=\(savedTrainerStep), the start state)")
+                    return
+                }
                 do {
-                    let written = try enumeratedWriter.write(encoded, step: step)
+                    let written = try enumeratedWriter.write(encoded, trainerStep: savedTrainerStep)
                     enumeratedSaveFailures.recordSuccess()
                     let note = written.outcome == .replacedThisRunsEarlierSave
-                        ? " (replaced this run's own earlier save of step \(step))"
+                        ? " (replaced this run's own earlier save of trainer step \(savedTrainerStep))"
                         : ""
                     emit("[REPLAY] enumerated checkpoint -> \(written.url.lastPathComponent)\(note)")
                 } catch let collision as TrainerOutputFileError {
@@ -1864,9 +1976,13 @@ enum CorpusReplayRunner {
             v.isFinite ? String(format: "%.\(digits)f", v) : "--"
         }
 
-        // Step-locked SGD loop.
+        // Step-locked SGD loop. Step lines follow the shared trainer-step
+        // schedule (`TrainingStepLineSchedule`); its time rule reads a
+        // monotonic clock started here.
         var step = 0
-        let logEvery = 50
+        var stepLines = TrainingStepLineSchedule()
+        let lineClock = ContinuousClock()
+        let lineClockStart = lineClock.now
         var aborted = false
         // `--gpu-capture-step` bookkeeping: whether the capture started, and
         // the error if it could not.
@@ -1930,12 +2046,15 @@ enum CorpusReplayRunner {
             }
             lineageTracker.recordTrainingStep(totalMs: timing.totalMs)
             step += 1
-            if step == 1 || step % logEvery == 0 {
+            // One trainer-step observation for this step: the line's cadence,
+            // its LR / momentum / cycle values, and the save point all read it.
+            let observedSteps = trainer.completedTrainSteps
+            if stepLines.lineDue(trainerStep: observedSteps,
+                                 elapsedSec: TrainingStepLineSchedule.seconds(lineClock.now - lineClockStart),
+                                 carriesDiagnostics: timing.hasDiagnostics,
+                                 intervalSec: p.parameters.stepLineIntervalSec) != nil {
                 // Live, warmup-adjusted LR read from the trainer (single source
                 // of truth — don't re-derive the warmup formula here).
-                // Pin LR, momentum and the cycle values to one step-count
-                // observation so the three agree with each other.
-                let observedSteps = trainer.completedTrainSteps
                 let liveLR = trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: observedSteps)
                 let liveMomentum = trainer.effectiveMomentum(completedSteps: observedSteps)
                 let cycleValues = trainer.lrMomentumCycleValues(completedSteps: observedSteps)
@@ -1951,6 +2070,13 @@ enum CorpusReplayRunner {
                     + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
                     + " trainerStep=\(observedSteps)"
                 emit(line)
+                // This step's own batch statistics ride the step line — to the session
+                // log only, as the trainer wrote them before (a 72 KB JSON line
+                // does not belong on the console).
+                if let batchStatsLine = BatchStatsLogLine.line(summary: trainer.lastBatchStatsSummary,
+                                                               ofTrainerStep: observedSteps) {
+                    SessionLogger.shared.log(batchStatsLine)
+                }
                 // Live layer health at the same cadence: BN state + ReZero α,
                 // read on the trainer's queue between steps.
                 for healthLine in await LayerHealthLog.live(trainer: trainer).lines {
@@ -2002,10 +2128,14 @@ enum CorpusReplayRunner {
                         segmentGames: feedTally.games - reconstructionFed.games)
                 ))
             }
-            // Periodic autosave (overwrites the rolling output file). A disk-full
-            // save throws here, halting the run (propagates out of runReplay) so it
+            // Periodic autosave (overwrites the rolling output file) at every
+            // trainer-step multiple of 1000, so a resumed run and the
+            // uninterrupted run save at the same trainer steps. Always after
+            // the step line, so at a save step the line and its live
+            // readout precede the save's checkpoint pass. A disk-full save
+            // throws here, halting the run (propagates out of runReplay) so it
             // can resume cleanly from the last checkpoint after space is freed.
-            if step % autosaveEvery == 0 {
+            if TrainingStepLineSchedule.isCheckpointStep(trainerStep: observedSteps) {
                 let rp = resumePoint()
                 try await saveTrainerModel(step: step, reason: "autosave",
                     nextGameIndex: rp.nextGame, shard: rp.shard,

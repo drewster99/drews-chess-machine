@@ -706,8 +706,8 @@ extension SessionController {
             guard let promotionSaveCut else {
                 preconditionFailure("a promotion save that will run built its session state at the promotion's cut")
             }
-            // One step count, from the cut, for the trainer file's metadata
-            // and the save's [LAYER-HEALTH] block.
+            // The step count at the cut, for the save's [LAYER-HEALTH]
+            // block (the trainer file states its rewound clock, below).
             let championID: String
             let trainerID: String
             let promotionSaveStep: Int
@@ -728,9 +728,11 @@ extension SessionController {
             // The trainer was rewound to exactly this state on promotion:
             // arena-start weights and velocity, the clock captured with them,
             // and the schedule it is running.
+            // `training_step` is the trainer step (format v11): the clock the
+            // trainer was rewound to, the same value as its schedule below.
             let trainerMetadata = ModelCheckpointMetadata.trainerFile(
-                creator: "promote",
-                trainingStep: promotionSaveStep,
+                creator: SessionSaveTrigger.promotionDiskTag,
+                trainingStep: promotionSaveTrainerStep,
                 parentModelID: championID,
                 notes: "Trainer lineage at arena-start pause with optimizer velocity",
                 schedule: TrainerScheduleState(

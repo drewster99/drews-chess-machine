@@ -195,7 +195,7 @@ class NormArchParityTests(unittest.TestCase):
     """norm_arch refuses what the app's decoder refuses, on its own."""
 
     def test_unknown_format_versions_are_refused(self):
-        for version in ("11", "0", "-1", "nine"):
+        for version in (str(dcm_arch.CURRENT_FORMAT_VERSION + 1), "0", "-1", "nine"):
             with self.assertRaises(dcm_arch.ArchitectureError, msg=version):
                 dcm_arch.norm_arch_md(md(architecture(), version))
             with self.assertRaises(dcm_arch.ArchitectureError, msg=version):

@@ -197,10 +197,19 @@ final class TrainingSettingsPopoverModel {
     /// the tab: it is read at each automatic save.
     var sessionSaveIncludeReplayBufferValue = false
     var klProbeIntervalText = "" { didSet { klProbeIntervalError = false } }
+    /// `step_line_interval_sec`, as `stepLineIntervalFormat` renders it.
+    /// Commit-on-Save; the GUI ticker reads the live value on every poll,
+    /// so a change takes effect at the next deadline.
+    var stepLineIntervalText = "" { didSet { stepLineIntervalError = false } }
 
     private(set) var periodicAutosaveIntervalError = false
     private(set) var maxPeriodicAutosavesKeptError = false
     private(set) var klProbeIntervalError = false
+    private(set) var stepLineIntervalError = false
+
+    /// The one rendering of the step-line interval's text, shared by the
+    /// seed and the row's Stepper.
+    static let stepLineIntervalFormat = "%g"
 
     /// Pending `random_seed_mode`. Commit-on-Save; read only when a run
     /// starts (`RunRandomSeed.resolve`), so an edit made during a run takes
@@ -377,6 +386,7 @@ final class TrainingSettingsPopoverModel {
         \.replayRatioTargetText, \.replaySelfPlayDelayText, \.replayTrainingStepDelayText,
         \.maxPliesFromAnyOneGameText, \.targetSampledGameLengthPliesText, \.maxDrawPercentPerBatchText,
         \.periodicAutosaveIntervalMinutesText, \.maxPeriodicAutosavesKeptText, \.klProbeIntervalText,
+        \.stepLineIntervalText,
     ]
 
     /// Each `seededTextFields` entry's text as `seedFromParams` (or a resync
@@ -507,6 +517,7 @@ final class TrainingSettingsPopoverModel {
         automaticSavePruningEnabledValue = p.automaticSavePruningEnabled
         sessionSaveIncludeReplayBufferValue = p.sessionSaveIncludeReplayBuffer
         klProbeIntervalText = String(p.klProbeInterval)
+        stepLineIntervalText = String(format: Self.stepLineIntervalFormat, p.stepLineIntervalSec)
         randomSeedModeValue = p.randomSeedMode
         randomSeedText = String(p.randomSeed)
         // Stash pre-edit values for the four replay-ratio control fields. The
@@ -585,6 +596,7 @@ final class TrainingSettingsPopoverModel {
         periodicAutosaveIntervalError = false
         maxPeriodicAutosavesKeptError = false
         klProbeIntervalError = false
+        stepLineIntervalError = false
         randomSeedError = false
     }
 
@@ -1559,6 +1571,19 @@ final class TrainingSettingsPopoverModel {
             }
         } else {
             klProbeIntervalError = true
+            anyError = true
+        }
+        // Step-line interval — seconds in the declared range. `liveTunable`;
+        // the GUI ticker reads it on every poll, so a plain singleton write
+        // is all that is required here.
+        if let seconds = editedValue(StepLineIntervalSec.self, \.stepLineIntervalText, current: p.stepLineIntervalSec) {
+            stepLineIntervalError = false
+            if seconds != p.stepLineIntervalSec {
+                SessionLogger.shared.log("[PARAM] stepLineIntervalSec: \(p.stepLineIntervalSec) -> \(seconds)")
+                p.stepLineIntervalSec = seconds
+            }
+        } else {
+            stepLineIntervalError = true
             anyError = true
         }
         // Run seed — the mode, then (in seeded mode only) a UInt64 seed.

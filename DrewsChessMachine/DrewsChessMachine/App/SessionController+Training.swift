@@ -1394,53 +1394,35 @@ extension SessionController {
                     }
                 }
 
-                // Periodic session-log ticker. Emits one [STATS] line
-                // per training step for the first 500 steps (every step
-                // matters during bootstrap — you want to see the curve
-                // shape of the first few hundred updates) then drops to
-                // one line per 60 seconds for the rest of the 
+                // Periodic session-log ticker, on the step-line schedule
+                // every path shares (`TrainingStepLineSchedule`): a line at
+                // the first observed trainer step, every 50 trainer steps
+                // through 1000, at every trainer-step multiple of 1000, and
+                // on the first poll whose rolling means carry diagnostics at
+                // least `step_line_interval_sec` (read live) after the
+                // previous line. It polls every 50 ms, so a fixed line lands
+                // on the first poll at or past its step. The trainer step is
+                // the stats box's cumulative count — seeded with the saved
+                // step on a session resume and rewound on a promotion (the
+                // schedule moves its baseline there; a rewind is not itself
+                // a line). The time rule needs no new step, so lines keep
+                // coming while an arena pauses training.
                 //
-                // Each wake-up snapshots the thread-safe stats boxes,
-                // optionally refreshes `legalMass` via a sampled
-                // forward pass (cadence-gated so the CPU work doesn't
-                // pile up during the per-step bootstrap window), and
-                // writes one `[STATS]` line. Identifiers are pulled
-                // through a brief MainActor hop since they live on
-                // classes whose var mutation is otherwise main-actor-
-                // driven.
+                // Each line snapshots the thread-safe stats boxes, refreshes
+                // `legalMass` via a sampled forward pass, writes the
+                // `[STATS]` line, the latest `[BATCH-STATS]` summary when it
+                // is not the one logged last, and the live `[LAYER-HEALTH]`
+                // readout. Identifiers are pulled through a brief MainActor
+                // hop since they live on classes whose var mutation is
+                // otherwise main-actor-driven. The legal-entropy chart trace
+                // (`realLastLegalMassSnapshot`) and the `[ALARM] policy
+                // entropy` log line refresh on line ticks; the heartbeat's
+                // streak alarms do not ride `[STATS]`.
                 group.addTask(priority: .utility) {
                     [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox, scheduleBox, recorder, drawWatch,
                      sessionTrainingBatchSize, probeInferenceForProbes] in
                     let sessionStart = Date()
-                    // Bootstrap-phase step threshold for the per-step
-                    // emit. `UpperContentView.bootstrapStatsStepCount` is tunable
-                    // on the view; at the default this covers roughly
-                    // the first 1-3 minutes of real-data training at
-                    // typical throughput.
-                    let bootstrapSteps = UpperContentView.bootstrapStatsStepCount
-                    // Time between STATS emits after the bootstrap
-                    // window closes. 60 s chosen so a session's
-                    // steady-state log file grows at a manageable rate
-                    // while still capturing drift inside the typical
-                    // arena cadence.
-                    let steadyInterval: TimeInterval = 60
-                    // Cadence for refreshing legalMass during the
-                    // per-step bootstrap window — refreshing every
-                    // step would double per-step CPU cost for little
-                    // additional signal. Every 25 steps roughly
-                    // matches the 60-second cadence used afterwards
-                    // at typical throughput.
-                    let legalMassBootstrapStride = 25
                     let legalMassSampleSize = 128
-                    // Live `[LAYER-HEALTH]` cadence during the per-step
-                    // bootstrap window: the first step, then whenever this
-                    // many steps have passed since the last one. Each read is
-                    // a small `graph.run` on the trainer's own queue, so a
-                    // line per bootstrap step would queue one between every
-                    // pair of SGD steps for no extra signal. After bootstrap
-                    // it rides every [STATS] emit.
-                    let layerHealthBootstrapStride = 25
-                    var lastLayerHealthStep: Int? = nil
 
                     // First-observed pwNorm becomes the session baseline
                     // so each [STATS] line can report the absolute value
@@ -1462,7 +1444,8 @@ extension SessionController {
                     var prevVmTotal: UInt32 = 0
                     var prevVmIoAccel: UInt32 = 0
 
-                    func logOne(elapsedTarget: TimeInterval, legalMassOverride: ChessTrainer.LegalMassSnapshot?) async {
+                    func logOne(elapsedTarget: TimeInterval, legalMassOverride: ChessTrainer.LegalMassSnapshot?,
+                                stepLineIntervalSec: Double) async {
                         let trainingSnap = await box.snapshot()
                         let parallelSnap = pStatsBox.snapshot()
                         let bufCount = buffer.count
@@ -1642,7 +1625,7 @@ extension SessionController {
                                                 parallelSnap.whiteCheckmates, parallelSnap.blackCheckmates,
                                                 parallelSnap.stalemates, parallelSnap.fiftyMoveDraws,
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
-                        let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", livePromoteThreshold)) arenaGames=\(liveTournamentGames) arenaAutoSec=\(Int(arenaAutoSec)) workers=\(workerN)"
+                        let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", livePromoteThreshold)) arenaGames=\(liveTournamentGames) arenaAutoSec=\(Int(arenaAutoSec)) workers=\(workerN) stepLineSec=\(String(format: "%g", stepLineIntervalSec))"
                         let regStr = String(
                             format: "clip=%.1f decay=%.0e drop=%.2f ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f complCE=%@",
                             gradClip,
@@ -2077,27 +2060,31 @@ extension SessionController {
                         }
                     }
 
-                    // Cache the most recent legalMass probe result so
-                    // we can include it in back-to-back per-step emits
-                    // without paying the ~5-20 ms forward-pass cost on
-                    // every single step. Refreshed every
-                    // `legalMassBootstrapStride` steps during bootstrap
-                    // and every time-based emit afterward.
+                    // The latest legal-mass probe, refreshed on every line.
                     var lastLegalMass: ChessTrainer.LegalMassSnapshot? = nil
-                    var lastEmittedStep: Int = -1
-                    var bootstrapDone = false
+                    var stepLines = TrainingStepLineSchedule()
+                    let lineClock = ContinuousClock()
+                    let lineClockStart = lineClock.now
+                    // The step of the last `[BATCH-STATS]` summary logged
+                    // (`BatchStatsLogLine`'s GUI rule: log the latest summary
+                    // when its step differs from this one).
+                    var lastLoggedBatchStatsStep: Int? = nil
 
-                    // Bootstrap phase: poll at short interval, emit one
-                    // line per new training step until
-                    // bootstrapSteps steps have been logged.
-                    while !Task.isCancelled && !bootstrapDone {
+                    while !Task.isCancelled {
                         let trainingSnap = await box.snapshot()
                         let steps = trainingSnap.stats.steps
-                        if steps > lastEmittedStep && steps > 0 {
-                            // Refresh legalMass on a stride so
-                            // back-to-back per-step emits share the
-                            // most recent probe.
-                            if steps == 1 || (steps - max(0, lastEmittedStep)) >= legalMassBootstrapStride {
+                        // No line before the first training step (the box
+                        // starts at 0 on a fresh session; a resumed session's
+                        // box is seeded with the saved step, so its first
+                        // line comes at the first poll).
+                        if steps > 0 {
+                            let intervalSec = await MainActor.run { TrainingParameters.shared.stepLineIntervalSec }
+                            let due = stepLines.lineDue(
+                                trainerStep: steps,
+                                elapsedSec: TrainingStepLineSchedule.seconds(lineClock.now - lineClockStart),
+                                carriesDiagnostics: trainingSnap.rollingPolicyEntropy != nil,
+                                intervalSec: intervalSec)
+                            if due != nil {
                                 if buffer.count >= legalMassSampleSize, let probeNet = probeInferenceForProbes {
                                     do {
                                         lastLegalMass = try await trainer.legalMassSnapshot(
@@ -2105,9 +2092,8 @@ extension SessionController {
                                             sampleSize: legalMassSampleSize,
                                             inferenceNetwork: probeNet
                                         )
-                                        // Mirror to @State so the
-                                        // chart-sample heartbeat can
-                                        // render the legal-entropy
+                                        // Mirror to @State so the chart-sample
+                                        // heartbeat can render the legal-entropy
                                         // trace at its own cadence.
                                         let snap = lastLegalMass
                                         await MainActor.run {
@@ -2120,69 +2106,27 @@ extension SessionController {
                                         )
                                     }
                                 }
-                            }
-                            let elapsed = Date().timeIntervalSince(sessionStart)
-                            await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass)
-                            if lastLayerHealthStep.map({ steps - $0 >= layerHealthBootstrapStride }) ?? true {
+                                let elapsed = Date().timeIntervalSince(sessionStart)
+                                await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass,
+                                             stepLineIntervalSec: intervalSec)
+                                let summary = trainer.lastBatchStatsSummary
+                                if let batchStatsLine = BatchStatsLogLine.line(summary: summary,
+                                                                               lastLoggedStep: lastLoggedBatchStatsStep) {
+                                    SessionLogger.shared.log(batchStatsLine)
+                                    lastLoggedBatchStatsStep = summary?.step
+                                }
                                 for line in await LayerHealthLog.live(trainer: trainer).lines {
                                     SessionLogger.shared.log(line)
                                 }
-                                lastLayerHealthStep = steps
-                            }
-                            lastEmittedStep = steps
-                            if steps >= bootstrapSteps {
-                                bootstrapDone = true
-                                break
                             }
                         }
-                        // Short poll — a training step at typical
-                        // throughput completes in 50-200 ms, and we
-                        // want the per-step cadence to track closely.
+                        // Short poll — a training step at typical throughput
+                        // completes in 50-200 ms, so a fixed line lands on
+                        // (or within a poll of) its step.
                         do {
                             try await Task.sleep(for: .milliseconds(50))
                         } catch {
                             return
-                        }
-                    }
-                    if Task.isCancelled { return }
-
-                    // Steady-state: one emit every `steadyInterval`
-                    // seconds. Each emit refreshes the legalMass probe
-                    // too.
-                    while !Task.isCancelled {
-                        do {
-                            try await Task.sleep(for: .seconds(steadyInterval))
-                        } catch {
-                            return
-                        }
-                        if Task.isCancelled { return }
-                        if buffer.count >= legalMassSampleSize, let probeNet = probeInferenceForProbes {
-                            let trainingSnap = await box.snapshot()
-                            let steps = trainingSnap.stats.steps
-                            do {
-                                lastLegalMass = try await trainer.legalMassSnapshot(
-                                    replayBuffer: buffer,
-                                    sampleSize: legalMassSampleSize,
-                                    inferenceNetwork: probeNet
-                                )
-                                // Mirror to @State so the chart-sample
-                                // heartbeat sees a fresh legal-entropy
-                                // value at the steady-state cadence.
-                                let snap = lastLegalMass
-                                await MainActor.run {
-                                    self.realLastLegalMassSnapshot = snap
-                                }
-                            } catch {
-                                lastLegalMass = nil
-                                SessionLogger.shared.log(
-                                    "[STATS-ERR] legalMassSnapshot failed at step \(steps): \(error.localizedDescription)"
-                                )
-                            }
-                        }
-                        let elapsed = Date().timeIntervalSince(sessionStart)
-                        await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass)
-                        for line in await LayerHealthLog.live(trainer: trainer).lines {
-                            SessionLogger.shared.log(line)
                         }
                     }
                 }

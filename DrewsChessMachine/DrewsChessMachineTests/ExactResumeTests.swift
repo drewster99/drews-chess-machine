@@ -261,7 +261,7 @@ final class ExactResumeTests: XCTestCase {
                     createdAtUnix: 1_780_000_000,
                     metadata: ModelCheckpointMetadata(
                         creator: creator,
-                        trainingStep: 17,
+                        trainingStep: snapshot.schedule.completedTrainSteps,
                         parentModelID: "",
                         notes: "unit test",
                         trainerSchedule: snapshot.schedule
@@ -273,8 +273,8 @@ final class ExactResumeTests: XCTestCase {
                         trainerCompletedSteps: snapshot.schedule.completedTrainSteps, corpus: corpus)
                 )
                 let file = try CheckpointManager.decodeAnyModelFile(data)
-                // `training_step` stays the segment-local value it was given.
-                XCTAssertEqual(file.metadata.trainingStep, 17)
+                // `training_step` is the trainer step (format v11).
+                XCTAssertEqual(file.metadata.trainingStep, snapshot.schedule.completedTrainSteps)
                 return try TrainerResumeSnapshot(checkpoint: file, fileName: "unit-test.safetensors")
             },
             resume: { trainer, snapshot in
@@ -343,7 +343,7 @@ final class ExactResumeTests: XCTestCase {
                     trainerWeights: snapshot.trainerWeights,
                     trainerID: "20260929-2-TEST",
                     trainerMetadata: ModelCheckpointMetadata(
-                        creator: "manual", trainingStep: 0, parentModelID: "20260929-1-TEST", notes: "trainer",
+                        creator: "manual", trainingStep: snapshot.schedule.completedTrainSteps, parentModelID: "20260929-1-TEST", notes: "trainer",
                         trainerSchedule: snapshot.schedule
                     ),
                     trainerCreatedAtUnix: 1_780_000_001,

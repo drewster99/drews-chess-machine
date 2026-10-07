@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Identify safetensors checkpoints by their embedded metadata rather than by filename.
 
-Why this exists: the corpus-replay runner's --enumerate-checkpoints writes
-<stem>-replay-step<N>.safetensors using the SEGMENT-LOCAL step number, and every
-resumed segment restarts that counter at 1. Across the v5 lineage five segments
-therefore competed for the same names — four different files have been called
-`v5-cont-replay-step1000.safetensors`, and later runs silently overwrote earlier
-ones as they climbed. A filename identifies nothing.
+Why this exists: before architecture format v11 the corpus-replay runner's
+--enumerate-checkpoints wrote <stem>-replay-step<N>.safetensors using the
+SEGMENT-LOCAL step number, and every resumed segment restarted that counter at 1.
+Across the v5 lineage five segments therefore competed for the same names — four
+different files have been called `v5-cont-replay-step1000.safetensors`, and later
+runs silently overwrote earlier ones as they climbed. A filename identifies nothing.
+(From v11 the name and `training_step` carry the trainer step, but files of both
+eras sit side by side.)
 
 The authoritative identity is the safetensors `__metadata__` header:
-`model_id` (minted per segment) plus `training_step` (segment-local). Files at
-architecture format v7 and later also carry a lineage record (`dcm_lineage`,
+`model_id` (minted per segment) plus `training_step` — the writing segment's
+step on a corpus-replay or train-vs-UCI file before format v11, the trainer step
+from v11 (each entry's `step_basis`, `trainer_step` and `segment_step` say which,
+from `dcm_lineage.step_reading`). Files at architecture format v7 and later also
+carry a lineage record (`dcm_lineage`,
 read through scripts/dcm_lineage.py), which names the run and segment outright
 and carries the corpus position that format no longer writes as `replay_*`
 keys; each entry's `lineage` is that record's summary, or "unrecorded (format
@@ -100,6 +105,10 @@ def scan(dirs, want_sha):
                     e[k] = meta[k]
             try:
                 e["lineage"] = lineage_summary(meta, os.path.basename(path))
+                reading = dcm_lineage.step_reading(meta, os.path.basename(path))
+                e["step_basis"] = reading.basis
+                e["trainer_step"] = reading.trainer_step
+                e["segment_step"] = reading.segment_step
             except dcm_lineage.LineageError as err:
                 # A file the app would refuse is a finding, recorded like a
                 # truncated one rather than dropped.
@@ -125,7 +134,9 @@ def main():
 
     summary = []
     for mid, v in sorted(by_model.items()):
-        steps = sorted(int(x["training_step"]) for x in v if "training_step" in x)
+        # The trainer step where the file records one, else the step it states.
+        steps = sorted(x["trainer_step"] if x.get("trainer_step") is not None else int(x["training_step"])
+                       for x in v if x.get("trainer_step") is not None or "training_step" in x)
         summary.append(dict(model_id=mid, count=len(v),
                             step_min=steps[0] if steps else None,
                             step_max=steps[-1] if steps else None))

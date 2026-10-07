@@ -360,9 +360,15 @@ Number of consecutive collapsed probes (after grace) before the run early-bails.
 
 ### batch_stats_interval
 
-Compute and emit [BATCH-STATS] every N training batches. 0 disables. Cost is ~1ms per evaluated batch; default 10 keeps log volume manageable.
+Compute the per-batch statistics and the graph diagnostics (policy entropy, value W/D/L, played-move probability) every N training steps, and on every fixed step-line step (every 50 through trainer step 1000, then every 1000). 0: no batch statistics; the diagnostics then run every 10 steps. The [BATCH-STATS] line is written with the step lines ([STATS] / [REPLAY] / [VS-UCI]), not on every statistics step. Cost is ~1ms per evaluated batch.
 
 **Type:** Int · **Range:** 0..10000 · **Default:** 10 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### step_line_interval_sec
+
+The step lines ([STATS] in the app, [REPLAY] for corpus replay, [VS-UCI] for train-vs-UCI) are written at a segment's first step, every 50 trainer steps through trainer step 1000, at every trainer step that is a multiple of 1000, and on the first diagnostics step at least this many seconds after the previous line (any line restarts the interval). The [BATCH-STATS] line and the live [LAYER-HEALTH] readout ride the step line. Logging only: it changes no training math. Read live by the app; the command-line paths read it once at start.
+
+**Type:** Double · **Range:** 10.0..86400.0 · **Default:** 180.0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### kl_probe_interval
 

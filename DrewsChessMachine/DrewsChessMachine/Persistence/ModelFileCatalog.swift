@@ -239,12 +239,20 @@ enum ModelFileCatalog {
         } else {
             label = "no architecture recorded"
         }
-        var trainingStep: Int?
-        if let text = metadata["training_step"] {
-            guard let step = Int(text) else {
-                throw ModelFileCatalogError.notSafetensors(file: name, detail: "training_step \"\(text)\" is not an integer")
-            }
-            trainingStep = step
+        // The file's trainer step where it records one, else the step it
+        // states (`ModelFileStepReading`): one rule for files before and
+        // after format v11, so the number shown is the trainer step wherever
+        // one is known. Order within a line (one model ID, one writer) is
+        // the same as by the raw value. The reading decodes the lineage
+        // record only when it needs it; a record it needs that does not
+        // decode makes this an error entry, as an unreadable architecture
+        // does. Display-only, so its legacy entry is not logged here.
+        let trainingStep: Int?
+        do {
+            trainingStep = try SafetensorsModelIO.trainingStepReading(fromMetadata: metadata, source: name)
+                .trainerStepOrStatedStep
+        } catch {
+            throw ModelFileCatalogError.notSafetensors(file: name, detail: "unreadable training step: \(String(describing: error))")
         }
         var createdAt: Date?
         if let text = metadata["created_at_unix"] {

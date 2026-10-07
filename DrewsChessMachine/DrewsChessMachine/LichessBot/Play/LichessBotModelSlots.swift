@@ -187,7 +187,10 @@ struct LichessBotModelFileLoader: Sendable {
                         weights: file.networkWeights,
                         architecture: file.architecture,
                         modelID: file.modelID,
-                        trainingStep: file.metadata.trainingStep
+                        // The file's trainer step where it records one, else
+                        // the step it states (`ModelFileStepReading`) — the
+                        // same kind of number the live sources pass.
+                        trainingStep: file.trainingStepReading.trainerStepOrStatedStep
                     )
                     guard let centering = file.valueHeadCentering else {
                         throw LichessBotModelError.valueHeadCenteringUnknown(url.path)

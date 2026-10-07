@@ -531,7 +531,9 @@ struct SessionCheckpointState: Codable, Equatable {
     var legalMassCollapseThreshold: Double?
     var legalMassCollapseGraceSeconds: Double?
     var legalMassCollapseNoImprovementProbes: Int?
-    /// Interval (in training steps) between `[BATCH-STATS]` emissions.
+    /// Interval (in training steps) between the trainer's per-batch
+    /// statistics and graph-diagnostics steps (`batch_stats_interval`; the
+    /// `[BATCH-STATS]` line itself is written with the step lines).
     /// Optional for back-compat; absent → loader falls through to
     /// `TrainingParameters.shared.batchStatsInterval`.
     var batchStatsInterval: Int?
@@ -539,6 +541,11 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat; absent → the loader falls through to the
     /// current `TrainingParameters.klProbeInterval`.
     var klProbeInterval: Int?
+    /// Step-line time interval in seconds (`step_line_interval_sec`) in
+    /// effect at save time. Logging only. Optional because sessions written
+    /// before the parameter existed do not state it; absent → the resume
+    /// keeps the current setting (its `absentValue` is `.currentSetting`).
+    var stepLineIntervalSec: Double?
     /// Periodic-autosave cadence (seconds) in effect at save time
     /// (`TrainingParameters.shared.periodicAutosaveIntervalSec`). Optional for
     /// back-compat; absent → loader falls through to the current value.

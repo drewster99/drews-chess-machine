@@ -320,21 +320,26 @@ enum TrainVsUciRunner {
             periodicIntervalSec: periodicSessionIntervalSec,
             includesReplayBuffer: config.saveReplayBuffer))
 
+        // The trainer step this segment starts from (the checkpoint's clock
+        // on an exact resume, 0 otherwise), known before the trainer is built
+        // and checked against it once it is — see CorpusReplayRunner.
         // Step-enumerated checkpoints (the per-step record probe loops and
-        // dashboards read) land on a multiple of this, plus the final step.
-        let autosaveEvery = 1000
+        // dashboards read) land on its trainer-step multiples of
+        // `TrainingStepLineSchedule.checkpointIntervalSteps`, plus the final
+        // step, named by the trainer step.
+        let segmentStartTrainerStep = resumeSnapshot?.schedule.completedTrainSteps ?? 0
         let enumeratedWriter: EnumeratedCheckpointWriter?
         if config.enumerateCheckpoints {
             let naming = EnumeratedCheckpointNaming(
                 rollingOutputURL: try TrainVsUciSession.enumeratedNamingBase(
                     checkpointStem: config.checkpointStem, startSource: startSource,
                     runModelID: config.runModelID),
-                runTag: EnumeratedCheckpointNaming.trainVsUciRunTag,
-                segmentIndex: LineageTracker.segmentIndex(
-                    exactResumeOf: resumeSnapshot != nil ? startModelFile?.lineageParent : nil))
-            try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(naming: naming, stepLimit: config.stepLimit)
+                runTag: EnumeratedCheckpointNaming.trainVsUciRunTag)
+            try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(
+                naming: naming, segmentStartTrainerStep: segmentStartTrainerStep, stepLimit: config.stepLimit)
             enumeratedWriter = EnumeratedCheckpointWriter(naming: naming)
-            emit("[VS-UCI] enumerated checkpoints: \(naming.url(step: autosaveEvery).path) and siblings (never overwritten)")
+            let firstSave = TrainingStepLineSchedule.firstCheckpointStep(after: segmentStartTrainerStep)
+            emit("[VS-UCI] enumerated checkpoints: \(naming.url(trainerStep: firstSave).path) and siblings (never overwritten)")
         } else {
             enumeratedWriter = nil
         }
@@ -397,6 +402,7 @@ enum TrainVsUciRunner {
             + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
+            + " stepLineSec=" + String(format: "%g", p.parameters.stepLineIntervalSec)
             + p.samplingConstraints.logFields(batchSize: p.trainingBatchSize))
         let buffer = ReplayBuffer(
             capacity: p.replayBufferCapacity,
@@ -454,6 +460,11 @@ enum TrainVsUciRunner {
             : (startModelFile != nil ? .newBranch(fromModelID: parentModelID) : .fresh)
         emit("[VS-UCI-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
             + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
+
+        try SegmentStartTrainerStepMismatch.require(
+            preflight: segmentStartTrainerStep, trainerClock: trainer.completedTrainSteps)
+        emit("[VS-UCI] " + TrainingStepLineSchedule.cadenceDescription(
+            intervalSec: p.parameters.stepLineIntervalSec, startTrainerStep: segmentStartTrainerStep))
 
         let lineageTracker = try LineageTracker(
             start: lineageStart, pathKind: .vsuci, argv: CommandLine.arguments,
@@ -527,9 +538,10 @@ enum TrainVsUciRunner {
 
         /// The complete trainer state at one save: weights + velocity, the
         /// trainer-file metadata, and the lineage record with the run's random
-        /// streams. Resumable with `--resume-exact`; `training_step` stays
-        /// segment-local as in CorpusReplayRunner. The SGD loop awaits each
-        /// step, so none is in flight when one is taken.
+        /// streams. Resumable with `--resume-exact`; `training_step` is the
+        /// trainer step (format v11) and the segment step is the record's
+        /// `segment_local_step`, as in CorpusReplayRunner. The SGD loop awaits
+        /// each step, so none is in flight when one is taken.
         struct TrainerSave {
             let snapshot: TrainerResumeSnapshot
             let metadata: ModelCheckpointMetadata
@@ -544,10 +556,10 @@ enum TrainVsUciRunner {
                 nextGameSerial: gameSerials.nextSerial, arenasStarted: nil,
                 opponentGameIndices: driver.currentGameIndices())
             let metadata = ModelCheckpointMetadata.trainerFile(
-                creator: "train-vs-uci",
-                trainingStep: step,
+                creator: ModelCheckpointMetadata.trainVsUciCreator,
+                trainingStep: snapshot.schedule.completedTrainSteps,
                 parentModelID: parentModelID,
-                notes: "train-vs-uci \(reason) @ step \(step)",
+                notes: "train-vs-uci \(reason) @ trainer step \(snapshot.schedule.completedTrainSteps) (segment step \(step))",
                 schedule: snapshot.schedule,
                 policyTailPrecision: trainer.policyTailPrecision)
             // Games and plies the driver flushed into the buffer.
@@ -617,11 +629,14 @@ enum TrainVsUciRunner {
                 let url = try await CheckpointManager.saveSession(
                     championWeights: championWeights,
                     championID: config.runModelID,
+                    // The play network synced from the trainer at this save:
+                    // the same trainer step as the trainer file.
                     championMetadata: ModelCheckpointMetadata(
-                        creator: "train-vs-uci",
-                        trainingStep: step,
+                        creator: ModelCheckpointMetadata.trainVsUciCreator,
+                        trainingStep: save.snapshot.schedule.completedTrainSteps,
                         parentModelID: parentModelID,
-                        notes: "train-vs-uci session (\(kind.diskTag)): play network synced from the trainer @ step \(step)"),
+                        notes: "train-vs-uci session (\(kind.diskTag)): play network synced from the trainer @ trainer "
+                            + "step \(save.snapshot.schedule.completedTrainSteps) (segment step \(step))"),
                     championCreatedAtUnix: createdAt,
                     trainerWeights: save.snapshot.trainerWeights,
                     trainerID: config.runModelID,
@@ -653,10 +668,18 @@ enum TrainVsUciRunner {
             }
         }
 
-        /// Write the step-enumerated checkpoint for `step` (the trainer file
-        /// alone) when `--enumerate-checkpoints` is on.
+        /// Write the step-enumerated checkpoint of the trainer's current state
+        /// (the trainer file alone, named by its trainer step) when
+        /// `--enumerate-checkpoints` is on and the segment trained at least
+        /// one step. `step` is the segment step, for the record and logs.
         func writeEnumeratedCheckpoint(step: Int, reason: String) async throws {
             guard let enumeratedWriter else { return }
+            guard TrainerOutputFileGuard.enumeratedCopyIsWritten(
+                trainerStep: trainer.completedTrainSteps, segmentStartTrainerStep: segmentStartTrainerStep) else {
+                emit("[VS-UCI] enumerated checkpoint not written: the segment trained no step "
+                    + "(trainerStep=\(trainer.completedTrainSteps), the start state)")
+                return
+            }
             do {
                 let save = try await trainerSave(step: step, reason: reason)
                 let encoded = try SafetensorsModelIO.encode(
@@ -667,10 +690,11 @@ enum TrainVsUciRunner {
                     architecture: arch,
                     includesVelocity: true,
                     lineage: save.lineage)
-                let written = try enumeratedWriter.write(encoded, step: step)
+                let savedTrainerStep = save.snapshot.schedule.completedTrainSteps
+                let written = try enumeratedWriter.write(encoded, trainerStep: savedTrainerStep)
                 enumeratedSaveFailures.recordSuccess()
                 let note = written.outcome == .replacedThisRunsEarlierSave
-                    ? " (replaced this run's own earlier save of step \(step))"
+                    ? " (replaced this run's own earlier save of trainer step \(savedTrainerStep))"
                     : ""
                 emit("[VS-UCI] enumerated checkpoint -> \(written.url.lastPathComponent)\(note)")
                 await logLayerHealth(save, step: step, context: "vsuci-\(reason)")
@@ -753,7 +777,12 @@ enum TrainVsUciRunner {
             emit("[VS-UCI] prefilled: bufCount=\(buffer.count)")
 
             // Step-locked SGD loop. Games are produced concurrently by the driver.
-            let logEvery = 50
+            // Step lines follow the shared trainer-step schedule
+            // (`TrainingStepLineSchedule`); its time rule reads a monotonic
+            // clock started here.
+            var stepLines = TrainingStepLineSchedule()
+            let lineClock = ContinuousClock()
+            let lineClockStart = lineClock.now
             while true {
                 if abort.isRequested { aborted = true; emit("[VS-UCI] abort requested — stopping at step \(step)"); break }
                 if let sl = config.stepLimit, step >= sl { break }
@@ -773,10 +802,14 @@ enum TrainVsUciRunner {
                 // Keep the play network ~live.
                 if step % syncEvery == 0 { try await syncEvalNet() }
 
-                if step == 1 || step % logEvery == 0 {
-                    // Pin LR, momentum and the cycle values to one step-count
-                    // observation so the three agree with each other.
-                    let observedSteps = trainer.completedTrainSteps
+                // One trainer-step observation for this step: the line's
+                // cadence, its LR / momentum / cycle values, and the save
+                // point all read it.
+                let observedSteps = trainer.completedTrainSteps
+                if stepLines.lineDue(trainerStep: observedSteps,
+                                     elapsedSec: TrainingStepLineSchedule.seconds(lineClock.now - lineClockStart),
+                                     carriesDiagnostics: timing.hasDiagnostics,
+                                     intervalSec: p.parameters.stepLineIntervalSec) != nil {
                     let liveLR = trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: observedSteps)
                     let liveMomentum = trainer.effectiveMomentum(completedSteps: observedSteps)
                     let cycleValues = trainer.lrMomentumCycleValues(completedSteps: observedSteps)
@@ -790,6 +823,13 @@ enum TrainVsUciRunner {
                         + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
                         + " trainerStep=\(observedSteps)"
                     emit(line)
+                    // This step's own batch statistics ride the step line — to the session
+                    // log only, as the trainer wrote them before (a 72 KB JSON line
+                    // does not belong on the console).
+                    if let batchStatsLine = BatchStatsLogLine.line(summary: trainer.lastBatchStatsSummary,
+                                                                   ofTrainerStep: observedSteps) {
+                        SessionLogger.shared.log(batchStatsLine)
+                    }
                     // Live layer health at the same cadence (BN state +
                     // ReZero α, read on the trainer's queue between steps).
                     for healthLine in await LayerHealthLog.live(trainer: trainer).lines {
@@ -852,11 +892,13 @@ enum TrainVsUciRunner {
                         // than a recovered one.
                         replayRatioTarget: nil,
                         lineageTotals: lineageTracker.totals(
-                            trainerCompletedSteps: trainer.completedTrainSteps,
+                            trainerCompletedSteps: observedSteps,
                             segmentGames: slots.reduce(0) { $0 + $1.gamesCompleted })
                     ))
                 }
-                if step % autosaveEvery == 0 {
+                // At every trainer-step multiple of 1000, after the step line
+                // (so the line and its live readout precede the save).
+                if TrainingStepLineSchedule.isCheckpointStep(trainerStep: observedSteps) {
                     try await writeEnumeratedCheckpoint(step: step, reason: "autosave")
                 }
                 if TrainVsUciSession.periodicSaveIsDue(now: Date(), lastSave: lastSessionSave,
@@ -882,7 +924,10 @@ enum TrainVsUciRunner {
         // final step's enumerated checkpoint.
         let finalKind: TrainVsUciSession.SaveKind = aborted ? .abort : .final
         try await saveSession(step: step, kind: finalKind)
-        if step % autosaveEvery != 0 {
+        // The final trainer step's enumerated copy, unless the autosave at a
+        // checkpoint step already wrote it (a segment that trained no step
+        // writes none: `writeEnumeratedCheckpoint` logs that).
+        if !TrainingStepLineSchedule.isCheckpointStep(trainerStep: trainer.completedTrainSteps) {
             try await writeEnumeratedCheckpoint(step: step, reason: finalKind.rawValue)
         }
         // The session folder is the end state: the run fails without it,

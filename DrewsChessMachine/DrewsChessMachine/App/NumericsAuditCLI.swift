@@ -70,7 +70,12 @@ enum NumericsAuditCLI {
                 let velocity: LayerHealth.VelocitySource = file.includesOptimizerVelocity
                     ? .trainerVelocity(Array(file.weights.dropFirst(planCount)))
                     : .unavailable(reason: "a model file holds no optimizer state")
-                let stepValue = file.metadata.trainingStep
+                // The trainer step where the file records one, else the step
+                // it states — the same kind of number the GUI's audit of the
+                // live trainer reports (its trainer clock). The header value
+                // and how it was read go on the JSON line beside it.
+                let stepReading = file.trainingStepReading
+                let stepValue = stepReading.trainerStepOrStatedStep
                 let modelID = file.modelID.isEmpty ? nil : file.modelID
                 let label = "file:\(target.lastPathComponent)"
                 let auditPositions = positions
@@ -97,7 +102,7 @@ enum NumericsAuditCLI {
                 case .failure(let error): throw error
                 }
                 FileHandle.standardError.write(Data("[NUMERICS] \(target.path)\n\(result.textSummary())\n\n".utf8))
-                emit(compactLine(result: result, target: target, jsonURL: jsonURL))
+                emit(compactLine(result: result, target: target, jsonURL: jsonURL, stepReading: stepReading))
             } catch {
                 failures += 1
                 emit(["event": "error", "model": target.path, "error": "\(error)"])
@@ -143,15 +148,19 @@ enum NumericsAuditCLI {
         return found.sorted { $0.path < $1.path }
     }
 
-    private static func compactLine(result: NumericsAudit.Result, target: URL, jsonURL: URL) -> [String: Any] {
+    private static func compactLine(result: NumericsAudit.Result, target: URL, jsonURL: URL,
+                                    stepReading: ModelFileStepReading) -> [String: Any] {
         var line: [String: Any] = [
             "event": "numerics",
             "model": target.path,
             "overall": result.overallVerdict.rawValue,
             "json": jsonURL.path,
+            "step_basis": stepReading.basis.rawValue,
         ]
         if let id = result.modelID { line["model_id"] = id }
         if let step = result.trainingStep { line["training_step"] = step }
+        if let stated = stepReading.statedTrainingStep { line["stated_training_step"] = stated }
+        if let segment = stepReading.segmentStep { line["segment_step"] = segment }
         if let offset = result.staticChecks.valueHeadOffset {
             line["value_offset_ratio_to_init"] = offset.ratioToInitExpectation
         }

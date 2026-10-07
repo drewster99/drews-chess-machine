@@ -7,11 +7,19 @@
 #
 #   --once      one pass over the checkpoints present, no trainer required (re-probing a
 #               finished run, e.g. with a newer PROBE_BIN).
-#   step limit  optional: checkpoints above it are skipped, and each skip is logged.
+#   step limit  optional: checkpoints whose name's step is above it are skipped, and each
+#               skip is logged. The name's step is the header's training_step: for files
+#               from architecture format v11 on that is the TRAINER step (a resumed
+#               segment's limit is its start trainer step plus its --training-step-limit);
+#               for older corpus-replay files it is the writing segment's own step. A
+#               segment-0 probe of a stem that a later segment also wrote into needs its
+#               own last trainer step as the limit, or it reaches the later segment's
+#               files and stops on the other-run check (exit 4).
 #
 # Environment:
-#   PROBE_BIN               probe binary (needed for checkpoints in an architecture format
-#                           the default frozen build cannot read)
+#   PROBE_BIN               probe binary. It must be a build that reads the files' format:
+#                           files written from format v11 on need a v11 build, and the
+#                           default frozen build predates v11 (it refuses them, loudly)
 #   TRAINER_PID             the trainer's pid, when the launcher knows it; otherwise the
 #                           trainer is found by its exact --out-model path. It must be the
 #                           app process itself (not a nohup / caffeinate / open wrapper):
@@ -20,10 +28,17 @@
 #                           has already exited and ending the loop after one pass
 #   PROBE_START_WAIT_SEC    how long to wait for the trainer to appear
 #   PROBE_MAX_ATTEMPTS      failed probes of one checkpoint before it is given up on
-#   PROBE_SEGMENT           the lineage segment index of the run segment to probe. A
-#                           resumed segment names its step files
-#                           <stem>-replay-seg<k>-step<N>; the run's first segment (0)
-#                           names them <stem>-replay-step<N>. Unset means segment 0.
+#   PROBE_ABOVE_STEP        the segment's start trainer step (default 0): step files at or
+#                           below it are skipped, each skip logged once. From format v11 a
+#                           resumed segment names its step files by the trainer step under the
+#                           same stem as the segments before it (<stem>-replay-step<T>); those
+#                           earlier files carry other model_ids, and without this bound the
+#                           loop would reach them and stop on the other-run check (exit 4).
+#   PROBE_SEGMENT           LEGACY ONLY: the lineage segment index of a resumed segment
+#                           written before format v11, which named its step files
+#                           <stem>-replay-seg<k>-step<N> (N its own step). Unset means the
+#                           unmarked names <stem>-replay-step<N>. Refused together with
+#                           PROBE_ABOVE_STEP: the two describe different naming schemes.
 #
 # Identity comes from each checkpoint's safetensors metadata (probe_record.py): the file
 # name's step must match the header's training_step and the probe's modelID the header's
@@ -46,8 +61,14 @@ M="$HOME/Library/Application Support/DrewsChessMachine/Models"
 ROLLING="$M/$STEM-replay-latest.safetensors"
 START_WAIT=${PROBE_START_WAIT_SEC:-600}
 MAX_ATTEMPTS=${PROBE_MAX_ATTEMPTS:-3}
+if [ -n "${PROBE_SEGMENT+set}" ] && [ -n "${PROBE_ABOVE_STEP+set}" ]; then
+  echo "PROBE_SEGMENT (legacy -seg<k> names) and PROBE_ABOVE_STEP (trainer-step names) cannot be used together" >&2
+  exit 2
+fi
 SEGMENT=${PROBE_SEGMENT:-0}
 [[ "$SEGMENT" == <-> && "$SEGMENT" == (0|[1-9]*) ]] || { echo "PROBE_SEGMENT must be a non-negative integer without leading zeros: $SEGMENT" >&2; exit 2; }
+ABOVE=${PROBE_ABOVE_STEP:-0}
+[[ "$ABOVE" == <-> && "$ABOVE" == (0|[1-9]*) ]] || { echo "PROBE_ABOVE_STEP must be a non-negative integer without leading zeros: $ABOVE" >&2; exit 2; }
 # The marker the app puts before the step number: none for segment 0, -seg<k> after.
 if [ "$SEGMENT" = 0 ]; then SEGMENT_PART=""; else SEGMENT_PART="-seg$SEGMENT"; fi
 ERRDIR="${OUT:r}.errors"
@@ -99,6 +120,10 @@ while true; do
   alive=0; [ $ONCE = 0 ] && trainer_alive && alive=1
   for f in "$M/$STEM"-replay"$SEGMENT_PART"-step<->.safetensors(Nn); do
     s=${${f:t:r}##*-replay"$SEGMENT_PART"-step}
+    if [ "$s" -le "$ABOVE" ]; then
+      [ -z "${skipped_logged[$s]:-}" ] && { echo "skipping step $s (at or below PROBE_ABOVE_STEP $ABOVE: an earlier segment's file)"; skipped_logged[$s]=1; }
+      continue
+    fi
     if [ -n "$LIMIT" ] && [ "$s" -gt "$LIMIT" ]; then
       [ -z "${skipped_logged[$s]:-}" ] && { echo "skipping step $s (above the step limit $LIMIT)"; skipped_logged[$s]=1; }
       continue

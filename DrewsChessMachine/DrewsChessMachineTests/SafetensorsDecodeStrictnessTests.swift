@@ -77,7 +77,7 @@ final class SafetensorsDecodeStrictnessTests: XCTestCase {
         let cases: [(String, Data)] = [
             ("plain", try encoded(trainingStep: 12)),
             ("no-step", try encoded(trainingStep: nil)),
-            ("trainer", try encoded(trainingStep: 12, schedule: schedule)),
+            ("trainer", try encoded(trainingStep: schedule.completedTrainSteps, schedule: schedule)),
         ]
         for (name, data) in cases {
             let url = directory.appendingPathComponent("\(name).safetensors")

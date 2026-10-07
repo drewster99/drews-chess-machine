@@ -655,4 +655,136 @@ final class ResumeEquivalenceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent(resumedOut).path),
                        "a refused resume writes no model")
     }
+
+    // MARK: - Step lines, saves and names on the trainer step
+
+    /// The run parameters of the step-line and save-point tests: the pins
+    /// the comparison tests use (small batch and buffer, dropout on, a short
+    /// warmup), the KL probe off, `batch_stats_interval` at its declared
+    /// default of 10, and `step_line_interval_sec` at its range maximum so
+    /// no time-based line falls inside a test this short — only the fixed
+    /// lines (and each segment's first) are written.
+    private func stepLineReplayParams() throws -> ReplayParams {
+        let pinned: [String: ParameterValue] = [
+            TrainingBatchSize.id: .int(32),
+            ReplayBufferCapacity.id: .int(2000),
+            ReplayBufferMinPositionsBeforeTraining.id: .int(500),
+            ReplayRatioTarget.id: .double(0.48),
+            DropoutRate.id: .double(0.1),
+            LRWarmupSteps.id: .int(5),
+            KLProbeInterval.id: .int(0),
+            BatchStatsInterval.id: .int(10),
+            StepLineIntervalSec.id: .double(86_400),
+        ]
+        return try ReplayParams(TrainingParametersSnapshot.declaredDefaults(overriding: pinned))
+    }
+
+    /// A run configuration with `--enumerate-checkpoints` and `--output`
+    /// as the caller chooses, for the step-line and save-point tests.
+    private func stepLineConfig(stepLimit: Int, startModel: URL, resumeExact: Bool, out: String,
+                                enumerateCheckpoints: Bool, results: URL?) throws -> CorpusReplayConfig {
+        var cfg = config(stepLimit: stepLimit, startModel: startModel, resumeExact: resumeExact, out: out)
+        cfg.enumerateCheckpoints = enumerateCheckpoints
+        if let results {
+            cfg.output = try CliResultsOutput.preflight(url: results, overwriteAuthorized: false)
+        }
+        return cfg
+    }
+
+    /// One `stats` row of a `results.json`: its `cum_trainer_step` and
+    /// whether it carries a measured `policy_entropy` (absent or null when
+    /// the row's step computed no diagnostics).
+    private struct StatsRow {
+        let cumTrainerStep: Int
+        let hasEntropy: Bool
+    }
+
+    private func statsRows(_ url: URL) throws -> [StatsRow] {
+        let object = try JSONSerialization.jsonObject(with: try Data(contentsOf: url))
+        let top = try XCTUnwrap(object as? [String: Any], "results.json is a JSON object")
+        let rows = try XCTUnwrap(top["stats"] as? [[String: Any]], "results.json has a stats array")
+        return try rows.map { row in
+            let step = try XCTUnwrap(row["cum_trainer_step"] as? Int,
+                                     "every row of a lineage run states cum_trainer_step")
+            return StatsRow(cumTrainerStep: step, hasEntropy: row["policy_entropy"] is NSNumber)
+        }
+    }
+
+    /// The bug this guards: after an exact resume the step lines were keyed
+    /// on the segment's own step count while the trainer computed its
+    /// diagnostics on its cumulative step, so a resume at a trainer step that
+    /// is not a multiple of the diagnostics interval logged no diagnostics
+    /// on any line. The step lines are keyed on the trainer step now: the
+    /// resumed segment logs at its first step and at the trainer steps the
+    /// uninterrupted run logs at, and every line after the first carries
+    /// the diagnostics.
+    func testAResumedRunsStatsRowsCarryDiagnosticsOnEveryRowAfterTheFirst() async throws {
+        let first = try await CorpusReplayRunner.runReplay(
+            config: try stepLineConfig(stepLimit: 13, startModel: startModelURL, resumeExact: false,
+                                       out: "lines-first.safetensors", enumerateCheckpoints: false, results: nil),
+            params: try stepLineReplayParams(), abort: ReplayAbortFlag())
+        XCTAssertEqual(first.steps, 13)
+        let resultsURL = tempDir.appendingPathComponent("lines-resumed-results.json")
+        let resumed = try await CorpusReplayRunner.runReplay(
+            config: try stepLineConfig(stepLimit: 120, startModel: tempDir.appendingPathComponent("lines-first.safetensors"),
+                                       resumeExact: true, out: "lines-resumed.safetensors",
+                                       enumerateCheckpoints: false, results: resultsURL),
+            params: try stepLineReplayParams(), abort: ReplayAbortFlag())
+        XCTAssertEqual(resumed.steps, 120)
+        let rows = try statsRows(resultsURL)
+        XCTAssertEqual(rows.map(\.cumTrainerStep), [14, 50, 100],
+                       "the segment's first step, then the trainer steps every 50 through 1000")
+        for row in rows.dropFirst() {
+            XCTAssertTrue(row.hasEntropy, "the row at trainer step \(row.cumTrainerStep) carries the diagnostics")
+        }
+    }
+
+    /// Saves land on trainer-step multiples of 1000 and enumerated files are
+    /// named by the trainer step, so a resumed segment continues its run's
+    /// series under the same stem: a resume from step 990 saves at trainer
+    /// step 1000 (its tenth step) and ends at 1020, writing `-step1000` and
+    /// `-step1020`, never a `-seg<k>` name. From format v11 the header's
+    /// `training_step` is the trainer step and the segment step is the
+    /// lineage record's `segment_local_step` (mirrored flat).
+    func testAResumedRunSavesAndNamesItsCheckpointsByTrainerStep() async throws {
+        let out = "S-replay-latest.safetensors"
+        let first = try await CorpusReplayRunner.runReplay(
+            config: try stepLineConfig(stepLimit: 990, startModel: startModelURL, resumeExact: false, out: out,
+                                       enumerateCheckpoints: true, results: nil),
+            params: try stepLineReplayParams(), abort: ReplayAbortFlag())
+        XCTAssertEqual(first.steps, 990)
+        let firstFinal = tempDir.appendingPathComponent("S-replay-step990.safetensors")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstFinal.path), "the first segment's final enumerated file")
+        let resultsURL = tempDir.appendingPathComponent("names-resumed-results.json")
+        let resumed = try await CorpusReplayRunner.runReplay(
+            config: try stepLineConfig(stepLimit: 30, startModel: firstFinal, resumeExact: true, out: out,
+                                       enumerateCheckpoints: true, results: resultsURL),
+            params: try stepLineReplayParams(), abort: ReplayAbortFlag())
+        XCTAssertEqual(resumed.steps, 30)
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: tempDir.path)
+        XCTAssertFalse(names.contains { $0.contains("-seg") }, "no -seg<k> name is written (\(names.sorted()))")
+        for (trainerStep, segmentStep) in [(1000, 10), (1020, 30)] {
+            let url = tempDir.appendingPathComponent("S-replay-step\(trainerStep).safetensors")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent) is written")
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            let md = try ModelFileCatalog.headerMetadata(at: url)
+            XCTAssertEqual(md[SafetensorsModelIO.Key.formatVersion], "11", "\(url.lastPathComponent): format v11")
+            XCTAssertEqual(md[SafetensorsModelIO.Key.trainingStep], String(trainerStep),
+                           "\(url.lastPathComponent): training_step is the trainer step")
+            XCTAssertEqual(md[TrainerScheduleState.MetadataKey.completedTrainSteps], String(trainerStep),
+                           "\(url.lastPathComponent): trainer_completed_steps")
+            XCTAssertEqual(md["lineage_segment_local_step"], String(segmentStep),
+                           "\(url.lastPathComponent): the segment step's flat mirror")
+            let file = try CheckpointManager.loadModelFile(at: url)
+            let record = try XCTUnwrap(file.lineageParent.lineage.record, "\(url.lastPathComponent) has a lineage record")
+            XCTAssertEqual(record.steps.segmentLocalStep, segmentStep, "\(url.lastPathComponent): segment_local_step")
+            XCTAssertEqual(record.steps.cumTrainerStep, trainerStep, "\(url.lastPathComponent): cum_trainer_step")
+            XCTAssertTrue(record.run.exactResume, "\(url.lastPathComponent): an exact resume")
+            XCTAssertEqual(record.run.notExactItems, [], "\(url.lastPathComponent): no resume gaps")
+        }
+        let rows = try statsRows(resultsURL)
+        let rowAt1000 = try XCTUnwrap(rows.first { $0.cumTrainerStep == 1000 }, "a stats row at trainer step 1000")
+        XCTAssertTrue(rowAt1000.hasEntropy, "the row at trainer step 1000 carries the diagnostics")
+    }
 }

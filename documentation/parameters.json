@@ -78,6 +78,7 @@
   "session_save_include_replay_buffer" : false,
   "signed_advantage_complement_ce" : true,
   "sqrt_batch_scaling_lr" : true,
+  "step_line_interval_sec" : 180,
   "target_sampled_game_length_plies" : 999,
   "training_batch_size" : 4096,
   "training_step_delay_ms" : 0,

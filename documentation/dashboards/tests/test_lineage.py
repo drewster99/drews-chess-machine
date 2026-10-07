@@ -134,6 +134,35 @@ class SwiftMirrorTests(unittest.TestCase):
                          dcm_lineage.SUPPORTED_SCHEMA)
         self.assertEqual(re.search(r'static let metadataKey = "([^"]+)"', rec).group(1), dcm_lineage.METADATA_KEY)
 
+    def test_step_reading_constants_match_the_app(self):
+        with open(os.path.join(SWIFT, "Network", "ArchitectureFormat.swift")) as handle:
+            fmt = handle.read()
+        with open(os.path.join(SWIFT, "Persistence", "ModelCheckpointFile.swift")) as handle:
+            meta = handle.read()
+        with open(os.path.join(SWIFT, "Persistence", "SessionSaveTrigger.swift")) as handle:
+            trigger = handle.read()
+        with open(os.path.join(SWIFT, "Persistence", "ModelFileStepReading.swift")) as handle:
+            reading = handle.read()
+        self.assertEqual(int(re.search(r"static let trainingStepIsTrainerStepFromVersion = (\d+)", fmt).group(1)),
+                         dcm_lineage.TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION)
+        import dcm_arch
+        self.assertEqual(int(re.search(r"static let currentVersion = (\d+)", fmt).group(1)),
+                         dcm_arch.CURRENT_FORMAT_VERSION)
+        replay = re.search(r'static let corpusReplayCreator = "([^"]+)"', meta).group(1)
+        vsuci = re.search(r'static let trainVsUciCreator = "([^"]+)"', meta).group(1)
+        self.assertEqual({replay, vsuci}, dcm_lineage.SEGMENT_STEP_CREATORS)
+        gui_literal = re.search(r"static let guiCreators: Set<String> = \[([^\]]+)\]", meta).group(1)
+        promotion = re.search(r'static let promotionDiskTag = "([^"]+)"', trigger).group(1)
+        gui = set(re.findall(r'"([^"]+)"', gui_literal))
+        if "SessionSaveTrigger.promotionDiskTag" in gui_literal:
+            gui.add(promotion)
+        self.assertEqual(gui, dcm_lineage.GUI_CREATORS)
+        raw_values = dict(re.findall(r'case (\w+) = "([^"]+)"', reading))
+        self.assertEqual(raw_values, {"trainerStep": dcm_lineage.BASIS_TRAINER_STEP,
+                                      "legacySegmentStep": dcm_lineage.BASIS_LEGACY_SEGMENT_STEP,
+                                      "legacyGUITrainerStep": dcm_lineage.BASIS_LEGACY_GUI_TRAINER_STEP,
+                                      "legacyUnknownWriter": dcm_lineage.BASIS_LEGACY_UNKNOWN_WRITER})
+
     def test_session_trainer_filename_matches_the_app(self):
         with open(os.path.join(SWIFT, "Persistence", "SessionCheckpointFile.swift")) as handle:
             layout = handle.read()
@@ -596,6 +625,89 @@ class TrackerCellTests(unittest.TestCase):
         self.assertEqual(self.replay.enum_specs(cfg), [(0, "seg-a-replay-step*.safetensors")])
 
 
+def v11_header(local_step=487, cum=2000, creator="replay", stated=None, clock=True, model_id="20261006-2-TTTT"):
+    """A format v11 corpus-replay header of segment 1 (seg-b) `local_step` steps in, at
+    trainer step `cum`: `training_step` is the trainer step (unless `stated` says
+    otherwise) and the record's `segment_local_step` the segment step."""
+    record = record_for(1, 500)
+    record["steps"] = {"cum_trainer_step": cum, "segment_start_trainer_step": cum - local_step,
+                       "segment_local_step": local_step}
+    header = {"dcm_format_version": "11", "model_id": model_id, "creator": creator,
+              "training_step": str(cum if stated is None else stated),
+              "dcm_lineage": json.dumps(record, sort_keys=True)}
+    if clock:
+        header["trainer_completed_steps"] = str(cum)
+    return header
+
+
+class StepReadingTests(unittest.TestCase):
+    """`dcm_lineage.step_reading`, the mirror of the app's ModelFileStepReading: from format
+    v11 `training_step` is the trainer step; before v11 it is read by the file's `creator`."""
+
+    def test_a_v11_header_states_the_trainer_step_with_the_segment_step_as_the_sidecar(self):
+        reading = dcm_lineage.step_reading(v11_header(), "v11")
+        self.assertEqual((reading.basis, reading.stated_training_step, reading.trainer_step, reading.segment_step),
+                         (dcm_lineage.BASIS_TRAINER_STEP, 2000, 2000, 487))
+        self.assertIsNone(reading.legacy_note)
+
+    def test_a_v11_trainer_header_whose_step_is_not_its_clock_is_refused(self):
+        with self.assertRaises(dcm_lineage.LineageError):
+            dcm_lineage.step_reading(v11_header(stated=487), "bad")
+        header = v11_header()
+        del header["training_step"]
+        with self.assertRaises(dcm_lineage.LineageError):
+            dcm_lineage.step_reading(header, "bad")
+
+    def test_a_version_newer_than_the_tools_is_refused(self):
+        import dcm_arch
+        header = v11_header()
+        header["dcm_format_version"] = str(dcm_arch.CURRENT_FORMAT_VERSION + 1)
+        with self.assertRaises(dcm_lineage.LineageError):
+            dcm_lineage.step_reading(header, "future")
+
+    def test_a_pre_v11_replay_header_reads_its_step_as_the_segment_step(self):
+        header = v11_header(stated=487)
+        header["dcm_format_version"] = "10"
+        reading = dcm_lineage.step_reading(header, "v10")
+        self.assertEqual((reading.basis, reading.trainer_step, reading.segment_step),
+                         (dcm_lineage.BASIS_LEGACY_SEGMENT_STEP, 2000, 487))
+        self.assertIn("training_step 487 is the writing segment's step", reading.legacy_note)
+        self.assertIn("trainer step 2000 (trainer_completed_steps)", reading.legacy_note)
+
+    def test_a_pre_v11_plain_replay_header_takes_the_records_total_and_a_schedule_less_v3_one_none(self):
+        header = v11_header(stated=487, clock=False)
+        header["dcm_format_version"] = "9"
+        reading = dcm_lineage.step_reading(header, "v9")
+        self.assertEqual((reading.trainer_step, reading.segment_step), (2000, 487))
+        v3 = {"model_id": "m", "creator": "replay", "training_step": "41000"}
+        reading = dcm_lineage.step_reading(v3, "v3")
+        self.assertIsNone(reading.trainer_step)
+        self.assertEqual((reading.segment_step, reading.trainer_step_or_stated_step), (41000, 41000))
+
+    def test_the_creator_names_the_writer_not_the_records_path_kind(self):
+        header = v11_header(creator="manual", clock=False)
+        header["dcm_format_version"] = "8"
+        self.assertEqual(json.loads(header["dcm_lineage"])["invocation"]["path_kind"], "replay")
+        reading = dcm_lineage.step_reading(header, "v8 GUI champion")
+        self.assertEqual((reading.basis, reading.trainer_step), (dcm_lineage.BASIS_LEGACY_GUI_TRAINER_STEP, 2000))
+
+    def test_a_creator_less_pre_v11_header_without_a_record_gives_its_step_as_both(self):
+        reading = dcm_lineage.step_reading({"dcm_format_version": "6", "model_id": "m", "training_step": "40"}, "v6")
+        self.assertEqual((reading.basis, reading.trainer_step, reading.segment_step),
+                         (dcm_lineage.BASIS_LEGACY_UNKNOWN_WRITER, 40, 40))
+        self.assertIn("was stated by writer ''", reading.legacy_note)
+
+    def test_a_header_stating_no_step_is_never_flagged(self):
+        reading = dcm_lineage.step_reading({"dcm_format_version": "10", "model_id": "m", "creator": "new-model"},
+                                           "seed")
+        self.assertIsNone(reading.stated_training_step)
+        self.assertIsNone(reading.legacy_note)
+
+    def test_a_malformed_step_is_refused(self):
+        with self.assertRaises(dcm_lineage.LineageError):
+            dcm_lineage.step_reading({"model_id": "m", "training_step": " 40"}, "bad")
+
+
 class InventoryTests(unittest.TestCase):
     def test_inventory_reports_lineage_and_unrecorded(self):
         directory = tempfile.mkdtemp()
@@ -608,6 +720,8 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual((old["lineage"], old["replay_epoch"], old["replay_next_game_index"]),
                          ("unrecorded (format v6)", "1", "42"))
         new = entries["seg-b-replay-step1000.safetensors"]
+        self.assertEqual((new["step_basis"], new["trainer_step"], new["segment_step"]),
+                         (dcm_lineage.BASIS_LEGACY_UNKNOWN_WRITER, 1000, 1000))
         self.assertEqual(new["lineage"]["lineage_run_id"], "run-1")
         self.assertEqual(new["lineage"]["segment_index"], 1)
         self.assertEqual(new["lineage"]["cum_trainer_step"], 2000)

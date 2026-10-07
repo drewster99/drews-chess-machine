@@ -181,7 +181,10 @@ struct LineageRecord: Codable, Equatable, Sendable {
         /// The trainer clock when this segment began — what the dashboards
         /// used to enter by hand as `cumstep_base`.
         let segmentStartTrainerStep: Int?
-        /// Steps this segment trained (the CLI files' `training_step`).
+        /// Steps this segment trained — the sidecar to the file's
+        /// `training_step`, which from format v11 is the trainer step (on CLI
+        /// files before v11 `training_step` held this value). Mirrored flat as
+        /// `lineage_segment_local_step`.
         let segmentLocalStep: Int
 
         enum CodingKeys: String, CodingKey {
@@ -883,8 +886,13 @@ struct LineageRecord: Codable, Equatable, Sendable {
         static let cumGamesFed = "cum_games_fed"
         static let cumTrainStepSec = "cum_train_step_sec"
         static let gitDirty = "git_dirty"
+        /// The segment step (`steps.segment_local_step`), so a person reading
+        /// a header sees both numbers — `training_step` (the trainer step)
+        /// and this — without opening the JSON record.
+        static let segmentLocalStep = "lineage_segment_local_step"
         static let derivationHistory = ModelDerivation.derivationHistoryKey
-        static let all = [lineageRunID, segmentIndex, cumTrainerStep, cumGamesFed, cumTrainStepSec, gitDirty, derivationHistory]
+        static let all = [lineageRunID, segmentIndex, cumTrainerStep, cumGamesFed, cumTrainStepSec, gitDirty,
+                          segmentLocalStep, derivationHistory]
         /// Written for a total no predecessor recorded.
         static let unrecorded = "unrecorded"
     }
@@ -936,6 +944,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
             MirrorKey.cumGamesFed: fed.cumGames.map(String.init) ?? MirrorKey.unrecorded,
             MirrorKey.cumTrainStepSec: time.cumTrainStepSec.map { String($0) } ?? MirrorKey.unrecorded,
             MirrorKey.gitDirty: build.gitDirty ? "true" : "false",
+            MirrorKey.segmentLocalStep: String(steps.segmentLocalStep),
         ]
         if !derivationHistory.isEmpty {
             entries[MirrorKey.derivationHistory] = try Self.derivationHistoryJSON(derivationHistory)

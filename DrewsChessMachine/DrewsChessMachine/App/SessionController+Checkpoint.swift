@@ -538,9 +538,14 @@ extension SessionController {
 
             // Final write + verify on a detached task so UI stays
             // responsive during the scratch-network build (sub-second).
+            // The trainer file states its own snapshot's clock (format v11:
+            // `training_step` is the trainer step, and on a trainer-state
+            // file it must equal the schedule's clock). The stats box's count
+            // at the cut is the same number at every cut
+            // (`SessionSaveConsistentCutTests`); the writer reads one source.
             let trainerMetadata = ModelCheckpointMetadata.trainerFile(
                 creator: diskTag,
-                trainingStep: trainingStep,
+                trainingStep: trainerSnapshot.schedule.completedTrainSteps,
                 parentModelID: championID,
                 notes: "Trainer lineage at session checkpoint (\(diskTag))",
                 schedule: trainerSnapshot.schedule,
@@ -1266,6 +1271,7 @@ extension SessionController {
             legalMassCollapseNoImprovementProbes: params.legalMassCollapseNoImprovementProbes,
             batchStatsInterval: params.batchStatsInterval,
             klProbeInterval: params.klProbeInterval,
+            stepLineIntervalSec: params.stepLineIntervalSec,
             periodicAutosaveIntervalSec: params.periodicAutosaveIntervalSec,
             maxPeriodicAutosavesKept: params.maxPeriodicAutosavesKept,
             automaticSavePruningEnabled: params.automaticSavePruningEnabled,
