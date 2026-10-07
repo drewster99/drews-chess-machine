@@ -9,6 +9,17 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 — Lichess bot challenge log P7: documentation
+
+- `LICHESS_BOT_CHALLENGE_LOG_PLAN.md`: status (P1–P7 implemented) and implementation notes §12–§18; `LICHESS_BOT_PLAN.md` §10.1 layout gains `Challenges/`; the ROADMAP line is marked done (nothing removed).
+- Left to the owner (needs the running app or lichess.org): the plan's §6.5–§6.7 live, read-only-proof and crash checks, and §6.9's load time.
+
+## 2026-10-06 — Lichess bot challenge log P5: origins and the challenge log in the UI
+
+- Every game shows how it began: an Origin column with a filter and per-category counts in All Games, a glyph in the Recent games list and on tiles, the label in the Live picker, and an Origin row in the game detail. Glyphs and wording live in `LichessBotGameOriginStyle` / `LichessBotChallengeLogStyle`.
+- A Challenge Log window (from the outcomes card) lists every challenge, live and rebuilt, with filters (date, direction, state, sender, rebuilt rows, opponent search), its load and rebuild status, and a Rebuild button.
+- New tests: `LichessBotChallengeLogRowTests`, `LichessBotGameOriginStyleTests`, `LichessBotChallengeLogViewRenderTests`, `LichessBotGameOriginViewRenderTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §17.
+
 ## 2026-10-06 — Lichess bot challenge log P6: the outcome log is a fold of the challenge log
 
 - `LichessBotChallengeOutcomeLog.fold`: the Overview's credit and outcome counts come from the challenge log's last day (plus rows rebuilt from the protocol log for the time before the live log began), refolded on every change. `challenge-outcomes.json` is no longer read or written; an existing file stays on disk as it was, and `LichessBotChallengeOutcomeLog.load` still reads it.

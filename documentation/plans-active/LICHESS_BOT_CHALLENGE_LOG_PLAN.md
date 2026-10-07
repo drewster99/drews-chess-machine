@@ -1,6 +1,6 @@
 # Lichess bot: a durable challenge log, and how each game started
 
-Status (2026-10-06): **P1 implemented** (`FileSafety.openForAppending`, the locked JSONL append, the journal and protocol log on it, the data-directory paths, the challenge-log entry schema, writer and reader, and `LichessBotChallengeLedger`; §12). Nothing calls the writer yet. P2 onward start after `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` has landed (§7, "Sequencing"). Owner decisions: all but OD-11 decided (§10). Reviewed 2026-10-06 against the code and the real bot data; the fixes are listed in §11.
+Status (2026-10-07): **P1–P7 implemented** on branch `worktree-agent-a1e4e0cda94c5842a`, merged with `main` at every phase boundary (the team lead's directive of 2026-10-06 overrode §7's sequencing, so P2–P7 did not wait for follow-lineage). Implementation notes per phase: P1 §12, P2 §13, P3 §14, P4 §15, P6 §16, P5 §17, P7 §18. Owner decisions: all decided; OD-11's ROADMAP line was added by the team lead (`fdd0855c`) and is marked done at P7 (§10). Reviewed 2026-10-06 against the code and the real bot data; the fixes are listed in §11.
 - Every `file:line` was checked against `main` at `57af1480`.
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`) or `documentation/`.
 - Numbers about the bot's data were measured on this Mac on 2026-10-06, read-only, from `~/Library/Application Support/DrewsChessMachine/LichessBot/`. Sizes are base-2.
@@ -831,6 +831,8 @@ Each phase: all work → recheck → build → its tests → commit (`git add` o
 | OD-13 | Record the matchmaking trigger (automatic pass vs. Fill Open Slots) on live sends? | **Yes.** Cheap and otherwise unknowable; reconstruction can't recover it. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
 | OD-14 | Fix the tests' session-log pollution (§1.8, §8) in a separate small change? | **Yes, separately:** give tests a temporary log folder. Not part of this plan. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
 
+OD-11 update (2026-10-06): the team lead added the ROADMAP line in `fdd0855c`; P7 marks it done, removing nothing.
+
 The owner delegated these on 2026-10-06 ("solve the problem yourself"). Also decided then (team lead, 2026-10-06, owner delegation): the wording **Withdrawn (reason not recorded)** for the 6 historical outgoing cancels with no withdrawal line (§11, open points) is accepted.
 
 ---
@@ -1071,6 +1073,56 @@ Decision:
 Tests (new files; no existing test changed):
 - `LichessBotChallengeOutcomeFoldTests` (5): each state mapped; not-created attempts and what stays out; the rolling day; stable ids across refolds; rebuilt rows only before the live log, with live rows winning on a shared id.
 - `LichessBotOutcomeLogFromChallengeLogTests` (1, fake Lichess): the outcome log follows a send and a lowercased-key decline (`nobot` → `.known(.noBot)`), and an old `challenge-outcomes.json` is left byte for byte.
+
+## 17. Implementation notes: P5 UI (2026-10-06)
+
+Built by a helper agent on its own branch (`de1327dc`, from P4) and merged in. No controller lines changed.
+
+Implemented:
+- `UI/LichessBotGameOriginStyle` and `UI/LichessBotChallengeLogStyle`: every glyph and every piece of wording in one place.
+- Building blocks: `LichessBotGameOriginGlyph`, `LichessBotGameOriginLabel`, `LichessBotGameOriginDetailLine`.
+- **All Games window:**
+  - a sortable Origin column after Color;
+  - an Origin filter (`LichessBotAllGamesOriginFilterPicker`);
+  - the filtered and sorted rows and the summary kept in `@State` and refreshed on change;
+  - per-category counts in the summary line.
+- **Elsewhere:**
+  - the Recent games list has a glyph column;
+  - the Live picker's title gets " · <short label>" / " · origin not yet known";
+  - a tile shows the glyph beside the opponent;
+  - the game detail has an Origin row;
+  - the outcomes card has a "Challenge Log…" button.
+- **Challenge Log window** (`LichessBotChallengeLogWindow`, with its view, filter bar, table, footer, and opponent and game cells):
+  - the pure row model is `Stats/LichessBotChallengeLogRow.swift`, plus `LichessBotChallengeLogFilter` and `LichessBotChallengeLogCounts`;
+  - live rows win on a shared id;
+  - every "not recorded" is its own case.
+- The recorder gains `loadedFiles` (files, lines, bytes, skipped newer lines at load) for the footer, and `LichessBotLiveGame` gains a computed `originDisplay`.
+
+Decisions (the helper's):
+- **Style file:** `LichessBotGameOriginStyle` has its own file, not `LichessBotOverviewView.swift` where `LichessBotStatusStyle` lives.
+- **Unknown origins:** the long label is the reason ("Unknown — played before origins were recorded; …").
+- **"Not yet known":** a live game with no origin yet has its own glyph ("ellipsis"), distinct from unknown's "?".
+- **`@State` updates from `onChange`** go through `Task { @MainActor in }`, the bot UI's existing pattern.
+- **Challenge Log defaults:** the date range defaults to All, so rebuilt rows show with "Include reconstructed" on.
+- **Credits:** "–" means "costs DCM no credits" for incoming, and "not recorded" for an echo or rebuilt row.
+- **Footer:** worded "Challenge log at load: …".
+- **Window sizes:** All Games 1080 wide (minimum 820); Challenge Log 1500 (minimum 1000).
+- **Ledger on open:** the window's `.task` calls `loadChallengeLog()`, which loads only while nil.
+- **Long Table bodies:** the two `Table` bodies run past 20 lines, because a `TableColumn` builder can't be split into child views; each cell is short or its own view.
+
+Tests (new files; no existing test changed): `LichessBotChallengeLogRowTests` (18), `LichessBotGameOriginStyleTests` (17), `LichessBotChallengeLogViewRenderTests` (5), `LichessBotGameOriginViewRenderTests` (4). Render data: empty, live-only, rebuilt-only and mixed, every state kind and every category.
+
+## 18. Implementation notes: P7 documentation (2026-10-07)
+
+- `LICHESS_BOT_PLAN.md` §10.1's layout gains the two `Challenges/` rows; the rest of its text is kept.
+- `CHANGELOG.md` has one entry per phase.
+- This file's status, and §12–§18.
+- ROADMAP.md: the line the team lead added (`fdd0855c`) is marked done, with nothing removed (OD-11).
+- **Validation done on this Mac:**
+  - §6.3, read-only: Appendix B's numbers reproduced exactly on the plan's inputs (§15).
+  - Idempotence, in tests: a rerun writes nothing and leaves the modification time unchanged.
+  - Nothing written under the real data folder: every test uses temporary folders, and the real-data test only reads.
+- **Not done here, and left to the owner** (they need the running app or lichess.org): §6.2 builds through drews-xcode-mcp (this branch was built with xcodebuild, as the team lead directed), §6.5's read-only proof on the real data folder, the §6.6 live checks, the §6.7 crash check, and §6.9's load cost in the CHANGELOG. `[LICHESS-BOT] challenge log loaded: … ms=…` is logged on every load for §6.9.
 
 ## Appendix A. Measured data (2026-10-06, read-only)
 

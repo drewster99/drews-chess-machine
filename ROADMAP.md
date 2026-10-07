@@ -39,7 +39,7 @@ original rationale is not lost.
     - the opponent card (§14.3b)
     - chat-panel operator input and move delay/hold (§14.3c)
   - **Lichess bot: follow a model lineage on disk, and build the model before going online (planned 2026-10-06).** Plan: documentation/plans-active/LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md.
-  - **Lichess bot: durable challenge log, per-game origin (matchmaking / manual / accepted incoming) in the UI, back-filled from the protocol log (planned 2026-10-06).** Plan: documentation/plans-active/LICHESS_BOT_CHALLENGE_LOG_PLAN.md.
+  - **Lichess bot: durable challenge log, per-game origin (matchmaking / manual / accepted incoming) in the UI, back-filled from the protocol log (planned 2026-10-06).** Plan: documentation/plans-active/LICHESS_BOT_CHALLENGE_LOG_PLAN.md. **Done 2026-10-07** (P1–P7; implementation notes in the plan's §12–§18).
   - **Lichess bot: Record card statistics (periods, time controls, per-model performance, the network's self-assessment, endings, opponent strength) (planned 2026-10-06).** Plan: documentation/plans-active/LICHESS_BOT_RECORD_STATS_PLAN.md.
   - **After that:** Phase 6 (Games, Stats, Events views) and Phase 7 (hardening and soak).
 
