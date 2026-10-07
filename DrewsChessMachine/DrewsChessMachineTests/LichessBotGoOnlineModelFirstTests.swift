@@ -87,16 +87,25 @@ final class LichessBotGoOnlineModelFirstTests: XCTestCase {
 
     /// A controller over the installation, not yet online; shut down after
     /// the test.
-    private func makeController(_ installation: Installation, transport: any LichessBotTransport, modelProvider: any LichessBotModelProvider) -> LichessBotController {
+    private func makeController(
+        _ installation: Installation,
+        transport: any LichessBotTransport,
+        modelProvider: any LichessBotModelProvider,
+        modelFileLoader: LichessBotModelFileLoader = .live,
+        goingOnlineStepBegan: @escaping @MainActor @Sendable (LichessBotGoingOnlineStep) async -> Void = { _ in }
+    ) -> LichessBotController {
         let token = LichessBotResumeFakeLichess.token
+        var services = LichessBotControllerServices(
+            makeTransport: { transport },
+            readToken: { _ in token }
+        )
+        services.modelFileLoader = modelFileLoader
+        services.goingOnlineStepBegan = goingOnlineStepBegan
         let controller = LichessBotController(
             modelProvider: modelProvider,
             defaults: installation.defaults,
             dataDirectory: installation.directory,
-            services: LichessBotControllerServices(
-                makeTransport: { transport },
-                readToken: { _ in token }
-            ),
+            services: services,
             finishedGameHold: LichessBotController.finishedGameHold
         )
         addTeardownBlock { @MainActor in
@@ -216,24 +225,21 @@ final class LichessBotGoOnlineModelFirstTests: XCTestCase {
         let installation = try makeInstallation()
         let provider = try await LichessBotHoldableModelProvider.make()
         let lichess = LichessBotModelFirstFakeLichess(snapshotCount: { provider.championSnapshots.value })
-        let controller = makeController(installation, transport: lichess, modelProvider: provider)
+        // Hold going online at its read of today's games (after the model).
+        let todaysGamesHold = LichessBotTestLatch()
+        let todaysGamesHeld = SyncBox(false)
+        let controller = makeController(installation, transport: lichess, modelProvider: provider, goingOnlineStepBegan: { step in
+            guard step == .readingTodaysGames else { return }
+            todaysGamesHeld.value = true
+            await todaysGamesHold.wait()
+        })
         let goingOnline = try await goOnlineHeld(controller, provider: provider)
-
-        // Hold the journal queue, so going online stops at its read of the
-        // leftover journals (seeding today's counts), after the model.
-        let journalHold = DispatchSemaphore(value: 0)
-        let journalHeld = SyncBox(false)
-        controller.journalQueue.enqueue("test: hold the journal queue") {
-            journalHeld.value = true
-            journalHold.wait()
-        }
-        try await waitUntil("the journal queue is held") { journalHeld.value }
         provider.releaseSnapshots()
-        try await waitUntil("the model is prepared") { controller.goingOnlineStep == .startingSession }
+        try await waitUntil("the model is prepared") { todaysGamesHeld.value }
 
         await controller.goOffline()
         XCTAssertEqual(controller.connection, .connecting)
-        journalHold.signal()
+        todaysGamesHold.open()
         await goingOnline.value
         XCTAssertEqual(controller.connection, .offline)
         XCTAssertFalse(controller.isRunning)
@@ -349,10 +355,17 @@ final class LichessBotGoOnlineModelFirstTests: XCTestCase {
             settings.model.filePath = file.path
         }
         let fileProvider = try await LichessBotHoldableModelProvider.make()
-        let fileLichess = LichessBotModelFirstFakeLichess(snapshotCount: { 0 })
-        let fileController = makeController(fileInstallation, transport: fileLichess, modelProvider: fileProvider)
+        let fileReads = SyncBox(0)
+        let countingLoader = LichessBotModelFileLoader(readBytes: { url in
+            fileReads.modify { $0 += 1 }
+            return try LichessBotModelFileLoader.live.readBytes(url)
+        })
+        let fileLichess = LichessBotModelFirstFakeLichess(snapshotCount: { fileReads.value })
+        let fileController = makeController(fileInstallation, transport: fileLichess, modelProvider: fileProvider, modelFileLoader: countingLoader)
         await fileController.goOnline()
         XCTAssertEqual(fileController.connection, .online)
+        try await waitUntil("the event stream is requested (file)") { fileLichess.eventStreamRequestCount > 0 }
+        XCTAssertEqual(fileLichess.snapshotCountsAtEventStreamRequests.value.first, 1, "file: read (and its generation built) before the event stream")
         try await waitUntil("the poll publishes the file's generation") { fileController.generation != nil }
         XCTAssertEqual(fileController.generation?.sourceKind, .file)
         XCTAssertEqual(fileController.generation?.filePath, file.path)

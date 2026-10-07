@@ -77,7 +77,7 @@ final class LichessBotReadyBeforePlayManagerTests: XCTestCase {
         let frozenTrainer = trainer
         let slots = h.slots
         let switching = Task {
-            try await slots.refreshIfDue(for: frozenTrainer)
+            _ = try await slots.refreshIfDue(for: frozenTrainer)
         }
         try await waitUntil("the switch's snapshot is held") { provider.snapshotsHeld.value == 1 }
         return switching
