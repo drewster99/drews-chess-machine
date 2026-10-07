@@ -392,5 +392,25 @@ window.DCM_EXPERIMENTS = [
    "E-0020"
   ],
   "supersededBy": null
+ },
+ {
+  "id": "E-0022",
+  "date": "2026-10-05",
+  "file": "E-0022_2026-10-05_leaky-everywhere-lr-cycle.html",
+  "title": "Leaky ReLU at every activation on B's LR cycle (arm B-leakyall)",
+  "status": "complete",
+  "tags": [
+   "leaky-relu",
+   "activations",
+   "lr-schedule",
+   "basic24"
+  ],
+  "takeaway": "Leaky ReLU at every activation kept the value head healthy (value.bn 0 of 16 parked vs B's 6, no zero-velocity value FC1 unit) but did not help the tower or the policy: blocks.2.bn1 still drifted (4 channels mostly off, worst β/|γ| −2.70 vs B −2.53) and low-LR probes averaged −12.5 ± 13.0 pElo vs ReLU B (best 1629.4 vs 1632.0 at 38k), so leaky everywhere adds nothing over a leaky value head.",
+  "related": [
+   "E-0017",
+   "E-0019",
+   "E-0021"
+  ],
+  "supersededBy": null
  }
 ];
