@@ -8,7 +8,6 @@ conversation.
 
 | started | experiment | ends (est.) |
 |---|---|---|
-| 2026-10-06 17:00 | LR arm B-silu-clip1: exact resume of B-silu from its step-18000 checkpoint with `grad_clip_max_norm` 1.0 (B-silu: 15), to trainer step 40k | shares the GPU with two other runs |
 
 
 ## Next (in order)
@@ -32,6 +31,10 @@ conversation.
 
 ## Finished
 
+- 2026-10-06 17:00 → 2026-10-07 02:45 — LR arm B-silu-clip1 (`20261005-lr-schedule-ab/`, E-0020): exact resume of B-silu
+  from 18k with `grad_clip_max_norm` 1.0, to 40k (clean finish). Never blew up (the cap-15 control reproduced the 20,600 blowup
+  bit for bit); low-LR probes −5.3 ± 6.7 pElo vs ReLU B, best 1639.2 at 38k (B 1632.0); 0 parked / 0 mostly-off BN channels at
+  40k (B: value.bn 6 parked). Largest logged gNorm 0.462.
 - 2026-10-05 23:44 → 2026-10-07 00:12 — LR arm B-leakyall (`20261005-lr-schedule-ab/`, E-0022): B with leaky ReLU at every
   activation, to 40k (clean finish). Value head kept every channel (`value.bn` 0 of 16 parked vs B's 6; value FC1 0 of 128 at
   zero velocity vs 27); tower `blocks.2.bn1` still drifted (4 mostly off, worst β/|γ| −2.70 vs B −2.53); policy probes −12.5 ± 13.0

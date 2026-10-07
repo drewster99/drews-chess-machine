@@ -359,7 +359,7 @@ grep -A16 'LAYER-HEALTH\] checkpoint replay-final' ~/Library/Logs/DrewsChessMach
 - The logged gNorm (every 50 steps) never exceeded 0.44 in clip1 and showed nothing unusual before 20,600 in B-silu.
   The precursor spike in 19,751–19,799 is invisible at this logging cadence (see the alarms plan's per-window max).
 
-### Gradient-cap experiment: results (B-silu-ctl15 finished 2026-10-06 21:57; B-silu-clip1 still running; E-0020)
+### Gradient-cap experiment: results (B-silu-ctl15 finished 2026-10-06 21:57; B-silu-clip1 finished 2026-10-07 02:45; E-0020)
 
 - **B-silu-ctl15 ended** by owner decision: run to its 22,000 probe and stop if it still matched B-silu. It matched, and the
   watcher sent SIGINT at ~21:57. Clean abort save at trainer step 22,030 (`20261006-lrBsilu-ctl15-replay-latest`, enumerated copy
@@ -421,7 +421,65 @@ B-silu at 22,000; at its 22,030 abort save, value.bn has 1 more channel mostly o
   - whether a looser cap (2 or 5) also prevents it;
   - whether the cap changes the long-run result;
   - more than one seed or one start state.
-- **To add when clip1 ends at 40,000:** its full probe table, the cycle-peak behaviour at 30–31k, the final checkpoint layer health, and a comparison with B and B-silu at 40k.
+- **clip1 finished** at trainer step 40,000 on its own at 02:45 on 2026-10-07: `[REPLAY] saved trainer model (final) step=22000
+  trainerStep=40000`, `[REPLAY] done: steps=22000`, rc=0 (chain.log). Largest logged gNorm over the whole run: 0.462 at
+  trainer step 21,150; no logged value exceeds the 1.0 cap from 18,050 to 40,000.
+
+#### clip1 to 40,000 (added 2026-10-07)
+
+| trainer step | B's LR | B (ReLU, cap 15) | B-silu (cap 15) | ctl15 (cap 15) | clip1 (cap 1.0) | clip1 NLL | clip1 − B |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 19,000 | 0.0907 | 1558.5 | 1571.9 | 1571.9 | 1571.9 | 2.0859 | +13.3 |
+| 20,000 | 0.508 | 1471.3 | 1390.2 | 1390.2 | 1442.5 | 2.2475 | −28.7 |
+| 21,000 | 0.982 | 1332.5 | 457.4 | 457.4 | 1386.6 | 2.3419 | +54.0 |
+| 22,000 | 0.508 | 1372.2 | 833.8 | 833.8 | 1412.8 | 2.3677 | +40.6 |
+| 23,000 | 0.0904 | 1573.4 | 927.2 | | 1567.8 | 2.1558 | −5.6 |
+| 24,000 | 0.0107 | 1597.5 | 951.9 | | 1597.5 | 2.1158 | +0.0 |
+| 25,000 | 0.00191 | 1604.7 | 953.5 | | 1596.5 | 2.1193 | −8.2 |
+| 26,000 | 0.000989 | 1609.4 | 963.3 | | 1597.5 | 2.1141 | −11.8 |
+| 27,000 | 0.00191 | 1603.7 | 968.7 | | 1595.0 | 2.1119 | −8.7 |
+| 28,000 | 0.0107 | 1598.6 | 960.6 | | 1600.6 | 2.1072 | +2.1 |
+| 29,000 | 0.09 | 1596.0 | 977.9 | | 1589.8 | 2.1669 | −6.2 |
+| 30,000 | 0.504 | 1504.6 | 773.9 | | 1499.0 | 2.2147 | −5.6 |
+| 31,000 | 0.973 | 1372.7 | 1013.4 | | 1336.1 | 2.4305 | −36.5 |
+| 32,000 | 0.503 | 1431.3 | 1048.5 | | 1442.5 | 2.2687 | +11.3 |
+| 33,000 | 0.0897 | 1578.5 | 1216.4 | | 1572.9 | 2.1500 | −5.6 |
+| 34,000 | 0.0107 | 1614.0 | 1230.4 | | 1601.7 | 2.0968 | −12.3 |
+| 35,000 | 0.0019 | 1628.4 | 1251.6 | | 1620.1 | 2.0785 | −8.2 |
+| 36,000 | 0.000984 | 1620.7 | 1250.0 | | 1618.6 | 2.0855 | −2.1 |
+| 37,000 | 0.0019 | 1627.8 | | | 1617.1 | 2.0796 | −10.8 |
+| 38,000 | 0.0106 | 1632.0 | | | 1639.2 | 2.0746 | +7.2 |
+| 39,000 | 0.0893 | 1583.7 | | | 1600.1 | 2.1212 | +16.4 |
+| 40,000 | 0.5 | 1507.7 | | | 1475.4 | 2.2313 | −32.3 |
+
+(B-silu was stopped at 36,066 by the owner, E-0021; its abort-checkpoint probe was 1247.4. ctl15 stopped at 22,030.)
+
+- **Did clip1 end up matching B?** Yes, within noise at low LR. Over the ten low-LR probes (24–28k and 34–38k) clip1 − B
+  averages −5.3 pElo (SD 6.7); its best probe is 1639.2 (NLL 2.0746) at 38,000 against B's best 1632.0 at 38,000. It passed
+  the second LR peak (31k, LR 0.973) with no blowup: 1336.1 against B's 1372.7. At 40,000 (LR 0.5) it is 1475.4 against B's
+  1507.7, the usual high-LR dip.
+- **End-of-run layer health at 40,000** (`bn_liveness.py` per site; checkpoint `20261006-lrBsilu-clip1-replay-seg1-step22000`
+  and B's `20261005-lrB-cyc1-r1-replay-seg1-step4000`). Cells: parked / mostly off / lowest pass-through.
+
+| site | clip1 (act) | B (relu) |
+|---|---|---|
+| blocks.0.bn1 | 0 / 0 / 0.2621 (silu) | 0 / 0 / 0.1190 |
+| blocks.0.bn2 | 0 / 0 / 0.1667 (silu) | 0 / 0 / 0.0542 |
+| blocks.1.bn1 | 0 / 0 / 0.1422 (silu) | 0 / 0 / 0.0551 |
+| blocks.1.bn2 | 0 / 0 / 0.1180 (silu) | 0 / 0 / 0.0275 |
+| blocks.2.bn1 | 0 / 0 / 0.0474 (silu) | 0 / 5 / 0.0056 |
+| blocks.2.bn2 | 0 / 0 / 0.1113 (silu) | 0 / 0 / 0.0231 |
+| tower_final_bn | 0 / 0 / 0.2858 (silu) | 0 / 0 / 0.2338 |
+| policy.pre_bn | 0 / 0 / 0.1537 (leaky_relu) | 0 / 0 / 0.1117 |
+| value.bn | 0 / 0 / 0.0447 (leaky_relu) | 6 / 0 / 0.0000 |
+
+  The app's own checkpoint line at 40,000: clip1 `dead=0 off=0`, running-variance max/median 153.6@blocks.2.bn1[31]; B
+  `dead=6`, 37.1@blocks.1.bn1[14]. clip1 has no parked or mostly-off channel anywhere; its largest running-variance spread is
+  larger than B's (no verdict: the alarm rule's threshold is 1,000).
+- **Conclusion:** with a 1.0 cap the SiLU-tower arm survives both LR peaks, ends level with ReLU B in strength and with
+  healthier BN statistics (no dead channels; B's value head has 6). A fixed 1.0 cap is not a general setting (it would bind
+  hard early in training, where gNorm is ~30 at step 1 and 1–3 for the first ~500 steps); a relative cap (k × running median)
+  is the proposed follow-up, not yet planned.
 - **Reproduce the analysis:** `python3 -c` comparisons of the three logs' `[REPLAY]` lines (`dcm_log_20261005-234437.txt`, `dcm_log_20261006-170000.txt`, `dcm_log_20261006-181510.txt`); `bn_liveness.analyze()` on `20261005-lrBsilu-cyc1-replay-step22000`, `20261006-lrBsilu-ctl15-replay-seg1-step4000` / `-step4030` and `20261006-lrBsilu-clip1-replay-seg1-step4000`.
 
 ## Arm B-leakyall: result (finished at 40,000; E-0022)
