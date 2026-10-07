@@ -85,12 +85,7 @@ final class ReplayResumeRecordedParametersTests: XCTestCase {
 
     /// The lineage snapshot of `record` as a parameter snapshot.
     private func snapshot(of parameters: LineageRecord.Parameters) throws -> TrainingParametersSnapshot {
-        let object = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: Data(parameters.snapshotJSON.utf8)) as? [String: Any])
-        var values: [String: ParameterValue] = [:]
-        for (id, json) in object {
-            values[id] = try ParameterValue(jsonValue: json, id: id)
-        }
+        let values = try JSONDecoder().decode([String: ParameterValue].self, from: Data(parameters.snapshotJSON.utf8))
         return try TrainingParametersSnapshot.declaredDefaults(overriding: values)
     }
 
@@ -232,7 +227,9 @@ final class ReplayResumeRecordedParametersTests: XCTestCase {
 
     func testAnAdoptedScheduleIsNotADifference() throws {
         let parentSnapshot = try params(warmup: 5, cyclePeriod: 40).parameters
-        let parent = try LineageRecord.Parameters(values: parentSnapshot.rawValueMap())
+        // What a schema-3 writer records: every parameter but the seed
+        // settings (plan O-9).
+        let parent = try LineageRecord.Parameters(values: parentSnapshot.lineageValues())
         let schedule = TrainerScheduleState(completedTrainSteps: 3, lrWarmupSteps: parentSnapshot.lrWarmupSteps,
                                             lrMomentumCycle: parentSnapshot.lrMomentumCycle)
         let configured = try params(warmup: 7, cyclePeriod: 80)

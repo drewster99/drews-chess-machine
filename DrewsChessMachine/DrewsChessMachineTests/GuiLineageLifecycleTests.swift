@@ -49,12 +49,16 @@ final class GuiLineageLifecycleTests: XCTestCase {
         let start = Date(timeIntervalSince1970: 1_790_000_000)
         let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .gui,
                                          argv: ["DrewsChessMachine"], startedAt: start, segmentStartTrainerStep: 0)
+        try tracker.noteSegmentStartForTests(trainerStep: 0)
         let record = try tracker.record(
             at: start.addingTimeInterval(60), trainerCompletedSteps: 4, segmentLocalStep: 4,
             segmentGames: 2, segmentPositions: 120, corpus: nil,
-            parameters: try LineageRecord.Parameters(values: ["learning_rate": .double(0.0005)]),
+            parameters: try .forTests(
+                adopting: TrainerScheduleState(completedTrainSteps: 4, lrWarmupSteps: 3, lrMomentumCycle: .disabled),
+                overriding: ["learning_rate": .double(0.0005)]),
             rng: LineageRecord.RNG(dropoutPhiloxState: try DropoutPhiloxState(words: [1, 2, 3, 4, 5, 6, 7]),
-                                   streams: nil, behaviorFingerprint: Self.fingerprint))
+                                   streams: nil, behaviorFingerprint: Self.fingerprint),
+            inputs: tracker.testInputs)
         let weights = arch.weightTensorPlan().enumerated().map { i, spec in
             (0..<spec.elementCount).map { Float((i * 5 + $0) % 11) * 0.01 }
         } + arch.trainableTensorPlan().map { [Float](repeating: -0.25, count: $0.elementCount) }
@@ -148,9 +152,17 @@ final class GuiLineageLifecycleTests: XCTestCase {
         let controller = SessionController()
         let trainer = try trainer()
         controller.trainer = trainer
-        controller.pendingLoadedSession = try loadedSession()
+        let session = try loadedSession()
+        controller.pendingLoadedSession = session
         controller.pendingLoadedSessionAcceptedReplacements = ["x"]
         controller.runRandomSeed = runSeed()
+        // What Load Session and `startRealTraining` set before the lineage
+        // begins: the loaded champion's origin, how the start resolved its
+        // seed, and its replay-ratio start.
+        controller.adoptLoadedChampionOrigin(session.championFile)
+        controller.runSeedStartKind = .resolvedOrInherited
+        controller.replayRatioStart = ReplayRatioInitialDelay.resolve(
+            autoAdjust: false, savedAutoDelayMs: nil, trainingStepDelayMs: 0)
         controller.beginRunStartCapture(buffer: ReplayBuffer(capacity: 64, inputEncoding: Self.architecture.inputEncoding, sampler: DCMRandom(seed: 3)))
 
         let result = controller.beginRunLineage(

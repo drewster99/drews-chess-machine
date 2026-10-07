@@ -10,7 +10,9 @@ struct AutoResumeProgressBlockView: View {
 
     var body: some View {
         let stepsStr = AutoResumeFormat.count(summary.trainingSteps)
-        let positionsStr = AutoResumeFormat.count(summary.trainingPositionsSeen)
+        // A session that did not record its positions trained says so,
+        // rather than showing a figure modeled from its step count.
+        let positionsStr = summary.trainingPositionsSeen.map(AutoResumeFormat.count) ?? "unrecorded"
         let gamesStr = AutoResumeFormat.count(summary.selfPlayGames)
         let movesStr = AutoResumeFormat.count(summary.selfPlayMoves)
         let promoPct: String = {

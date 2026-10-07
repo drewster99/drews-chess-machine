@@ -60,15 +60,15 @@ final class ReplayRunnerPreflightTests: XCTestCase {
         // The rolling name fits, but `-latest` becomes `-step<N>`, and with no
         // step limit N can need every digit an Int has.
         let rolling = root.appendingPathComponent(rollingName(bytes: longestStageableName - 8))
-        let naming = EnumeratedCheckpointNaming(rollingOutputURL: rolling, runTag: "replay", segmentIndex: 0)
+        let naming = EnumeratedCheckpointNaming(rollingOutputURL: rolling, runTag: "replay")
         XCTAssertThrowsError(try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(
-            naming: naming, stepLimit: nil)) { error in
+            naming: naming, segmentStartTrainerStep: 0, stepLimit: nil)) { error in
             XCTAssertTrue(error.localizedDescription.contains(String(self.longestStageableName)),
                           error.localizedDescription)
         }
         // With a small step limit every step name still fits.
         XCTAssertNoThrow(try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(
-            naming: naming, stepLimit: 1000))
+            naming: naming, segmentStartTrainerStep: 0, stepLimit: 1000))
     }
 
     // MARK: Negative training steps

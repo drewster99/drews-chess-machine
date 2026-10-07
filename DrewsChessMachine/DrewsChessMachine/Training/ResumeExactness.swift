@@ -102,9 +102,20 @@ enum ResumeGap: String, CaseIterable, Sendable {
                                 runningBuild: LineageRecord.Build,
                                 runningDevice: LineageRecord.Device,
                                 runningFingerprint: BehaviorFingerprint.Record) -> EnvironmentComparison {
+        // The diff hash identifies uncommitted code (gap 6): two dirty
+        // builds of one commit are different code unless their hashes
+        // agree. An unrecorded hash (a schema-2 build) cannot be shown equal,
+        // so it counts as a change; the fingerprint escape below still
+        // applies.
+        let diffChanged: Bool
+        switch (record.build.gitDiffSHA256, runningBuild.gitDiffSHA256) {
+        case (.recorded(let saved), .recorded(let running)): diffChanged = saved != running
+        default: diffChanged = true
+        }
         let buildChanged = record.build.gitHash != runningBuild.gitHash
             || record.build.gitDirty != runningBuild.gitDirty
             || record.build.buildNumber != runningBuild.buildNumber
+            || diffChanged
         let osChanged = record.device.osVersion != runningDevice.osVersion
         let deviceChanged = record.device.hardwareModel != runningDevice.hardwareModel
             || record.device.cpu != runningDevice.cpu

@@ -33,41 +33,49 @@ struct CliTrainingConfig: Sendable {
     /// did not include `training_step_limit`.
     var trainingStepLimit: Int?
 
+    /// The two budget keys a parameters file may carry beside the
+    /// registered parameters.
+    static let trainingTimeLimitKey = "training_time_limit"
+    static let trainingStepLimitKey = "training_step_limit"
+
     /// Load and decode a parameters JSON file from disk. Throws on
     /// I/O failure or malformed JSON.
     ///
-    /// `training_time_limit` is pulled out of the values map before
-    /// it gets handed to `TrainingParameters.apply(_:)`, since that
-    /// id is not a registered parameter.
+    /// The file is read through `ParameterValue.parametersObject(fromJSON:)`,
+    /// so every number is exactly the value its text spells — a defaults
+    /// file written by `--create-parameters-file` reads back to the
+    /// declared defaults bit for bit.
+    ///
+    /// `training_time_limit` and `training_step_limit` are pulled out of
+    /// the values map before it gets handed to `TrainingParameters.apply(_:)`,
+    /// since those ids are not registered parameters. The time limit is any
+    /// number of seconds; the step limit a whole number (a value with a
+    /// fraction, or true/false, is refused rather than truncated or read as
+    /// 1).
     static func load(from url: URL) throws -> CliTrainingConfig {
-        let data = try Data(contentsOf: url)
-        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw TrainingConfigError.wrongType(id: "<root>")
-        }
-
-        var values: [String: ParameterValue] = [:]
+        var values = try ParameterValue.parametersObject(fromJSON: try Data(contentsOf: url))
         var trainingTimeLimitSec: Double?
         var trainingStepLimit: Int?
 
-        for (id, anyValue) in dict {
-            if id == "training_time_limit" {
-                if let n = anyValue as? NSNumber {
-                    trainingTimeLimitSec = n.doubleValue
-                } else {
-                    throw TrainingConfigError.wrongType(id: id)
-                }
-                continue
+        if let raw = values.removeValue(forKey: trainingTimeLimitKey) {
+            switch raw {
+            case .int(let seconds): trainingTimeLimitSec = Double(seconds)
+            case .double(let seconds): trainingTimeLimitSec = seconds
+            case .bool, .uint64: throw TrainingConfigError.wrongType(id: trainingTimeLimitKey)
             }
-            if id == "training_step_limit" {
-                if let n = anyValue as? NSNumber {
-                    trainingStepLimit = n.intValue
-                } else {
-                    throw TrainingConfigError.wrongType(id: id)
+        }
+        if let raw = values.removeValue(forKey: trainingStepLimitKey) {
+            switch raw {
+            case .int(let steps):
+                trainingStepLimit = steps
+            case .double(let steps):
+                guard let whole = Int(exactly: steps) else {
+                    throw TrainingConfigError.wrongType(id: trainingStepLimitKey)
                 }
-                continue
+                trainingStepLimit = whole
+            case .bool, .uint64:
+                throw TrainingConfigError.wrongType(id: trainingStepLimitKey)
             }
-
-            values[id] = try ParameterValue(jsonValue: anyValue, id: id)
         }
 
         return CliTrainingConfig(
@@ -75,6 +83,18 @@ struct CliTrainingConfig: Sendable {
             trainingTimeLimitSec: trainingTimeLimitSec,
             trainingStepLimit: trainingStepLimit
         )
+    }
+
+    /// Why corpus replay refuses this file, or nil when it does not: replay
+    /// enforces no wall-clock limit (owner decision O-21, gap 11) — its runs
+    /// are budgeted in steps and epochs, so a run's end never depends on
+    /// machine speed — and a `training_time_limit` it silently ignored would
+    /// read as one it honoured. (A JSON `null` for the key is already refused
+    /// by the loader, as no parameter kind reads it.)
+    func corpusReplayRefusal(parametersPath: String) -> CLIRunRefusal? {
+        guard trainingTimeLimitSec != nil else { return nil }
+        return CLIRunRefusal(message: "corpus replay enforces no wall-clock limit; remove \(Self.trainingTimeLimitKey) "
+            + "from \(parametersPath) (use training_step_limit, --training-step-limit or --epochs)")
     }
 
     /// Human-readable single-line summary for the `[APP]` banner —
@@ -89,10 +109,10 @@ struct CliTrainingConfig: Sendable {
             parts.append("\(id)=\(value.displayText)")
         }
         if let t = trainingTimeLimitSec {
-            parts.append("training_time_limit=\(t)")
+            parts.append("\(Self.trainingTimeLimitKey)=\(t)")
         }
         if let s = trainingStepLimit {
-            parts.append("training_step_limit=\(s)")
+            parts.append("\(Self.trainingStepLimitKey)=\(s)")
         }
         return parts.isEmpty ? "(empty)" : parts.joined(separator: " ")
     }

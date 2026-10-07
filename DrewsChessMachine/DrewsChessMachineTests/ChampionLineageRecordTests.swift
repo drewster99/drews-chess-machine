@@ -36,7 +36,8 @@ final class ChampionLineageRecordTests: XCTestCase {
             rng: LineageRecord.RNG(dropoutPhiloxState: try DropoutPhiloxState(words: [1, 2, 3, 4, 5, 6, 7]),
                                    streams: streams,
                                    behaviorFingerprint: BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe,
-                                                                                   sha256: "ab")))
+                                                                                   sha256: "ab")),
+            inputs: tracker.testInputs)
     }
 
     private func assertNoTrainerState(_ record: LineageRecord, file: StaticString = #filePath, line: UInt = #line) {
@@ -49,7 +50,7 @@ final class ChampionLineageRecordTests: XCTestCase {
         let promotion = try trainedRecordWithTrainerState()
         let origin = SessionController.ChampionOrigin.file(LineageTracker.ParentFile(
             modelID: "20261003-1-PROM", contentSHA256: nil, trainerCompletedSteps: 1000,
-            lineage: .recorded(promotion.withoutTrainerState()), derivationHistory: []))
+            lineage: .recorded(try promotion.withoutTrainerState()), derivationHistory: []), startWeights: .notLoaded)
         let record = try SessionController.championFileLineageRecord(origin: origin, at: saveDate)
         XCTAssertEqual(record.steps.cumTrainerStep, 1000)
         XCTAssertEqual(record.run.lineageRunID, promotion.run.lineageRunID)
@@ -62,9 +63,9 @@ final class ChampionLineageRecordTests: XCTestCase {
         let fileRecord = try trainedRecordWithTrainerState()
         let origin = SessionController.ChampionOrigin.file(LineageTracker.ParentFile(
             modelID: "20261003-1-LOAD", contentSHA256: "00", trainerCompletedSteps: 1000,
-            lineage: .recorded(fileRecord), derivationHistory: []))
+            lineage: .recorded(fileRecord), derivationHistory: []), startWeights: .loaded(.alreadyCentered))
         let record = try SessionController.championFileLineageRecord(origin: origin, at: saveDate)
-        XCTAssertEqual(record, fileRecord.withoutTrainerState())
+        XCTAssertEqual(record, try fileRecord.withoutTrainerState())
         assertNoTrainerState(record)
     }
 
@@ -80,7 +81,7 @@ final class ChampionLineageRecordTests: XCTestCase {
     func testAPreLineageSourceGetsAnUntrainedCopyRecord() throws {
         let origin = SessionController.ChampionOrigin.file(LineageTracker.ParentFile(
             modelID: "20260801-1-PREL", contentSHA256: nil, trainerCompletedSteps: 2500,
-            lineage: .unrecorded(formatVersion: 6), derivationHistory: []))
+            lineage: .unrecorded(formatVersion: 6), derivationHistory: []), startWeights: .loaded(.alreadyCentered))
         let record = try SessionController.championFileLineageRecord(origin: origin, at: saveDate)
         XCTAssertEqual(record.run.start, .derive)
         XCTAssertEqual(record.parent?.modelID, "20260801-1-PREL")
@@ -98,12 +99,12 @@ final class ChampionLineageRecordTests: XCTestCase {
         let promotion = try trainedRecordWithTrainerState()
         controller.recordPromotedChampionOrigin(
             championID: ModelID(value: "20261003-1-PROM"), trainerCompletedSteps: 1000, record: .success(promotion))
-        guard case .file(let parent) = controller.championOrigin else {
+        guard case .file(let parent, _) = controller.championOrigin else {
             return XCTFail("a promotion's origin is the promoted weights' record")
         }
         XCTAssertEqual(parent.modelID, "20261003-1-PROM")
         XCTAssertEqual(parent.trainerCompletedSteps, 1000)
-        XCTAssertEqual(parent.lineage.record, promotion.withoutTrainerState())
+        XCTAssertEqual(parent.lineage.record, try promotion.withoutTrainerState())
     }
 
     func testAPromotionWhoseRecordFailedClearsTheChampionsOrigin() throws {

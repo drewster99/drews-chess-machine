@@ -291,9 +291,9 @@ struct LichessBotGenerationBuilder: Sendable {
         }
         let loadedRank = ModelLineageRank(segmentChain: position.segmentChain, segmentLocalStep: position.segmentLocalStep, recordedUnix: position.recordedUnix)
         guard !target.rank.isAbove(loadedRank) else {
-            throw refuse("the file read (step \(position.segmentLocalStep)) is older than the selected one (step \(target.candidate.position.segmentLocalStep))")
+            throw refuse("the file read (segment step \(position.segmentLocalStep)) is older than the selected one (segment step \(target.candidate.position.segmentLocalStep))")
         }
-        let note = contentSHA256 == target.candidate.contentSHA256 ? nil : "file changed since the check: loaded step \(position.segmentLocalStep)"
+        let note = contentSHA256 == target.candidate.contentSHA256 ? nil : "file changed since the check: loaded segment step \(position.segmentLocalStep)"
         return (LichessBotGenerationLineage(position: position, contentSHA256: contentSHA256, followed: followed), note)
     }
 }
@@ -341,7 +341,10 @@ struct LichessBotModelFileLoader: Sendable {
                         weights: file.networkWeights,
                         architecture: file.architecture,
                         modelID: file.modelID,
-                        trainingStep: file.metadata.trainingStep
+                        // The file's trainer step where it records one, else
+                        // the step it states (`ModelFileStepReading`) — the
+                        // same kind of number the live sources pass.
+                        trainingStep: file.trainingStepReading.trainerStepOrStatedStep
                     )
                     guard let centering = file.valueHeadCentering else {
                         throw LichessBotModelError.valueHeadCenteringUnknown(url.path)

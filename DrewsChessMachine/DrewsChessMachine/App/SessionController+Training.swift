@@ -50,6 +50,18 @@ extension SessionController {
                 return
             }
         }
+        // The saved auto-computed replay-ratio delay (O-20): read before
+        // anything starts, so a stored value of the wrong type refuses the
+        // start visibly instead of being coerced or treated as absent.
+        var savedAutoDelayMs: Int?
+        do {
+            savedAutoDelayMs = try savedAutoComputedDelayMs()
+        } catch {
+            let message = "Play and Train not started: \(error.localizedDescription)"
+            SessionLogger.shared.log("[PARAM] \(error.localizedDescription)")
+            checkpoint?.setCheckpointStatus(message, kind: .error)
+            return
+        }
         // Begin a new training segment for cumulative wall-time
         // tracking. Closed via `closeActiveTrainingSegment` on Stop or
         // at save time. Don't try to open one if the previous Stop
@@ -148,12 +160,14 @@ extension SessionController {
         if continueMode, let existingSeed = runRandomSeed, let existingSerials = selfPlayGameSerials {
             runSeed = existingSeed
             gameSerials = existingSerials
+            runSeedStartKind = .continued
             SessionLogger.shared.log("[RUN-SEED] continuing seed=\(runSeed.masterSeed) (next self-play game serial \(gameSerials.nextSerial), arenas started \(arenasStartedThisRun))")
         } else if let streams = pendingLoadedSession.flatMap(Self.resumableRunStreams(of:)),
                   let nextSerial = streams.nextGameSerial, let arenasStarted = streams.arenasStarted,
                   let inherited = Self.inheritedRunSeed(streams: streams, commandLineSeed: commandLineSeed) {
             runSeed = inherited
             gameSerials = GameSerialCounter(firstSerial: nextSerial)
+            runSeedStartKind = .resolvedOrInherited
             runRandomSeed = runSeed
             selfPlayGameSerials = gameSerials
             arenasStartedThisRun = arenasStarted
@@ -187,6 +201,7 @@ extension SessionController {
             runRandomSeed = runSeed
             selfPlayGameSerials = gameSerials
             arenasStartedThisRun = 0
+            runSeedStartKind = .resolvedOrInherited
             for line in runSeed.parameterNotes { SessionLogger.shared.log(line) }
         }
         let buffer: ReplayBuffer
@@ -209,13 +224,15 @@ extension SessionController {
                 buffer.restoreSamplerState(resumedRunStreams.samplerState)
                 SessionLogger.shared.log("[RESUME] rng: sampler=restored")
             }
-            replayBuffer = buffer
         }
         // The batch size, pre-train fill and capacity this run trains under,
         // from here until the next start — every reader below and every
         // record of the run takes them from this capture, never from the
-        // settings, which the popover may change during the run.
+        // settings, which the popover may change during the run. Taken before
+        // the buffer is installed, so a start that fails puts the replaced
+        // buffer back with the replaced capture.
         let runCapture = beginRunStartCapture(buffer: buffer)
+        replayBuffer = buffer
         // Seed the buffer's per-batch sampling constraints from the
         // current parameters. Subsequent updates come reactively from
         // `ControlSideEffectsProbe.onChange(of: trainingParams.X)` —
@@ -369,9 +386,10 @@ extension SessionController {
             // controller state, not a parameter.
             if let autoDelay = rs.lastAutoComputedDelayMs {
                 SessionLogger.shared.log(
-                    "[RESUME-PARAM] last_auto_computed_delay_ms: \(lastAutoComputedDelayMs) -> \(autoDelay) (from session)"
+                    "[RESUME-PARAM] last_auto_computed_delay_ms: \(savedAutoDelayMs.map(String.init) ?? "none") -> \(autoDelay) (from session)"
                 )
-                lastAutoComputedDelayMs = autoDelay
+                setSavedAutoComputedDelayMs(autoDelay)
+                savedAutoDelayMs = autoDelay
             }
         } else {
             // Fresh session — no resumed steps to subtract.
@@ -490,13 +508,18 @@ extension SessionController {
             arena: arSchedule
         )
         samplingScheduleBox = scheduleBox
+        // The controller's starting delay and its source, logged here and
+        // recorded in the segment's lineage when the start is noted (B6).
+        let initialDelay = ReplayRatioInitialDelay.resolve(
+            autoAdjust: TrainingParameters.shared.replayRatioAutoAdjust, savedAutoDelayMs: savedAutoDelayMs,
+            trainingStepDelayMs: TrainingParameters.shared.trainingStepDelayMs)
+        SessionLogger.shared.log(initialDelay.logLine)
+        replayRatioStart = initialDelay
         let ratioController = ReplayRatioController(
             batchSize: runCapture.trainingBatchSize,
             targetRatio: TrainingParameters.shared.replayRatioTarget,
             autoAdjust: TrainingParameters.shared.replayRatioAutoAdjust,
-            initialDelayMs: TrainingParameters.shared.replayRatioAutoAdjust
-            ? lastAutoComputedDelayMs
-            : TrainingParameters.shared.trainingStepDelayMs,
+            initialDelayMs: initialDelay.delayMs,
             maxTrainingStepDelayMs: UpperContentView.stepDelayMaxMs,
             maxSelfPlayDelayMs: UpperContentView.selfPlayDelayMaxMs
         )
@@ -524,9 +547,9 @@ extension SessionController {
         arenaOverrideBox = overrideBox
         isArenaRunning = false
         realTraining = true
-        // Clear any divergence suspension from a prior run so this start begins
-        // with arenas and the periodic autosave un-gated.
-        trainingSuspendedByDivergence = false
+        // Clear any suspension from a prior run so this start begins with
+        // arenas and the periodic autosave un-gated.
+        trainingSuspension = nil
         // Arm the periodic-save scheduler. Always construct a fresh
         // controller on each start — a previous stop will have nil'd it
         // out, and `.continueAfterStop` intentionally resets the
@@ -614,6 +637,20 @@ extension SessionController {
             AutoTrainTermination(recorder: $0, resultsOutput: resultsOutput)
         }
 
+        // Training-health monitoring for this start (a new monitor every
+        // start, a continue after Stop included). A `--train` run's health
+        // stop takes the same termination claim as its other endings; an
+        // interactive run suspends training instead.
+        let healthMonitor = beginTrainingHealthRun(
+            arch: trainer.arch, recorder: recorder,
+            autoTrainStop: isAutoTrainRun
+                ? autoTrainTermination.map { TrainingHealthAutoTrainStop(termination: $0, runStart: runStart) }
+                : nil)
+        let healthResolveConfig: @Sendable () async -> TrainingHealthConfig? = { [weak self] in
+            await MainActor.run { self?.resolveTrainingHealthConfig() }
+        }
+        let healthDeliver = makeTrainingHealthDelivery()
+
         // Self-play corpus recording. Read once at run start (not
         // live-tunable). When enabled, every kept (post-draw-filter) self-play
         // game is tee'd into a standalone game corpus under Corpora/, referenced
@@ -700,7 +737,8 @@ extension SessionController {
              gameWatcher, ratioController, recorder, cliTrainingTimeLimitSec,
              cliTrainingStepLimit, autoTrainTermination,
              isAutoTrainRun,
-             sessionTrainingBatchSize, sessionMinBufferBeforeTraining] in
+             sessionTrainingBatchSize, sessionMinBufferBeforeTraining,
+             healthMonitor, healthResolveConfig, healthDeliver] in
 
             // --- Setup: build any missing networks, reset the trainer ---
 
@@ -1193,9 +1231,15 @@ extension SessionController {
                 let trainingTaskCreatedAt = Date()
                 group.addTask(priority: .high) {
                     [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, ratioController,
-                     sessionTrainingBatchSize, sessionMinBufferBeforeTraining, trainingTaskCreatedAt] in
+                     sessionTrainingBatchSize, sessionMinBufferBeforeTraining, trainingTaskCreatedAt,
+                     healthMonitor, healthResolveConfig, healthDeliver, recorder] in
                     let creatingMs = Int(Date().timeIntervalSince(trainingTaskCreatedAt) * 1000)
                     SessionLogger.shared.log("[TASK] training worker: created→exec=\(creatingMs)ms")
+                    // This worker's training-health hooks (record, the
+                    // 50-step live evaluation, the value-FC1 read, parking).
+                    let healthWorker = GuiTrainingHealthWorker(
+                        monitor: healthMonitor, trainer: trainer, batchSize: sessionTrainingBatchSize,
+                        recorder: recorder, resolveConfig: healthResolveConfig, deliver: healthDeliver)
                     // Track the previous step's applied delay so the
                     // next `recordTrainingBatchAndGetDelay` can report
                     // it as the current per-batch training-side delay
@@ -1217,6 +1261,17 @@ extension SessionController {
                             trainingGate.markRunning()
                         }
                         if Task.isCancelled { break }
+
+                        // A training-health stop suspended training: park
+                        // instead of returning, so the session saves this
+                        // suspension allows (they wait for this worker to
+                        // acknowledge their training pause) still complete
+                        // (R3). Only Stop (cancellation) ends the parked loop.
+                        if healthWorker.parkRequested {
+                            SessionLogger.shared.log("[HEALTH] trainer worker parked at trainerStep=\(trainer.completedTrainSteps)")
+                            await GuiTrainingHealthWorker.park(at: trainingGate)
+                            break
+                        }
 
                         // Wait for the replay buffer to warm up before
                         // starting to train — the first few games
@@ -1264,7 +1319,7 @@ extension SessionController {
                             // vanish before the user ever saw it. Instead we
                             // SUSPEND: keep the alarm banner up, leave the rest
                             // of the run (heartbeat, self-play, stats) alive,
-                            // and flip `trainingSuspendedByDivergence` so the
+                            // and set `trainingSuspension` so the
                             // suspended state gates the two things that would
                             // otherwise act on the poisoned net — arenas and the
                             // 4-hour periodic autosave. The trainer worker exits
@@ -1278,6 +1333,11 @@ extension SessionController {
                         box.recordStep(timing)
                         pStatsBox.recordTrainingStep()
                         segmentLineage.recordTrainingStep(totalMs: timing.totalMs)
+                        // Training health: record the step; every 50 trainer
+                        // steps the live evaluation; the value-FC1 read when
+                        // due. Awaited inline, so the next SGD step waits for
+                        // it (the observer never overlaps a step it judges).
+                        await healthWorker.afterStep(timing, trainerStep: trainer.completedTrainSteps)
 
                         // Candidate-test probe firing check. Method
                         // guards internally on all preconditions
@@ -1374,8 +1434,8 @@ extension SessionController {
                             // a still-pending auto-trigger and a manual Run
                             // Arena click). The trigger was already consumed by
                             // `waitForTrigger`, so we just loop back and wait.
-                            if await MainActor.run(body: { self.trainingSuspendedByDivergence }) {
-                                SessionLogger.shared.log("[ARENA] skipped — training suspended (divergence)")
+                            if let suspension = await MainActor.run(body: { self.trainingSuspension }) {
+                                SessionLogger.shared.log("[ARENA] skipped — training suspended (\(suspension.arenaSkipLabel))")
                                 continue arenaLoop
                             }
                             await self.runArenaParallel(
@@ -1394,53 +1454,35 @@ extension SessionController {
                     }
                 }
 
-                // Periodic session-log ticker. Emits one [STATS] line
-                // per training step for the first 500 steps (every step
-                // matters during bootstrap — you want to see the curve
-                // shape of the first few hundred updates) then drops to
-                // one line per 60 seconds for the rest of the 
+                // Periodic session-log ticker, on the step-line schedule
+                // every path shares (`TrainingStepLineSchedule`): a line at
+                // the first observed trainer step, every 50 trainer steps
+                // through 1000, at every trainer-step multiple of 1000, and
+                // on the first poll whose rolling means carry diagnostics at
+                // least `step_line_interval_sec` (read live) after the
+                // previous line. It polls every 50 ms, so a fixed line lands
+                // on the first poll at or past its step. The trainer step is
+                // the stats box's cumulative count — seeded with the saved
+                // step on a session resume and rewound on a promotion (the
+                // schedule moves its baseline there; a rewind is not itself
+                // a line). The time rule needs no new step, so lines keep
+                // coming while an arena pauses training.
                 //
-                // Each wake-up snapshots the thread-safe stats boxes,
-                // optionally refreshes `legalMass` via a sampled
-                // forward pass (cadence-gated so the CPU work doesn't
-                // pile up during the per-step bootstrap window), and
-                // writes one `[STATS]` line. Identifiers are pulled
-                // through a brief MainActor hop since they live on
-                // classes whose var mutation is otherwise main-actor-
-                // driven.
+                // Each line snapshots the thread-safe stats boxes, refreshes
+                // `legalMass` via a sampled forward pass, writes the
+                // `[STATS]` line, the latest `[BATCH-STATS]` summary when it
+                // is not the one logged last, and the live `[LAYER-HEALTH]`
+                // readout. Identifiers are pulled through a brief MainActor
+                // hop since they live on classes whose var mutation is
+                // otherwise main-actor-driven. The legal-entropy chart trace
+                // (`realLastLegalMassSnapshot`) and the `[ALARM] policy
+                // entropy` log line refresh on line ticks; the heartbeat's
+                // streak alarms do not ride `[STATS]`.
                 group.addTask(priority: .utility) {
                     [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox, scheduleBox, recorder, drawWatch,
                      sessionTrainingBatchSize, probeInferenceForProbes] in
                     let sessionStart = Date()
-                    // Bootstrap-phase step threshold for the per-step
-                    // emit. `UpperContentView.bootstrapStatsStepCount` is tunable
-                    // on the view; at the default this covers roughly
-                    // the first 1-3 minutes of real-data training at
-                    // typical throughput.
-                    let bootstrapSteps = UpperContentView.bootstrapStatsStepCount
-                    // Time between STATS emits after the bootstrap
-                    // window closes. 60 s chosen so a session's
-                    // steady-state log file grows at a manageable rate
-                    // while still capturing drift inside the typical
-                    // arena cadence.
-                    let steadyInterval: TimeInterval = 60
-                    // Cadence for refreshing legalMass during the
-                    // per-step bootstrap window — refreshing every
-                    // step would double per-step CPU cost for little
-                    // additional signal. Every 25 steps roughly
-                    // matches the 60-second cadence used afterwards
-                    // at typical throughput.
-                    let legalMassBootstrapStride = 25
                     let legalMassSampleSize = 128
-                    // Live `[LAYER-HEALTH]` cadence during the per-step
-                    // bootstrap window: the first step, then whenever this
-                    // many steps have passed since the last one. Each read is
-                    // a small `graph.run` on the trainer's own queue, so a
-                    // line per bootstrap step would queue one between every
-                    // pair of SGD steps for no extra signal. After bootstrap
-                    // it rides every [STATS] emit.
-                    let layerHealthBootstrapStride = 25
-                    var lastLayerHealthStep: Int? = nil
 
                     // First-observed pwNorm becomes the session baseline
                     // so each [STATS] line can report the absolute value
@@ -1462,7 +1504,8 @@ extension SessionController {
                     var prevVmTotal: UInt32 = 0
                     var prevVmIoAccel: UInt32 = 0
 
-                    func logOne(elapsedTarget: TimeInterval, legalMassOverride: ChessTrainer.LegalMassSnapshot?) async {
+                    func logOne(elapsedTarget: TimeInterval, legalMassOverride: ChessTrainer.LegalMassSnapshot?,
+                                stepLineIntervalSec: Double) async {
                         let trainingSnap = await box.snapshot()
                         let parallelSnap = pStatsBox.snapshot()
                         let bufCount = buffer.count
@@ -1642,7 +1685,7 @@ extension SessionController {
                                                 parallelSnap.whiteCheckmates, parallelSnap.blackCheckmates,
                                                 parallelSnap.stalemates, parallelSnap.fiftyMoveDraws,
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
-                        let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", livePromoteThreshold)) arenaGames=\(liveTournamentGames) arenaAutoSec=\(Int(arenaAutoSec)) workers=\(workerN)"
+                        let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", livePromoteThreshold)) arenaGames=\(liveTournamentGames) arenaAutoSec=\(Int(arenaAutoSec)) workers=\(workerN) stepLineSec=\(String(format: "%g", stepLineIntervalSec))"
                         let regStr = String(
                             format: "clip=%.1f decay=%.0e drop=%.2f ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f complCE=%@",
                             gradClip,
@@ -2070,34 +2113,38 @@ extension SessionController {
                         // story. Skipped if entropy isn't yet
                         // available (training hasn't started).
                         if let entropy = trainingSnap.rollingPolicyEntropy,
-                           entropy < TrainingAlarmController.policyEntropyAlarmThreshold {
+                           entropy < TrainingHealthThresholds.policyEntropyAlarm {
                             SessionLogger.shared.log(
-                                "[ALARM] policy entropy \(String(format: "%.4f", entropy)) < \(String(format: "%.2f", TrainingAlarmController.policyEntropyAlarmThreshold)) — policy may be collapsing (steps=\(trainingSnap.stats.steps))"
+                                "[ALARM] policy entropy \(String(format: "%.4f", entropy)) < \(String(format: "%.2f", TrainingHealthThresholds.policyEntropyAlarm)) — policy may be collapsing (steps=\(trainingSnap.stats.steps))"
                             )
                         }
                     }
 
-                    // Cache the most recent legalMass probe result so
-                    // we can include it in back-to-back per-step emits
-                    // without paying the ~5-20 ms forward-pass cost on
-                    // every single step. Refreshed every
-                    // `legalMassBootstrapStride` steps during bootstrap
-                    // and every time-based emit afterward.
+                    // The latest legal-mass probe, refreshed on every line.
                     var lastLegalMass: ChessTrainer.LegalMassSnapshot? = nil
-                    var lastEmittedStep: Int = -1
-                    var bootstrapDone = false
+                    var stepLines = TrainingStepLineSchedule()
+                    let lineClock = ContinuousClock()
+                    let lineClockStart = lineClock.now
+                    // The step of the last `[BATCH-STATS]` summary logged
+                    // (`BatchStatsLogLine`'s GUI rule: log the latest summary
+                    // when its step differs from this one).
+                    var lastLoggedBatchStatsStep: Int? = nil
 
-                    // Bootstrap phase: poll at short interval, emit one
-                    // line per new training step until
-                    // bootstrapSteps steps have been logged.
-                    while !Task.isCancelled && !bootstrapDone {
+                    while !Task.isCancelled {
                         let trainingSnap = await box.snapshot()
                         let steps = trainingSnap.stats.steps
-                        if steps > lastEmittedStep && steps > 0 {
-                            // Refresh legalMass on a stride so
-                            // back-to-back per-step emits share the
-                            // most recent probe.
-                            if steps == 1 || (steps - max(0, lastEmittedStep)) >= legalMassBootstrapStride {
+                        // No line before the first training step (the box
+                        // starts at 0 on a fresh session; a resumed session's
+                        // box is seeded with the saved step, so its first
+                        // line comes at the first poll).
+                        if steps > 0 {
+                            let intervalSec = await MainActor.run { TrainingParameters.shared.stepLineIntervalSec }
+                            let due = stepLines.lineDue(
+                                trainerStep: steps,
+                                elapsedSec: TrainingStepLineSchedule.seconds(lineClock.now - lineClockStart),
+                                carriesDiagnostics: trainingSnap.rollingPolicyEntropy != nil,
+                                intervalSec: intervalSec)
+                            if due != nil {
                                 if buffer.count >= legalMassSampleSize, let probeNet = probeInferenceForProbes {
                                     do {
                                         lastLegalMass = try await trainer.legalMassSnapshot(
@@ -2105,9 +2152,8 @@ extension SessionController {
                                             sampleSize: legalMassSampleSize,
                                             inferenceNetwork: probeNet
                                         )
-                                        // Mirror to @State so the
-                                        // chart-sample heartbeat can
-                                        // render the legal-entropy
+                                        // Mirror to @State so the chart-sample
+                                        // heartbeat can render the legal-entropy
                                         // trace at its own cadence.
                                         let snap = lastLegalMass
                                         await MainActor.run {
@@ -2120,69 +2166,27 @@ extension SessionController {
                                         )
                                     }
                                 }
-                            }
-                            let elapsed = Date().timeIntervalSince(sessionStart)
-                            await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass)
-                            if lastLayerHealthStep.map({ steps - $0 >= layerHealthBootstrapStride }) ?? true {
+                                let elapsed = Date().timeIntervalSince(sessionStart)
+                                await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass,
+                                             stepLineIntervalSec: intervalSec)
+                                let summary = trainer.lastBatchStatsSummary
+                                if let batchStatsLine = BatchStatsLogLine.line(summary: summary,
+                                                                               lastLoggedStep: lastLoggedBatchStatsStep) {
+                                    SessionLogger.shared.log(batchStatsLine)
+                                    lastLoggedBatchStatsStep = summary?.step
+                                }
                                 for line in await LayerHealthLog.live(trainer: trainer).lines {
                                     SessionLogger.shared.log(line)
                                 }
-                                lastLayerHealthStep = steps
-                            }
-                            lastEmittedStep = steps
-                            if steps >= bootstrapSteps {
-                                bootstrapDone = true
-                                break
                             }
                         }
-                        // Short poll — a training step at typical
-                        // throughput completes in 50-200 ms, and we
-                        // want the per-step cadence to track closely.
+                        // Short poll — a training step at typical throughput
+                        // completes in 50-200 ms, so a fixed line lands on
+                        // (or within a poll of) its step.
                         do {
                             try await Task.sleep(for: .milliseconds(50))
                         } catch {
                             return
-                        }
-                    }
-                    if Task.isCancelled { return }
-
-                    // Steady-state: one emit every `steadyInterval`
-                    // seconds. Each emit refreshes the legalMass probe
-                    // too.
-                    while !Task.isCancelled {
-                        do {
-                            try await Task.sleep(for: .seconds(steadyInterval))
-                        } catch {
-                            return
-                        }
-                        if Task.isCancelled { return }
-                        if buffer.count >= legalMassSampleSize, let probeNet = probeInferenceForProbes {
-                            let trainingSnap = await box.snapshot()
-                            let steps = trainingSnap.stats.steps
-                            do {
-                                lastLegalMass = try await trainer.legalMassSnapshot(
-                                    replayBuffer: buffer,
-                                    sampleSize: legalMassSampleSize,
-                                    inferenceNetwork: probeNet
-                                )
-                                // Mirror to @State so the chart-sample
-                                // heartbeat sees a fresh legal-entropy
-                                // value at the steady-state cadence.
-                                let snap = lastLegalMass
-                                await MainActor.run {
-                                    self.realLastLegalMassSnapshot = snap
-                                }
-                            } catch {
-                                lastLegalMass = nil
-                                SessionLogger.shared.log(
-                                    "[STATS-ERR] legalMassSnapshot failed at step \(steps): \(error.localizedDescription)"
-                                )
-                            }
-                        }
-                        let elapsed = Date().timeIntervalSince(sessionStart)
-                        await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass)
-                        for line in await LayerHealthLog.live(trainer: trainer).lines {
-                            SessionLogger.shared.log(line)
                         }
                     }
                 }
@@ -2365,23 +2369,11 @@ extension SessionController {
                         // `noImprovementProbeCount` samples before
                         // declaring "no improvement"; until then we
                         // log the probe and continue.
-                        let windowFull = legalMassWindow.count >= noImprovementProbeCount
-                        let allAboveThreshold: Bool = {
-                            guard windowFull else { return false }
-                            for legalMass in legalMassWindow where (1.0 - legalMass) <= illegalMassThreshold {
-                                return false
-                            }
-                            return true
-                        }()
-                        let noImprovement: Bool = {
-                            guard windowFull,
-                                  let oldest = legalMassWindow.first,
-                                  let newest = legalMassWindow.last else {
-                                return false
-                            }
-                            return newest <= oldest
-                        }()
-                        let probeMatches = allAboveThreshold && noImprovement
+                        // The condition is shared with the training-health
+                        // evaluator's `legal_mass_stall` rule (OD-9).
+                        let probeMatches = TrainingHealthDetectorConditions.legalMassStalled(
+                            legalMassRun: legalMassWindow, illegalMassThreshold: illegalMassThreshold,
+                            evaluations: noImprovementProbeCount)
                         if probeMatches {
                             SessionLogger.shared.log(
                                 String(format: "[ALARM] legal-mass collapse window: %d/%d probes illegalMass>%.4f, newest legalMass=%.5f ≤ oldest=%.5f",
@@ -2398,7 +2390,7 @@ extension SessionController {
                                 // "Training Diverged (Suspended)" banner (which
                                 // explains *why* training stopped) with a
                                 // secondary alarm. Mirrors the heartbeat gate.
-                                guard !self.trainingSuspendedByDivergence else { return }
+                                guard self.trainingSuspension == nil else { return }
                                 self.trainingAlarm?.raise(
                                     severity: .critical,
                                     title: "Policy Collapse (legal mass)",
@@ -2485,7 +2477,7 @@ extension SessionController {
     /// does NOT clear the alarm. The trainer worker that called this returns
     /// immediately afterward (a NaN net can't keep stepping), but the session
     /// stays loaded with the banner up so the user can see what happened and
-    /// reload an earlier checkpoint. `trainingSuspendedByDivergence` is the gate
+    /// reload an earlier checkpoint. `trainingSuspension` is the gate
     /// that stops the now-poisoned trainer weights from doing further harm:
     /// arenas won't run (no candidate snapshot of the NaN weights) and the
     /// 4-hour periodic autosave won't persist the diverged session.
@@ -2494,8 +2486,11 @@ extension SessionController {
     /// worker fully unwinds) re-enters here and no-ops past the guard so the
     /// banner detail isn't churned.
     func suspendTrainingOnDivergence(reason: String) {
-        guard !trainingSuspendedByDivergence else { return }
-        trainingSuspendedByDivergence = true
+        // Idempotent for a divergence. A health suspension in force is
+        // replaced: the worker it parked cannot diverge, so a divergence here
+        // means the worker was already past its park check.
+        if case .divergence? = trainingSuspension { return }
+        trainingSuspension = .divergence(reason: reason)
         // Raise the banner explicitly rather than relying on the heartbeat's
         // gNorm/entropy streak detector having already tripped — an instant
         // step-1 NaN can diverge before any streak threshold is met. A distinct
@@ -2523,9 +2518,10 @@ extension SessionController {
     /// `suspendTrainingOnDivergence` instead, which keeps the banner and the
     /// session alive.)
     func stopRealTraining() {
+        finishTrainingHealthRun()
         realTrainingTask?.cancel()
         realTrainingTask = nil
-        trainingSuspendedByDivergence = false
+        trainingSuspension = nil
         trainingAlarm?.clear()
         // Close the in-progress training segment so cumulative wall-time
         // totals exclude post-Stop idle. If saving immediately after,

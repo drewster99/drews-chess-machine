@@ -70,10 +70,16 @@ struct ModelInitRecord: Equatable, Sendable {
 /// `.dcmmodel` file. Extensible — new fields can be added in this
 /// JSON blob without breaking the fixed binary header.
 struct ModelCheckpointMetadata: Codable, Equatable {
-    /// Source of the save: `manual`, `promote`, or `periodic`.
+    /// Who wrote the file: a GUI save tag (`guiCreators`), a CLI runner
+    /// (`corpusReplayCreator`, `trainVsUciCreator`), or another tool
+    /// (`new-model`, `derive-model`, …). It names the writer, which is what a
+    /// file before format v11 is read by (`ModelFileStepReading`).
     let creator: String
-    /// Training step at mint time, if the model came from a live
-    /// training session. Nil for standalone builds.
+    /// The trainer step the weights were taken at (format v11; on a
+    /// trainer-state file it equals the schedule's `completedTrainSteps`,
+    /// refused otherwise). Nil for a file that states none (a fresh build,
+    /// a derive, a graft). A file written before v11 states what its writer
+    /// wrote here — read it through `ModelFileStepReading`.
     let trainingStep: Int?
     /// Parent model ID (e.g. the champion that the trainer was forked
     /// from, or the previous champion prior to a promotion). Empty
@@ -100,6 +106,19 @@ struct ModelCheckpointMetadata: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case creator, trainingStep, parentModelID, notes
     }
+
+    /// Corpus replay's `creator`.
+    static let corpusReplayCreator = "replay"
+    /// Train-vs-UCI's `creator` (its trainer files and its session's
+    /// champion file).
+    static let trainVsUciCreator = "train-vs-uci"
+    /// The writers whose `training_step` before format v11 is the writing
+    /// segment's own step.
+    static let segmentStepCreators: Set<String> = [corpusReplayCreator, trainVsUciCreator]
+    /// The GUI's save tags (`SessionSaveTrigger` disk tags, pinned by
+    /// `TrainingStepBasisTests`), whose `training_step` before format v11 is
+    /// the GUI's cumulative trainer step.
+    static let guiCreators: Set<String> = ["manual", "periodic", SessionSaveTrigger.promotionDiskTag, "sigusr2"]
 
     init(
         creator: String,
@@ -325,6 +344,11 @@ struct ModelCheckpointFile {
     /// Set by the safetensors decoder only; nil for a legacy `.dcmmodel`
     /// and for a file built in memory to be encoded.
     let safetensorsProvenance: SafetensorsProvenance?
+    /// What the file's `training_step` means (`ModelFileStepReading`): set by
+    /// both decoders from the file's own format and writer. A file built in
+    /// memory to be encoded is read at the current format — the version its
+    /// encode stamps.
+    let trainingStepReading: ModelFileStepReading
 
     /// A safetensors file's own identity and history, as decoded.
     struct SafetensorsProvenance: Equatable, Sendable {
@@ -350,7 +374,8 @@ struct ModelCheckpointFile {
         formatVersion: UInt32 = ModelCheckpointFile.formatVersion,
         valueHeadCentering: ValueHeadCentering? = nil,
         architectureFormat: ArchitectureFormat.DecodeFormat? = nil,
-        safetensorsProvenance: SafetensorsProvenance? = nil
+        safetensorsProvenance: SafetensorsProvenance? = nil,
+        trainingStepReading: ModelFileStepReading? = nil
     ) {
         self.modelID = modelID
         self.createdAtUnix = createdAtUnix
@@ -361,6 +386,17 @@ struct ModelCheckpointFile {
         self.valueHeadCentering = valueHeadCentering
         self.architectureFormat = architectureFormat
         self.safetensorsProvenance = safetensorsProvenance
+        self.trainingStepReading = trainingStepReading ?? Self.currentFormatReading(of: metadata)
+    }
+
+    /// The step reading of a file built in memory to be encoded: the current
+    /// format's rule (`training_step` is the trainer step), which is what the
+    /// encode stamps. Its segment step is the lineage record's, which travels
+    /// separately to the encode, so it is not known here.
+    private static func currentFormatReading(of metadata: ModelCheckpointMetadata) -> ModelFileStepReading {
+        ModelFileStepReading(basis: .trainerStep, statedTrainingStep: metadata.trainingStep,
+                             trainerStep: metadata.trainingStep ?? metadata.trainerSchedule?.completedTrainSteps,
+                             segmentStep: nil, legacyResolution: nil)
     }
 
     /// This file as the parent of a segment that trains from it, for a file
@@ -368,8 +404,9 @@ struct ModelCheckpointFile {
     /// content hash nor a lineage, so its lineage is unrecorded at the
     /// legacy format.
     var lineageParent: LineageTracker.ParentFile {
-        let trainerClock = SafetensorsModelIO.trainerClock(
-            schedule: metadata.trainerSchedule, trainingStep: metadata.trainingStep)
+        // The parent's stated step: the trainer step where the file records
+        // one, else the step it states (`ModelFileStepReading`).
+        let trainerClock = trainingStepReading.trainerStepOrStatedStep
         guard let provenance = safetensorsProvenance else {
             // `.dcmmodel` predates `--derive-model`, so it states no
             // derivation history.
@@ -638,6 +675,19 @@ struct ModelCheckpointFile {
             valueHeadCentering = .keptAsStored
         }
 
+        // A `.dcmmodel` predates format versions and lineage: it is read at
+        // the unversioned legacy version, by its `creator` (every one on disk
+        // is a GUI save). It carries no `DecodeFormat`, so its loaders log
+        // the reading's legacy entry themselves
+        // (`CheckpointManager.logLegacyFileFacts`).
+        let stepReading = try ModelFileStepReading.reading(
+            formatVersion: ArchitectureFormat.unversionedLegacyVersion,
+            creator: metadata.creator,
+            statedTrainingStep: metadata.trainingStep,
+            trainerCompletedSteps: nil,
+            recordSteps: { nil },
+            source: modelID + " (.dcmmodel)")
+
         return ModelCheckpointFile(
             modelID: modelID,
             createdAtUnix: createdAtUnix,
@@ -645,7 +695,8 @@ struct ModelCheckpointFile {
             weights: weights,
             architecture: resolvedArchitecture,
             formatVersion: version,
-            valueHeadCentering: valueHeadCentering
+            valueHeadCentering: valueHeadCentering,
+            trainingStepReading: stepReading
         )
     }
 }

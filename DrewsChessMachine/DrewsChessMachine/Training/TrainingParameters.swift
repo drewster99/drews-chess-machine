@@ -81,8 +81,9 @@ public enum ParameterValue: Codable, Equatable, Sendable {
     }
 
     /// Parse one value of a parameters JSON object (`JSONSerialization`
-    /// output) — the one reader both the `--parameters` loader and the
-    /// settings "load" path use. `NSNumber` bridging is treacherous (`as? Bool`
+    /// output) — the kind reader of `parametersObject(fromJSON:)`, which every
+    /// parameter JSON reader goes through (it replaces each `.double` with
+    /// the exactly-parsed value). `NSNumber` bridging is treacherous (`as? Bool`
     /// succeeds for any number, so `1` would read as `true`), so the kind is
     /// taken from the number's `objCType`: true/false are char-typed
     /// ("c"/"B"), JSON doubles are "d"/"f", everything else is an integer. A
@@ -1007,7 +1008,7 @@ public enum ArenaSPRTMaxGames: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Batch Stats Interval",
-    description: "Compute and emit [BATCH-STATS] every N training batches. 0 disables. Cost is ~1ms per evaluated batch; default 10 keeps log volume manageable.",
+    description: "Compute the per-batch statistics and the graph diagnostics (policy entropy, value W/D/L, played-move probability) every N training steps, and on every fixed step-line step (every 50 through trainer step 1000, then every 1000). 0: no batch statistics; the diagnostics then run every 10 steps. The [BATCH-STATS] line is written with the step lines ([STATS] / [REPLAY] / [VS-UCI]), not on every statistics step. Cost is ~1ms per evaluated batch.",
     default: 10,
     range: 0...10000,
     category: "Observability",
@@ -1015,6 +1016,17 @@ public enum ArenaSPRTMaxGames: TrainingParameterKey {}
     absentValue: .currentSetting
 )
 public enum BatchStatsInterval: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Step Line Interval (sec)",
+    description: "The step lines ([STATS] in the app, [REPLAY] for corpus replay, [VS-UCI] for train-vs-UCI) are written at a segment's first step, every 50 trainer steps through trainer step 1000, at every trainer step that is a multiple of 1000, and on the first diagnostics step at least this many seconds after the previous line (any line restarts the interval). The [BATCH-STATS] line and the live [LAYER-HEALTH] readout ride the step line. Logging only: it changes no training math. Read live by the app; the command-line paths read it once at start.",
+    default: 180.0,
+    range: 10.0...86400.0,
+    category: "Observability",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum StepLineIntervalSec: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "KL Probe Interval",
@@ -1321,6 +1333,206 @@ public enum AutomaticSavePruningEnabled: TrainingParameterKey {}
 )
 public enum SessionSaveIncludeReplayBuffer: TrainingParameterKey {}
 
+// MARK: Training health alarms (TRAINING_HEALTH_ALARMS_PLAN.md, Part K)
+//
+// Operational knobs: they decide what the training-health monitor logs and
+// whether an alarm stops the run, never the training math, so a resume
+// keeps the live setting when a checkpoint has none (`.currentSetting`).
+// The thresholds are declared constants (`TrainingHealthThresholds`, owner
+// decision OD-14), not parameters. The GUI reads these at every
+// evaluation; the command-line paths once at start.
+
+@TrainingParameter(
+    name: "Training Health Alarms Enabled",
+    description: "Run the training-health checks on every training path (GUI Play-and-Train, corpus replay, train-vs-UCI): thirteen rules over every SGD step and the layer-health reads, logged as [ALARM] health lines and a [HEALTH] check line every Training Health Check Interval steps. Off: no evaluation at all, and one [HEALTH] alarms disabled line at run start. The checks only observe: no random draws, no change to the trainer, optimizer or replay buffer.",
+    default: true,
+    category: "Health",
+    id: "training_health_alarms_enabled",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthAlarmsEnabled: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Training Health Check Interval (steps)",
+    description: "Trainer steps between [HEALTH] check lines (counters, cost, active alarms), the reminder line of every active alarm, and the rate limit of the worsen lines. The rules themselves are evaluated every 50 trainer steps whatever this is.",
+    default: 1000,
+    range: 50...100000,
+    category: "Health",
+    id: "training_health_check_interval_steps",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthCheckIntervalSteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Training Health Learning Grace (steps)",
+    description: "Trainer steps added to LR Warmup Steps before the illegal_mass rule's not-learned form applies (window median illegal mass still at or above 0.5). Its regression form and every damage rule apply from the first evaluation.",
+    default: 1000,
+    range: 0...100000,
+    category: "Health",
+    id: "training_health_learning_grace_steps",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthLearningGraceSteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Non-Finite",
+    description: "What the non_finite alarm (a NaN or infinite value in the batch-norm state, ReZero α, any checkpointed tensor, or a step's loss, illegal mass or gradient norm. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_non_finite",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionNonFinite: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Dead Channels",
+    description: "What the dead_channels alarm (parked batch-norm channels (dead for ReLU / leaky ReLU, the pass-through equivalent for SiLU / GELU). Warning on any; critical at 5% of all such channels or 20% of one site's) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_dead_channels",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionDeadChannels: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Value FC1 Zero Velocity",
+    description: "What the value_fc1_zero_velocity alarm (value-head FC1 units whose optimizer velocity is exactly zero (dead ReLU units). Warning at 5% of the units, critical at 50%; checked every 1000 trainer steps; applies only to a ReLU value hidden layer) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_value_fc1_zero_velocity",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionValueFC1ZeroVelocity: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Illegal Mass",
+    description: "What the illegal_mass alarm (the window median of the illegal-move probability mass regressing after it was learned, or not learned past warmup plus the learning grace. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_illegal_mass",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionIllegalMass: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Gradient Collapse",
+    description: "What the gradient_collapse alarm (the window median of the pre-clip gradient norm below 0.1. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_gradient_collapse",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionGradientCollapse: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Loss Spike",
+    description: "What the loss_spike alarm (the window's loss against the median loss of the 1000 trainer steps before it (median 1.5x or maximum 3x). Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_loss_spike",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionLossSpike: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Policy Offset Drift",
+    description: "What the policy_offset_drift alarm (the window median of |policy logit mean| at or above 3. Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_policy_offset_drift",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionPolicyOffsetDrift: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: BN Running Variance Runaway",
+    description: "What the bn_running_variance_runaway alarm (the largest batch-norm running-variance max/median ratio at or above 1000. Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_bn_running_variance_runaway",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionBatchNormRunningVarianceRunaway: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Gradient Spike",
+    description: "What the gradient_spike alarm (the window's largest pre-clip gradient norm at or above 5x the median of the 1000 trainer steps before it. Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_gradient_spike",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionGradientSpike: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Divergence",
+    description: "What the divergence alarm (the window medians of policy entropy and gradient norm: critical when entropy < 0.5 or gNorm > 500, warning when entropy < 1.0 together with gNorm > 50 — the GUI banner's divergence condition) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_divergence",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionDivergence: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Value Saturation",
+    description: "What the value_saturation alarm (the window median of the value head's mean |p_win − p_loss|: warning at 0.97, critical at 0.995 — the GUI banner's value-saturation condition) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_value_saturation",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionValueSaturation: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Value Draw Saturation",
+    description: "What the value_draw_saturation alarm (the window median of the value head's mean p_draw: warning at 0.92, critical at 0.97 (a fresh head starts at 0.75) — the GUI banner's draw condition) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_value_draw_saturation",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionValueDrawSaturation: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Legal Mass Stall",
+    description: "What the legal_mass_stall alarm (window median illegal mass above Legal-Mass Collapse Threshold on Legal-Mass Collapse No-Improvement Probes consecutive evaluations with no improvement, past warmup plus the learning grace — the GUI legal-mass probe's condition. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_legal_mass_stall",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionLegalMassStall: TrainingParameterKey {}
+
 // MARK: Reproducibility (determinism plan, Part A3.2)
 //
 // One master seed per run; every random stream (replay-buffer draws, each
@@ -1480,6 +1692,7 @@ public extension TrainingParametersSnapshot {
     var arenaSPRTMaxGames: Int { value(for: ArenaSPRTMaxGames.self) }
     var batchStatsInterval: Int { value(for: BatchStatsInterval.self) }
     var klProbeInterval: Int { value(for: KLProbeInterval.self) }
+    var stepLineIntervalSec: Double { value(for: StepLineIntervalSec.self) }
     var lrCycleEnabled: Bool { value(for: LRCycleEnabled.self) }
     var lrCyclePeriodSteps: Int { value(for: LRCyclePeriodSteps.self) }
     var lrCycleCount: Int { value(for: LRCycleCount.self) }
@@ -1504,6 +1717,9 @@ public extension TrainingParametersSnapshot {
     var maxPeriodicAutosavesKept: Int { value(for: MaxPeriodicAutosavesKept.self) }
     var automaticSavePruningEnabled: Bool { value(for: AutomaticSavePruningEnabled.self) }
     var sessionSaveIncludeReplayBuffer: Bool { value(for: SessionSaveIncludeReplayBuffer.self) }
+    var trainingHealthAlarmsEnabled: Bool { value(for: TrainingHealthAlarmsEnabled.self) }
+    var trainingHealthCheckIntervalSteps: Int { value(for: TrainingHealthCheckIntervalSteps.self) }
+    var trainingHealthLearningGraceSteps: Int { value(for: TrainingHealthLearningGraceSteps.self) }
     var randomSeedMode: RandomSeedMode {
         RandomSeedMode(persistedRawValue: value(for: RandomSeedModeParameter.self))
     }
@@ -1514,6 +1730,33 @@ public extension TrainingParametersSnapshot {
 
 // `arenaSPRTConfig()` returns `ArenaSPRT.SPRTConfig`, which is internal, so it
 // cannot sit in the public accessor extension above.
+extension TrainingParametersSnapshot {
+
+    /// The action parameter of one training-health rule, as the typed enum.
+    /// The one mapping from a rule to its parameter key on the snapshot side
+    /// (`TrainingParameters.trainingHealthActionKeyPath(for:)` is the
+    /// singleton's).
+    func trainingHealthAction(for rule: TrainingHealthRule) -> TrainingHealthAction {
+        let raw: Int
+        switch rule {
+        case .nonFinite: raw = value(for: TrainingHealthActionNonFinite.self)
+        case .deadChannels: raw = value(for: TrainingHealthActionDeadChannels.self)
+        case .valueFC1ZeroVelocity: raw = value(for: TrainingHealthActionValueFC1ZeroVelocity.self)
+        case .illegalMass: raw = value(for: TrainingHealthActionIllegalMass.self)
+        case .gradientCollapse: raw = value(for: TrainingHealthActionGradientCollapse.self)
+        case .lossSpike: raw = value(for: TrainingHealthActionLossSpike.self)
+        case .policyOffsetDrift: raw = value(for: TrainingHealthActionPolicyOffsetDrift.self)
+        case .batchNormRunningVarianceRunaway: raw = value(for: TrainingHealthActionBatchNormRunningVarianceRunaway.self)
+        case .gradientSpike: raw = value(for: TrainingHealthActionGradientSpike.self)
+        case .divergence: raw = value(for: TrainingHealthActionDivergence.self)
+        case .valueSaturation: raw = value(for: TrainingHealthActionValueSaturation.self)
+        case .valueDrawSaturation: raw = value(for: TrainingHealthActionValueDrawSaturation.self)
+        case .legalMassStall: raw = value(for: TrainingHealthActionLegalMassStall.self)
+        }
+        return TrainingHealthAction(persistedRawValue: raw)
+    }
+}
+
 extension TrainingParametersSnapshot {
 
     /// Builds the validated SPRT configuration these parameters describe.
@@ -1547,117 +1790,136 @@ public final class TrainingParameters {
 
     // Stored properties — one per parameter. didSet persists to UserDefaults.
     // @Observable instruments these for SwiftUI re-renders.
-    public var entropyBonus: Double { didSet { if !Self.commitAssignment(EntropyBonus.self, value: entropyBonus) { entropyBonus = oldValue } } }
-    public var illegalMassWeight: Double { didSet { if !Self.commitAssignment(IllegalMassWeight.self, value: illegalMassWeight) { illegalMassWeight = oldValue } } }
-    public var policyLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingEpsilon.self, value: policyLabelSmoothingEpsilon) { policyLabelSmoothingEpsilon = oldValue } } }
+    public var entropyBonus: Double { didSet { if !Self.commitAssignment(EntropyBonus.self, value: entropyBonus, oldValue: oldValue) { entropyBonus = oldValue } } }
+    public var illegalMassWeight: Double { didSet { if !Self.commitAssignment(IllegalMassWeight.self, value: illegalMassWeight, oldValue: oldValue) { illegalMassWeight = oldValue } } }
+    public var policyLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingEpsilon.self, value: policyLabelSmoothingEpsilon, oldValue: oldValue) { policyLabelSmoothingEpsilon = oldValue } } }
     /// Stored as the enum rather than its raw value so no use site ever sees
     /// the persisted integer; the `didSet` unwraps it at the persistence
     /// boundary, which is the only place the raw form is meaningful.
     public var policyLabelSmoothingMode: PolicyLabelSmoothingMode {
         didSet {
-            if !Self.commitAssignment(PolicyLabelSmoothingModeParameter.self, value: policyLabelSmoothingMode.rawValue) {
+            if !Self.commitAssignment(PolicyLabelSmoothingModeParameter.self, value: policyLabelSmoothingMode.rawValue, oldValue: oldValue.rawValue) {
                 policyLabelSmoothingMode = oldValue
             }
         }
     }
-    public var policyLabelSmoothingPerMove: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMove.self, value: policyLabelSmoothingPerMove) { policyLabelSmoothingPerMove = oldValue } } }
-    public var policyLabelSmoothingPerMoveCap: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMoveCap.self, value: policyLabelSmoothingPerMoveCap) { policyLabelSmoothingPerMoveCap = oldValue } } }
-    public var valueLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(ValueLabelSmoothingEpsilon.self, value: valueLabelSmoothingEpsilon) { valueLabelSmoothingEpsilon = oldValue } } }
-    public var gradClipMaxNorm: Double { didSet { if !Self.commitAssignment(GradClipMaxNorm.self, value: gradClipMaxNorm) { gradClipMaxNorm = oldValue } } }
-    public var weightDecay: Double { didSet { if !Self.commitAssignment(WeightDecay.self, value: weightDecay) { weightDecay = oldValue } } }
-    public var dropoutRate: Double { didSet { if !Self.commitAssignment(DropoutRate.self, value: dropoutRate) { dropoutRate = oldValue } } }
-    public var policyLossWeight: Double { didSet { if !Self.commitAssignment(PolicyLossWeight.self, value: policyLossWeight) { policyLossWeight = oldValue } } }
-    public var valueLossWeight: Double { didSet { if !Self.commitAssignment(ValueLossWeight.self, value: valueLossWeight) { valueLossWeight = oldValue } } }
-    public var learningRate: Double { didSet { if !Self.commitAssignment(LearningRate.self, value: learningRate) { learningRate = oldValue } } }
-    public var momentumCoeff: Double { didSet { if !Self.commitAssignment(MomentumCoeff.self, value: momentumCoeff) { momentumCoeff = oldValue } } }
-    public var sqrtBatchScalingLR: Bool { didSet { if !Self.commitAssignment(SqrtBatchScalingLR.self, value: sqrtBatchScalingLR) { sqrtBatchScalingLR = oldValue } } }
-    public var signedAdvantageComplementCE: Bool { didSet { if !Self.commitAssignment(SignedAdvantageComplementCE.self, value: signedAdvantageComplementCE) { signedAdvantageComplementCE = oldValue } } }
-    public var lrWarmupSteps: Int { didSet { if !Self.commitAssignment(LRWarmupSteps.self, value: lrWarmupSteps) { lrWarmupSteps = oldValue } } }
-    public var drawPenalty: Double { didSet { if !Self.commitAssignment(DrawPenalty.self, value: drawPenalty) { drawPenalty = oldValue } } }
-    public var selfPlayStartTau: Double { didSet { if !Self.commitAssignment(SelfPlayStartTau.self, value: selfPlayStartTau) { selfPlayStartTau = oldValue } } }
-    public var selfPlayTargetTau: Double { didSet { if !Self.commitAssignment(SelfPlayTargetTau.self, value: selfPlayTargetTau) { selfPlayTargetTau = oldValue } } }
-    public var selfPlayTauDecayPerPly: Double { didSet { if !Self.commitAssignment(SelfPlayTauDecayPerPly.self, value: selfPlayTauDecayPerPly) { selfPlayTauDecayPerPly = oldValue } } }
-    public var selfPlayDrawKeepFraction: Double { didSet { if !Self.commitAssignment(SelfPlayDrawKeepFraction.self, value: selfPlayDrawKeepFraction) { selfPlayDrawKeepFraction = oldValue } } }
-    public var selfPlayMaxPliesPerGame: Int { didSet { if !Self.commitAssignment(SelfPlayMaxPliesPerGame.self, value: selfPlayMaxPliesPerGame) { selfPlayMaxPliesPerGame = oldValue } } }
-    public var recordSelfPlayGames: Bool { didSet { if !Self.commitAssignment(RecordSelfPlayGames.self, value: recordSelfPlayGames) { recordSelfPlayGames = oldValue } } }
-    public var drawWatchPDrawThreshold: Double { didSet { if !Self.commitAssignment(DrawWatchPDrawThreshold.self, value: drawWatchPDrawThreshold) { drawWatchPDrawThreshold = oldValue } } }
-    public var drawWatchTerminateGames: Bool { didSet { if !Self.commitAssignment(DrawWatchTerminateGames.self, value: drawWatchTerminateGames) { drawWatchTerminateGames = oldValue } } }
-    public var drawWatchStreakLength: Int { didSet { if !Self.commitAssignment(DrawWatchStreakLength.self, value: drawWatchStreakLength) { drawWatchStreakLength = oldValue } } }
-    public var arenaStartTau: Double { didSet { if !Self.commitAssignment(ArenaStartTau.self, value: arenaStartTau) { arenaStartTau = oldValue } } }
-    public var arenaTargetTau: Double { didSet { if !Self.commitAssignment(ArenaTargetTau.self, value: arenaTargetTau) { arenaTargetTau = oldValue } } }
-    public var arenaTauDecayPerPly: Double { didSet { if !Self.commitAssignment(ArenaTauDecayPerPly.self, value: arenaTauDecayPerPly) { arenaTauDecayPerPly = oldValue } } }
-    public var replayRatioTarget: Double { didSet { if !Self.commitAssignment(ReplayRatioTarget.self, value: replayRatioTarget) { replayRatioTarget = oldValue } } }
-    public var replayRatioAutoAdjust: Bool { didSet { if !Self.commitAssignment(ReplayRatioAutoAdjust.self, value: replayRatioAutoAdjust) { replayRatioAutoAdjust = oldValue } } }
-    public var selfPlayConcurrency: Int { didSet { if !Self.commitAssignment(SelfPlayConcurrency.self, value: selfPlayConcurrency) { selfPlayConcurrency = oldValue } } }
-    public var trainingStepDelayMs: Int { didSet { if !Self.commitAssignment(TrainingStepDelayMs.self, value: trainingStepDelayMs) { trainingStepDelayMs = oldValue } } }
-    public var selfPlayDelayMs: Int { didSet { if !Self.commitAssignment(SelfPlayDelayMs.self, value: selfPlayDelayMs) { selfPlayDelayMs = oldValue } } }
-    public var trainingBatchSize: Int { didSet { if !Self.commitAssignment(TrainingBatchSize.self, value: trainingBatchSize) { trainingBatchSize = oldValue } } }
-    public var replayBufferCapacity: Int { didSet { if !Self.commitAssignment(ReplayBufferCapacity.self, value: replayBufferCapacity) { replayBufferCapacity = oldValue } } }
-    public var replayBufferMinPositionsBeforeTraining: Int { didSet { if !Self.commitAssignment(ReplayBufferMinPositionsBeforeTraining.self, value: replayBufferMinPositionsBeforeTraining) { replayBufferMinPositionsBeforeTraining = oldValue } } }
-    public var maxPliesFromAnyOneGame: Int { didSet { if !Self.commitAssignment(MaxPliesFromAnyOneGame.self, value: maxPliesFromAnyOneGame) { maxPliesFromAnyOneGame = oldValue } } }
-    public var targetSampledGameLengthPlies: Int { didSet { if !Self.commitAssignment(TargetSampledGameLengthPlies.self, value: targetSampledGameLengthPlies) { targetSampledGameLengthPlies = oldValue } } }
-    public var maxDrawPercentPerBatch: Int { didSet { if !Self.commitAssignment(MaxDrawPercentPerBatch.self, value: maxDrawPercentPerBatch) { maxDrawPercentPerBatch = oldValue } } }
-    public var replayBufferStratifyByMaterial: Bool { didSet { if !Self.commitAssignment(ReplayBufferStratifyByMaterial.self, value: replayBufferStratifyByMaterial) { replayBufferStratifyByMaterial = oldValue } } }
-    public var arenaPromoteThreshold: Double { didSet { if !Self.commitAssignment(ArenaPromoteThreshold.self, value: arenaPromoteThreshold) { arenaPromoteThreshold = oldValue } } }
-    public var arenaGamesPerTournament: Int { didSet { if !Self.commitAssignment(ArenaGamesPerTournament.self, value: arenaGamesPerTournament) { arenaGamesPerTournament = oldValue } } }
-    public var arenaAutoIntervalSec: Double { didSet { if !Self.commitAssignment(ArenaAutoIntervalSec.self, value: arenaAutoIntervalSec) { arenaAutoIntervalSec = oldValue } } }
-    public var candidateProbeIntervalSec: Double { didSet { if !Self.commitAssignment(CandidateProbeIntervalSec.self, value: candidateProbeIntervalSec) { candidateProbeIntervalSec = oldValue } } }
-    public var legalMassCollapseThreshold: Double { didSet { if !Self.commitAssignment(LegalMassCollapseThreshold.self, value: legalMassCollapseThreshold) { legalMassCollapseThreshold = oldValue } } }
-    public var legalMassCollapseGraceSeconds: Double { didSet { if !Self.commitAssignment(LegalMassCollapseGraceSeconds.self, value: legalMassCollapseGraceSeconds) { legalMassCollapseGraceSeconds = oldValue } } }
-    public var legalMassCollapseNoImprovementProbes: Int { didSet { if !Self.commitAssignment(LegalMassCollapseNoImprovementProbes.self, value: legalMassCollapseNoImprovementProbes) { legalMassCollapseNoImprovementProbes = oldValue } } }
-    public var arenaConcurrency: Int { didSet { if !Self.commitAssignment(ArenaConcurrency.self, value: arenaConcurrency) { arenaConcurrency = oldValue } } }
+    public var policyLabelSmoothingPerMove: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMove.self, value: policyLabelSmoothingPerMove, oldValue: oldValue) { policyLabelSmoothingPerMove = oldValue } } }
+    public var policyLabelSmoothingPerMoveCap: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMoveCap.self, value: policyLabelSmoothingPerMoveCap, oldValue: oldValue) { policyLabelSmoothingPerMoveCap = oldValue } } }
+    public var valueLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(ValueLabelSmoothingEpsilon.self, value: valueLabelSmoothingEpsilon, oldValue: oldValue) { valueLabelSmoothingEpsilon = oldValue } } }
+    public var gradClipMaxNorm: Double { didSet { if !Self.commitAssignment(GradClipMaxNorm.self, value: gradClipMaxNorm, oldValue: oldValue) { gradClipMaxNorm = oldValue } } }
+    public var weightDecay: Double { didSet { if !Self.commitAssignment(WeightDecay.self, value: weightDecay, oldValue: oldValue) { weightDecay = oldValue } } }
+    public var dropoutRate: Double { didSet { if !Self.commitAssignment(DropoutRate.self, value: dropoutRate, oldValue: oldValue) { dropoutRate = oldValue } } }
+    public var policyLossWeight: Double { didSet { if !Self.commitAssignment(PolicyLossWeight.self, value: policyLossWeight, oldValue: oldValue) { policyLossWeight = oldValue } } }
+    public var valueLossWeight: Double { didSet { if !Self.commitAssignment(ValueLossWeight.self, value: valueLossWeight, oldValue: oldValue) { valueLossWeight = oldValue } } }
+    public var learningRate: Double { didSet { if !Self.commitAssignment(LearningRate.self, value: learningRate, oldValue: oldValue) { learningRate = oldValue } } }
+    public var momentumCoeff: Double { didSet { if !Self.commitAssignment(MomentumCoeff.self, value: momentumCoeff, oldValue: oldValue) { momentumCoeff = oldValue } } }
+    public var sqrtBatchScalingLR: Bool { didSet { if !Self.commitAssignment(SqrtBatchScalingLR.self, value: sqrtBatchScalingLR, oldValue: oldValue) { sqrtBatchScalingLR = oldValue } } }
+    public var signedAdvantageComplementCE: Bool { didSet { if !Self.commitAssignment(SignedAdvantageComplementCE.self, value: signedAdvantageComplementCE, oldValue: oldValue) { signedAdvantageComplementCE = oldValue } } }
+    public var lrWarmupSteps: Int { didSet { if !Self.commitAssignment(LRWarmupSteps.self, value: lrWarmupSteps, oldValue: oldValue) { lrWarmupSteps = oldValue } } }
+    public var drawPenalty: Double { didSet { if !Self.commitAssignment(DrawPenalty.self, value: drawPenalty, oldValue: oldValue) { drawPenalty = oldValue } } }
+    public var selfPlayStartTau: Double { didSet { if !Self.commitAssignment(SelfPlayStartTau.self, value: selfPlayStartTau, oldValue: oldValue) { selfPlayStartTau = oldValue } } }
+    public var selfPlayTargetTau: Double { didSet { if !Self.commitAssignment(SelfPlayTargetTau.self, value: selfPlayTargetTau, oldValue: oldValue) { selfPlayTargetTau = oldValue } } }
+    public var selfPlayTauDecayPerPly: Double { didSet { if !Self.commitAssignment(SelfPlayTauDecayPerPly.self, value: selfPlayTauDecayPerPly, oldValue: oldValue) { selfPlayTauDecayPerPly = oldValue } } }
+    public var selfPlayDrawKeepFraction: Double { didSet { if !Self.commitAssignment(SelfPlayDrawKeepFraction.self, value: selfPlayDrawKeepFraction, oldValue: oldValue) { selfPlayDrawKeepFraction = oldValue } } }
+    public var selfPlayMaxPliesPerGame: Int { didSet { if !Self.commitAssignment(SelfPlayMaxPliesPerGame.self, value: selfPlayMaxPliesPerGame, oldValue: oldValue) { selfPlayMaxPliesPerGame = oldValue } } }
+    public var recordSelfPlayGames: Bool { didSet { if !Self.commitAssignment(RecordSelfPlayGames.self, value: recordSelfPlayGames, oldValue: oldValue) { recordSelfPlayGames = oldValue } } }
+    public var drawWatchPDrawThreshold: Double { didSet { if !Self.commitAssignment(DrawWatchPDrawThreshold.self, value: drawWatchPDrawThreshold, oldValue: oldValue) { drawWatchPDrawThreshold = oldValue } } }
+    public var drawWatchTerminateGames: Bool { didSet { if !Self.commitAssignment(DrawWatchTerminateGames.self, value: drawWatchTerminateGames, oldValue: oldValue) { drawWatchTerminateGames = oldValue } } }
+    public var drawWatchStreakLength: Int { didSet { if !Self.commitAssignment(DrawWatchStreakLength.self, value: drawWatchStreakLength, oldValue: oldValue) { drawWatchStreakLength = oldValue } } }
+    public var arenaStartTau: Double { didSet { if !Self.commitAssignment(ArenaStartTau.self, value: arenaStartTau, oldValue: oldValue) { arenaStartTau = oldValue } } }
+    public var arenaTargetTau: Double { didSet { if !Self.commitAssignment(ArenaTargetTau.self, value: arenaTargetTau, oldValue: oldValue) { arenaTargetTau = oldValue } } }
+    public var arenaTauDecayPerPly: Double { didSet { if !Self.commitAssignment(ArenaTauDecayPerPly.self, value: arenaTauDecayPerPly, oldValue: oldValue) { arenaTauDecayPerPly = oldValue } } }
+    public var replayRatioTarget: Double { didSet { if !Self.commitAssignment(ReplayRatioTarget.self, value: replayRatioTarget, oldValue: oldValue) { replayRatioTarget = oldValue } } }
+    public var replayRatioAutoAdjust: Bool { didSet { if !Self.commitAssignment(ReplayRatioAutoAdjust.self, value: replayRatioAutoAdjust, oldValue: oldValue) { replayRatioAutoAdjust = oldValue } } }
+    public var selfPlayConcurrency: Int { didSet { if !Self.commitAssignment(SelfPlayConcurrency.self, value: selfPlayConcurrency, oldValue: oldValue) { selfPlayConcurrency = oldValue } } }
+    public var trainingStepDelayMs: Int { didSet { if !Self.commitAssignment(TrainingStepDelayMs.self, value: trainingStepDelayMs, oldValue: oldValue) { trainingStepDelayMs = oldValue } } }
+    public var selfPlayDelayMs: Int { didSet { if !Self.commitAssignment(SelfPlayDelayMs.self, value: selfPlayDelayMs, oldValue: oldValue) { selfPlayDelayMs = oldValue } } }
+    public var trainingBatchSize: Int { didSet { if !Self.commitAssignment(TrainingBatchSize.self, value: trainingBatchSize, oldValue: oldValue) { trainingBatchSize = oldValue } } }
+    public var replayBufferCapacity: Int { didSet { if !Self.commitAssignment(ReplayBufferCapacity.self, value: replayBufferCapacity, oldValue: oldValue) { replayBufferCapacity = oldValue } } }
+    public var replayBufferMinPositionsBeforeTraining: Int { didSet { if !Self.commitAssignment(ReplayBufferMinPositionsBeforeTraining.self, value: replayBufferMinPositionsBeforeTraining, oldValue: oldValue) { replayBufferMinPositionsBeforeTraining = oldValue } } }
+    public var maxPliesFromAnyOneGame: Int { didSet { if !Self.commitAssignment(MaxPliesFromAnyOneGame.self, value: maxPliesFromAnyOneGame, oldValue: oldValue) { maxPliesFromAnyOneGame = oldValue } } }
+    public var targetSampledGameLengthPlies: Int { didSet { if !Self.commitAssignment(TargetSampledGameLengthPlies.self, value: targetSampledGameLengthPlies, oldValue: oldValue) { targetSampledGameLengthPlies = oldValue } } }
+    public var maxDrawPercentPerBatch: Int { didSet { if !Self.commitAssignment(MaxDrawPercentPerBatch.self, value: maxDrawPercentPerBatch, oldValue: oldValue) { maxDrawPercentPerBatch = oldValue } } }
+    public var replayBufferStratifyByMaterial: Bool { didSet { if !Self.commitAssignment(ReplayBufferStratifyByMaterial.self, value: replayBufferStratifyByMaterial, oldValue: oldValue) { replayBufferStratifyByMaterial = oldValue } } }
+    public var arenaPromoteThreshold: Double { didSet { if !Self.commitAssignment(ArenaPromoteThreshold.self, value: arenaPromoteThreshold, oldValue: oldValue) { arenaPromoteThreshold = oldValue } } }
+    public var arenaGamesPerTournament: Int { didSet { if !Self.commitAssignment(ArenaGamesPerTournament.self, value: arenaGamesPerTournament, oldValue: oldValue) { arenaGamesPerTournament = oldValue } } }
+    public var arenaAutoIntervalSec: Double { didSet { if !Self.commitAssignment(ArenaAutoIntervalSec.self, value: arenaAutoIntervalSec, oldValue: oldValue) { arenaAutoIntervalSec = oldValue } } }
+    public var candidateProbeIntervalSec: Double { didSet { if !Self.commitAssignment(CandidateProbeIntervalSec.self, value: candidateProbeIntervalSec, oldValue: oldValue) { candidateProbeIntervalSec = oldValue } } }
+    public var legalMassCollapseThreshold: Double { didSet { if !Self.commitAssignment(LegalMassCollapseThreshold.self, value: legalMassCollapseThreshold, oldValue: oldValue) { legalMassCollapseThreshold = oldValue } } }
+    public var legalMassCollapseGraceSeconds: Double { didSet { if !Self.commitAssignment(LegalMassCollapseGraceSeconds.self, value: legalMassCollapseGraceSeconds, oldValue: oldValue) { legalMassCollapseGraceSeconds = oldValue } } }
+    public var legalMassCollapseNoImprovementProbes: Int { didSet { if !Self.commitAssignment(LegalMassCollapseNoImprovementProbes.self, value: legalMassCollapseNoImprovementProbes, oldValue: oldValue) { legalMassCollapseNoImprovementProbes = oldValue } } }
+    public var arenaConcurrency: Int { didSet { if !Self.commitAssignment(ArenaConcurrency.self, value: arenaConcurrency, oldValue: oldValue) { arenaConcurrency = oldValue } } }
     /// Stored as the enum rather than its raw value so no use site ever sees
     /// the persisted integer; the `didSet` unwraps it at the persistence
     /// boundary, which is the only place the raw form is meaningful.
     public var arenaPromotionCriterion: ArenaPromotionCriterion {
         didSet {
-            if !Self.commitAssignment(ArenaPromotionCriterionParameter.self, value: arenaPromotionCriterion.rawValue) {
+            if !Self.commitAssignment(ArenaPromotionCriterionParameter.self, value: arenaPromotionCriterion.rawValue, oldValue: oldValue.rawValue) {
                 arenaPromotionCriterion = oldValue
             }
         }
     }
-    public var arenaSPRTElo0: Double { didSet { if !Self.commitAssignment(ArenaSPRTElo0.self, value: arenaSPRTElo0) { arenaSPRTElo0 = oldValue } } }
-    public var arenaSPRTElo1: Double { didSet { if !Self.commitAssignment(ArenaSPRTElo1.self, value: arenaSPRTElo1) { arenaSPRTElo1 = oldValue } } }
-    public var arenaSPRTAlpha: Double { didSet { if !Self.commitAssignment(ArenaSPRTAlpha.self, value: arenaSPRTAlpha) { arenaSPRTAlpha = oldValue } } }
-    public var arenaSPRTBeta: Double { didSet { if !Self.commitAssignment(ArenaSPRTBeta.self, value: arenaSPRTBeta) { arenaSPRTBeta = oldValue } } }
-    public var arenaSPRTMinGames: Int { didSet { if !Self.commitAssignment(ArenaSPRTMinGames.self, value: arenaSPRTMinGames) { arenaSPRTMinGames = oldValue } } }
-    public var arenaSPRTMaxGames: Int { didSet { if !Self.commitAssignment(ArenaSPRTMaxGames.self, value: arenaSPRTMaxGames) { arenaSPRTMaxGames = oldValue } } }
-    public var batchStatsInterval: Int { didSet { if !Self.commitAssignment(BatchStatsInterval.self, value: batchStatsInterval) { batchStatsInterval = oldValue } } }
-    public var klProbeInterval: Int { didSet { if !Self.commitAssignment(KLProbeInterval.self, value: klProbeInterval) { klProbeInterval = oldValue } } }
-    public var lrCycleEnabled: Bool { didSet { if !Self.commitAssignment(LRCycleEnabled.self, value: lrCycleEnabled) { lrCycleEnabled = oldValue } } }
-    public var lrCyclePeriodSteps: Int { didSet { if !Self.commitAssignment(LRCyclePeriodSteps.self, value: lrCyclePeriodSteps) { lrCyclePeriodSteps = oldValue } } }
-    public var lrCycleCount: Int { didSet { if !Self.commitAssignment(LRCycleCount.self, value: lrCycleCount) { lrCycleCount = oldValue } } }
-    public var lrCycleMin: Double { didSet { if !Self.commitAssignment(LRCycleMin.self, value: lrCycleMin) { lrCycleMin = oldValue } } }
-    public var lrCycleMax: Double { didSet { if !Self.commitAssignment(LRCycleMax.self, value: lrCycleMax) { lrCycleMax = oldValue } } }
-    public var lrCycleInvert: Bool { didSet { if !Self.commitAssignment(LRCycleInvert.self, value: lrCycleInvert) { lrCycleInvert = oldValue } } }
-    public var momentumCycleEnabled: Bool { didSet { if !Self.commitAssignment(MomentumCycleEnabled.self, value: momentumCycleEnabled) { momentumCycleEnabled = oldValue } } }
-    public var momentumCyclePeriodSteps: Int { didSet { if !Self.commitAssignment(MomentumCyclePeriodSteps.self, value: momentumCyclePeriodSteps) { momentumCyclePeriodSteps = oldValue } } }
-    public var momentumCycleCount: Int { didSet { if !Self.commitAssignment(MomentumCycleCount.self, value: momentumCycleCount) { momentumCycleCount = oldValue } } }
-    public var momentumCycleMin: Double { didSet { if !Self.commitAssignment(MomentumCycleMin.self, value: momentumCycleMin) { momentumCycleMin = oldValue } } }
-    public var momentumCycleMax: Double { didSet { if !Self.commitAssignment(MomentumCycleMax.self, value: momentumCycleMax) { momentumCycleMax = oldValue } } }
-    public var momentumCycleInvert: Bool { didSet { if !Self.commitAssignment(MomentumCycleInvert.self, value: momentumCycleInvert) { momentumCycleInvert = oldValue } } }
-    public var lrCyclePeakEnd: Double { didSet { if !Self.commitAssignment(LRCyclePeakEnd.self, value: lrCyclePeakEnd) { lrCyclePeakEnd = oldValue } } }
-    public var lrCycleTroughEnd: Double { didSet { if !Self.commitAssignment(LRCycleTroughEnd.self, value: lrCycleTroughEnd) { lrCycleTroughEnd = oldValue } } }
-    public var lrCycleDecayHorizonSteps: Int { didSet { if !Self.commitAssignment(LRCycleDecayHorizonSteps.self, value: lrCycleDecayHorizonSteps) { lrCycleDecayHorizonSteps = oldValue } } }
-    public var momentumFollowsLRCycle: Bool { didSet { if !Self.commitAssignment(MomentumFollowsLRCycle.self, value: momentumFollowsLRCycle) { momentumFollowsLRCycle = oldValue } } }
-    public var momentumFollowStartLow: Double { didSet { if !Self.commitAssignment(MomentumFollowStartLow.self, value: momentumFollowStartLow) { momentumFollowStartLow = oldValue } } }
-    public var momentumFollowStartHigh: Double { didSet { if !Self.commitAssignment(MomentumFollowStartHigh.self, value: momentumFollowStartHigh) { momentumFollowStartHigh = oldValue } } }
-    public var momentumFollowEndLow: Double { didSet { if !Self.commitAssignment(MomentumFollowEndLow.self, value: momentumFollowEndLow) { momentumFollowEndLow = oldValue } } }
-    public var momentumFollowEndHigh: Double { didSet { if !Self.commitAssignment(MomentumFollowEndHigh.self, value: momentumFollowEndHigh) { momentumFollowEndHigh = oldValue } } }
-    public var periodicAutosaveIntervalSec: Double { didSet { if !Self.commitAssignment(PeriodicAutosaveIntervalSec.self, value: periodicAutosaveIntervalSec) { periodicAutosaveIntervalSec = oldValue } } }
-    public var maxPeriodicAutosavesKept: Int { didSet { if !Self.commitAssignment(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept) { maxPeriodicAutosavesKept = oldValue } } }
-    public var automaticSavePruningEnabled: Bool { didSet { if !Self.commitAssignment(AutomaticSavePruningEnabled.self, value: automaticSavePruningEnabled) { automaticSavePruningEnabled = oldValue } } }
-    public var sessionSaveIncludeReplayBuffer: Bool { didSet { if !Self.commitAssignment(SessionSaveIncludeReplayBuffer.self, value: sessionSaveIncludeReplayBuffer) { sessionSaveIncludeReplayBuffer = oldValue } } }
+    public var arenaSPRTElo0: Double { didSet { if !Self.commitAssignment(ArenaSPRTElo0.self, value: arenaSPRTElo0, oldValue: oldValue) { arenaSPRTElo0 = oldValue } } }
+    public var arenaSPRTElo1: Double { didSet { if !Self.commitAssignment(ArenaSPRTElo1.self, value: arenaSPRTElo1, oldValue: oldValue) { arenaSPRTElo1 = oldValue } } }
+    public var arenaSPRTAlpha: Double { didSet { if !Self.commitAssignment(ArenaSPRTAlpha.self, value: arenaSPRTAlpha, oldValue: oldValue) { arenaSPRTAlpha = oldValue } } }
+    public var arenaSPRTBeta: Double { didSet { if !Self.commitAssignment(ArenaSPRTBeta.self, value: arenaSPRTBeta, oldValue: oldValue) { arenaSPRTBeta = oldValue } } }
+    public var arenaSPRTMinGames: Int { didSet { if !Self.commitAssignment(ArenaSPRTMinGames.self, value: arenaSPRTMinGames, oldValue: oldValue) { arenaSPRTMinGames = oldValue } } }
+    public var arenaSPRTMaxGames: Int { didSet { if !Self.commitAssignment(ArenaSPRTMaxGames.self, value: arenaSPRTMaxGames, oldValue: oldValue) { arenaSPRTMaxGames = oldValue } } }
+    public var batchStatsInterval: Int { didSet { if !Self.commitAssignment(BatchStatsInterval.self, value: batchStatsInterval, oldValue: oldValue) { batchStatsInterval = oldValue } } }
+    public var klProbeInterval: Int { didSet { if !Self.commitAssignment(KLProbeInterval.self, value: klProbeInterval, oldValue: oldValue) { klProbeInterval = oldValue } } }
+    public var stepLineIntervalSec: Double { didSet { if !Self.commitAssignment(StepLineIntervalSec.self, value: stepLineIntervalSec, oldValue: oldValue) { stepLineIntervalSec = oldValue } } }
+    public var lrCycleEnabled: Bool { didSet { if !Self.commitAssignment(LRCycleEnabled.self, value: lrCycleEnabled, oldValue: oldValue) { lrCycleEnabled = oldValue } } }
+    public var lrCyclePeriodSteps: Int { didSet { if !Self.commitAssignment(LRCyclePeriodSteps.self, value: lrCyclePeriodSteps, oldValue: oldValue) { lrCyclePeriodSteps = oldValue } } }
+    public var lrCycleCount: Int { didSet { if !Self.commitAssignment(LRCycleCount.self, value: lrCycleCount, oldValue: oldValue) { lrCycleCount = oldValue } } }
+    public var lrCycleMin: Double { didSet { if !Self.commitAssignment(LRCycleMin.self, value: lrCycleMin, oldValue: oldValue) { lrCycleMin = oldValue } } }
+    public var lrCycleMax: Double { didSet { if !Self.commitAssignment(LRCycleMax.self, value: lrCycleMax, oldValue: oldValue) { lrCycleMax = oldValue } } }
+    public var lrCycleInvert: Bool { didSet { if !Self.commitAssignment(LRCycleInvert.self, value: lrCycleInvert, oldValue: oldValue) { lrCycleInvert = oldValue } } }
+    public var momentumCycleEnabled: Bool { didSet { if !Self.commitAssignment(MomentumCycleEnabled.self, value: momentumCycleEnabled, oldValue: oldValue) { momentumCycleEnabled = oldValue } } }
+    public var momentumCyclePeriodSteps: Int { didSet { if !Self.commitAssignment(MomentumCyclePeriodSteps.self, value: momentumCyclePeriodSteps, oldValue: oldValue) { momentumCyclePeriodSteps = oldValue } } }
+    public var momentumCycleCount: Int { didSet { if !Self.commitAssignment(MomentumCycleCount.self, value: momentumCycleCount, oldValue: oldValue) { momentumCycleCount = oldValue } } }
+    public var momentumCycleMin: Double { didSet { if !Self.commitAssignment(MomentumCycleMin.self, value: momentumCycleMin, oldValue: oldValue) { momentumCycleMin = oldValue } } }
+    public var momentumCycleMax: Double { didSet { if !Self.commitAssignment(MomentumCycleMax.self, value: momentumCycleMax, oldValue: oldValue) { momentumCycleMax = oldValue } } }
+    public var momentumCycleInvert: Bool { didSet { if !Self.commitAssignment(MomentumCycleInvert.self, value: momentumCycleInvert, oldValue: oldValue) { momentumCycleInvert = oldValue } } }
+    public var lrCyclePeakEnd: Double { didSet { if !Self.commitAssignment(LRCyclePeakEnd.self, value: lrCyclePeakEnd, oldValue: oldValue) { lrCyclePeakEnd = oldValue } } }
+    public var lrCycleTroughEnd: Double { didSet { if !Self.commitAssignment(LRCycleTroughEnd.self, value: lrCycleTroughEnd, oldValue: oldValue) { lrCycleTroughEnd = oldValue } } }
+    public var lrCycleDecayHorizonSteps: Int { didSet { if !Self.commitAssignment(LRCycleDecayHorizonSteps.self, value: lrCycleDecayHorizonSteps, oldValue: oldValue) { lrCycleDecayHorizonSteps = oldValue } } }
+    public var momentumFollowsLRCycle: Bool { didSet { if !Self.commitAssignment(MomentumFollowsLRCycle.self, value: momentumFollowsLRCycle, oldValue: oldValue) { momentumFollowsLRCycle = oldValue } } }
+    public var momentumFollowStartLow: Double { didSet { if !Self.commitAssignment(MomentumFollowStartLow.self, value: momentumFollowStartLow, oldValue: oldValue) { momentumFollowStartLow = oldValue } } }
+    public var momentumFollowStartHigh: Double { didSet { if !Self.commitAssignment(MomentumFollowStartHigh.self, value: momentumFollowStartHigh, oldValue: oldValue) { momentumFollowStartHigh = oldValue } } }
+    public var momentumFollowEndLow: Double { didSet { if !Self.commitAssignment(MomentumFollowEndLow.self, value: momentumFollowEndLow, oldValue: oldValue) { momentumFollowEndLow = oldValue } } }
+    public var momentumFollowEndHigh: Double { didSet { if !Self.commitAssignment(MomentumFollowEndHigh.self, value: momentumFollowEndHigh, oldValue: oldValue) { momentumFollowEndHigh = oldValue } } }
+    public var periodicAutosaveIntervalSec: Double { didSet { if !Self.commitAssignment(PeriodicAutosaveIntervalSec.self, value: periodicAutosaveIntervalSec, oldValue: oldValue) { periodicAutosaveIntervalSec = oldValue } } }
+    public var maxPeriodicAutosavesKept: Int { didSet { if !Self.commitAssignment(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept, oldValue: oldValue) { maxPeriodicAutosavesKept = oldValue } } }
+    public var automaticSavePruningEnabled: Bool { didSet { if !Self.commitAssignment(AutomaticSavePruningEnabled.self, value: automaticSavePruningEnabled, oldValue: oldValue) { automaticSavePruningEnabled = oldValue } } }
+    public var sessionSaveIncludeReplayBuffer: Bool { didSet { if !Self.commitAssignment(SessionSaveIncludeReplayBuffer.self, value: sessionSaveIncludeReplayBuffer, oldValue: oldValue) { sessionSaveIncludeReplayBuffer = oldValue } } }
+    public var trainingHealthAlarmsEnabled: Bool { didSet { if !Self.commitAssignment(TrainingHealthAlarmsEnabled.self, value: trainingHealthAlarmsEnabled, oldValue: oldValue) { trainingHealthAlarmsEnabled = oldValue } } }
+    public var trainingHealthCheckIntervalSteps: Int { didSet { if !Self.commitAssignment(TrainingHealthCheckIntervalSteps.self, value: trainingHealthCheckIntervalSteps, oldValue: oldValue) { trainingHealthCheckIntervalSteps = oldValue } } }
+    public var trainingHealthLearningGraceSteps: Int { didSet { if !Self.commitAssignment(TrainingHealthLearningGraceSteps.self, value: trainingHealthLearningGraceSteps, oldValue: oldValue) { trainingHealthLearningGraceSteps = oldValue } } }
+    // One action per training-health rule, stored as the enum; the raw
+    // value appears only at the persistence boundary.
+    public var trainingHealthActionNonFinite: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionNonFinite.self, value: trainingHealthActionNonFinite.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionNonFinite = oldValue } } }
+    public var trainingHealthActionDeadChannels: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionDeadChannels.self, value: trainingHealthActionDeadChannels.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionDeadChannels = oldValue } } }
+    public var trainingHealthActionValueFC1ZeroVelocity: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionValueFC1ZeroVelocity.self, value: trainingHealthActionValueFC1ZeroVelocity.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionValueFC1ZeroVelocity = oldValue } } }
+    public var trainingHealthActionIllegalMass: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionIllegalMass.self, value: trainingHealthActionIllegalMass.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionIllegalMass = oldValue } } }
+    public var trainingHealthActionGradientCollapse: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionGradientCollapse.self, value: trainingHealthActionGradientCollapse.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionGradientCollapse = oldValue } } }
+    public var trainingHealthActionLossSpike: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionLossSpike.self, value: trainingHealthActionLossSpike.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionLossSpike = oldValue } } }
+    public var trainingHealthActionPolicyOffsetDrift: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionPolicyOffsetDrift.self, value: trainingHealthActionPolicyOffsetDrift.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionPolicyOffsetDrift = oldValue } } }
+    public var trainingHealthActionBatchNormRunningVarianceRunaway: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionBatchNormRunningVarianceRunaway.self, value: trainingHealthActionBatchNormRunningVarianceRunaway.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionBatchNormRunningVarianceRunaway = oldValue } } }
+    public var trainingHealthActionGradientSpike: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionGradientSpike.self, value: trainingHealthActionGradientSpike.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionGradientSpike = oldValue } } }
+    public var trainingHealthActionDivergence: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionDivergence.self, value: trainingHealthActionDivergence.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionDivergence = oldValue } } }
+    public var trainingHealthActionValueSaturation: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionValueSaturation.self, value: trainingHealthActionValueSaturation.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionValueSaturation = oldValue } } }
+    public var trainingHealthActionValueDrawSaturation: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionValueDrawSaturation.self, value: trainingHealthActionValueDrawSaturation.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionValueDrawSaturation = oldValue } } }
+    public var trainingHealthActionLegalMassStall: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionLegalMassStall.self, value: trainingHealthActionLegalMassStall.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionLegalMassStall = oldValue } } }
     /// Stored as the enum; the raw value appears only at the persistence
     /// boundary (see `RandomSeedMode`).
     public var randomSeedMode: RandomSeedMode {
         didSet {
-            if !Self.commitAssignment(RandomSeedModeParameter.self, value: randomSeedMode.rawValue) {
+            if !Self.commitAssignment(RandomSeedModeParameter.self, value: randomSeedMode.rawValue, oldValue: oldValue.rawValue) {
                 randomSeedMode = oldValue
             }
         }
     }
-    public var randomSeed: UInt64 { didSet { if !Self.commitAssignment(RandomSeed.self, value: randomSeed) { randomSeed = oldValue } } }
+    public var randomSeed: UInt64 { didSet { if !Self.commitAssignment(RandomSeed.self, value: randomSeed, oldValue: oldValue) { randomSeed = oldValue } } }
 
     /// Stored preferences found unusable at launch (wrong type or outside the
     /// declared range). The app starts on each one's declared default (a
@@ -1733,6 +1995,7 @@ public final class TrainingParameters {
         self.arenaSPRTMaxGames = Self.read(ArenaSPRTMaxGames.self)
         self.batchStatsInterval = Self.read(BatchStatsInterval.self)
         self.klProbeInterval = Self.read(KLProbeInterval.self)
+        self.stepLineIntervalSec = Self.read(StepLineIntervalSec.self)
         self.lrCycleEnabled = Self.read(LRCycleEnabled.self)
         self.lrCyclePeriodSteps = Self.read(LRCyclePeriodSteps.self)
         self.lrCycleCount = Self.read(LRCycleCount.self)
@@ -1757,6 +2020,22 @@ public final class TrainingParameters {
         self.maxPeriodicAutosavesKept = Self.read(MaxPeriodicAutosavesKept.self)
         self.automaticSavePruningEnabled = Self.read(AutomaticSavePruningEnabled.self)
         self.sessionSaveIncludeReplayBuffer = Self.read(SessionSaveIncludeReplayBuffer.self)
+        self.trainingHealthAlarmsEnabled = Self.read(TrainingHealthAlarmsEnabled.self)
+        self.trainingHealthCheckIntervalSteps = Self.read(TrainingHealthCheckIntervalSteps.self)
+        self.trainingHealthLearningGraceSteps = Self.read(TrainingHealthLearningGraceSteps.self)
+        self.trainingHealthActionNonFinite = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionNonFinite.self))
+        self.trainingHealthActionDeadChannels = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionDeadChannels.self))
+        self.trainingHealthActionValueFC1ZeroVelocity = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionValueFC1ZeroVelocity.self))
+        self.trainingHealthActionIllegalMass = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionIllegalMass.self))
+        self.trainingHealthActionGradientCollapse = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionGradientCollapse.self))
+        self.trainingHealthActionLossSpike = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionLossSpike.self))
+        self.trainingHealthActionPolicyOffsetDrift = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionPolicyOffsetDrift.self))
+        self.trainingHealthActionBatchNormRunningVarianceRunaway = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionBatchNormRunningVarianceRunaway.self))
+        self.trainingHealthActionGradientSpike = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionGradientSpike.self))
+        self.trainingHealthActionDivergence = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionDivergence.self))
+        self.trainingHealthActionValueSaturation = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionValueSaturation.self))
+        self.trainingHealthActionValueDrawSaturation = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionValueDrawSaturation.self))
+        self.trainingHealthActionLegalMassStall = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionLegalMassStall.self))
         self.randomSeedMode = RandomSeedMode(persistedRawValue: Self.read(RandomSeedModeParameter.self))
         self.randomSeed = Self.read(RandomSeed.self)
         self.invalidStoredSettings = Self.invalidStoredValuesFound.value.values.sorted { $0.id < $1.id }
@@ -1829,6 +2108,7 @@ public final class TrainingParameters {
         v[ArenaSPRTMaxGames.id] = ArenaSPRTMaxGames.encode(arenaSPRTMaxGames)
         v[BatchStatsInterval.id] = BatchStatsInterval.encode(batchStatsInterval)
         v[KLProbeInterval.id] = KLProbeInterval.encode(klProbeInterval)
+        v[StepLineIntervalSec.id] = StepLineIntervalSec.encode(stepLineIntervalSec)
         v[LRCycleEnabled.id] = LRCycleEnabled.encode(lrCycleEnabled)
         v[LRCyclePeriodSteps.id] = LRCyclePeriodSteps.encode(lrCyclePeriodSteps)
         v[LRCycleCount.id] = LRCycleCount.encode(lrCycleCount)
@@ -1853,6 +2133,22 @@ public final class TrainingParameters {
         v[MaxPeriodicAutosavesKept.id] = MaxPeriodicAutosavesKept.encode(maxPeriodicAutosavesKept)
         v[AutomaticSavePruningEnabled.id] = AutomaticSavePruningEnabled.encode(automaticSavePruningEnabled)
         v[SessionSaveIncludeReplayBuffer.id] = SessionSaveIncludeReplayBuffer.encode(sessionSaveIncludeReplayBuffer)
+        v[TrainingHealthAlarmsEnabled.id] = TrainingHealthAlarmsEnabled.encode(trainingHealthAlarmsEnabled)
+        v[TrainingHealthCheckIntervalSteps.id] = TrainingHealthCheckIntervalSteps.encode(trainingHealthCheckIntervalSteps)
+        v[TrainingHealthLearningGraceSteps.id] = TrainingHealthLearningGraceSteps.encode(trainingHealthLearningGraceSteps)
+        v[TrainingHealthActionNonFinite.id] = TrainingHealthActionNonFinite.encode(trainingHealthActionNonFinite.rawValue)
+        v[TrainingHealthActionDeadChannels.id] = TrainingHealthActionDeadChannels.encode(trainingHealthActionDeadChannels.rawValue)
+        v[TrainingHealthActionValueFC1ZeroVelocity.id] = TrainingHealthActionValueFC1ZeroVelocity.encode(trainingHealthActionValueFC1ZeroVelocity.rawValue)
+        v[TrainingHealthActionIllegalMass.id] = TrainingHealthActionIllegalMass.encode(trainingHealthActionIllegalMass.rawValue)
+        v[TrainingHealthActionGradientCollapse.id] = TrainingHealthActionGradientCollapse.encode(trainingHealthActionGradientCollapse.rawValue)
+        v[TrainingHealthActionLossSpike.id] = TrainingHealthActionLossSpike.encode(trainingHealthActionLossSpike.rawValue)
+        v[TrainingHealthActionPolicyOffsetDrift.id] = TrainingHealthActionPolicyOffsetDrift.encode(trainingHealthActionPolicyOffsetDrift.rawValue)
+        v[TrainingHealthActionBatchNormRunningVarianceRunaway.id] = TrainingHealthActionBatchNormRunningVarianceRunaway.encode(trainingHealthActionBatchNormRunningVarianceRunaway.rawValue)
+        v[TrainingHealthActionGradientSpike.id] = TrainingHealthActionGradientSpike.encode(trainingHealthActionGradientSpike.rawValue)
+        v[TrainingHealthActionDivergence.id] = TrainingHealthActionDivergence.encode(trainingHealthActionDivergence.rawValue)
+        v[TrainingHealthActionValueSaturation.id] = TrainingHealthActionValueSaturation.encode(trainingHealthActionValueSaturation.rawValue)
+        v[TrainingHealthActionValueDrawSaturation.id] = TrainingHealthActionValueDrawSaturation.encode(trainingHealthActionValueDrawSaturation.rawValue)
+        v[TrainingHealthActionLegalMassStall.id] = TrainingHealthActionLegalMassStall.encode(trainingHealthActionLegalMassStall.rawValue)
         v[RandomSeedModeParameter.id] = RandomSeedModeParameter.encode(randomSeedMode.rawValue)
         v[RandomSeed.id] = RandomSeed.encode(randomSeed)
         return v
@@ -2011,6 +2307,8 @@ public final class TrainingParameters {
             try ArenaSPRTMaxGames.definition.validate(raw); arenaSPRTMaxGames = try ArenaSPRTMaxGames.decode(raw)
         case BatchStatsInterval.id:
             try BatchStatsInterval.definition.validate(raw); batchStatsInterval = try BatchStatsInterval.decode(raw)
+        case StepLineIntervalSec.id:
+            try StepLineIntervalSec.definition.validate(raw); stepLineIntervalSec = try StepLineIntervalSec.decode(raw)
         case KLProbeInterval.id:
             try KLProbeInterval.definition.validate(raw); klProbeInterval = try KLProbeInterval.decode(raw)
         case LRCycleEnabled.id:
@@ -2061,6 +2359,51 @@ public final class TrainingParameters {
             try AutomaticSavePruningEnabled.definition.validate(raw); automaticSavePruningEnabled = try AutomaticSavePruningEnabled.decode(raw)
         case SessionSaveIncludeReplayBuffer.id:
             try SessionSaveIncludeReplayBuffer.definition.validate(raw); sessionSaveIncludeReplayBuffer = try SessionSaveIncludeReplayBuffer.decode(raw)
+        case TrainingHealthAlarmsEnabled.id:
+            try TrainingHealthAlarmsEnabled.definition.validate(raw); trainingHealthAlarmsEnabled = try TrainingHealthAlarmsEnabled.decode(raw)
+        case TrainingHealthCheckIntervalSteps.id:
+            try TrainingHealthCheckIntervalSteps.definition.validate(raw); trainingHealthCheckIntervalSteps = try TrainingHealthCheckIntervalSteps.decode(raw)
+        case TrainingHealthLearningGraceSteps.id:
+            try TrainingHealthLearningGraceSteps.definition.validate(raw); trainingHealthLearningGraceSteps = try TrainingHealthLearningGraceSteps.decode(raw)
+        case TrainingHealthActionNonFinite.id:
+            try TrainingHealthActionNonFinite.definition.validate(raw)
+            trainingHealthActionNonFinite = TrainingHealthAction(persistedRawValue: try TrainingHealthActionNonFinite.decode(raw))
+        case TrainingHealthActionDeadChannels.id:
+            try TrainingHealthActionDeadChannels.definition.validate(raw)
+            trainingHealthActionDeadChannels = TrainingHealthAction(persistedRawValue: try TrainingHealthActionDeadChannels.decode(raw))
+        case TrainingHealthActionValueFC1ZeroVelocity.id:
+            try TrainingHealthActionValueFC1ZeroVelocity.definition.validate(raw)
+            trainingHealthActionValueFC1ZeroVelocity = TrainingHealthAction(persistedRawValue: try TrainingHealthActionValueFC1ZeroVelocity.decode(raw))
+        case TrainingHealthActionIllegalMass.id:
+            try TrainingHealthActionIllegalMass.definition.validate(raw)
+            trainingHealthActionIllegalMass = TrainingHealthAction(persistedRawValue: try TrainingHealthActionIllegalMass.decode(raw))
+        case TrainingHealthActionGradientCollapse.id:
+            try TrainingHealthActionGradientCollapse.definition.validate(raw)
+            trainingHealthActionGradientCollapse = TrainingHealthAction(persistedRawValue: try TrainingHealthActionGradientCollapse.decode(raw))
+        case TrainingHealthActionLossSpike.id:
+            try TrainingHealthActionLossSpike.definition.validate(raw)
+            trainingHealthActionLossSpike = TrainingHealthAction(persistedRawValue: try TrainingHealthActionLossSpike.decode(raw))
+        case TrainingHealthActionPolicyOffsetDrift.id:
+            try TrainingHealthActionPolicyOffsetDrift.definition.validate(raw)
+            trainingHealthActionPolicyOffsetDrift = TrainingHealthAction(persistedRawValue: try TrainingHealthActionPolicyOffsetDrift.decode(raw))
+        case TrainingHealthActionBatchNormRunningVarianceRunaway.id:
+            try TrainingHealthActionBatchNormRunningVarianceRunaway.definition.validate(raw)
+            trainingHealthActionBatchNormRunningVarianceRunaway = TrainingHealthAction(persistedRawValue: try TrainingHealthActionBatchNormRunningVarianceRunaway.decode(raw))
+        case TrainingHealthActionGradientSpike.id:
+            try TrainingHealthActionGradientSpike.definition.validate(raw)
+            trainingHealthActionGradientSpike = TrainingHealthAction(persistedRawValue: try TrainingHealthActionGradientSpike.decode(raw))
+        case TrainingHealthActionDivergence.id:
+            try TrainingHealthActionDivergence.definition.validate(raw)
+            trainingHealthActionDivergence = TrainingHealthAction(persistedRawValue: try TrainingHealthActionDivergence.decode(raw))
+        case TrainingHealthActionValueSaturation.id:
+            try TrainingHealthActionValueSaturation.definition.validate(raw)
+            trainingHealthActionValueSaturation = TrainingHealthAction(persistedRawValue: try TrainingHealthActionValueSaturation.decode(raw))
+        case TrainingHealthActionValueDrawSaturation.id:
+            try TrainingHealthActionValueDrawSaturation.definition.validate(raw)
+            trainingHealthActionValueDrawSaturation = TrainingHealthAction(persistedRawValue: try TrainingHealthActionValueDrawSaturation.decode(raw))
+        case TrainingHealthActionLegalMassStall.id:
+            try TrainingHealthActionLegalMassStall.definition.validate(raw)
+            trainingHealthActionLegalMassStall = TrainingHealthAction(persistedRawValue: try TrainingHealthActionLegalMassStall.decode(raw))
         case RandomSeedModeParameter.id:
             try RandomSeedModeParameter.definition.validate(raw)
             randomSeedMode = RandomSeedMode(persistedRawValue: try RandomSeedModeParameter.decode(raw))
@@ -2461,7 +2804,8 @@ public final class TrainingParameters {
     /// a value the next launch would not see.) Validation runs even when
     /// persistence is suppressed, so a transient CLI override is held to the
     /// same range.
-    private nonisolated static func commitAssignment<K: TrainingParameterKey>(_ key: K.Type, value: K.Value) -> Bool {
+    private nonisolated static func commitAssignment<K: TrainingParameterKey>(_ key: K.Type, value: K.Value,
+                                                                            oldValue: K.Value) -> Bool {
         let raw = K.encode(value)
         do {
             try K.definition.validate(raw)
@@ -2471,6 +2815,7 @@ public final class TrainingParameters {
                 // out-of-range value in memory for this run. Never persisted:
                 // it is the session's value, not an app setting, and the
                 // UserDefaults load would reject it on the next launch anyway.
+                notifyRunChangeObserver(K.self, old: K.encode(oldValue), new: raw)
                 return true
             }
             let message = "[PARAM-REJECTED] \(error.localizedDescription); assignment reverted to the previous value"
@@ -2483,9 +2828,42 @@ public final class TrainingParameters {
         if !assigningRunHold {
             runHeldPriorValues.removeValue(forKey: K.id)
         }
+        // Before the persistence early return, so suppressed assignments
+        // (held values released, CLI loads) are seen too.
+        notifyRunChangeObserver(K.self, old: K.encode(oldValue), new: raw)
         if suppressPersistence { return true }
         store(raw, forKey: K.id, in: .standard)
         return true
+    }
+
+    /// Called with `(id, old, new)` for every committed change of a
+    /// setting while a GUI lineage segment is running, so the segment's
+    /// record journals live edits (hyperparameter recording plan, gap 4).
+    /// Installed and removed by `SessionController` on the main actor.
+    nonisolated static let runChangeObserver = SyncBox<(@Sendable (String, ParameterValue, ParameterValue) -> Void)?>(nil)
+
+    /// Tell the run-change observer about a committed assignment — copied
+    /// out of its box and called after the box's lock is released, so the
+    /// observer (which takes its journal's own lock) never runs under
+    /// another lock. Skipped: an unchanged value; the revert of a rejected
+    /// assignment (its "old" value is the rejected one, which never took
+    /// effect); a resume's run-only holds; the seed settings, which no
+    /// running run reads; and the keys a run captures at its start, whose
+    /// edits take effect only at the next start, where the recapture is
+    /// journalled instead.
+    private nonisolated static func notifyRunChangeObserver<K: TrainingParameterKey>(
+        _ key: K.Type, old: ParameterValue, new: ParameterValue
+    ) {
+        guard old != new, !assigningRunHold else { return }
+        guard !LineageRecord.Parameters.excludedParameterIDs.contains(K.id),
+              !RunStartParameterCapture.capturedKeyIDs.contains(K.id) else { return }
+        do {
+            try K.definition.validate(old)
+        } catch {
+            guard admittingSessionValueOutsideDeclaredRange else { return }
+        }
+        guard let observer = runChangeObserver.value else { return }
+        observer(K.id, old, new)
     }
 
     // MARK: Registry
@@ -2550,6 +2928,7 @@ public final class TrainingParameters {
         ArenaSPRTMinGames.self,
         ArenaSPRTMaxGames.self,
         BatchStatsInterval.self,
+        StepLineIntervalSec.self,
         KLProbeInterval.self,
         LRCycleEnabled.self,
         LRCyclePeriodSteps.self,
@@ -2575,6 +2954,22 @@ public final class TrainingParameters {
         MaxPeriodicAutosavesKept.self,
         AutomaticSavePruningEnabled.self,
         SessionSaveIncludeReplayBuffer.self,
+        TrainingHealthAlarmsEnabled.self,
+        TrainingHealthCheckIntervalSteps.self,
+        TrainingHealthLearningGraceSteps.self,
+        TrainingHealthActionNonFinite.self,
+        TrainingHealthActionDeadChannels.self,
+        TrainingHealthActionValueFC1ZeroVelocity.self,
+        TrainingHealthActionIllegalMass.self,
+        TrainingHealthActionGradientCollapse.self,
+        TrainingHealthActionLossSpike.self,
+        TrainingHealthActionPolicyOffsetDrift.self,
+        TrainingHealthActionBatchNormRunningVarianceRunaway.self,
+        TrainingHealthActionGradientSpike.self,
+        TrainingHealthActionDivergence.self,
+        TrainingHealthActionValueSaturation.self,
+        TrainingHealthActionValueDrawSaturation.self,
+        TrainingHealthActionLegalMassStall.self,
         RandomSeedModeParameter.self,
         RandomSeed.self
     ]
@@ -2697,15 +3092,40 @@ public final class TrainingParameters {
         try data.write(to: url, options: [.atomic])
     }
 
+    /// Apply a settings file `save(to:)` wrote. Read through
+    /// `ParameterValue.parametersObject(fromJSON:)`, so every value is the
+    /// one that was saved, to the bit.
     public func load(from url: URL) throws {
-        let data = try Data(contentsOf: url)
-        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw TrainingConfigError.wrongType(id: "<root>")
+        try apply(try ParameterValue.parametersObject(fromJSON: try Data(contentsOf: url)))
+    }
+}
+
+
+// MARK: - Training health actions on the singleton
+
+extension TrainingParameters {
+
+    /// The stored property holding one training-health rule's action: the
+    /// one mapping from a rule to its setting on the singleton (the Health
+    /// tab binds through it; `TrainingParametersSnapshot
+    /// .trainingHealthAction(for:)` is the snapshot's).
+    static func trainingHealthActionKeyPath(
+        for rule: TrainingHealthRule
+    ) -> ReferenceWritableKeyPath<TrainingParameters, TrainingHealthAction> {
+        switch rule {
+        case .nonFinite: return \.trainingHealthActionNonFinite
+        case .deadChannels: return \.trainingHealthActionDeadChannels
+        case .valueFC1ZeroVelocity: return \.trainingHealthActionValueFC1ZeroVelocity
+        case .illegalMass: return \.trainingHealthActionIllegalMass
+        case .gradientCollapse: return \.trainingHealthActionGradientCollapse
+        case .lossSpike: return \.trainingHealthActionLossSpike
+        case .policyOffsetDrift: return \.trainingHealthActionPolicyOffsetDrift
+        case .batchNormRunningVarianceRunaway: return \.trainingHealthActionBatchNormRunningVarianceRunaway
+        case .gradientSpike: return \.trainingHealthActionGradientSpike
+        case .divergence: return \.trainingHealthActionDivergence
+        case .valueSaturation: return \.trainingHealthActionValueSaturation
+        case .valueDrawSaturation: return \.trainingHealthActionValueDrawSaturation
+        case .legalMassStall: return \.trainingHealthActionLegalMassStall
         }
-        var values: [String: ParameterValue] = [:]
-        for (id, anyValue) in dict {
-            values[id] = try ParameterValue(jsonValue: anyValue, id: id)
-        }
-        try apply(values)
     }
 }

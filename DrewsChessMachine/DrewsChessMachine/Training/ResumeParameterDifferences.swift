@@ -25,8 +25,30 @@ struct ParameterDifference: Equatable, Sendable {
         case thisRunOnly
     }
 
+    /// What the parent's snapshot lacking a key this build declares
+    /// (`thisRunOnly`) says about the parent's value, from the key's declared
+    /// `absentValue` — the same declaration a GUI resume of such a session
+    /// applies (`TrainingParameterResolution`).
+    enum ParentAbsence: Equatable, Sendable {
+        /// The parent ran before the parameter existed, at this value
+        /// (`.preFeature`, or `.declaredRangeMaximum` standing in for
+        /// "unbounded"). Reported only when this run's value differs.
+        case preFeatureValue(String)
+        /// An operational setting (`.currentSetting`): it does not change
+        /// training math, and the parent's value was not recorded.
+        case operationalSetting
+        /// A training parameter with no declared pre-feature value
+        /// (`.refuseExact`): the value the parent trained with is not
+        /// recorded. A GUI resume reports this NOT EXACT; whether a CLI
+        /// `--resume-exact` should also count it as a gap is open (owner
+        /// decision O-4), so here it is reported, not refused.
+        case unknownTrainingValue
+    }
+
     let id: String
     let presence: Presence
+    /// Set exactly when `presence` is `thisRunOnly`.
+    let parentAbsence: ParentAbsence?
     /// The parent's value as text, nil when the parent has no such key.
     let parentValue: String?
     /// This run's value as text, nil when this build does not declare the key.
@@ -43,12 +65,29 @@ struct ParameterDifference: Equatable, Sendable {
 
     /// The `[RESUME-DIFF]` log line for this difference.
     var logLine: String {
-        var line = "[RESUME-DIFF] \(id): parent=\(parentValue ?? "absent") this_run=\(thisRunValue ?? "absent")"
+        let parentText: String
+        if let parentValue {
+            parentText = parentValue
+        } else if case .preFeatureValue(let preFeature) = parentAbsence {
+            parentText = "absent(pre-feature \(preFeature))"
+        } else {
+            parentText = "absent"
+        }
+        var line = "[RESUME-DIFF] \(id): parent=\(parentText) this_run=\(thisRunValue ?? "absent")"
         var notes: [String] = []
         switch presence {
         case .both: break
         case .parentOnly: notes.append("parent only: not a parameter of this build")
-        case .thisRunOnly: notes.append("this run only: the parent's snapshot predates this parameter")
+        case .thisRunOnly:
+            switch parentAbsence {
+            case .preFeatureValue:
+                notes.append("this run only: the parent's snapshot predates this parameter and ran at its pre-feature value")
+            case .operationalSetting:
+                notes.append("this run only: an operational setting the parent's snapshot predates")
+            case .unknownTrainingValue, nil:
+                notes.append("this run only: the parent's snapshot predates this training parameter; "
+                    + "the value it trained with is not recorded")
+            }
         }
         if parentValueOutsideTodaysRange {
             notes.append("parent value out of today's range")
@@ -114,12 +153,19 @@ extension TrainingParametersSnapshot {
     ///
     /// Seed settings are compared only when the parent's snapshot has them.
     ///
-    /// The text is read with `JSONDecoder`, not `JSONSerialization`: the
-    /// snapshot is written by `JSONSerialization`, which spells a `Double`
-    /// with every significant digit (`0.0003` as `0.00029999999999999997`),
-    /// and `JSONSerialization`'s own parser does not read every such
-    /// spelling back to the same `Double`;
-    /// comparing through it reported unchanged values as changed.
+    /// A key the parent's snapshot predates is read through its declared
+    /// `absentValue`: a parent that predates a `.preFeature` (or
+    /// `.declaredRangeMaximum`) key ran at that value, so this run at the
+    /// same value changed nothing and is not reported; any other value is
+    /// reported against it (`parent=absent(pre-feature …)`).
+    ///
+    /// The text is read with `ParameterValue.parametersObject(fromJSON:)`,
+    /// the exact reader of parameter JSON: the snapshot is written by
+    /// `JSONSerialization`, which spells a `Double` with every significant
+    /// digit (`0.0003` as `0.00029999999999999997`), and
+    /// `JSONSerialization`'s own parser does not read every such spelling
+    /// back to the same `Double`; comparing through it reported unchanged
+    /// values as changed.
     ///
     /// Throws only when `snapshot_json` is not a JSON object of parameter
     /// values, or one of its values has the wrong type for its declaration.
@@ -128,7 +174,7 @@ extension TrainingParametersSnapshot {
     func differences(fromLineage parent: LineageRecord.Parameters) throws -> [ParameterDifference] {
         let parentObject: [String: ParameterValue]
         do {
-            parentObject = try JSONDecoder().decode([String: ParameterValue].self, from: Data(parent.snapshotJSON.utf8))
+            parentObject = try ParameterValue.parametersObject(fromJSON: Data(parent.snapshotJSON.utf8))
         } catch {
             throw ParameterDifferenceError.unreadableParentSnapshot(detail: String(describing: error))
         }
@@ -141,7 +187,7 @@ extension TrainingParametersSnapshot {
             guard let key = keysByID[id] else {
                 guard let parentRaw = parentObject[id] else { continue }
                 differences.append(ParameterDifference(
-                    id: id, presence: .parentOnly, parentValue: parentRaw.displayText,
+                    id: id, presence: .parentOnly, parentAbsence: nil, parentValue: parentRaw.displayText,
                     thisRunValue: nil, parentValueOutsideTodaysRange: false, isSeedSetting: isSeedSetting))
                 continue
             }
@@ -151,19 +197,38 @@ extension TrainingParametersSnapshot {
             let thisRunValue = try Self.decodedByType(key, thisRunRaw)
             guard let parentRaw = parentObject[id] else {
                 if isSeedSetting { continue }
+                guard let absence = Self.parentAbsence(key, thisRunValue: thisRunValue) else { continue }
                 differences.append(ParameterDifference(
-                    id: id, presence: .thisRunOnly, parentValue: nil, thisRunValue: thisRunValue.displayText,
-                    parentValueOutsideTodaysRange: false, isSeedSetting: false))
+                    id: id, presence: .thisRunOnly, parentAbsence: absence, parentValue: nil,
+                    thisRunValue: thisRunValue.displayText, parentValueOutsideTodaysRange: false, isSeedSetting: false))
                 continue
             }
             let parentValue = try Self.decodedByType(key, parentRaw)
             guard parentValue != thisRunValue else { continue }
             differences.append(ParameterDifference(
-                id: id, presence: .both, parentValue: parentValue.displayText, thisRunValue: thisRunValue.displayText,
+                id: id, presence: .both, parentAbsence: nil,
+                parentValue: parentValue.displayText, thisRunValue: thisRunValue.displayText,
                 parentValueOutsideTodaysRange: try !Self.isWithinDeclaredRange(key, parentValue),
                 isSeedSetting: isSeedSetting))
         }
         return differences
+    }
+
+    /// What `K`'s declared `absentValue` says about a parent whose snapshot
+    /// predates `K`, or nil when the parent ran at the pre-feature value this
+    /// run (`thisRunValue`, canonical) still uses — not a difference.
+    private static func parentAbsence<K: TrainingParameterKey>(
+        _ key: K.Type, thisRunValue: ParameterValue
+    ) -> ParameterDifference.ParentAbsence? {
+        switch K.absentValue {
+        case .preFeature, .declaredRangeMaximum:
+            let preFeature = K.encode(TrainingParameterResolution.absentValue(of: K.self))
+            return preFeature == thisRunValue ? nil : .preFeatureValue(preFeature.displayText)
+        case .currentSetting:
+            return .operationalSetting
+        case .refuseExact:
+            return .unknownTrainingValue
+        }
     }
 
     /// `raw` read as `K`'s declared type and written back in canonical form

@@ -103,7 +103,7 @@ final class BehaviorFingerprintTests: XCTestCase {
         XCTAssertEqual(BehaviorFingerprint.recipe, 3)
         let running = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab12")
         let saved = try record(fingerprint: BehaviorFingerprint.Record(recipe: 1, sha256: "ab12"))
-        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: saved, runningBuild: laterBuild(than: saved.build),
+        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: saved, runningBuild: try laterBuild(than: saved.build),
                                                  runningDevice: saved.device, runningFingerprint: running).gaps, [.build])
     }
 
@@ -113,7 +113,7 @@ final class BehaviorFingerprintTests: XCTestCase {
     func testARecipeTwoFingerprintIsAGapUnderTheCurrentRecipe() throws {
         let running = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab12")
         let saved = try record(fingerprint: BehaviorFingerprint.Record(recipe: 2, sha256: "ab12"))
-        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: saved, runningBuild: laterBuild(than: saved.build),
+        XCTAssertEqual(ResumeGap.environmentGaps(writtenBy: saved, runningBuild: try laterBuild(than: saved.build),
                                                  runningDevice: saved.device, runningFingerprint: running).gaps, [.build])
     }
 
@@ -154,18 +154,21 @@ final class BehaviorFingerprintTests: XCTestCase {
         return try tracker.record(at: start, trainerCompletedSteps: 1, segmentLocalStep: 1, segmentGames: 0,
                                   segmentPositions: 0, corpus: nil, parameters: nil,
                                   rng: LineageRecord.RNG(dropoutPhiloxState: nil, streams: nil,
-                                                         behaviorFingerprint: fingerprint))
+                                                         behaviorFingerprint: fingerprint),
+                                  inputs: tracker.testInputs)
     }
 
-    private func laterBuild(than build: LineageRecord.Build) -> LineageRecord.Build {
-        LineageRecord.Build(buildNumber: build.buildNumber + 1, gitHash: build.gitHash + "x",
-                            gitBranch: build.gitBranch, gitDirty: build.gitDirty)
+    private func laterBuild(than build: LineageRecord.Build) throws -> LineageRecord.Build {
+        try LineageRecord.Build(buildNumber: build.buildNumber + 1, gitHash: build.gitHash + "x",
+                                gitBranch: build.gitBranch, gitDirty: build.gitDirty,
+                                gitDiffSHA256: build.gitDiffSHA256, xcodeBuild: build.xcodeBuild,
+                                sdkBuild: build.sdkBuild, configuration: build.configuration)
     }
 
     func testARebuildWithAMatchingFingerprintIsNotAGap() throws {
         let fingerprint = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab12")
         let saved = try record(fingerprint: fingerprint)
-        let comparison = ResumeGap.environmentGaps(writtenBy: saved, runningBuild: laterBuild(than: saved.build),
+        let comparison = ResumeGap.environmentGaps(writtenBy: saved, runningBuild: try laterBuild(than: saved.build),
                                                    runningDevice: saved.device, runningFingerprint: fingerprint)
         XCTAssertEqual(comparison.gaps, [])
         XCTAssertEqual(comparison.logLines.count, 1)
@@ -187,7 +190,7 @@ final class BehaviorFingerprintTests: XCTestCase {
         ]
         for savedFingerprint in cases {
             let saved = try record(fingerprint: savedFingerprint)
-            let comparison = ResumeGap.environmentGaps(writtenBy: saved, runningBuild: laterBuild(than: saved.build),
+            let comparison = ResumeGap.environmentGaps(writtenBy: saved, runningBuild: try laterBuild(than: saved.build),
                                                        runningDevice: saved.device, runningFingerprint: running)
             XCTAssertEqual(comparison.gaps, [.build], "\(String(describing: savedFingerprint))")
         }

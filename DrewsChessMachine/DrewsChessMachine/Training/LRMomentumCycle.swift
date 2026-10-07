@@ -368,6 +368,20 @@ extension TrainingParametersSnapshot {
     /// against today's declared ranges (`TrainingParametersSnapshot.replacing`):
     /// the checkpoint's value is what ran, even when a range has narrowed
     /// since it was saved.
+    /// The ids `adoptingSchedule(_:)` writes: the warmup length and the 20
+    /// cycle, envelope and follow keys. The schedule backstop of a trainer
+    /// file (`SafetensorsModelIO.checkScheduleAgrees`) compares exactly
+    /// these.
+    static let scheduleKeyIDs: [String] = [
+        LRWarmupSteps.id,
+        LRCycleEnabled.id, LRCyclePeriodSteps.id, LRCycleCount.id, LRCycleMin.id, LRCycleMax.id, LRCycleInvert.id,
+        MomentumCycleEnabled.id, MomentumCyclePeriodSteps.id, MomentumCycleCount.id, MomentumCycleMin.id,
+        MomentumCycleMax.id, MomentumCycleInvert.id,
+        LRCyclePeakEnd.id, LRCycleTroughEnd.id, LRCycleDecayHorizonSteps.id,
+        MomentumFollowsLRCycle.id, MomentumFollowStartLow.id, MomentumFollowStartHigh.id,
+        MomentumFollowEndLow.id, MomentumFollowEndHigh.id,
+    ]
+
     func adoptingSchedule(_ schedule: TrainerScheduleState) -> TrainingParametersSnapshot {
         let cycle = schedule.lrMomentumCycle
         let envelope = cycle.envelope
@@ -497,5 +511,65 @@ enum LRMomentumCycleLogFormat {
     static func envelopeBounds(_ values: LRMomentumCycle.Values) -> String {
         guard let peak = values.lrPeak, let trough = values.lrTrough else { return "" }
         return String(format: "[pk=%.1e,tr=%.1e]", peak, trough)
+    }
+}
+
+/// The learning rate and momentum a trainer is fed at a clock — the one
+/// implementation of that host-side arithmetic (review N6, owner decision
+/// O-18). `ChessTrainer.buildFeeds` writes its result into the step's feeds,
+/// the status-bar readouts (`effectiveLearningRate` / `effectiveMomentum`)
+/// show it, and a lineage record's `configuration.schedule_at_save` stores
+/// it, so the three can never disagree. Before it, the readouts were a
+/// hand-kept mirror of the feed code.
+///
+/// The cycle is evaluated once for both channels, as the feed always did.
+/// The LR is the cycle's value (or the static LR when no cycle is active),
+/// times the √batch scale when that rule is on, times the warmup ramp; the
+/// arithmetic and its order are the feed's, in `Float`.
+enum LRMomentumCycleReadout {
+    struct Fed: Sendable, Equatable {
+        /// The cycle's own step (warmup offset applied).
+        let cycleStep: Int
+        let learningRate: Float
+        let momentum: Float
+    }
+
+    static func values(completedTrainSteps: Int, lrWarmupSteps: Int, cycle: LRMomentumCycle,
+                       staticLearningRate: Float, staticMomentum: Float, batchSize: Int,
+                       sqrtBatchScaling: Bool, sqrtScaleBaseBatchSize: Int) -> Fed {
+        let warmupMul: Float
+        if lrWarmupSteps > 0 {
+            warmupMul = Float(min(1.0, Double(completedTrainSteps) / Double(lrWarmupSteps)))
+        } else {
+            warmupMul = 1.0
+        }
+        let cycleValues = cycle.values(completedTrainSteps: completedTrainSteps, lrWarmupSteps: lrWarmupSteps)
+        let baseLR: Float = cycleValues.learningRate.map { Float($0) } ?? staticLearningRate
+        var lr: Float
+        if sqrtBatchScaling {
+            let sqrtBatchScale: Float = Float(sqrt(Double(batchSize) / Double(sqrtScaleBaseBatchSize)))
+            lr = baseLR * sqrtBatchScale
+        } else {
+            lr = baseLR
+        }
+        lr *= warmupMul
+        let momentum: Float = cycleValues.momentum.map { Float($0) } ?? staticMomentum
+        return Fed(cycleStep: LRMomentumCycle.cycleStep(completedTrainSteps: completedTrainSteps, lrWarmupSteps: lrWarmupSteps),
+                   learningRate: lr, momentum: momentum)
+    }
+
+    /// `configuration.schedule_at_save` for a record whose parameters are
+    /// `inForce` (its schedule already adopted) at trainer clock
+    /// `completedTrainSteps`: the values the trainer is fed there, computed
+    /// from the record's own inputs.
+    static func scheduleAtSave(inForce p: TrainingParametersSnapshot,
+                               completedTrainSteps: Int) -> LineageRecord.ScheduleAtSave {
+        let fed = values(completedTrainSteps: completedTrainSteps, lrWarmupSteps: p.lrWarmupSteps,
+                         cycle: p.lrMomentumCycle, staticLearningRate: Float(p.learningRate),
+                         staticMomentum: Float(p.momentumCoeff), batchSize: p.trainingBatchSize,
+                         sqrtBatchScaling: p.sqrtBatchScalingLR,
+                         sqrtScaleBaseBatchSize: ChessTrainer.sqrtScaleBaseBatchSize)
+        return LineageRecord.ScheduleAtSave(cycleStep: fed.cycleStep, learningRateFed: Double(fed.learningRate),
+                                            momentumFed: Double(fed.momentum))
     }
 }

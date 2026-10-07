@@ -76,7 +76,7 @@ final class PolicyTailPrecisionProvenanceTests: XCTestCase {
         let snapshot = try await trainer.exportResumeSnapshot()
         let metadata = ModelCheckpointMetadata.trainerFile(
             creator: "test",
-            trainingStep: 1,
+            trainingStep: snapshot.schedule.completedTrainSteps,
             parentModelID: "",
             notes: "",
             schedule: snapshot.schedule,

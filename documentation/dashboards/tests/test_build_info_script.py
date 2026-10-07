@@ -71,14 +71,19 @@ class Repository:
         return subprocess.run(["git", "-C", self.root, *arguments], check=True, capture_output=True,
                               env=git_environment()).stdout
 
-    def run_script(self, toolchain=None):
+    def commit(self, message):
+        self.git("add", "-A")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", message)
+
+    def run_script(self, toolchain=None, extra_environment=None):
         environment = git_environment()
         environment.update(TOOLCHAIN if toolchain is None else toolchain)
+        environment.update(extra_environment or {})
         return subprocess.run([self.path("DrewsChessMachine/generate-build-info.sh")], capture_output=True,
                               env=environment)
 
-    def build_info(self, toolchain=None):
-        result = self.run_script(toolchain)
+    def build_info(self, toolchain=None, extra_environment=None):
+        result = self.run_script(toolchain, extra_environment)
         if result.returncode != 0:
             raise AssertionError(f"the script failed: {result.stderr.decode()}")
         return parse(open(self.path(BUILD_INFO)).read())
@@ -102,9 +107,14 @@ def parse(swift):
     }
 
 
-def framed(path, content):
-    encoded = path.encode()
-    return b"%d\n%s\n%d\n%s" % (len(encoded), encoded, len(content), content)
+def committed_scope_hash(repository):
+    """The hash a dirty build must write, derived independently of the script: commit the working tree
+    without the two generated files, and hash the id of the committed `DrewsChessMachine/` tree."""
+    repository.git("add", "-A")
+    repository.git("rm", "-q", "--cached", COUNTER, BUILD_INFO)
+    repository.git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "as built")
+    tree = repository.git("rev-parse", "HEAD:DrewsChessMachine").decode().strip()
+    return hashlib.sha256(tree.encode()).hexdigest()
 
 
 class BuildInfoScriptTests(unittest.TestCase):
@@ -161,23 +171,22 @@ class BuildInfoScriptTests(unittest.TestCase):
         self.assertTrue(with_untracked["git_dirty"])
         self.assertNotEqual(with_untracked["git_diff_sha256"], edit_only)
 
-    def test_an_untracked_file_alone_hashes_its_framing(self):
+    def test_an_untracked_file_alone_hashes_the_tree_it_is_built_in(self):
         repository = self.repository()
         path = "DrewsChessMachine/DrewsChessMachine/New.swift"
         content = b"let added = 1\n"
         repository.write(path, content)
         info = repository.build_info()
         self.assertTrue(info["git_dirty"])
-        self.assertEqual(info["git_diff_sha256"], hashlib.sha256(framed(path, content)).hexdigest())
+        self.assertEqual(info["git_diff_sha256"], committed_scope_hash(repository))
 
-    def test_untracked_files_are_framed_in_sorted_path_order(self):
+    def test_untracked_files_hash_the_tree_they_are_built_in(self):
         repository = self.repository()
         files = [("DrewsChessMachine/b.swift", b"b\n"), ("DrewsChessMachine/a.swift", b"a\n")]
         for path, content in files:
             repository.write(path, content)
         info = repository.build_info()
-        expected = b"".join(framed(path, content) for path, content in sorted(files))
-        self.assertEqual(info["git_diff_sha256"], hashlib.sha256(expected).hexdigest())
+        self.assertEqual(info["git_diff_sha256"], committed_scope_hash(repository))
 
     def test_the_generated_files_never_change_the_hash(self):
         repository = self.repository()
@@ -207,6 +216,74 @@ class BuildInfoScriptTests(unittest.TestCase):
         second = self.repository("second")
         second.write("DrewsChessMachine/u/ab", b"c")
         self.assertNotEqual(first.build_info()["git_diff_sha256"], second.build_info()["git_diff_sha256"])
+
+    def test_the_hash_identifies_the_tree_that_was_built(self):
+        repository = self.repository()
+        repository.write(SOURCE, b"let answer = 43\n")
+        repository.write("DrewsChessMachine/DrewsChessMachine/New.swift", b"let added = 1\n")
+        os.remove(repository.path(README))
+        info = repository.build_info()
+        self.assertTrue(info["git_dirty"])
+        self.assertEqual(info["git_diff_sha256"], committed_scope_hash(repository))
+
+    def test_a_staged_and_an_untracked_new_file_hash_the_same(self):
+        repository = self.repository()
+        path = "DrewsChessMachine/DrewsChessMachine/New.swift"
+        repository.write(path, b"let added = 1\n")
+        untracked = repository.build_info()["git_diff_sha256"]
+        repository.git("add", path)
+        staged = repository.build_info()["git_diff_sha256"]
+        self.assertRegex(untracked, r"^[0-9a-f]{64}$")
+        self.assertEqual(staged, untracked, "the same source is one identity, whatever the index holds")
+
+    def test_a_staged_and_an_unstaged_edit_hash_the_same(self):
+        repository = self.repository()
+        repository.write(SOURCE, b"let answer = 44\n")
+        unstaged = repository.build_info()["git_diff_sha256"]
+        repository.git("add", SOURCE)
+        self.assertEqual(repository.build_info()["git_diff_sha256"], unstaged)
+
+    def test_the_hash_does_not_depend_on_git_configuration(self):
+        repository = self.repository()
+        long_path = "DrewsChessMachine/DrewsChessMachine/Long.swift"
+        unicode_path = "DrewsChessMachine/DrewsChessMachine/\u00dcml\u00e4ut.swift"
+        lines = [b"let line%d = %d\n" % (n, n) for n in range(80)]
+        repository.write(long_path, b"".join(lines))
+        repository.write(unicode_path, b"let umlaut = 1\n")
+        repository.commit("more sources")
+        # Two hunks far apart, a second tracked file with a non-ASCII name, and an untracked file.
+        edited = list(lines)
+        edited[5] = b"let line5 = -5\n"
+        edited[40] = b"let line40 = -40\n"
+        repository.write(long_path, b"".join(edited))
+        repository.write(unicode_path, b"let umlaut = 2\n")
+        repository.write(SOURCE, b"let answer = 43\n")
+        repository.write("DrewsChessMachine/DrewsChessMachine/New.swift", b"let added = 1\n")
+        baseline = repository.build_info()["git_diff_sha256"]
+        self.assertRegex(baseline, r"^[0-9a-f]{64}$")
+
+        order_file = os.path.join(self.folder, "order.txt")
+        with open(order_file, "w") as handle:
+            handle.write("\n".join([unicode_path, long_path, SOURCE]) + "\n")
+        settings = [
+            ("diff.context", "10"),
+            ("diff.interHunkContext", "30"),
+            ("diff.orderFile", order_file),
+            ("core.quotePath", "false"),
+            ("diff.algorithm", "patience"),
+            ("diff.noprefix", "true"),
+            ("diff.mnemonicPrefix", "true"),
+        ]
+        for key, value in settings:
+            with self.subTest(setting=f"{key}={value}"):
+                self.assert_hash_under_configuration(repository, key, value, baseline)
+
+    def assert_hash_under_configuration(self, repository, key, value, baseline):
+        """The script's hash with only `key = value` in the global git configuration equals `baseline`."""
+        config = os.path.join(self.folder, "gitconfig-" + key)
+        subprocess.run(["git", "config", "--file", config, key, value], check=True, env=git_environment())
+        info = repository.build_info(extra_environment={"GIT_CONFIG_GLOBAL": config})
+        self.assertEqual(info["git_diff_sha256"], baseline, f"{key}={value} must not change the hash")
 
     def test_toolchain_fields_are_written_and_empty_refuses(self):
         repository = self.repository()

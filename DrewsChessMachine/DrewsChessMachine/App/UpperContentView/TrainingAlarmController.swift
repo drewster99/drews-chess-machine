@@ -28,7 +28,7 @@ import SwiftUI
 ///
 /// The constants below are the canonical alarm thresholds for the project;
 /// `colorizedPanelBody` and the periodic `[ALARM]` log line in `startRealTraining`
-/// reference `TrainingAlarmController.policyEntropyAlarmThreshold`.
+/// reference `TrainingHealthThresholds.policyEntropyAlarm`.
 @MainActor
 @Observable
 final class TrainingAlarmController {
@@ -40,11 +40,11 @@ final class TrainingAlarmController {
     /// (≈ 2.7 effective legal moves), leaving a ~0.9-nat margin below
     /// fresh-init baseline. Normal training concentrates the policy over time,
     /// so moderate decline from 1.9 is expected and healthy.
-    nonisolated static let policyEntropyAlarmThreshold: Double = 1.0
-    nonisolated static let divergenceAlarmGradNormWarningThreshold: Double = 50.0
-    nonisolated static let divergenceAlarmGradNormCriticalThreshold: Double = 500.0
-    /// Post-mask entropy critical floor: ≈ 1.6 effective legal moves.
-    nonisolated static let divergenceAlarmEntropyCriticalThreshold: Double = 0.5
+    // The levels themselves (entropy, gradient-norm, vAbs and pD
+    // thresholds) live in `TrainingHealthThresholds` and are applied by
+    // `TrainingHealthDetectorConditions`, shared with the training-health
+    // evaluator's rules 10–13 (OD-9). This controller keeps the banner's
+    // heartbeat streaks and titles.
     nonisolated static let divergenceAlarmConsecutiveWarningSamples: Int = 3
     nonisolated static let divergenceAlarmConsecutiveCriticalSamples: Int = 2
     nonisolated static let divergenceAlarmRecoverySamples: Int = 10
@@ -62,8 +62,6 @@ final class TrainingAlarmController {
     /// this alarm.) Thresholds kept at the prior `(0.97, 0.995)`
     /// levels; they no longer index a tanh-gradient and are just
     /// "very confident" / "near-degenerate" markers.
-    nonisolated static let valueAbsMeanSaturationWarningThreshold: Double = 0.97
-    nonisolated static let valueAbsMeanSaturationCriticalThreshold: Double = 0.995
 
     /// Streak counts for the value-head saturation detector. Match the
     /// divergence detector's `(warning: 3, critical: 2, recovery: 10)`
@@ -88,8 +86,6 @@ final class TrainingAlarmController {
     /// buffer), critical at 0.97 (basically degenerate). Distinct from
     /// `valueAbsMeanSaturation` above, which catches the *opposite*
     /// extreme (`vAbs → 1`, over-confident win/loss everywhere).
-    nonisolated static let valueDrawCollapseWarningThreshold: Double = 0.92
-    nonisolated static let valueDrawCollapseCriticalThreshold: Double = 0.97
     nonisolated static let valueDrawCollapseConsecutiveWarningSamples: Int = 3
     nonisolated static let valueDrawCollapseConsecutiveCriticalSamples: Int = 2
     nonisolated static let valueDrawCollapseRecoverySamples: Int = 10
@@ -108,6 +104,16 @@ final class TrainingAlarmController {
 
     private(set) var active: TrainingAlarm?
     private(set) var silenced = false
+
+    /// The training-health monitor's active alarms, mirrored for the alarm
+    /// list (`TrainingHealthAlarmList`). The monitor is the source; this is
+    /// replaced wholesale on every evaluation's main-actor hop
+    /// (`refreshHealth(from:)`), never edited.
+    private(set) var healthAlarms: [TrainingHealthActiveAlarm] = []
+
+    /// The rule whose health stop suspended training, for the list's header
+    /// row; nil when training is not suspended by a health alarm.
+    private(set) var healthSuspendedRule: TrainingHealthRule?
 
     // MARK: - Private detector / sound state
 
@@ -145,12 +151,9 @@ final class TrainingAlarmController {
     }
 
     private func evaluateDivergence(entropy: Double?, gradNorm: Double?) {
-        let warningOutOfLine =
-            (entropy.map { $0 < Self.policyEntropyAlarmThreshold } ?? false)
-            && (gradNorm.map { $0 > Self.divergenceAlarmGradNormWarningThreshold } ?? false)
-        let criticalOutOfLine =
-            (entropy.map { $0 < Self.divergenceAlarmEntropyCriticalThreshold } ?? false)
-            || (gradNorm.map { $0 > Self.divergenceAlarmGradNormCriticalThreshold } ?? false)
+        let level = TrainingHealthDetectorConditions.divergenceLevel(entropy: entropy, gradientNorm: gradNorm)
+        let warningOutOfLine = level == .warning
+        let criticalOutOfLine = level == .critical
 
         if criticalOutOfLine {
             divergenceCriticalStreak += 1
@@ -210,8 +213,9 @@ final class TrainingAlarmController {
             valueAbsMeanSaturationRecoveryStreak = 0
             return
         }
-        let critical = vAbs >= Self.valueAbsMeanSaturationCriticalThreshold
-        let warning = vAbs >= Self.valueAbsMeanSaturationWarningThreshold
+        let level = TrainingHealthDetectorConditions.valueSaturationLevel(valueAbsMean: vAbs)
+        let critical = level == .critical
+        let warning = level != nil
         if critical {
             valueAbsMeanSaturationCriticalStreak += 1
             valueAbsMeanSaturationWarningStreak = 0
@@ -261,8 +265,9 @@ final class TrainingAlarmController {
             valueDrawCollapseRecoveryStreak = 0
             return
         }
-        let critical = pD >= Self.valueDrawCollapseCriticalThreshold
-        let warning = pD >= Self.valueDrawCollapseWarningThreshold
+        let level = TrainingHealthDetectorConditions.valueDrawSaturationLevel(valueProbDraw: pD)
+        let critical = level == .critical
+        let warning = level != nil
         if critical {
             valueDrawCollapseCriticalStreak += 1
             valueDrawCollapseWarningStreak = 0
@@ -320,6 +325,7 @@ final class TrainingAlarmController {
     /// Raise (or update) the banner. Used by `evaluate(from:)` and by other
     /// detectors (e.g. the legal-mass-collapse probe) directly.
     func raise(severity: TrainingAlarm.Severity, title: String, detail: String) {
+        defer { reconcileSound() }
         let next = TrainingAlarm(
             id: UUID(),
             severity: severity,
@@ -339,13 +345,13 @@ final class TrainingAlarmController {
         if isNewAlarm || titleOrSeverityChanged {
             SessionLogger.shared.log("[ALARM] \(title): \(detail)")
         }
-        startAlarmSoundLoopIfNeeded()
     }
 
     /// Auto-clear / lifecycle-reset path: clears the banner, unmutes, and
     /// cancels the beep loop. Does NOT touch the divergence streak counters
     /// (the recovery-streak auto-clear in `evaluate(from:)` deliberately leaves
-    /// them alone).
+    /// them alone), nor the health alarms, which clear only by recovery: the
+    /// loop restarts at once if a critical one remains.
     func clear() {
         if let prior = active {
             SessionLogger.shared.log("[ALARM] cleared: \(prior.title)")
@@ -354,15 +360,47 @@ final class TrainingAlarmController {
         silenced = false
         alarmSoundTask?.cancel()
         alarmSoundTask = nil
+        reconcileSound()
     }
 
+    /// Mute the beep for whatever is sounding (the banner, a critical health
+    /// alarm, or both). Reachable from the banner and from the health list.
     func silence() {
         if let active {
             SessionLogger.shared.log("[ALARM] silenced: \(active.title)")
         }
+        if healthAlarms.contains(where: { $0.severity == .critical }) {
+            SessionLogger.shared.log("[ALARM] silenced: training health alarms "
+                + healthAlarms.map { "\($0.rule.rawValue):\($0.severity.rawValue)" }.joined(separator: ","))
+        }
         silenced = true
-        alarmSoundTask?.cancel()
-        alarmSoundTask = nil
+        reconcileSound()
+    }
+
+    // MARK: - Training-health alarms
+
+    /// Mirror `monitor`'s current active set (D2: re-read on every hop, so
+    /// hops arriving out of order never show an older state).
+    func refreshHealth(from monitor: TrainingHealthMonitor) {
+        refreshHealth(monitor.activeAlarmsSnapshot())
+    }
+
+    /// Core of `refreshHealth(from:)`, for tests.
+    func refreshHealth(_ alarms: [TrainingHealthActiveAlarm]) {
+        healthAlarms = alarms
+        reconcileSound()
+    }
+
+    func setHealthSuspension(_ rule: TrainingHealthRule?) {
+        healthSuspendedRule = rule
+    }
+
+    /// Whether the beep loop should run: the banner shows an alarm or a
+    /// critical health alarm is active, and the user has not silenced it.
+    /// Warnings alone never beep (OD-8).
+    var shouldSound: Bool {
+        guard !silenced else { return false }
+        return active != nil || healthAlarms.contains { $0.severity == .critical }
     }
 
     /// Clear the banner AND reset the divergence streak counters so the alarm
@@ -377,6 +415,7 @@ final class TrainingAlarmController {
         alarmSoundTask?.cancel()
         alarmSoundTask = nil
         resetStreaks()
+        reconcileSound()
     }
 
     /// The consecutive-sample counters behind the divergence, value-saturation
@@ -439,8 +478,17 @@ final class TrainingAlarmController {
 
     // MARK: - Beep loop
 
-    private func startAlarmSoundLoopIfNeeded() {
-        guard active != nil, !silenced, alarmSoundTask == nil else { return }
+    /// The one place the beep loop starts or stops, called after every
+    /// change to the banner, the health alarms or `silenced`: one loop for
+    /// both sources, so a health-only critical alarm beeps although the
+    /// banner shows nothing.
+    private func reconcileSound() {
+        guard shouldSound else {
+            alarmSoundTask?.cancel()
+            alarmSoundTask = nil
+            return
+        }
+        guard alarmSoundTask == nil else { return }
         alarmSoundTask = Task {
             while !Task.isCancelled {
                 await playAlarmBuzzBurst()
@@ -456,7 +504,7 @@ final class TrainingAlarmController {
     @MainActor
     private func playAlarmBuzzBurst() async {
         for _ in 0..<3 {
-            if Task.isCancelled || active == nil || silenced { return }
+            if Task.isCancelled || !shouldSound { return }
             NSSound.beep()
             do {
                 try await Task.sleep(for: .seconds(1.2))

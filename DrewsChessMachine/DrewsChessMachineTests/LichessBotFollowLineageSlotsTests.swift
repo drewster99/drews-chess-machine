@@ -606,7 +606,7 @@ final class LichessBotFollowLineageSlotsTests: XCTestCase {
         let info = await slots.current.info
         XCTAssertEqual(info.trainingStep, 2000, "the generation records what was loaded")
         XCTAssertEqual(info.lineage?.segmentLocalStep, 2000)
-        XCTAssertTrue(lines.value.contains { $0.contains("(file changed since the check: loaded step 2000)") }, "\(lines.value)")
+        XCTAssertTrue(lines.value.contains { $0.contains("(file changed since the check: loaded segment step 2000)") }, "\(lines.value)")
     }
 
     func testFileOfAnotherLineageAtTheSamePathIsRefused() async throws {

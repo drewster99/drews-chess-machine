@@ -120,9 +120,15 @@ struct AnalysisExportMetadata: Codable, Sendable {
         /// active one. Excludes stopped time; restored across resumes.
         /// `nil` when no `CheckpointController` / segment history exists.
         let cumulativeTrainingSeconds: Double?
-        /// Positions (plies) consumed per SGD step
-        /// (`TrainingParameters.shared.trainingBatchSize`).
-        let batchSize: Int
+        /// Positions (plies) consumed per SGD step by the active
+        /// Play-and-Train run — its run-start capture, which a settings edit
+        /// during the run does not change. nil (omitted) when no run is
+        /// active; `batchSizeSetting` is written instead.
+        let batchSize: Int?
+        /// The `training_batch_size` setting, which applies at the next
+        /// Play-and-Train start; written only when no run is active, so it
+        /// is never mistaken for a batch a run trained at. Added in v3.
+        let batchSizeSetting: Int?
         /// Arena score a candidate must reach to be promoted
         /// (`TrainingParameters.shared.arenaPromoteThreshold`).
         let promoteThreshold: Double
@@ -131,6 +137,8 @@ struct AnalysisExportMetadata: Codable, Sendable {
         let replayBufferPlies: Int?
     }
 
-    /// Current schema version emitted by this build.
-    static let currentSchemaVersion = 2
+    /// Current schema version emitted by this build. v3: `training.batchSize`
+    /// is the active run's and omitted with no run active, when
+    /// `training.batchSizeSetting` holds the setting instead.
+    static let currentSchemaVersion = 3
 }

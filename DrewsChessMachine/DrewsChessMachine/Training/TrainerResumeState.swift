@@ -22,11 +22,14 @@ import Foundation
 /// carries one without the others cannot be resumed exactly, so
 /// `SafetensorsModelIO` refuses to write or read that combination.
 ///
-/// Deliberately separate from `ModelCheckpointMetadata.trainingStep`: the CLI
-/// runners write their *segment-local* step there, and the replay tracker
-/// (`documentation/dashboards/`) derives cumulative steps from it as
-/// `cumstep_base + training_step`. The trainer clock here is cumulative across
-/// every exact resume of the lineage.
+/// The clock here is cumulative across every exact resume of the lineage,
+/// and it is what a resume restores — never `ModelCheckpointMetadata.trainingStep`.
+/// From format v11 a trainer-state file's `training_step` states the same
+/// value (the writer and the reader refuse a file where they differ); the
+/// segment's own step is the lineage record's `segment_local_step`. Files
+/// written before v11 by the CLI runners state their *segment-local* step as
+/// `training_step` (read by `ModelFileStepReading`), which is why the clock
+/// was never taken from it.
 struct TrainerScheduleState: Sendable, Equatable {
     /// The trainer's completed SGD steps — the clock warmup, the cycle phase
     /// and the decay envelope are evaluated against.

@@ -396,19 +396,10 @@ struct UpperContentView: View {
     // `trainingBatchSize` (demo-training batch size) moved to
     // `SessionController` in Stage 4g — `SessionController.trainingBatchSize`.
 
-    /// Number of training steps at the start of a Play-and-Train
-    /// session for which the `[STATS]` line fires on every step.
-    /// After this many steps the STATS ticker switches to a 60 s
-    /// time-based cadence. The bootstrap window covers the first
-    /// few minutes of training — long enough to see the initial
-    /// loss curve shape without flooding the log once training
-    /// settles.
-    nonisolated static let bootstrapStatsStepCount: Int = 500
-
     // The training-alarm thresholds, divergence-streak detector, and the
     // banner / beep state moved to `TrainingAlarmController` (held below as
-    // `@State private var trainingAlarm`). `policyEntropyAlarmThreshold` lives
-    // there now too — referenced as `TrainingAlarmController.policyEntropyAlarmThreshold`.
+    // `@State private var trainingAlarm`). `TrainingHealthThresholds.policyEntropyAlarm` (shared with
+    // the training-health rules, OD-9) is the entropy threshold.
 
     // Real (self-play) training run state moved to SessionController in
     // Stage 4d — forwarding proxies below. (Self-play generates games, labels
@@ -808,15 +799,6 @@ struct UpperContentView: View {
     // and accessed via `trainingParams.<name>`. See TrainingParameters.swift
     // for the canonical definitions, defaults, and persistence.
 
-    /// Last auto-computed step delay (auto-controller state, persisted across
-    /// sessions, intentionally NOT a training parameter). Moved to
-    /// SessionController in Stage 4l — forwarding proxy; the source of truth is
-    /// `SessionController.lastAutoComputedDelayMs`, a `UserDefaults`-backed
-    /// computed property (was `@AppStorage("lastAutoComputedDelayMs")` here).
-    private var lastAutoComputedDelayMs: Int {
-        get { session.lastAutoComputedDelayMs } nonmutating set { session.lastAutoComputedDelayMs = newValue }
-    }
-
     /// Singleton container for all training parameters that were
     /// previously stored as @AppStorage / @State on this view.
     /// Reads (`trainingParams.<name>`) participate in the view's
@@ -983,6 +965,7 @@ struct UpperContentView: View {
             sweepRunning: sweepRunning,
             realTraining: realTraining,
             isArenaRunning: session.isArenaRunning,
+            trainingSuspended: session.trainingSuspension != nil,
             checkpointSaveInFlight: checkpoint.checkpointSaveInFlight,
             isTrainingOnce: isTrainingOnce,
             isEvaluating: isEvaluating,
@@ -1146,6 +1129,8 @@ struct UpperContentView: View {
                     onDismiss: { trainingAlarm.dismiss() }
                 )
             }
+            // Always mounted; hidden (opacity 0, zero frame) while empty.
+            TrainingHealthAlarmList(alarmController: trainingAlarm)
             cumulativeStatusBar
             busyRowWithDialogs
             boardAndTextRow
@@ -1784,7 +1769,7 @@ struct UpperContentView: View {
             samplingScheduleBox?.setArena(session.buildArenaSchedule())
         }
         trainingSettingsPopover.trainerProvider = { trainer }
-        trainingSettingsPopover.runStartCaptureProvider = { session.runStartCapture }
+        trainingSettingsPopover.runStartCaptureProvider = { session.activeRunStartCapture }
         trainingSettingsPopover.replayRatioControllerProvider = { replayRatioController }
         trainingSettingsPopover.pushSelfPlaySchedule = {
             samplingScheduleBox?.setSelfPlay(session.buildSelfPlaySchedule())
@@ -2449,6 +2434,7 @@ struct UpperContentView: View {
         commandHub.sweepRunning = sweepRunning
         commandHub.realTraining = realTraining
         commandHub.isArenaRunning = session.isArenaRunning
+        commandHub.trainingSuspended = session.trainingSuspension != nil
         commandHub.checkpointSaveInFlight = checkpoint.checkpointSaveInFlight
         commandHub.pendingLoadedSessionExists = pendingLoadedSession != nil
         commandHub.canResumeFromAutosave = canResumeFromAutosave
@@ -2870,8 +2856,8 @@ struct UpperContentView: View {
     /// One of four high-level session states surfaced as a colored
     /// chip in the top status bar. Order is the natural progression of
     /// a training session: Idle → SelfPlayPrefill (workers running but
-    /// the trainer is still waiting on
-    /// `trainingParams.replayBufferMinPositionsBeforeTraining`) →
+    /// the trainer is still waiting on the run's captured
+    /// `replayBufferMinPositionsBeforeTraining`) →
     /// TrainingWarmup (trainer is taking steps but the LR-warmup
     /// multiplier is still <1) → Training (warmup complete). Outside
     /// of a Play-and-Train session we always read Idle, regardless of
@@ -2887,7 +2873,9 @@ struct UpperContentView: View {
     private var sessionStatusChip: SessionStatusChipView.Kind {
         guard realTraining else { return .idle }
         let bufferCount = replayBuffer?.count ?? 0
-        if bufferCount < trainingParams.replayBufferMinPositionsBeforeTraining {
+        // The fill the run's trainer waits for (its run-start capture, which
+        // an active run always has), not a setting edited for the next start.
+        if bufferCount < session.replayBufferMinPositionsDisplay().value {
             return .selfPlayPrefill
         }
         if let snap = trainerWarmupSnap, snap.inWarmup {
@@ -2930,7 +2918,10 @@ struct UpperContentView: View {
         let totalSteps = trainingStats?.steps ?? 0
         let hasHistory = checkpoint.cumulativeRunCount > 0 || totalSteps > 0
         let canRunArena = !session.isArenaRunning && network != nil && trainer != nil
-        let totalPositions = totalSteps * trainingParams.trainingBatchSize
+        // Each step at the batch it trained at (the run's positions count);
+        // "—" where no run's count describes the displayed steps.
+        let positionsTrained = session.trainedPositionsForDisplay(atSessionSteps: totalSteps)
+            .map(Self.formatCompactCount) ?? "—"
         // Live actual LR + momentum the optimizer is being fed (cycle-aware,
         // warmup-aware), shown whenever a trainer exists — not only during
         // warm-up. During warm-up the LR value is the actual ramped value.
@@ -2948,7 +2939,7 @@ struct UpperContentView: View {
             learningRateInWarmup: liveLRInWarmup,
             momentum: liveMomentum,
             trainingSteps: Int(totalSteps).formatted(),
-            positionsTrained: Self.formatCompactCount(totalPositions),
+            positionsTrained: positionsTrained,
             trainingRate: trainingRateStatusValue,
             legalMass: legalMassStr,
             runs: "\(checkpoint.cumulativeRunCount)",
@@ -3233,11 +3224,11 @@ struct UpperContentView: View {
     /// Apply attribute-based color highlighting to the multi-line
     /// body text of a stats panel. Wraps `AttributedMetricColor`
     /// with the live grad-clip ceiling and the project's
-    /// `policyEntropyAlarmThreshold` so the entropy/gNorm bands stay
+    /// `TrainingHealthThresholds.policyEntropyAlarm` so the entropy/gNorm bands stay
     /// calibrated against whatever values are currently in use.
     private func colorizedPanelBody(_ body: String) -> AttributedString {
         let thresholds = AttributedMetricColor.Thresholds.default(
-            entropyCollapseBelow: TrainingAlarmController.policyEntropyAlarmThreshold,
+            entropyCollapseBelow: TrainingHealthThresholds.policyEntropyAlarm,
             gradClipMaxNorm: trainingParams.gradClipMaxNorm
         )
         return AttributedMetricColor.colorize(body: body, thresholds: thresholds)
@@ -3423,7 +3414,10 @@ struct UpperContentView: View {
         // column header.
         let trainerIDStr = trainer?.identifier?.description ?? dash
         let header = "Training [\(trainerIDStr)]"
-        lines.append("  Batch size:  \(trainingParams.trainingBatchSize)")
+        // The active run's batch (its run-start capture); with no run
+        // active, the setting, labelled as one.
+        let batchSize = session.trainingBatchSizeDisplay()
+        lines.append("  \(batchSize.label("Batch size")):  \(batchSize.value)")
 
         // Self-Play adds two extra header lines (replay buffer fill, rolling
         // loss). Both are present from the first render of a self-play run,
@@ -3432,13 +3426,16 @@ struct UpperContentView: View {
         // buffer and no meaningful rolling-loss window separate from the
         // last-step loss shown below.
         if isSelfPlay {
-            let bufCount = replayBuffer?.count ?? 0
-            let bufCap = replayBuffer?.capacity ?? trainingParams.replayBufferCapacity
-            let bytesPerPos = replayBuffer?.bytesPerPosition
-                ?? ReplayBuffer.bytesPerPosition(floatsPerBoard: ReplayBuffer.defaultFloatsPerBoard)
-            let bufRamMB = Double(bufCap * bytesPerPos) / (1024.0 * 1024.0)
-            let bufStr = String(format: "%6d / %d  (%.0f MB)", bufCount, bufCap, bufRamMB)
-            lines.append("  Buffer:     \(bufStr)")
+            // The run's own buffer, whose capacity is the one it was built
+            // with. A run always has one (it is installed with the run's
+            // capture), so without one there is nothing to describe.
+            if let buffer = replayBuffer {
+                let bufRamMB = Double(buffer.capacity * buffer.bytesPerPosition) / (1024.0 * 1024.0)
+                let bufStr = String(format: "%6d / %d  (%.0f MB)", buffer.count, buffer.capacity, bufRamMB)
+                lines.append("  Buffer:     \(bufStr)")
+            } else {
+                lines.append("  Buffer:     none")
+            }
             // Pre-constraint composition: game-weighted mean game length,
             // position-weighted mean game length, and W/D/L position split.
             let compStr: String
@@ -3647,14 +3644,17 @@ struct UpperContentView: View {
             let stepsPerSec: Double = segmentSteps > 0
             ? Double(segmentSteps) / rateDenomSec
             : 0
-            let movesPerSec: Double = segmentSteps > 0
-            ? Double(segmentSteps * trainingParams.trainingBatchSize) / rateDenomSec
-            : 0
+            // The batch this segment's steps trained at: the run's capture
+            // (every step since the segment's start), or the demo batch
+            // while demo training runs; none for stats left behind by a
+            // finished demo run.
+            let segmentBatchSize = session.trainedBatchSizeForDisplayedStats()
 
             let rateStr = segmentSteps > 0 ? String(format: "%.2f", stepsPerSec) : dash
             let movesSecStr: String
             let movesHrStr: String
-            if segmentSteps > 0 {
+            if segmentSteps > 0, let segmentBatchSize {
+                let movesPerSec = Double(segmentSteps * segmentBatchSize) / rateDenomSec
                 movesSecStr = Int(movesPerSec.rounded())
                     .formatted(.number.grouping(.automatic))
                 movesHrStr = Int((movesPerSec * 3600).rounded())

@@ -55,6 +55,7 @@ struct LichessBotRootView: View {
                 await controller.refreshTokenState()
             }
         }
+        .modifier(LichessBotRecordStatisticsClock(pipeline: controller.recordStatistics))
         // `initial`: the window may open with the sheet already due — a quit
         // or Go Offline opens it after setting `finishing`.
         .onChange(of: controller.finishing, initial: true) {

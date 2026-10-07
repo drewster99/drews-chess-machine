@@ -261,7 +261,7 @@ final class ExactResumeTests: XCTestCase {
                     createdAtUnix: 1_780_000_000,
                     metadata: ModelCheckpointMetadata(
                         creator: creator,
-                        trainingStep: 17,
+                        trainingStep: snapshot.schedule.completedTrainSteps,
                         parentModelID: "",
                         notes: "unit test",
                         trainerSchedule: snapshot.schedule
@@ -273,8 +273,8 @@ final class ExactResumeTests: XCTestCase {
                         trainerCompletedSteps: snapshot.schedule.completedTrainSteps, corpus: corpus)
                 )
                 let file = try CheckpointManager.decodeAnyModelFile(data)
-                // `training_step` stays the segment-local value it was given.
-                XCTAssertEqual(file.metadata.trainingStep, 17)
+                // `training_step` is the trainer step (format v11).
+                XCTAssertEqual(file.metadata.trainingStep, snapshot.schedule.completedTrainSteps)
                 return try TrainerResumeSnapshot(checkpoint: file, fileName: "unit-test.safetensors")
             },
             resume: { trainer, snapshot in
@@ -287,8 +287,9 @@ final class ExactResumeTests: XCTestCase {
     }
 
     func test_corpusReplay_resumeExact_continuesTheScheduleAsIfNeverStopped() async throws {
-        try await assertCLIExactResume(creator: "replay", corpus: LineageRecord.CorpusPosition(
-            corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", epoch: 0,
+        try await assertCLIExactResume(creator: "replay", corpus: try LineageRecord.CorpusPosition(
+            corpusIdentity: .listed([.init(corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", shardCount: 0)]),
+            segmentStart: .recorded(LineageRecord.FeedPoint(epoch: 0, nextGameIndex: 0)), epoch: 0,
             nextGameIndex: 12, shard: 0, populatedPlies: 0, bufferCapacity: 0,
             feedAheadPositions: 0, feedPerStep: 1, shardSHA256: []))
     }
@@ -343,7 +344,7 @@ final class ExactResumeTests: XCTestCase {
                     trainerWeights: snapshot.trainerWeights,
                     trainerID: "20260929-2-TEST",
                     trainerMetadata: ModelCheckpointMetadata(
-                        creator: "manual", trainingStep: 0, parentModelID: "20260929-1-TEST", notes: "trainer",
+                        creator: "manual", trainingStep: snapshot.schedule.completedTrainSteps, parentModelID: "20260929-1-TEST", notes: "trainer",
                         trainerSchedule: snapshot.schedule
                     ),
                     trainerCreatedAtUnix: 1_780_000_001,
@@ -424,8 +425,9 @@ final class ExactResumeTests: XCTestCase {
             weights: baseWeights,
             architecture: .current,
             includesVelocity: false,
-            lineage: try LineageRecord.forTests(trainerCompletedSteps: 9, corpus: LineageRecord.CorpusPosition(
-                corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", epoch: 0,
+            lineage: try LineageRecord.forTests(trainerCompletedSteps: 9, corpus: try LineageRecord.CorpusPosition(
+            corpusIdentity: .listed([.init(corpusID: "unit-test-corpus", corpusPath: "/unit-test-corpus", shardCount: 0)]),
+            segmentStart: .recorded(LineageRecord.FeedPoint(epoch: 0, nextGameIndex: 0)), epoch: 0,
                 nextGameIndex: 0, shard: 0, populatedPlies: 0, bufferCapacity: 0,
             feedAheadPositions: 0, feedPerStep: 1, shardSHA256: []))
         )

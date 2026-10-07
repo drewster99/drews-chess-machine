@@ -97,16 +97,20 @@ struct RunRandomSeed: Sendable, Equatable {
     /// The mode the run effectively ran in: a `--seed` run is seeded.
     var effectiveMode: RandomSeedMode {
         switch origin {
-        case .configured, .commandLine, .inherited(firstSegment: .configured): return .seeded
+        case .configured, .commandLine, .inherited(firstSegment: .configured),
+             .inherited(firstSegment: .commandLine): return .seeded
         case .drawn, .inherited(firstSegment: .drawn): return .unseeded
         }
     }
 
     /// How the run's seed is recorded in its lineage record: configured
-    /// (settings or `--seed`) or drawn, as the run's first segment got it.
+    /// (settings), command line (`--seed`) or drawn, as the run's first
+    /// segment got it. Schema 2 folded `--seed` into `configured`; schema 3
+    /// records it as itself (gap 9).
     var recordedOrigin: LineageRecord.RunStreams.SeedOrigin {
         switch origin {
-        case .configured, .commandLine: return .configured
+        case .configured: return .configured
+        case .commandLine: return .commandLine
         case .drawn: return .drawn
         case .inherited(let firstSegment): return firstSegment
         }

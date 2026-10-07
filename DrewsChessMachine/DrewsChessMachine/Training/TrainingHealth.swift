@@ -4,7 +4,7 @@ import Foundation
 //
 // Every training path (GUI Play-and-Train, `--replay-corpus`,
 // `--train-vs-uci`) and the offline `--replay-health-log` judge a run's
-// health through the one evaluator in this file, so the nine rules and
+// health through the one evaluator in this file, so the thirteen rules and
 // their thresholds have exactly one home. Nothing here touches the GPU, the
 // trainer, the replay buffer, a file or the log: the inputs are values the
 // paths already compute (`TrainStepTiming`, `LayerHealthSummary`), the
@@ -30,6 +30,15 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
     case policyOffsetDrift = "policy_offset_drift"
     case batchNormRunningVarianceRunaway = "bn_running_variance_runaway"
     case gradientSpike = "gradient_spike"
+    // Rules 10–13: the conditions of the GUI's banner detectors and of its
+    // legal-mass probe, moved here so every path judges them (owner
+    // decision OD-9). The banner keeps its own heartbeat cadence and
+    // streaks, but reads its levels from `TrainingHealthDetectorConditions`,
+    // the same functions these rules apply to the step window.
+    case divergence = "divergence"
+    case valueSaturation = "value_saturation"
+    case valueDrawSaturation = "value_draw_saturation"
+    case legalMassStall = "legal_mass_stall"
 
     /// Position in rule order (the declaration order of `allCases`).
     var ruleOrder: Int {
@@ -43,6 +52,10 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
         case .policyOffsetDrift: return 6
         case .batchNormRunningVarianceRunaway: return 7
         case .gradientSpike: return 8
+        case .divergence: return 9
+        case .valueSaturation: return 10
+        case .valueDrawSaturation: return 11
+        case .legalMassStall: return 12
         }
     }
 
@@ -50,7 +63,8 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
     /// only, so `stop_on_critical` can never stop on them.
     var hasCriticalLevel: Bool {
         switch self {
-        case .nonFinite, .deadChannels, .valueFC1ZeroVelocity, .illegalMass, .gradientCollapse:
+        case .nonFinite, .deadChannels, .valueFC1ZeroVelocity, .illegalMass, .gradientCollapse,
+             .divergence, .valueSaturation, .valueDrawSaturation, .legalMassStall:
             return true
         case .lossSpike, .policyOffsetDrift, .batchNormRunningVarianceRunaway, .gradientSpike:
             return false
@@ -61,10 +75,11 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
     /// critical only.
     var hasWarningLevel: Bool {
         switch self {
-        case .nonFinite, .illegalMass, .gradientCollapse:
+        case .nonFinite, .illegalMass, .gradientCollapse, .legalMassStall:
             return false
         case .deadChannels, .valueFC1ZeroVelocity, .lossSpike, .policyOffsetDrift,
-             .batchNormRunningVarianceRunaway, .gradientSpike:
+             .batchNormRunningVarianceRunaway, .gradientSpike,
+             .divergence, .valueSaturation, .valueDrawSaturation:
             return true
         }
     }
@@ -72,10 +87,15 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
     /// How long the raise condition must hold (Part R's "Sustain" column).
     var raiseSustain: TrainingHealthSustain {
         switch self {
-        case .illegalMass, .gradientCollapse, .policyOffsetDrift:
+        case .illegalMass, .gradientCollapse, .policyOffsetDrift,
+             .divergence, .valueSaturation, .valueDrawSaturation:
             return TrainingHealthThresholds.windowRuleSustain
         case .nonFinite, .deadChannels, .valueFC1ZeroVelocity, .lossSpike,
              .batchNormRunningVarianceRunaway, .gradientSpike:
+            return .immediate
+        case .legalMassStall:
+            // Its condition already spans `legalMassStallEvaluations`
+            // consecutive evaluations (the probe's no-improvement window).
             return .immediate
         }
     }
@@ -87,7 +107,8 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
         switch self {
         case .nonFinite:
             return nil
-        case .illegalMass, .gradientCollapse, .policyOffsetDrift:
+        case .illegalMass, .gradientCollapse, .policyOffsetDrift,
+             .divergence, .valueSaturation, .valueDrawSaturation, .legalMassStall:
             return TrainingHealthThresholds.windowRuleSustain
         case .deadChannels, .batchNormRunningVarianceRunaway:
             return TrainingHealthThresholds.layerHealthRuleClearSustain
@@ -98,8 +119,10 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
 }
 
 /// What a rule does besides logging when it is active. The raw value is
-/// the persisted parameter value; JSON writes the name.
-enum TrainingHealthAction: Int, CaseIterable, Codable, Sendable {
+/// the persisted parameter value (`training_health_action_<rule>`); JSON
+/// writes the name. Public because the `TrainingParameters` singleton (a
+/// public class) stores one per rule as this enum.
+public enum TrainingHealthAction: Int, CaseIterable, Codable, Sendable {
     /// Log, record and show only — the default for every rule.
     case log = 0
     /// Additionally stop the run while the rule is active at critical.
@@ -123,12 +146,35 @@ enum TrainingHealthAction: Int, CaseIterable, Codable, Sendable {
         self = action
     }
 
-    init(from decoder: Decoder) throws {
+    /// Closed range of raw values this enum covers, for pinning against the
+    /// action parameters' declared range.
+    static var parameterRawValueRange: ClosedRange<Int> {
+        let raws = allCases.map(\.rawValue)
+        guard let low = raws.min(), let high = raws.max() else {
+            preconditionFailure("TrainingHealthAction must have at least one case")
+        }
+        return low...high
+    }
+
+    /// Converts a persisted raw value. Every path that reaches this has
+    /// checked the value against the parameter's declared range (pinned to
+    /// `parameterRawValueRange` by test), so an unrepresentable value is a
+    /// programmer error and traps rather than silently picking an action.
+    init(persistedRawValue raw: Int) {
+        guard let action = TrainingHealthAction(rawValue: raw) else {
+            preconditionFailure(
+                "training_health_action raw value \(raw) has no TrainingHealthAction case; "
+                + "the parameters' declared range and \(TrainingHealthAction.self) have drifted apart")
+        }
+        self = action
+    }
+
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         self = try TrainingHealthAction(name: try container.decode(String.self))
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(name)
     }
@@ -160,6 +206,10 @@ struct TrainingHealthActions: Sendable, Equatable, Encodable {
     var policyOffsetDrift: TrainingHealthAction
     var batchNormRunningVarianceRunaway: TrainingHealthAction
     var gradientSpike: TrainingHealthAction
+    var divergence: TrainingHealthAction
+    var valueSaturation: TrainingHealthAction
+    var valueDrawSaturation: TrainingHealthAction
+    var legalMassStall: TrainingHealthAction
 
     /// Build every rule's action from one function of the rule.
     init(_ actionForRule: (TrainingHealthRule) -> TrainingHealthAction) {
@@ -172,6 +222,10 @@ struct TrainingHealthActions: Sendable, Equatable, Encodable {
         policyOffsetDrift = actionForRule(.policyOffsetDrift)
         batchNormRunningVarianceRunaway = actionForRule(.batchNormRunningVarianceRunaway)
         gradientSpike = actionForRule(.gradientSpike)
+        divergence = actionForRule(.divergence)
+        valueSaturation = actionForRule(.valueSaturation)
+        valueDrawSaturation = actionForRule(.valueDrawSaturation)
+        legalMassStall = actionForRule(.legalMassStall)
     }
 
     subscript(rule: TrainingHealthRule) -> TrainingHealthAction {
@@ -186,6 +240,10 @@ struct TrainingHealthActions: Sendable, Equatable, Encodable {
             case .policyOffsetDrift: return policyOffsetDrift
             case .batchNormRunningVarianceRunaway: return batchNormRunningVarianceRunaway
             case .gradientSpike: return gradientSpike
+            case .divergence: return divergence
+            case .valueSaturation: return valueSaturation
+            case .valueDrawSaturation: return valueDrawSaturation
+            case .legalMassStall: return legalMassStall
             }
         }
         set {
@@ -199,6 +257,10 @@ struct TrainingHealthActions: Sendable, Equatable, Encodable {
             case .policyOffsetDrift: policyOffsetDrift = newValue
             case .batchNormRunningVarianceRunaway: batchNormRunningVarianceRunaway = newValue
             case .gradientSpike: gradientSpike = newValue
+            case .divergence: divergence = newValue
+            case .valueSaturation: valueSaturation = newValue
+            case .valueDrawSaturation: valueDrawSaturation = newValue
+            case .legalMassStall: legalMassStall = newValue
             }
         }
     }
@@ -237,6 +299,14 @@ struct TrainingHealthConfig: Sendable, Equatable, Encodable {
     /// velocity lags death by a μ-dependent number of steps); never a
     /// condition.
     let momentumCoefficient: Double
+    /// Rule 13 (`legal_mass_stall`): the window median illegal mass above
+    /// which a window counts as stalled — the GUI legal-mass probe's
+    /// `legal_mass_collapse_threshold`, one setting for both.
+    let legalMassStallThreshold: Double
+    /// Rule 13: how many consecutive stalled evaluations, with no
+    /// improvement from the first to the last, raise it — the probe's
+    /// `legal_mass_collapse_no_improvement_probes`.
+    let legalMassStallEvaluations: Int
     let actions: TrainingHealthActions
 
     /// Refuses values no evaluation can run under (a check interval below 1
@@ -247,6 +317,8 @@ struct TrainingHealthConfig: Sendable, Equatable, Encodable {
         learningGraceSteps: Int,
         lrWarmupSteps: Int,
         momentumCoefficient: Double,
+        legalMassStallThreshold: Double,
+        legalMassStallEvaluations: Int,
         actions: TrainingHealthActions
     ) throws {
         guard checkIntervalSteps >= 1 else {
@@ -261,12 +333,39 @@ struct TrainingHealthConfig: Sendable, Equatable, Encodable {
         guard momentumCoefficient.isFinite else {
             throw TrainingHealthError.invalidConfig("momentumCoefficient must be finite, got \(momentumCoefficient)")
         }
+        guard legalMassStallThreshold.isFinite, legalMassStallThreshold > 0, legalMassStallThreshold <= 1 else {
+            throw TrainingHealthError.invalidConfig("legalMassStallThreshold must be in (0, 1], got \(legalMassStallThreshold)")
+        }
+        guard legalMassStallEvaluations >= 1 else {
+            throw TrainingHealthError.invalidConfig("legalMassStallEvaluations must be at least 1, got \(legalMassStallEvaluations)")
+        }
         self.enabled = enabled
         self.checkIntervalSteps = checkIntervalSteps
         self.learningGraceSteps = learningGraceSteps
         self.lrWarmupSteps = lrWarmupSteps
         self.momentumCoefficient = momentumCoefficient
+        self.legalMassStallThreshold = legalMassStallThreshold
+        self.legalMassStallEvaluations = legalMassStallEvaluations
         self.actions = actions
+    }
+
+    /// The one resolution from the parameters, shared by every path: the
+    /// command-line runners resolve it once from their run-start snapshot,
+    /// the GUI at every evaluation from `TrainingParameters.shared
+    /// .snapshot()`, so a live edit applies at the next evaluation. The
+    /// declared ranges already exclude every value the memberwise
+    /// initializer refuses, so a throw here means a snapshot bypassed
+    /// validation — surfaced, never defaulted.
+    init(_ snapshot: TrainingParametersSnapshot) throws {
+        try self.init(
+            enabled: snapshot.trainingHealthAlarmsEnabled,
+            checkIntervalSteps: snapshot.trainingHealthCheckIntervalSteps,
+            learningGraceSteps: snapshot.trainingHealthLearningGraceSteps,
+            lrWarmupSteps: snapshot.lrWarmupSteps,
+            momentumCoefficient: snapshot.momentumCoeff,
+            legalMassStallThreshold: snapshot.legalMassCollapseThreshold,
+            legalMassStallEvaluations: snapshot.legalMassCollapseNoImprovementProbes,
+            actions: TrainingHealthActions { snapshot.trainingHealthAction(for: $0) })
     }
 
     /// Trainer step from which rule 4's not-learned form applies.
@@ -278,6 +377,8 @@ struct TrainingHealthConfig: Sendable, Equatable, Encodable {
         case learningGraceSteps = "learning_grace_steps"
         case lrWarmupSteps = "lr_warmup_steps"
         case momentumCoefficient = "momentum_coefficient"
+        case legalMassStallThreshold = "legal_mass_stall_threshold"
+        case legalMassStallEvaluations = "legal_mass_stall_evaluations"
         case actions
     }
 }
@@ -400,6 +501,31 @@ enum TrainingHealthThresholds {
     static let batchNormRunningVarianceRunawayRaise: Double = 1000
     static let batchNormRunningVarianceRunawayClear: Double = 300
 
+    // Rules 10–12 — the GUI banner detectors' levels (OD-9), moved here
+    // from `TrainingAlarmController` so the banner and the evaluator read
+    // one declaration. Applied by `TrainingHealthDetectorConditions`.
+    /// Policy entropy (nats) below this, together with a gradient norm
+    /// above `divergenceGradientNormWarning`, is a divergence warning; also
+    /// the `[ALARM] policy entropy` line's threshold. ln(30) ≈ 3.4 nats in a
+    /// typical midgame and ≈ 1.9 for a fresh network, so 1.0 (≈ 2.7
+    /// effective legal moves) flags genuine collapse with a margin.
+    static let policyEntropyAlarm: Double = 1.0
+    /// Policy entropy below this alone is a critical divergence (≈ 1.6
+    /// effective legal moves).
+    static let divergenceEntropyCritical: Double = 0.5
+    static let divergenceGradientNormWarning: Double = 50.0
+    /// A gradient norm above this alone is a critical divergence.
+    static let divergenceGradientNormCritical: Double = 500.0
+    /// `vAbs = mean |p_win − p_loss|`: near 1 means the W/D/L head calls
+    /// nearly every position a clean win or loss — implausible for chess.
+    static let valueSaturationWarning: Double = 0.97
+    static let valueSaturationCritical: Double = 0.995
+    /// `pD = mean p_draw`: a fresh head starts at 0.75 (its bias init) and
+    /// healthy training pulls it down; well above that, the head is
+    /// calling nearly everything a draw.
+    static let valueDrawSaturationWarning: Double = 0.92
+    static let valueDrawSaturationCritical: Double = 0.97
+
     /// Records the pending window holds before it drops the oldest (and
     /// counts them, `truncated=` on the `[HEALTH] check` line). Guards
     /// against evaluations that never come.
@@ -451,6 +577,11 @@ struct TrainingHealthStepRecord: Sendable, Equatable {
     let totalMs: Double?
     /// Present on a diagnostic step; may be non-finite (rule 1 reads that).
     let policyLogitMean: Float?
+    /// Diagnostic-step values for rules 10–12 (policy entropy in nats, the
+    /// value head's mean |p_win − p_loss| and mean p_draw); nil otherwise.
+    let policyEntropy: Float?
+    let valueAbsMean: Float?
+    let valueProbDraw: Float?
 
     init(timing: TrainStepTiming, trainerStep: Int) {
         self.trainerStep = trainerStep
@@ -459,8 +590,21 @@ struct TrainingHealthStepRecord: Sendable, Equatable {
         self.gradGlobalNorm = timing.gradGlobalNorm
         self.totalMs = timing.totalMs
         self.policyLogitMean = timing.hasDiagnostics ? timing.policyLogitMean : nil
+        // NaN is `TrainStepTiming`'s "not computed" marker for these
+        // diagnostic fields (the step lines print it as `--`); a genuinely
+        // non-finite entropy halts the trainer before it is recorded
+        // (`nonFiniteLoss`), so a non-finite value here is "not measured".
+        self.policyEntropy = Self.measured(timing.policyEntropy, on: timing)
+        self.valueAbsMean = Self.measured(timing.valueAbsMean, on: timing)
+        self.valueProbDraw = Self.measured(timing.valueProbDraw, on: timing)
     }
 
+    private static func measured(_ value: Float, on timing: TrainStepTiming) -> Float? {
+        timing.hasDiagnostics && value.isFinite ? value : nil
+    }
+
+    /// A record whose rule 10–12 inputs were not measured (an older log's
+    /// row, a test's lean record).
     init(
         trainerStep: Int,
         loss: Float?,
@@ -469,12 +613,32 @@ struct TrainingHealthStepRecord: Sendable, Equatable {
         totalMs: Double?,
         policyLogitMean: Float?
     ) {
+        self.init(
+            trainerStep: trainerStep, loss: loss, illegalMassPenalty: illegalMassPenalty,
+            gradGlobalNorm: gradGlobalNorm, totalMs: totalMs, policyLogitMean: policyLogitMean,
+            policyEntropy: nil, valueAbsMean: nil, valueProbDraw: nil)
+    }
+
+    init(
+        trainerStep: Int,
+        loss: Float?,
+        illegalMassPenalty: Float?,
+        gradGlobalNorm: Float?,
+        totalMs: Double?,
+        policyLogitMean: Float?,
+        policyEntropy: Float?,
+        valueAbsMean: Float?,
+        valueProbDraw: Float?
+    ) {
         self.trainerStep = trainerStep
         self.loss = loss
         self.illegalMassPenalty = illegalMassPenalty
         self.gradGlobalNorm = gradGlobalNorm
         self.totalMs = totalMs
         self.policyLogitMean = policyLogitMean
+        self.policyEntropy = policyEntropy
+        self.valueAbsMean = valueAbsMean
+        self.valueProbDraw = valueProbDraw
     }
 }
 
@@ -504,7 +668,8 @@ struct LayerHealthDigest: Sendable, Equatable {
                 return self != .valueFC1Read
             case .valueFC1ZeroVelocity:
                 return self != .live
-            case .illegalMass, .gradientCollapse, .lossSpike, .policyOffsetDrift, .gradientSpike:
+            case .illegalMass, .gradientCollapse, .lossSpike, .policyOffsetDrift, .gradientSpike,
+                 .divergence, .valueSaturation, .valueDrawSaturation, .legalMassStall:
                 return false
             }
         }
@@ -689,6 +854,10 @@ struct TrainingHealthWindowStatistics: Sendable, Equatable {
     /// Median of |policyLogitMean| over the diagnostic records with a
     /// finite value.
     let policyLogitMeanAbsMedian: Double?
+    /// Rules 10–12: medians over the diagnostic records with a finite value.
+    let policyEntropyMedian: Double?
+    let valueAbsMeanMedian: Double?
+    let valueProbDrawMedian: Double?
     /// Non-finite values among the window's measured fields (rule 1).
     let nonFiniteValueCount: Int
     /// Rule 6's reference: median loss before the window.
@@ -706,6 +875,9 @@ struct TrainingHealthWindowStatistics: Sendable, Equatable {
         var illegal: [Double] = []
         var gradients: [Double] = []
         var offsets: [Double] = []
+        var entropies: [Double] = []
+        var valueAbs: [Double] = []
+        var valueDraw: [Double] = []
         var diagnostic = 0
         var nonFinite = 0
         var first: Int?
@@ -732,6 +904,9 @@ struct TrainingHealthWindowStatistics: Sendable, Equatable {
                     nonFinite += 1
                 }
             }
+            take(record.policyEntropy, into: &entropies)
+            take(record.valueAbsMean, into: &valueAbs)
+            take(record.valueProbDraw, into: &valueDraw)
         }
         var lossReference: TrainingHealthReference?
         var gradientReference: TrainingHealthReference?
@@ -752,6 +927,9 @@ struct TrainingHealthWindowStatistics: Sendable, Equatable {
             gradientNormMax: gradients.max(),
             diagnosticRecordCount: diagnostic,
             policyLogitMeanAbsMedian: median(offsets),
+            policyEntropyMedian: median(entropies),
+            valueAbsMeanMedian: median(valueAbs),
+            valueProbDrawMedian: median(valueDraw),
             nonFiniteValueCount: nonFinite,
             lossReference: lossReference,
             gradientNormReference: gradientReference)
@@ -866,6 +1044,68 @@ struct TrainingHealthEvaluation: Sendable {
     let window: TrainingHealthWindowStatistics?
 }
 
+/// Who turns an active alarm into a stop (R2). The decision itself is always
+/// `TrainingHealthStopPolicy.firstQualifying`; this says where it runs.
+enum TrainingHealthStopDecision: Sendable, Equatable {
+    /// At the end of every evaluation, with that evaluation's config: the
+    /// command-line paths and the offline replay, whose actions never
+    /// change during a run. The evaluation's `stopRequest` (and its `stop`
+    /// event line) is the stop.
+    case byEvaluator
+    /// By the caller after each evaluation is delivered, with the actions in
+    /// force at that moment: the GUI, whose actions are live-tunable and
+    /// whose detached checkpoint passes can finish after an action changed
+    /// (R2, R3). The evaluator then never requests a stop nor writes a
+    /// `stop` line; the caller writes it when it acts.
+    case byCaller
+}
+
+/// The GUI banner detectors' and legal-mass probe's conditions (owner
+/// decision OD-9): one pure function per condition, used by the banner
+/// (`TrainingAlarmController`, on its heartbeat's rolling means and its
+/// own streaks) and by the evaluator's rules 10–13 (on the step window's
+/// medians), so the two can never disagree about a level.
+enum TrainingHealthDetectorConditions {
+
+    /// Divergence: critical when the entropy alone is below its critical
+    /// floor or the gradient norm alone is above its critical ceiling;
+    /// warning when the entropy is low and the gradient norm high together.
+    /// A missing input never satisfies an arm.
+    static func divergenceLevel(entropy: Double?, gradientNorm: Double?) -> TrainingAlarm.Severity? {
+        let critical = (entropy.map { $0 < TrainingHealthThresholds.divergenceEntropyCritical } ?? false)
+            || (gradientNorm.map { $0 > TrainingHealthThresholds.divergenceGradientNormCritical } ?? false)
+        if critical { return .critical }
+        let warning = (entropy.map { $0 < TrainingHealthThresholds.policyEntropyAlarm } ?? false)
+            && (gradientNorm.map { $0 > TrainingHealthThresholds.divergenceGradientNormWarning } ?? false)
+        return warning ? .warning : nil
+    }
+
+    static func valueSaturationLevel(valueAbsMean: Double?) -> TrainingAlarm.Severity? {
+        guard let valueAbsMean else { return nil }
+        if valueAbsMean >= TrainingHealthThresholds.valueSaturationCritical { return .critical }
+        if valueAbsMean >= TrainingHealthThresholds.valueSaturationWarning { return .warning }
+        return nil
+    }
+
+    static func valueDrawSaturationLevel(valueProbDraw: Double?) -> TrainingAlarm.Severity? {
+        guard let valueProbDraw else { return nil }
+        if valueProbDraw >= TrainingHealthThresholds.valueDrawSaturationCritical { return .critical }
+        if valueProbDraw >= TrainingHealthThresholds.valueDrawSaturationWarning { return .warning }
+        return nil
+    }
+
+    /// The legal-mass probe's confirmation: `evaluations` consecutive
+    /// readings of legal mass (oldest first), every one with illegal mass
+    /// (`1 − legal`) above `illegalMassThreshold`, and no improvement — the
+    /// newest legal mass at most the oldest. Stated on legal mass, the
+    /// probe's own measurement, so the probe's arithmetic is unchanged.
+    static func legalMassStalled(legalMassRun: [Double], illegalMassThreshold: Double, evaluations: Int) -> Bool {
+        guard legalMassRun.count >= evaluations, let oldest = legalMassRun.first,
+              let newest = legalMassRun.last else { return false }
+        return legalMassRun.allSatisfy { (1.0 - $0) > illegalMassThreshold } && newest <= oldest
+    }
+}
+
 /// R2: one pure decision, shared by every path.
 enum TrainingHealthStopPolicy {
     /// The first active alarm, in rule order, whose severity qualifies under
@@ -890,7 +1130,7 @@ enum TrainingHealthStopPolicy {
 
 // MARK: - The evaluator
 
-/// The nine rules as a value type: per-rule sustain counters, hysteresis,
+/// The thirteen rules as a value type: per-rule sustain counters, hysteresis,
 /// the active set and the stop flag. The monitor runs every transition on a
 /// copy and commits it only if no trainer-clock rewind intervened (D2).
 struct TrainingHealthEvaluator: Sendable {
@@ -928,6 +1168,10 @@ struct TrainingHealthEvaluator: Sendable {
         var rules: [RuleState]
         /// Rule 4's regression form: the running minimum of window medians.
         var illegalMassRunningMinimum: Double?
+        /// Rule 13: the newest window medians of illegal mass, oldest first,
+        /// at most `legalMassStallEvaluations` of them; emptied by any window
+        /// at or below the threshold (the stall must be consecutive).
+        var legalMassStallMedians: [Double] = []
         /// Check-interval bucket of the last `[HEALTH] check` (nil before the
         /// first live evaluation).
         var lastCheckBucket: Int?
@@ -935,10 +1179,19 @@ struct TrainingHealthEvaluator: Sendable {
     }
 
     let valueFC1Applicability: TrainingHealthValueFC1Applicability
+    let stopDecision: TrainingHealthStopDecision
     private(set) var state: State
 
+    /// An evaluator that decides stops itself (`.byEvaluator`): the
+    /// command-line paths and the offline replay, whose actions never change
+    /// during a run.
     init(valueFC1Applicability: TrainingHealthValueFC1Applicability) {
+        self.init(valueFC1Applicability: valueFC1Applicability, stopDecision: .byEvaluator)
+    }
+
+    init(valueFC1Applicability: TrainingHealthValueFC1Applicability, stopDecision: TrainingHealthStopDecision) {
         self.valueFC1Applicability = valueFC1Applicability
+        self.stopDecision = stopDecision
         state = State(
             rules: Array(repeating: RuleState(), count: TrainingHealthRule.allCases.count),
             illegalMassRunningMinimum: nil, lastCheckBucket: nil)
@@ -972,6 +1225,7 @@ struct TrainingHealthEvaluator: Sendable {
             state.rules[rule.ruleOrder].newestAppliedTrainerStep = nil
         }
         state.illegalMassRunningMinimum = nil
+        state.legalMassStallMedians = []
     }
 
     // MARK: Evaluate
@@ -1029,6 +1283,16 @@ struct TrainingHealthEvaluator: Sendable {
             }
         }
 
+        // Rule 13's stall run includes this window after it was judged.
+        if let median = observation.window?.illegalMassMedian {
+            if median > config.legalMassStallThreshold {
+                state.legalMassStallMedians.append(median)
+                let overflow = state.legalMassStallMedians.count - config.legalMassStallEvaluations
+                if overflow > 0 { state.legalMassStallMedians.removeFirst(overflow) }
+            } else {
+                state.legalMassStallMedians = []
+            }
+        }
         // Rule 4's running minimum includes this window after it was judged.
         if let median = observation.window?.illegalMassMedian {
             state.illegalMassRunningMinimum = min(state.illegalMassRunningMinimum ?? median, median)
@@ -1046,7 +1310,8 @@ struct TrainingHealthEvaluator: Sendable {
         }
 
         var stopRequest: TrainingHealthEvent?
-        if !state.stopRequested,
+        if stopDecision == .byEvaluator,
+           !state.stopRequested,
            let qualifying = TrainingHealthStopPolicy.firstQualifying(active: activeAlarms, actions: config.actions) {
             let event = TrainingHealthEvent(
                 kind: .stop, rule: qualifying.rule, severity: qualifying.severity, trainerStep: step,
@@ -1084,7 +1349,8 @@ struct TrainingHealthEvaluator: Sendable {
     /// Rules whose input is the step window.
     static func isWindowRule(_ rule: TrainingHealthRule) -> Bool {
         switch rule {
-        case .illegalMass, .gradientCollapse, .lossSpike, .policyOffsetDrift, .gradientSpike:
+        case .illegalMass, .gradientCollapse, .lossSpike, .policyOffsetDrift, .gradientSpike,
+             .divergence, .valueSaturation, .valueDrawSaturation, .legalMassStall:
             return true
         case .nonFinite, .deadChannels, .valueFC1ZeroVelocity, .batchNormRunningVarianceRunaway:
             return false
@@ -1120,7 +1386,100 @@ struct TrainingHealthEvaluator: Sendable {
         case .policyOffsetDrift: return assessPolicyOffset(observation.window)
         case .batchNormRunningVarianceRunaway: return assessRunningVariance(observation.layerHealth)
         case .gradientSpike: return assessGradientSpike(observation.window)
+        case .divergence: return assessDivergence(observation.window)
+        case .valueSaturation: return assessValueSaturation(observation.window)
+        case .valueDrawSaturation: return assessValueDrawSaturation(observation.window)
+        case .legalMassStall: return assessLegalMassStall(observation, config: config)
         }
+    }
+
+    // Rules 10–12 judge the window medians with the GUI banner detectors'
+    // own level functions (`TrainingHealthDetectorConditions`); the clear is
+    // their healthy reading, so rule and banner agree on every level.
+
+    private func assessDivergence(_ window: TrainingHealthWindowStatistics?) -> Assessment {
+        guard let window, let gradient = window.gradientNormMedian else { return .noData }
+        let entropy = window.policyEntropyMedian
+        let value = "entropy=\(entropy.map { Self.fixed($0, 4) } ?? TrainingHealthLog.notMeasured)"
+            + " gNorm=\(Self.fixed(gradient, 3))"
+        switch TrainingHealthDetectorConditions.divergenceLevel(entropy: entropy, gradientNorm: gradient) {
+        case .critical:
+            return .raise(severity: .critical, value: value,
+                          threshold: "entropy<\(Self.plain(TrainingHealthThresholds.divergenceEntropyCritical))"
+                              + "|gNorm>\(Self.plain(TrainingHealthThresholds.divergenceGradientNormCritical))",
+                          detail: "", count: nil)
+        case .warning:
+            return .raise(severity: .warning, value: value,
+                          threshold: "entropy<\(Self.plain(TrainingHealthThresholds.policyEntropyAlarm))"
+                              + "&gNorm>\(Self.plain(TrainingHealthThresholds.divergenceGradientNormWarning))",
+                          detail: "", count: nil)
+        case nil:
+            // Without the entropy only the gradient arm of the critical level
+            // can be judged; a healthy gradient then says nothing either way.
+            return entropy == nil ? .noData : .clear(value: value, detail: "")
+        }
+    }
+
+    private func assessValueSaturation(_ window: TrainingHealthWindowStatistics?) -> Assessment {
+        guard let valueAbs = window?.valueAbsMeanMedian else { return .noData }
+        let value = "vAbs=\(Self.fixed(valueAbs, 4))"
+        switch TrainingHealthDetectorConditions.valueSaturationLevel(valueAbsMean: valueAbs) {
+        case .critical:
+            return .raise(severity: .critical, value: value,
+                          threshold: "vAbs>=\(Self.plain(TrainingHealthThresholds.valueSaturationCritical))",
+                          detail: "", count: nil)
+        case .warning:
+            return .raise(severity: .warning, value: value,
+                          threshold: "vAbs>=\(Self.plain(TrainingHealthThresholds.valueSaturationWarning))",
+                          detail: "", count: nil)
+        case nil:
+            return .clear(value: value, detail: "")
+        }
+    }
+
+    private func assessValueDrawSaturation(_ window: TrainingHealthWindowStatistics?) -> Assessment {
+        guard let draw = window?.valueProbDrawMedian else { return .noData }
+        let value = "pD=\(Self.fixed(draw, 4))"
+        switch TrainingHealthDetectorConditions.valueDrawSaturationLevel(valueProbDraw: draw) {
+        case .critical:
+            return .raise(severity: .critical, value: value,
+                          threshold: "pD>=\(Self.plain(TrainingHealthThresholds.valueDrawSaturationCritical))",
+                          detail: "", count: nil)
+        case .warning:
+            return .raise(severity: .warning, value: value,
+                          threshold: "pD>=\(Self.plain(TrainingHealthThresholds.valueDrawSaturationWarning))",
+                          detail: "", count: nil)
+        case nil:
+            return .clear(value: value, detail: "")
+        }
+    }
+
+    /// Rule 13, the GUI legal-mass probe's condition on the step window:
+    /// the window median illegal mass above the threshold on
+    /// `legalMassStallEvaluations` consecutive evaluations (this one
+    /// included) with no improvement from the first to the last, past the
+    /// learning gate. The probe's grace is wall-clock seconds, which no
+    /// command-line run can share; the rule uses the learning gate (warmup
+    /// plus `training_health_learning_grace_steps`), the trainer-step grace
+    /// rule 4's not-learned form already uses.
+    private func assessLegalMassStall(_ observation: TrainingHealthObservation, config: TrainingHealthConfig) -> Assessment {
+        guard let median = observation.window?.illegalMassMedian else { return .noData }
+        let run = state.legalMassStallMedians + (median > config.legalMassStallThreshold ? [median] : [])
+        let value = "median=\(Self.fixed(median, 4)) stalled=\(min(run.count, config.legalMassStallEvaluations))"
+            + "/\(config.legalMassStallEvaluations)"
+        if TrainingHealthDetectorConditions.legalMassStalled(
+            legalMassRun: run.suffix(config.legalMassStallEvaluations).map { 1.0 - $0 },
+            illegalMassThreshold: config.legalMassStallThreshold,
+            evaluations: config.legalMassStallEvaluations),
+           observation.trainerStep >= config.learningGateTrainerStep {
+            return .raise(severity: .critical, value: value,
+                          threshold: "median>\(Self.plain(config.legalMassStallThreshold))x\(config.legalMassStallEvaluations)&noImprovement",
+                          detail: "gate=\(config.learningGateTrainerStep)", count: nil)
+        }
+        if median <= config.legalMassStallThreshold {
+            return .clear(value: value, detail: "")
+        }
+        return .hold(value: value, detail: "")
     }
 
     private func assessGradientSpike(_ window: TrainingHealthWindowStatistics?) -> Assessment {
@@ -1539,6 +1898,38 @@ struct TrainingHealthSegmentSummary: Codable, Sendable, Equatable {
     let evaluations: Int
     /// One entry per rule that raised, in rule order.
     let raised: [Raised]
+
+    /// The summary of no evaluation: what a segment records before its
+    /// first monitor has evaluated anything.
+    static let empty = TrainingHealthSegmentSummary(evaluations: 0, raised: [])
+
+    /// This summary and `other` as one segment's: evaluations and raise
+    /// counts summed, the earliest first trainer step, the highest
+    /// severity. A GUI segment spans several monitors (one per start —
+    /// Continue and keep-trainer starts stay in the segment), so the
+    /// lineage record's `configuration.health_alarms` (HPARAM_RECORDING_PLAN
+    /// P4) is the merge of every monitor's summary in the segment. Pure and
+    /// order-independent, so merging the stored summary of the ended
+    /// monitors with the live one never counts anything twice as long as
+    /// each monitor is merged once.
+    func merging(_ other: TrainingHealthSegmentSummary) -> TrainingHealthSegmentSummary {
+        var byRule: [TrainingHealthRule: Raised] = [:]
+        for entry in raised + other.raised {
+            if let existing = byRule[entry.rule] {
+                byRule[entry.rule] = Raised(
+                    rule: entry.rule,
+                    firstTrainerStep: min(existing.firstTrainerStep, entry.firstTrainerStep),
+                    highestSeverity: existing.highestSeverity.healthRank >= entry.highestSeverity.healthRank
+                        ? existing.highestSeverity : entry.highestSeverity,
+                    raiseCount: existing.raiseCount + entry.raiseCount)
+            } else {
+                byRule[entry.rule] = entry
+            }
+        }
+        return TrainingHealthSegmentSummary(
+            evaluations: evaluations + other.evaluations,
+            raised: TrainingHealthRule.allCases.compactMap { byRule[$0] })
+    }
 }
 
 enum TrainingHealthError: LocalizedError, Equatable {

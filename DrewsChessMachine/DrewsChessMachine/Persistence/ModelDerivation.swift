@@ -50,9 +50,15 @@
 //    the tensors it rewrote, and the source file's SHA-256. A chain of
 //    derivations therefore stays traceable from the newest file alone.
 //
-//  Every other `__metadata__` key of the source (training step, value-head
-//  centering marker, replay provenance, …) is carried over verbatim; the
-//  keys this file rewrites are listed in `rewrittenMetadataKeys`.
+//  Every other `__metadata__` key of the source (value-head centering
+//  marker, replay provenance, …) is carried over verbatim; the keys this
+//  file rewrites are listed in `rewrittenMetadataKeys`. `training_step` is
+//  one of them: the output is written at the current format, where it means
+//  the trainer step, so it states the source's step reading
+//  (`ModelFileStepReading.trainerStepOrStatedStep` — the trainer step where
+//  the source records one, else the step it states, the same value the
+//  output's lineage records as its parent's step), and nothing when the
+//  source states none.
 //
 
 import CryptoKit
@@ -151,6 +157,7 @@ enum ModelDerivation {
         SafetensorsModelIO.Key.parentModelID,
         SafetensorsModelIO.Key.notes,
         SafetensorsModelIO.Key.architecture,
+        SafetensorsModelIO.Key.trainingStep,
         SafetensorsFile.contentHashKey,
         derivationHistoryKey,
         LineageRecord.metadataKey,
@@ -377,13 +384,17 @@ enum ModelDerivation {
 
         // Lineage. The source as a parent carries its derivation history
         // (its lineage record's, or the flat key a file before lineage
-        // states); this derivation appends one step to it.
+        // states); this derivation appends one step to it. Its step is the
+        // source's step reading, under the source's own format and writer
+        // (the decode above already put a pre-v11 source's legacy entry on
+        // its format's log).
+        let sourceStepReading = sourceDecoded.file.trainingStepReading
         let sourceLineage = try SafetensorsModelIO.lineage(
             fromMetadata: sourceMetadata, formatVersion: sourceDecoded.architectureFormat.formatVersion)
         let sourceParent = LineageTracker.ParentFile(
             modelID: parentModelID,
             contentSHA256: sourceMetadata[SafetensorsFile.contentHashKey],
-            trainerCompletedSteps: try SafetensorsModelIO.trainerClock(fromMetadata: sourceMetadata, source: sourceName),
+            trainerCompletedSteps: sourceStepReading.trainerStepOrStatedStep,
             lineage: sourceLineage,
             derivationHistory: try LineageTracker.ParentFile.derivationHistory(lineage: sourceLineage, metadata: sourceMetadata))
         if !appliedRewrites.isEmpty {
@@ -408,14 +419,21 @@ enum ModelDerivation {
         metadata[SafetensorsModelIO.Key.parentModelID] = parentModelID
         metadata[SafetensorsModelIO.Key.notes] = notes(for: record)
         metadata[SafetensorsModelIO.Key.architecture] = String(decoding: try JSONEncoder().encode(target), as: UTF8.self)
+        if let step = sourceStepReading.trainerStepOrStatedStep {
+            metadata[SafetensorsModelIO.Key.trainingStep] = String(step)
+        }
         // The derived model's lineage: a new run whose weights carry the
         // source's history (totals continue from the source's record, or
         // stay unrecorded for a source written before lineage). Its
         // derivation history — the source's plus this step — is written
         // by the record, with the flat `derivation_history` key as its
         // mirror.
-        let lineage = LineageTracker.untrainedCopyRecord(
-            source: sourceParent, derivation: record, pathKind: .derive, argv: invocationArguments,
+        let lineage = try LineageTracker.untrainedCopyRecord(
+            source: sourceParent, derivation: record,
+            sourceArchitecture: try LineageRecord.AncestorRun.ArchitectureAtDeparture.ifChanged(
+                from: source, to: target, sourceMetadata: sourceMetadata,
+                sourceFormatVersion: sourceDecoded.architectureFormat.formatVersion, sourceName: sourceName),
+            pathKind: .derive, argv: invocationArguments,
             at: Date(timeIntervalSince1970: TimeInterval(createdAtUnix)))
         for (key, value) in try lineage.metadataEntries() { metadata[key] = value }
 

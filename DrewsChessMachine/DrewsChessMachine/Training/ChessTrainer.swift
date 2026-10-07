@@ -1200,6 +1200,39 @@ final class ChessTrainer: @unchecked Sendable {
     /// batch-stats setting. See GPU_UTILIZATION_PLAN.md (Phase 1).
     static let diagnosticsFallbackInterval = 10
 
+    /// The diagnostics cadence for a `batchStatsInterval`: the interval
+    /// itself, or `diagnosticsFallbackInterval` when it is 0.
+    static func diagnosticsInterval(batchStatsInterval: Int) -> Int {
+        batchStatsInterval > 0 ? batchStatsInterval : diagnosticsFallbackInterval
+    }
+
+    /// Whether trainer step `trainerStep` runs the diagnostic reductions: a
+    /// multiple of the diagnostics interval, or a fixed step-line step
+    /// (`TrainingStepLineSchedule.isFixedLineStep`). The second term is what
+    /// makes every step line after a segment's first carry diagnostics for
+    /// any `batch_stats_interval` (one that does not divide 50 included); at
+    /// the default interval 10, and at 0 (fallback 10), every fixed line step
+    /// is already a multiple of 10, so the set of diagnostic steps is
+    /// unchanged. A function of the trainer step only — never of where a
+    /// process started — so a resumed run and the uninterrupted run run the
+    /// same graph on every step.
+    static func isDiagnosticsStep(trainerStep: Int, batchStatsInterval: Int) -> Bool {
+        trainerStep % diagnosticsInterval(batchStatsInterval: batchStatsInterval) == 0
+            || TrainingStepLineSchedule.isFixedLineStep(trainerStep: trainerStep)
+    }
+
+    /// Whether trainer step `trainerStep` collects batch metadata and
+    /// computes the batch-stats summary: never when `batchStatsInterval` is
+    /// 0, else a multiple of it or a fixed step-line step, so the
+    /// `[BATCH-STATS]` line that rides the step line has this step's own
+    /// summary. The sampler draws the same positions either way (the
+    /// metadata pointers are only copied into), so this changes no draw.
+    static func isBatchStatsStep(trainerStep: Int, batchStatsInterval: Int) -> Bool {
+        batchStatsInterval > 0
+            && (trainerStep % batchStatsInterval == 0
+                || TrainingStepLineSchedule.isFixedLineStep(trainerStep: trainerStep))
+    }
+
     /// Default per-head loss coefficients in `total_loss =
     /// valueLossWeight · valueLoss + policyLossWeight · policyLoss
     /// − entropyCoeff · policyEntropy
@@ -1976,22 +2009,34 @@ final class ChessTrainer: @unchecked Sendable {
     private var replayBatchWorkerGameIds: UnsafeMutablePointer<UInt32>?
     private var replayBatchMaterialCounts: UnsafeMutablePointer<UInt8>?
 
-    /// How often (in training steps) to compute and emit a
-    /// `[BATCH-STATS]` log line. 0 disables. Live-tunable from the UI
-    /// or from `TrainingParameters.batchStatsInterval`.
+    /// How often (in training steps) to compute the per-batch statistics
+    /// and the graph diagnostics (`isBatchStatsStep` / `isDiagnosticsStep`
+    /// add the fixed step-line steps). 0: no batch statistics; diagnostics
+    /// every `diagnosticsFallbackInterval` steps. The `[BATCH-STATS]` line
+    /// itself is written by the step-line writers (`BatchStatsLogLine`), not
+    /// here. Live-tunable from the UI or from
+    /// `TrainingParameters.batchStatsInterval`.
     var batchStatsInterval: Int = 10
+
+    /// The latest batch-stats summary and its unique-position percent, as
+    /// one value: written on the trainer's queue on every batch-stats step,
+    /// read by the step-line writers (the CLI runners between steps, the
+    /// GUI ticker task on every line) and the GUI `results.json` recorder.
+    /// Under one lock so a reader never sees a summary from one step with
+    /// a percent from another.
+    private struct LatestBatchStats: Sendable {
+        var summary: ReplayBuffer.BatchStatsSummary?
+        var uniquePct: Double
+    }
+    private let latestBatchStats = SyncBox(LatestBatchStats(summary: nil, uniquePct: .nan))
+
     /// Last computed unique-position percent (0..1) for surfacing in
-    /// the regular `[STATS]` line. Defaults to NaN until the first
-    /// stats-collection batch lands.
-    private(set) var lastBatchStatsUniquePct: Double = .nan
-    /// Last full batch-stats summary so the CLI recorder can ship
-    /// every result.json's stats tick with the most-recent
-    /// observability snapshot. Nil until the first stats batch lands.
-    /// Reads/writes are unsynchronized scalar pointer assignments
-    /// (the struct is small, but Swift atomicity isn't guaranteed) —
-    /// acceptable for diagnostic purposes; readers may briefly see
-    /// the prior value during update.
-    private(set) var lastBatchStatsSummary: ReplayBuffer.BatchStatsSummary?
+    /// the regular `[STATS]` line. NaN until the first stats-collection
+    /// batch lands.
+    var lastBatchStatsUniquePct: Double { latestBatchStats.value.uniquePct }
+    /// Last full batch-stats summary (its `step` says which trainer step it
+    /// describes). Nil until the first stats batch lands.
+    var lastBatchStatsSummary: ReplayBuffer.BatchStatsSummary? { latestBatchStats.value.summary }
 
     // Per-step phase timings, accumulated within the current
     // batchStatsInterval window. Reset on every emit. Touched only
@@ -4435,31 +4480,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// reading the SyncBox twice would otherwise let the count and LR
     /// disagree by one training step.
     func effectiveLearningRate(forBatchSize batchSize: Int, completedSteps: Int? = nil) -> Float {
-        let steps = completedSteps ?? _completedTrainSteps.value
-        let warmupMul: Float
-        if lrWarmupSteps > 0 {
-            warmupMul = Float(min(1.0, Double(steps) / Double(lrWarmupSteps)))
-        } else {
-            warmupMul = 1.0
-        }
-        // Base LR: the cycle's geometric value when LR cycling is active,
-        // otherwise the static `learningRate`. Identical resolution to
-        // `buildFeeds` so this readout matches the LR the SGD step actually
-        // applies — sqrt-batch scaling and warmup compose on top.
-        let baseLR: Float = _lrMomentumCycle.value.learningRate(
-            completedTrainSteps: steps,
-            lrWarmupSteps: lrWarmupSteps
-        ).map { Float($0) } ?? learningRate
-        var lr: Float
-        if sqrtBatchScalingForLR {
-            let sqrtBatchScale: Float = Float(
-                sqrt(Double(batchSize) / Double(Self.sqrtScaleBaseBatchSize))
-            )
-            lr = baseLR * sqrtBatchScale
-        } else {
-            lr = baseLR
-        }
-        return lr * warmupMul
+        fedSchedule(forBatchSize: batchSize, completedSteps: completedSteps ?? _completedTrainSteps.value).learningRate
     }
 
     /// Effective Polyak momentum the optimizer is currently being fed:
@@ -4471,11 +4492,23 @@ final class ChessTrainer: @unchecked Sendable {
     /// in-flight step; pass `completedSteps` to pin it to the same
     /// observation as a co-published LR.
     func effectiveMomentum(completedSteps: Int? = nil) -> Float {
-        let steps = completedSteps ?? _completedTrainSteps.value
-        return _lrMomentumCycle.value.momentum(
-            completedTrainSteps: steps,
-            lrWarmupSteps: lrWarmupSteps
-        ).map { Float($0) } ?? momentumCoeff
+        // The batch size scales only the learning rate; momentum ignores it.
+        fedSchedule(forBatchSize: Self.sqrtScaleBaseBatchSize,
+                    completedSteps: completedSteps ?? _completedTrainSteps.value).momentum
+    }
+
+    /// The learning rate and momentum fed at trainer clock `completedSteps`
+    /// for a batch of `batchSize`: `LRMomentumCycleReadout`, the one
+    /// function the readouts above, `buildFeeds` and the lineage record's
+    /// `schedule_at_save` all use (plan O-18), so a status readout, the SGD
+    /// step and the record cannot compute different values. The cycle
+    /// configuration is read once, so both channels come from one untorn
+    /// copy of it.
+    private func fedSchedule(forBatchSize batchSize: Int, completedSteps: Int) -> LRMomentumCycleReadout.Fed {
+        LRMomentumCycleReadout.values(
+            completedTrainSteps: completedSteps, lrWarmupSteps: lrWarmupSteps, cycle: _lrMomentumCycle.value,
+            staticLearningRate: learningRate, staticMomentum: momentumCoeff, batchSize: batchSize,
+            sqrtBatchScaling: sqrtBatchScalingForLR, sqrtScaleBaseBatchSize: Self.sqrtScaleBaseBatchSize)
     }
 
     private func internalTrainStep(batchSize: Int, queueWaitMs: Double = 0) throws -> TrainStepTiming {
@@ -4648,13 +4681,12 @@ final class ChessTrainer: @unchecked Sendable {
             // racing the in-flight one.
             let interval = self.batchStatsInterval
             let nextStep = self._completedTrainSteps.value + 1
-            let isStatsStep = interval > 0 && nextStep % interval == 0
-            // Graph diagnostics are gated separately from [BATCH-STATS]: they
+            let isStatsStep = Self.isBatchStatsStep(trainerStep: nextStep, batchStatsInterval: interval)
+            // Graph diagnostics are gated separately from batch stats: they
             // coincide with stats steps when `batchStatsInterval` is set, but
-            // fall back to a fixed cadence when it's 0 so the [STATS] line and
-            // the entropy/draw-collapse alarms never lose their inputs.
-            let diagnosticsInterval = interval > 0 ? interval : Self.diagnosticsFallbackInterval
-            let includeDiagnostics = nextStep % diagnosticsInterval == 0
+            // fall back to a fixed cadence when it's 0 so the step lines and
+            // the entropy alarms never lose their inputs.
+            let includeDiagnostics = Self.isDiagnosticsStep(trainerStep: nextStep, batchStatsInterval: interval)
             let didSample = replayBuffer.sample(
                 count: batchSize,
                 intoBoards: boards,
@@ -4680,11 +4712,11 @@ final class ChessTrainer: @unchecked Sendable {
             let sampledBatchDrawFraction = samplingResult.batchSize > 0
                 ? Double(samplingResult.achievedDrawCount) / Double(samplingResult.batchSize)
                 : Double.nan
-            // Compute batch stats up-front (cheap, ~1 ms) and emit the
-            // line BEFORE the heavy GPU work fires. Doing it here keeps
-            // it on the trainer queue (no cross-queue ownership of the
-            // metadata pointers) and means a stats failure can't
-            // interrupt training.
+            // Compute batch stats up-front (cheap, ~1 ms) BEFORE the heavy
+            // GPU work fires. Doing it here keeps it on the trainer queue
+            // (no cross-queue ownership of the metadata pointers) and means
+            // a stats failure can't interrupt training. The `[BATCH-STATS]`
+            // line is written by the step-line writers, from this summary.
             if isStatsStep {
                 let summary = replayBuffer.computeBatchStats(
                     step: nextStep,
@@ -4697,9 +4729,7 @@ final class ChessTrainer: @unchecked Sendable {
                     materialCounts: materials,
                     zs: zs
                 )
-                self.lastBatchStatsUniquePct = summary.uniquePct
-                self.lastBatchStatsSummary = summary
-                SessionLogger.shared.log("[BATCH-STATS] " + summary.jsonLine())
+                self.latestBatchStats.value = LatestBatchStats(summary: summary, uniquePct: summary.uniquePct)
 
                 // Surface composition-constraint deviations: stratum
                 // clamps on the draw cap (in either direction), length
@@ -5778,6 +5808,55 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
+    /// Read one trainable tensor's optimizer velocity, with the trainer's
+    /// completed-step clock read in the same queue turn — the training-health
+    /// monitor's dedicated value-FC1 read (`value.fc1.weight`, alarms plan
+    /// D6, every 1,000 trainer steps where no save's checkpoint pass covers
+    /// the interval).
+    ///
+    /// Same pattern as `readLayerHealthLiveState`: enqueued on
+    /// `executionQueue`, the queue every SGD step runs on, so it lands
+    /// between steps and never observes a half-applied update, and the
+    /// caller does not pause training. One `graph.run` whose only target is
+    /// that velocity variable, fed the dummy inference input: no operation
+    /// is targeted, so nothing is assigned, no dropout op is encoded (no
+    /// RNG advance) and the weights, velocity, BN statistics and replay
+    /// buffer are untouched (probe isolation; pinned by
+    /// `ValueFC1VelocityReadTests`). Velocity is fp32 on every path.
+    func readTrainableVelocity(named name: String) async throws -> (velocity: [Float], completedTrainSteps: Int) {
+        let trainableNames = arch.trainableTensorPlan().map(\.name)
+        guard let index = trainableNames.firstIndex(of: name) else {
+            throw ChessTrainerError.layerHealthTensorNotInPlan(name)
+        }
+        return try await enqueue { [self] in
+            try autoreleasepool {
+                // A trainer built for loaded weights holds zero velocity
+                // until its load, which would read as every unit dead.
+                try network.requireLoadedWeights("readTrainableVelocity")
+                // `velocityVariables` is one per trainable, in
+                // `trainableTensorPlan()` order (the order the saved
+                // velocity tensors are named in).
+                guard velocityVariables.count == trainableNames.count else {
+                    throw ChessTrainerError.trainerWeightCountMismatch(
+                        expected: "\(trainableNames.count) velocity variables (trainableTensorPlan)",
+                        got: velocityVariables.count)
+                }
+                let variable = velocityVariables[index]
+                let results = network.graph.run(
+                    with: network.commandQueue,
+                    feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                    targetTensors: [variable],
+                    targetOperations: nil
+                )
+                guard let data = results[variable] else {
+                    throw ChessTrainerError.velocityReadbackMissing(variable.operation.name)
+                }
+                let count = try ChessNetwork.elementCount(of: variable)
+                return (ChessNetwork.readFloatsFP32(from: data, count: count), _completedTrainSteps.value)
+            }
+        }
+    }
+
     /// Body of `readLayerHealthLiveState`; must run on `executionQueue`.
     /// Refuses a trainer still waiting for its weight load, whose zero-filled
     /// variables would read as every channel dead.
@@ -6148,39 +6227,18 @@ final class ChessTrainer: @unchecked Sendable {
         // Snapshot the step count and the cycling config once, so warmup,
         // the LR cycle, and the momentum cycle all key off the same step and
         // a single consistent (untorn) config read.
-        let currentStep = _completedTrainSteps.value
-        let cycle = _lrMomentumCycle.value
-
-        let warmupMul: Float
-        if lrWarmupSteps > 0 {
-            warmupMul = Float(min(1.0, Double(currentStep) / Double(lrWarmupSteps)))
-        } else {
-            warmupMul = 1.0
-        }
+        //
         // Base LR: the cycle's geometric value when LR cycling is active,
-        // otherwise the static configured learning rate. sqrt-batch scaling
-        // and warmup then compose multiplicatively on top, exactly as before —
-        // enabling LR cycling overrides the static base, not the multipliers.
-        // The cycle starts after warmup (see `LRMomentumCycle.cycleStep`), so
-        // during warmup this is the cycle's starting value and the ramp below
-        // lands exactly on it.
-        // One schedule evaluation feeds both channels, so LR and momentum
-        // can never be computed from different envelope positions.
-        let cycleValues = cycle.values(
-            completedTrainSteps: currentStep,
-            lrWarmupSteps: lrWarmupSteps
-        )
-        let baseLR: Float = cycleValues.learningRate.map { Float($0) } ?? learningRate
-        var lr: Float
-        if sqrtBatchScalingForLR {
-            let sqrtBatchScale: Float = Float(
-                sqrt(Double(input.batchSize) / Double(Self.sqrtScaleBaseBatchSize))
-            )
-            lr = baseLR * sqrtBatchScale
-        } else {
-            lr = baseLR
-        }
-        lr *= warmupMul
+        // otherwise the static configured learning rate; sqrt-batch scaling
+        // and warmup compose multiplicatively on top — enabling LR cycling
+        // overrides the static base, not the multipliers. The cycle starts
+        // after warmup (see `LRMomentumCycle.cycleStep`), so during warmup
+        // the ramp lands exactly on the cycle's starting value. One schedule
+        // evaluation feeds both channels, so LR and momentum can never come
+        // from different envelope positions. `fedSchedule` computes it, the
+        // same function the readouts and the lineage record use.
+        let fed = fedSchedule(forBatchSize: input.batchSize, completedSteps: _completedTrainSteps.value)
+        let lr = fed.learningRate
         // Every scalar hyperparameter ND array is fp32 (its graph
         // placeholder is fp32), so `writeScalarFeed` writes the raw `Float`.
         // It still branches on the array's own dtype, so a narrow array could
@@ -6198,10 +6256,9 @@ final class ChessTrainer: @unchecked Sendable {
         writeScalarFeed(policyLabelSmoothingPerMoveCapNDArray, value: policyLabelSmoothingPerMoveCap)
         writeScalarFeed(valueLabelSmoothingEpsilonNDArray, value: valueLabelSmoothingEpsilon)
         // Momentum: the cycle's linear value when momentum cycling is active,
-        // otherwise the static configured coefficient.
-        // Offset by warmup exactly like the LR channel so the two stay in phase.
-        let momentumToFeed: Float = cycleValues.momentum.map { Float($0) } ?? momentumCoeff
-        writeScalarFeed(momentumNDArray, value: momentumToFeed)
+        // otherwise the static configured coefficient, offset by warmup
+        // exactly like the LR channel so the two stay in phase.
+        writeScalarFeed(momentumNDArray, value: fed.momentum)
         writeScalarFeed(complementCEEnableNDArray, value: useSignedAdvantageComplementCE ? 1.0 : 0.0)
 
         return cached.feedsDict

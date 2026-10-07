@@ -368,17 +368,26 @@ extension ModelDerivation {
             build: build,
             operations: [operation])
 
-        // Lineage: a new derived run continuing the source's totals.
+        // Lineage: a new derived run continuing the source's totals. The
+        // source's step is its step reading, under its own format and
+        // writer (the record's `source_training_step` above stays the value
+        // as the source stated it; the decode above already put a pre-v11
+        // source's legacy entry on its format's log).
+        let sourceStepReading = sourceDecoded.file.trainingStepReading
         let sourceLineage = try SafetensorsModelIO.lineage(
             fromMetadata: sourceMetadata, formatVersion: sourceDecoded.architectureFormat.formatVersion)
         let sourceParent = LineageTracker.ParentFile(
             modelID: parentModelID,
             contentSHA256: sourceMetadata[SafetensorsFile.contentHashKey],
-            trainerCompletedSteps: try SafetensorsModelIO.trainerClock(fromMetadata: sourceMetadata, source: sourceName),
+            trainerCompletedSteps: sourceStepReading.trainerStepOrStatedStep,
             lineage: sourceLineage,
             derivationHistory: try LineageTracker.ParentFile.derivationHistory(lineage: sourceLineage, metadata: sourceMetadata))
-        let lineage = LineageTracker.untrainedCopyRecord(
-            source: sourceParent, derivation: record, pathKind: .derive, argv: invocationArguments,
+        let lineage = try LineageTracker.untrainedCopyRecord(
+            source: sourceParent, derivation: record,
+            sourceArchitecture: try LineageRecord.AncestorRun.ArchitectureAtDeparture.ifChanged(
+                from: sourceDecoded.architecture, to: target, sourceMetadata: sourceMetadata,
+                sourceFormatVersion: sourceDecoded.architectureFormat.formatVersion, sourceName: sourceName),
+            pathKind: .derive, argv: invocationArguments,
             at: Date(timeIntervalSince1970: TimeInterval(createdAtUnix)))
 
         // Metadata is built, not copied: a graft's file states only what is

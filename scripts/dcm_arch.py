@@ -72,8 +72,11 @@ ACTIVATION_FUNCTIONS = ('relu', 'silu', 'gelu', 'leaky_relu')
 UNVERSIONED_LEGACY_VERSION = 3
 # ArchitectureFormat.currentVersion: the newest format this module understands.
 # A newer (or non-positive) version is refused, as the app's requireSupported
-# refuses it, rather than read under rules that may not hold for it.
-CURRENT_FORMAT_VERSION = 10
+# refuses it, rather than read under rules that may not hold for it. v11 adds no
+# architecture field: from it a header's `training_step` is the trainer step
+# (`dcm_lineage.step_reading` reads a file's step under either rule), and a copy
+# of this module that predates it refuses a v11 file instead of misreading it.
+CURRENT_FORMAT_VERSION = 11
 # A safetensors header larger than this is not a DCM model header (theirs are
 # a few kilobytes); refusing it keeps a damaged length prefix from being read
 # as a request for gigabytes.
@@ -81,8 +84,8 @@ MAX_HEADER_BYTES = 100 * 1024 * 1024
 # The text Swift's `Int(String)` parses: an optional sign, then one or more ASCII
 # digits, nothing else (no whitespace, underscores or non-ASCII digits, all of
 # which Python's int() accepts). Used with fullmatch: `$` would admit a trailing
-# newline.
-_SWIFT_INT_TEXT = re.compile(r'[+-]?[0-9]+')
+# newline. Shared with `dcm_lineage`'s integer header values.
+SWIFT_INT_TEXT = re.compile(r'[+-]?[0-9]+')
 # The keys of the uniform-tower (legacy) form, every one required by the app's
 # decoder (NetworkArchitecture.init(from:) without `block_groups`).
 _UNIFORM_TOWER_KEYS = (
@@ -102,11 +105,11 @@ class ArchitectureError(ValueError):
 def parsed_format_version(format_version):
     """A stated format version as a positive int, parsed as the app parses it
     (ArchitectureFormat.safetensorsFormatVersion): text must be what Swift's
-    `Int(String)` accepts (`_SWIFT_INT_TEXT`); an int (not a bool) is taken as is;
+    `Int(String)` accepts (`SWIFT_INT_TEXT`); an int (not a bool) is taken as is;
     anything else, or a value of 0 or below, raises. No upper bound: that is
     `checked_format_version`'s."""
     if isinstance(format_version, str):
-        if not _SWIFT_INT_TEXT.fullmatch(format_version):
+        if not SWIFT_INT_TEXT.fullmatch(format_version):
             raise ArchitectureError(f"format version {format_version!r} is not an integer")
         version = int(format_version)
     elif isinstance(format_version, int) and not isinstance(format_version, bool):

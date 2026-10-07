@@ -29,15 +29,18 @@ final class GuiResumeContinuationGapsTests: XCTestCase {
         let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .gui, argv: ["DrewsChessMachine"],
                                          startedAt: start, segmentStartTrainerStep: 0)
         let seed = RunRandomSeed.resolve(mode: .seeded, configuredSeed: 7, commandLineSeed: nil, drawSeed: { 0 })
+        try tracker.noteSegmentStartForTests(trainerStep: 0, policyTailPrecision: savedPrecision, seed: seed)
         let streams = seed.runStreams(samplerState: seed.streams.generator(.sampler),
                                       dropoutStreamState: seed.streams.generator(.dropout),
                                       nextGameSerial: 12, arenasStarted: 3, opponentGameIndices: nil)
         let record = try tracker.record(
             at: start.addingTimeInterval(60), trainerCompletedSteps: 4, segmentLocalStep: 4,
             segmentGames: 2, segmentPositions: 120, corpus: nil,
-            parameters: try LineageRecord.Parameters(values: ["learning_rate": .double(0.0005)]),
+            parameters: try .forTests(adopting: TrainerScheduleState(completedTrainSteps: 4, lrWarmupSteps: 3, lrMomentumCycle: .disabled),
+                                      overriding: ["learning_rate": .double(0.0005)]),
             rng: LineageRecord.RNG(dropoutPhiloxState: try DropoutPhiloxState(words: [1, 2, 3, 4, 5, 6, 7]),
-                                   streams: streams, behaviorFingerprint: Self.fingerprint))
+                                   streams: streams, behaviorFingerprint: Self.fingerprint),
+            inputs: tracker.testInputs)
         let weights = arch.weightTensorPlan().enumerated().map { i, spec in
             (0..<spec.elementCount).map { Float((i * 5 + $0) % 11) * 0.01 }
         } + arch.trainableTensorPlan().map { [Float](repeating: -0.25, count: $0.elementCount) }
@@ -71,10 +74,10 @@ final class GuiResumeContinuationGapsTests: XCTestCase {
     }
 
     private func gaps(_ resumed: LoadedSession, continuedRunStreams: LineageRecord.RunStreams?,
-                      replayBufferRestored: Bool) -> [String] {
+                      replayBufferRestored: Bool) throws -> [String] {
         let gaps = SessionController.guiResumeGaps(
             resumed: resumed, continuedRunStreams: continuedRunStreams, replayBufferRestored: replayBufferRestored,
-            runningPolicyTailPrecision: savedPrecision, runningBuild: .current, runningDevice: .current,
+            runningPolicyTailPrecision: savedPrecision, runningBuild: try .current, runningDevice: .current,
             runningFingerprint: Self.fingerprint)
         return ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps).tokens
     }
@@ -82,17 +85,17 @@ final class GuiResumeContinuationGapsTests: XCTestCase {
     func testStreamsContinuedAndBufferRestoredResumeExactly() throws {
         let resumed = completeSession(file: try trainerFileWithStreams())
         let streams = try XCTUnwrap(SessionController.resumableRunStreams(of: resumed))
-        XCTAssertEqual(gaps(resumed, continuedRunStreams: streams, replayBufferRestored: true), [])
+        XCTAssertEqual(try gaps(resumed, continuedRunStreams: streams, replayBufferRestored: true), [])
     }
 
     func testStreamsInTheFileButNotContinuedAreNamed() throws {
         let resumed = completeSession(file: try trainerFileWithStreams())
-        XCTAssertEqual(gaps(resumed, continuedRunStreams: nil, replayBufferRestored: true), ["rng_sampler", "serials"])
+        XCTAssertEqual(try gaps(resumed, continuedRunStreams: nil, replayBufferRestored: true), ["rng_sampler", "serials"])
     }
 
     func testFailedBufferRestoreIsNamed() throws {
         let resumed = completeSession(file: try trainerFileWithStreams())
         let streams = try XCTUnwrap(SessionController.resumableRunStreams(of: resumed))
-        XCTAssertEqual(gaps(resumed, continuedRunStreams: streams, replayBufferRestored: false), ["buffer"])
+        XCTAssertEqual(try gaps(resumed, continuedRunStreams: streams, replayBufferRestored: false), ["buffer"])
     }
 }

@@ -37,8 +37,12 @@ enum ModelFileLineageFacts: Sendable, Equatable {
     /// Written at a format version from before lineage records.
     case unrecorded(formatVersion: Int)
     /// The record (or the format version, trainer clock or derivation
-    /// history read with it) does not decode. The file still lists: the
-    /// file picker shows what it always showed.
+    /// history read with it) does not decode, and the file's step reading
+    /// did not need the record, so the file still lists. A file whose step
+    /// reading does need it (`ModelFileStepReading.reading`'s `recordSteps`:
+    /// a format-v11 file stating a `training_step`, whose segment step is
+    /// the record's) is an unreadable catalog entry instead, since its step
+    /// cannot be read without the record and is never made up.
     case unreadable(reason: String)
 }
 
@@ -56,8 +60,9 @@ struct ModelFileLineagePosition: Sendable, Equatable {
     /// (`ModelLineageTip`), which needs them to see a parent that kept
     /// training after a child resumed it.
     let handoffs: [LineageHandoff]
-    /// The segment's own step count at the save (the CLI files'
-    /// `training_step`).
+    /// The segment's own step count at the save (equal to `training_step`
+    /// on CLI files before format v11; from v11 `training_step` is the
+    /// trainer step and this is its sidecar).
     let segmentLocalStep: Int
     /// Nil when the run continues history no record counted.
     let cumTrainerStep: Int?
@@ -239,12 +244,20 @@ enum ModelFileCatalog {
         } else {
             label = "no architecture recorded"
         }
-        var trainingStep: Int?
-        if let text = metadata["training_step"] {
-            guard let step = Int(text) else {
-                throw ModelFileCatalogError.notSafetensors(file: name, detail: "training_step \"\(text)\" is not an integer")
-            }
-            trainingStep = step
+        // The file's trainer step where it records one, else the step it
+        // states (`ModelFileStepReading`): one rule for files before and
+        // after format v11, so the number shown is the trainer step wherever
+        // one is known. Order within a line (one model ID, one writer) is
+        // the same as by the raw value. The reading decodes the lineage
+        // record only when it needs it; a record it needs that does not
+        // decode makes this an error entry, as an unreadable architecture
+        // does. Display-only, so its legacy entry is not logged here.
+        let trainingStep: Int?
+        do {
+            trainingStep = try SafetensorsModelIO.trainingStepReading(fromMetadata: metadata, source: name)
+                .trainerStepOrStatedStep
+        } catch {
+            throw ModelFileCatalogError.notSafetensors(file: name, detail: "unreadable training step: \(String(describing: error))")
         }
         var createdAt: Date?
         if let text = metadata["created_at_unix"] {

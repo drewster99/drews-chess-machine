@@ -40,6 +40,7 @@ enum RunProvenanceLine {
         fields += buildAndDevice(build: record.build, device: record.device)
         fields.append(seedFields(seed))
         fields.append("params_sha=\(record.parameters.map { short($0.sha256) } ?? Self.none)")
+        fields.append("policy_tail=\(policyTail(record.configuration))")
         fields.append("cum_step=\(total(record.steps.cumTrainerStep))")
         fields.append("cum_games=\(total(record.fed.cumGames))")
         fields.append("cum_train_sec=\(total(record.time.cumTrainStepSec))")
@@ -88,10 +89,31 @@ enum RunProvenanceLine {
             "build=\(build.buildNumber)",
             "git=\(build.gitHash)",
             "dirty=\(build.gitDirty)",
+            "git_diff=\(diff(build.gitDiffSHA256))",
             "device=\(quoted(device.cpu ?? Self.unrecorded))",
             "vm=\(device.isVirtualMachine.map { String($0) } ?? Self.unrecorded)",
             "os=\(quoted(device.osVersion))",
         ]
+    }
+
+    /// The build's diff hash (gap 6): its first digits, `none` for a clean
+    /// build, `unrecorded` for a build that predates the field.
+    private static func diff(_ hash: LineageRecord.Recorded<String?>) -> String {
+        switch hash {
+        case .recorded(let value?): return short(value)
+        case .recorded(nil): return Self.none
+        case .unrecorded: return Self.unrecorded
+        }
+    }
+
+    /// The segment's policy-tail precision (gap 8), `none` for a record with
+    /// no training behind it, `unrecorded` for one carried from schema 2.
+    private static func policyTail(_ configuration: LineageRecord.RecordedIfTrained<LineageRecord.TrainingConfiguration>) -> String {
+        switch configuration {
+        case .recorded(let value): return value.policyTailPrecision
+        case .notTrained: return Self.none
+        case .unrecorded: return Self.unrecorded
+        }
     }
 
     private static func seedFields(_ seed: RunRandomSeed?) -> String {

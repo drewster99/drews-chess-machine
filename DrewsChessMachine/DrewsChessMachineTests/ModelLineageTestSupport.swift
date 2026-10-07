@@ -18,7 +18,8 @@ struct LineageTestSegment {
             segmentPositions: 0,
             corpus: nil,
             parameters: nil,
-            rng: .withoutRunStreams(dropoutPhiloxState: nil))
+            rng: .withoutRunStreams(dropoutPhiloxState: nil),
+            inputs: tracker.testInputs)
     }
 
     var segmentStartTrainerStep: Int? { tracker.segmentStartTrainerStep }

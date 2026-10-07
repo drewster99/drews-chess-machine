@@ -24,6 +24,8 @@ import dcm_arch  # noqa: E402
 import dcm_session_logs  # noqa: E402
 import probe_record  # noqa: E402
 import table_common  # noqa: E402
+sys.path.insert(0, HERE)
+from test_lineage import v11_header  # noqa: E402
 
 
 def group(**fields):
@@ -174,6 +176,42 @@ class ProbeRecordTests(unittest.TestCase):
         status, record = probe_record.build_record(self.checkpoint, 2000, text, self.probes, "Test.app@sha256:000000000000")
         self.assertEqual((status, record["pElo"]), (0, None))
 
+    def test_a_v11_resumed_segments_record_carries_the_trainer_step_and_its_basis(self):
+        checkpoint = os.path.join(self.folder.name, "run-replay-step2000-v11.safetensors")
+        write_header(checkpoint, v11_header(local_step=487, cum=2000, model_id="M1"))
+        status, record = probe_record.build_record(checkpoint, 2000, self.summary(), self.probes,
+                                                   "Test.app@sha256:000000000000")
+        self.assertEqual(status, 0, record)
+        self.assertEqual(list(record)[:3], ["step", "training_step", "model_id"])
+        self.assertEqual((record["step"], record["trainer_step"], record["segment_step"], record["step_basis"]),
+                         (2000, 2000, 487, "trainer_step"))
+        keys = list(record)
+        self.assertGreater(keys.index("step_basis"), keys.index("model_id"), "the new keys come after the leading ones")
+
+    def test_a_pre_v11_record_names_its_segment_step_basis(self):
+        status, record = probe_record.build_record(self.checkpoint, 2000, self.summary(), self.probes,
+                                                   "Test.app@sha256:000000000000")
+        self.assertEqual(status, 0)
+        self.assertEqual(record["step_basis"], "legacy_unknown_writer")
+        self.assertEqual(list(record)[:4], ["step", "training_step", "model_id", "parent_model_id"])
+
+    def test_a_record_appends_to_a_probes_file_of_records_without_a_basis(self):
+        with open(self.probes, "w") as handle:
+            handle.write(json.dumps({"step": 1000, "training_step": 1000, "model_id": "M1", "pElo": 1.0,
+                                     "nll": 2.0}) + "\n")
+        status, record = probe_record.build_record(self.checkpoint, 2000, self.summary(), self.probes,
+                                                   "Test.app@sha256:000000000000")
+        self.assertEqual(status, 0, record)
+        with open(self.probes, "a") as handle:
+            handle.write(json.dumps(record) + "\n")
+        self.assertEqual(sorted(probe_record.load_probe_points(self.probes, "M1")), [1000, 2000])
+
+    def test_a_header_the_tools_refuse_is_an_identity_failure(self):
+        checkpoint = os.path.join(self.folder.name, "run-replay-step2000-bad.safetensors")
+        write_header(checkpoint, v11_header(local_step=487, cum=2000, model_id="M1", stated=487))
+        self.assertEqual(probe_record.build_record(checkpoint, 487, self.summary(), self.probes,
+                                                   "Test.app@sha256:000000000000")[0], 4)
+
     def test_load_probe_points_refusals(self):
         with self.assertRaises(FileNotFoundError):
             probe_record.load_probe_points(self.probes, "M1")
@@ -320,6 +358,34 @@ class ProbeLoopScriptTests(unittest.TestCase):
         self.assertEqual([(r["step"], r["model_id"], r["pElo"]) for r in records], [(2000, "M1", 1200.5)])
 
 
+    def test_probe_loop_above_step_skips_an_earlier_segments_files_under_the_stem(self):
+        # Segment 0 (model M0) wrote steps 1000 and 1513; the resumed segment (M1, v11)
+        # continued the series under the same stem from trainer step 1513.
+        write_header(os.path.join(self.models, f"{self.STEM}-replay-step1000.safetensors"),
+                     {"model_id": "M0", "training_step": "1000"})
+        write_header(os.path.join(self.models, f"{self.STEM}-replay-step1513.safetensors"),
+                     {"model_id": "M0", "training_step": "1513"})
+        write_header(os.path.join(self.models, f"{self.STEM}-replay-step2000.safetensors"),
+                     v11_header(local_step=487, cum=2000, model_id="M1"))
+        summary = json.dumps({"modelID": "M1", "pElo": 1200.5, "nll": 2.4, "set": "wide"})
+        probe = self.app_executable("Probe.app", f"echo '{summary}'\n")
+        completed = self.run_loop(["--once", self.STEM, self.probes], PROBE_BIN=probe, PROBE_ABOVE_STEP="1513")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("skipping step 1000", completed.stdout)
+        self.assertIn("skipping step 1513", completed.stdout)
+        with open(self.probes) as handle:
+            records = [json.loads(line) for line in handle]
+        self.assertEqual([(r["step"], r["segment_step"], r["step_basis"]) for r in records],
+                         [(2000, 487, "trainer_step")])
+
+    def test_probe_loop_refuses_probe_segment_with_above_step(self):
+        probe = self.app_executable("Probe.app", "exit 0\n")
+        completed = self.run_loop(["--once", self.STEM, self.probes], PROBE_BIN=probe, PROBE_SEGMENT="1",
+                                  PROBE_ABOVE_STEP="1000")
+        self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+        self.assertIn("cannot be used together", completed.stderr)
+
+
 class BufferGameLengthTests(unittest.TestCase):
     def test_games_at_the_boundary_are_interpolated(self):
         feed = [(50, 0, 0), (100, 400_000, 6_000), (150, 800_000, 12_000)]
@@ -328,6 +394,28 @@ class BufferGameLengthTests(unittest.TestCase):
         self.assertEqual(table_common.games_fed_at(feed, axis, 600_000), 9_000)
         self.assertIsNone(table_common.games_fed_at(feed, axis, -1))
         self.assertIsNone(table_common.games_fed_at(feed, axis, 900_000))
+
+    def test_buffer_game_length_by_trainer_step_keys_on_the_trainer_step(self):
+        # A resumed segment's log (segment 1, started at trainer step 513): its lines'
+        # trainer steps are its segment steps plus 513, so its 1000-step marks fall on
+        # trainer steps, not segment steps; a line from an older build without
+        # trainerStep= is not read.
+        lines = ["00:00:00.000 [REPLAY] step=1 loss=1 plies=100000 games=1000 epoch=0\n"]
+        for segment_step, plies, games in ((487, 400_000, 6_000), (987, 800_000, 12_000), (1487, 1_200_000, 18_000)):
+            lines.append(f"00:00:00.000 [REPLAY] step={segment_step} loss=1 plies={plies} games={games} epoch=0 "
+                         f"mom=0.9 trainerStep={segment_step + 513}\n")
+        with tempfile.TemporaryDirectory() as folder:
+            with open(os.path.join(folder, "seg1.txt"), "w") as handle:
+                handle.writelines(lines)
+            with mock.patch.object(table_common, "LOGS", folder):
+                by_trainer = table_common.buffer_plies_per_game_by_trainer_step("seg1.txt")
+                by_segment = table_common.buffer_plies_per_game("seg1.txt")
+        # Trainer step 1000's buffer boundary (400,000 − 500,000 plies) lies before the
+        # first line read, so it has no value; 2000's (700,000) is interpolated between
+        # the lines at 400,000 (6,000 games) and 800,000 (12,000): 10,500 games.
+        self.assertEqual(list(by_trainer), [2000])
+        self.assertAlmostEqual(by_trainer[2000], table_common.BUFFER / (18_000 - 10_500))
+        self.assertEqual(by_segment, {}, "no segment step of this log is a multiple of 1000")
 
 
 if __name__ == "__main__":

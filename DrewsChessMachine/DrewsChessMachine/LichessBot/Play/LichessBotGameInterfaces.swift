@@ -19,14 +19,22 @@ extension LichessBotAPIClient: LichessBotGameAPI {}
 /// Identity of the weights a move was played with (plan §9). Recorded with
 /// every move, so every statistic is attributable to exact weights.
 struct LichessBotGenerationInfo: Sendable, Equatable, Codable {
-    /// Distinct per snapshot within one run of the app.
+    /// Distinct per snapshot within one going-online: numbering restarts at
+    /// 1 each time the bot goes online (`LichessBotModelSlots.prepare`), so
+    /// one ID can name different generations in a game resumed after a
+    /// relaunch. A record tells them apart by the whole info
+    /// (`LichessBotGameRecord.Move.generationIndex`).
     let generationID: Int
     let sourceKind: LichessBotModelSourceKind
     let modelID: String
     /// The step the weights were taken at: the trainer's completed step
-    /// count for a trainer snapshot, a file's `training_step` (segment-local
-    /// on the CLI paths) for a file; nil when the source records none (a
-    /// champion, a file that states no step).
+    /// count for a trainer snapshot; for a file, its trainer step where the
+    /// file records one, else the `training_step` it states
+    /// (`ModelFileStepReading.trainerStepOrStatedStep`). Since format v11 a
+    /// file's `training_step` is the trainer step on every path; a CLI file
+    /// written before v11 with no trainer step on record states its writing
+    /// segment's step. Nil when the source records none (a champion, a file
+    /// that states no step).
     let trainingStep: Int?
     let snapshotAt: Date
     let architectureSummary: String
