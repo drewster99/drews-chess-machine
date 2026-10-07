@@ -1026,3 +1026,14 @@ P3 landed on the same branch (2026-10-06). Decisions made while implementing:
 # Implementation notes (P4)
 
 - `documentation/training-health-alarms.md` (rules, cadence, actions per path, parameters, formats, the app's surfaces, offline replay); CHANGELOG entry; CLAUDE.md: `[HEALTH]` / `[ALARM] health` / `[LAYER-HEALTH] value-fc1` in the tag list, a "Training health alarms" section under observability, `vsuci-health-stop` in "Saved model state" (OD-11); `documentation/UCI.md` "Output: session folders", `scripts/sessions_summary.py` and `documentation/dashboards/vsuci.py` docstrings gain `vsuci-health-stop`. `--help` was done in P2.
+
+### V-1 long runs (reported, not judged; OD-17)
+
+`--replay-health-log <log> --segment-step-as-trainer-step`, declared defaults, read only:
+
+| Log | `loss_spike` | `gradient_spike` (rule 9, new since the Long-runs table) | other rules |
+|---|---|---|---|
+| `dcm_log_20260702-201756.txt` (v5 line, 5,371 rows) | 21 raises, first 26,600 — **identical to the Long-runs table** | **247 raises** (first 1,850), each cleared at the next row; ratio min 5.04, median 8.23, max 46.59, 87 at ≥ 10× | none (`pLogitMean` absent, so `policy_offset_drift` has no data) |
+| `dcm_log_20260727-094049.txt` (qeu8 line, 27,953 rows) | 2 raises (125,350; 330,550) — **identical** | **173 raises** (first 700); ratio min 5.01, median 5.74, max 9.63 | none |
+
+**For the owner (not changed here, OD-14 / OD-17):** rule 9's 5× threshold was set against the post-fix runs (largest healthy ratio 1.40). On these two older bf16-era lines (before `da15920`) single logged rows reach 5–47× their reference median often enough to keep rule 9 near-permanently flickering as a warning (raise, then clear at the next row). The default action is `log` and the rule is warning-only, so nothing stops; whether these are real gradient spikes of that era or the threshold needs a long post-fix run to judge is the same question OD-17 asked of rule 6.
