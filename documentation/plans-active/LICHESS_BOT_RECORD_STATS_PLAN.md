@@ -623,7 +623,7 @@ Decisions taken while implementing, where the plan left a choice open or the cod
 - **Rated filter checked against the real records** (2026-10-06 22:56 CDT, read-only): the Swift snapshot's Rated rows equal `scripts/lichess_bot_record_stats.py --filter rated` in every period (all time 197 games, 41–33–123, Perf 1389, −6330*, Brier@20 0.662).
 - **View bodies trimmed to the 20-line rule** by small one-cell views (`LichessBotRowLabel`, `LichessBotNoteText`, `LichessBotModelRowLabel`), the pane menu, the progression header and plot, and the recent-games header and frame as their own views.
 
-**After the follow-lineage plan reached `main` (merged 2026-10-06 23:50 CDT)**
+**After the follow-lineage plan reached `main` (merged 2026-10-06 23:43 CDT, `c352757a`)**
 - **P-gate passed late:** `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` P3–P6 landed on `main` while this branch was at P8 + L1–L6; it merged without conflicts in code (only `CHANGELOG.md` and the build counter, both kept).
 - **Lineage wired** (the P5 note's pending item): `LichessBotGenerationFacts.lineageRunID` / `segmentIndex` / `cumTrainerStep` now come from `LichessBotGenerationInfo.lineage`. No schema bump: this plan's schema 3 has not reached `main`, so no index of the unwired shape exists outside test folders. The Models table still groups by model ID; the progression chart follows a lineage run across its segments (model IDs) by cumulative trainer step (`LichessBotGenerationLineageFactsTests`). A followed-lineage generation is keyed by its file's SHA-256 like any file.
 - **P0's deferred doc-comment fix done:** `LichessBotGenerationInfo.generationID` now says IDs restart at 1 on every going-online, and points to `Move.generationIndex`.
