@@ -84,15 +84,54 @@ final class LichessBotJSONLinesSynchronizationTests: XCTestCase {
     func testFullSyncFlushesTheFolderOnlyWhenTheAppendCreatedTheFile() throws {
         let url = tempRoot.appendingPathComponent("Challenges/full.jsonl")
         XCTAssertEqual(try appendRecording(to: url, .fullSync), [
+            .fullSyncDirectory(path: tempRoot.path),
             .write(byteCount: Self.line.count),
             .fullSync(path: url.path),
             .fullSyncDirectory(path: url.deletingLastPathComponent().path),
-        ], "a new file's name is in its folder, which is flushed too")
+        ], "a new file's name is in its folder, which is flushed too (and the new folder's, in its parent)")
         XCTAssertEqual(try appendRecording(to: url, .fullSync), [
             .write(byteCount: Self.line.count),
             .fullSync(path: url.path),
         ], "an existing file's name is already durable")
         XCTAssertEqual(try Data(contentsOf: url), Self.line + Self.line)
+    }
+
+    /// A folder the append created is an entry in its own parent, flushed
+    /// separately from the folder's contents: without flushing each new
+    /// folder's parent, a power loss can keep the file and lose the folder
+    /// that names it.
+    func testFullSyncFlushesTheParentOfEveryFolderTheAppendCreated() throws {
+        let url = tempRoot.appendingPathComponent("Outer/Challenges/full.jsonl")
+        let calls = try appendRecording(to: url, .fullSync)
+        let synced = Set(calls.compactMap { call -> String? in
+            if case .fullSyncDirectory(let path) = call { return path }
+            return nil
+        })
+        XCTAssertEqual(synced, [
+            url.deletingLastPathComponent().path,
+            tempRoot.appendingPathComponent("Outer").path,
+            tempRoot.path,
+        ], "the file's folder, and the parent of each folder created")
+        XCTAssertEqual(try appendRecording(to: url, .fullSync), [
+            .write(byteCount: Self.line.count),
+            .fullSync(path: url.path),
+        ], "nothing new, nothing more to flush")
+    }
+
+    /// `createDirectories()` creates the bot's folders on the first launch
+    /// (`Challenges/` among them); each new folder's entry in its parent is
+    /// flushed, so the challenge log's first fully synced append never
+    /// lands in a folder a power loss can drop.
+    func testCreateDirectoriesFlushesTheParentOfEachFolderItCreates() throws {
+        let root = tempRoot.appendingPathComponent("Bot", isDirectory: true)
+        let bot = LichessBotDataDirectory(root: root)
+        let synced = SyncBox<[String]>([])
+        try bot.createDirectories(fullSyncDirectory: { folder in synced.modify { $0.append(folder.standardizedFileURL.path) } })
+        XCTAssertEqual(Set(synced.value), [tempRoot.standardizedFileURL.path, root.standardizedFileURL.path],
+                       "the bot folder's entry in its parent, and its five folders' entries in it")
+        synced.value = []
+        try bot.createDirectories(fullSyncDirectory: { folder in synced.modify { $0.append(folder.path) } })
+        XCTAssertEqual(synced.value, [], "folders that exist are not flushed again")
     }
 
     // MARK: - The writers refuse a symbolic link

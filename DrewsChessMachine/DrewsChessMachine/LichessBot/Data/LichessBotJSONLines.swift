@@ -96,7 +96,8 @@ extension LichessBotJSONLines {
         /// append created the file, the file's folder too: the new name is
         /// an entry in the folder, which is flushed separately from the
         /// file's contents, so without it a power loss can keep the bytes
-        /// and lose the name.
+        /// and lose the name. Likewise the parent of every folder the append
+        /// created on the way.
         case fullSync
     }
 
@@ -171,7 +172,12 @@ extension LichessBotJSONLines {
         composing compose: (_ cutTail: Data) throws -> Data
     ) throws -> AppendOutcome {
         if try FileSafety.existingItem(at: url) == nil {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let folder = url.deletingLastPathComponent()
+            if synchronization == .fullSync {
+                try FileSafety.createDirectoryFlushingNewEntries(at: folder, fullSyncDirectory: systemCalls.fullSyncDirectory)
+            } else {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            }
         }
         let opened = try FileSafety.openForAppending(at: url)
         let handle = opened.handle

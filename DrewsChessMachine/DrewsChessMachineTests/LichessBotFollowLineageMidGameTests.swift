@@ -113,4 +113,16 @@ final class LichessBotFollowLineageMidGameTests: XCTestCase {
         XCTAssertEqual(first.decidedPlies.value, [0, 2])
         XCTAssertEqual(older.decidedPlies.value, [])
     }
+
+    /// A newer generation can hold an older file of the lineage: after the
+    /// file that plays is deleted and the source is switched away and back,
+    /// the slots build the lineage's newest remaining file under a higher
+    /// generation ID. A game in progress never steps back to it (§3.8).
+    func testGameNeverSwitchesToANewerGenerationOfAnOlderFile() async throws {
+        let first = LichessBotFollowedGenerationMoveSource(generationID: 2, modelID: "20261006-1-AAAA", step: 2000, followed: lineageA)
+        let olderFile = LichessBotFollowedGenerationMoveSource(generationID: 3, modelID: "20261006-1-AAAA", step: 1000, followed: lineageA)
+        try await play(first: first, latest: olderFile, followed: lineageA, midGameRefresh: true)
+        XCTAssertEqual(first.decidedPlies.value, [0, 2])
+        XCTAssertEqual(olderFile.decidedPlies.value, [])
+    }
 }

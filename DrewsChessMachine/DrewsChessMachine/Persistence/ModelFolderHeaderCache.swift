@@ -2,13 +2,17 @@ import Foundation
 
 /// What a scan knows about a listed model file without reading it: the file
 /// the path resolves to (device and inode, following a symbolic link the way
-/// the header read and the load do), its size and its modification time. A
-/// file renamed over the path (a rolling `--out-model` save) is a new inode,
-/// so it never matches its predecessor even at the same size and second.
+/// the header read and the load do), its size, its modification time and its
+/// status change time. A file renamed over the path (a rolling
+/// `--out-model` save) is a new inode, so it never matches its predecessor
+/// even at the same size and second; a file made readable (a permission or
+/// owner change) has a new status change time, so it is read again rather
+/// than remembered as unreadable.
 struct ModelFileFingerprint: Hashable, Sendable {
     let identity: FileSafety.FileIdentity
     let size: Int64
     let modifiedAt: Date
+    let statusChangedAt: Date
 }
 
 /// One model folder's headers, read incrementally (follow-lineage plan
@@ -84,7 +88,7 @@ struct ModelFolderHeaderCache: Sendable {
                 unreadable.append(UnreadableModelFile(url: url, reason: "\(url.lastPathComponent) is a symbolic link to nothing"))
                 continue
             }
-            let fingerprint = ModelFileFingerprint(identity: resolved.identity, size: resolved.size, modifiedAt: resolved.modifiedAt)
+            let fingerprint = ModelFileFingerprint(identity: resolved.identity, size: resolved.size, modifiedAt: resolved.modifiedAt, statusChangedAt: resolved.statusChangedAt)
             let outcome: Outcome
             if let known = previous.items[url], known.fingerprint == fingerprint {
                 outcome = known.outcome

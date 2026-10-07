@@ -169,6 +169,67 @@ final class LichessBotRecordStatisticsPipelineTests: XCTestCase {
         await pipeline.latestComputation?.value
     }
 
+    /// File a record the way the store does.
+    private func file(_ record: LichessBotGameRecord, in controller: LichessBotController) throws {
+        let folder = controller.dataDirectory.gamesMonthDirectory(createdAt: record.createdAt)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601withFractionalSeconds
+        try encoder.encode(record).write(to: folder.appendingPathComponent("\(record.gameID).json"))
+    }
+
+    /// A filed game changes both the index and the resolved origins (the
+    /// new game gets one); the statistics are computed once for the pair,
+    /// not once for the new origins over the old rows and again for the new
+    /// rows.
+    func testAFiledGameSchedulesOneComputation() async throws {
+        let controller = try makeController(suite: try makeTemporaryDefaultsSuite())
+        await controller.refreshIndex()
+        await controller.recordStatistics.latestComputation?.value
+        let before = controller.recordStatistics.requestCount
+        try file(try Fixtures.record(ourColor: .white, plies: 20, status: "resign", winner: "white") { _ in .postedWithoutDecision }, in: controller)
+        await controller.refreshIndex()
+        XCTAssertEqual(controller.recordStatistics.requestCount, before + 1)
+        await controller.recordStatistics.latestComputation?.value
+        XCTAssertEqual(games(controller.recordStatistics.state), 1)
+    }
+
+    /// A challenge fact can change only the origin of the game with its id
+    /// (and, once, every origin, when it starts the live log): a fact for a
+    /// challenge that is no indexed game resolves no origins.
+    func testAChallengeFactResolvesOriginsOnlyForAnIndexedGame() async throws {
+        let controller = try makeController(suite: try makeTemporaryDefaultsSuite())
+        let record = try Fixtures.record(ourColor: .white, plies: 20, status: "resign", winner: "white") { _ in .postedWithoutDecision }
+        try file(record, in: controller)
+        await controller.refreshIndex()
+        await controller.challengeLogRecorder.load()
+        controller.challengeLogRecorder.record(.canceledOnLichess(challengeID: "Other111"))
+        let before = controller.gameOriginRefreshCount
+        controller.challengeLogRecorder.record(.canceledOnLichess(challengeID: "Other222"))
+        XCTAssertEqual(controller.gameOriginRefreshCount, before, "no indexed game has this id")
+        controller.challengeLogRecorder.record(.canceledOnLichess(challengeID: record.gameID))
+        XCTAssertEqual(controller.gameOriginRefreshCount, before + 1, "the filed game's origin may change")
+        try await controller.challengeLogRecorder.flush()
+    }
+
+    /// The clock checks once when it starts (the window opening), not only
+    /// a tick later: a period boundary that passed while the window was
+    /// closed is recomputed at once.
+    func testTheClockChecksAtOnceWhenItStarts() async throws {
+        let pipeline = try makePipeline()
+        pipeline.indexChanged(rows: try rows(1))
+        await pipeline.latestComputation?.value
+        pipeline.schedule(reason: .clock, now: Date(timeIntervalSinceNow: -3 * 86_400))
+        await pipeline.latestComputation?.value
+        let before = pipeline.requestCount
+        let clock = Task { await pipeline.runClock(tickInterval: .seconds(3600)) }
+        for _ in 0..<400 where pipeline.requestCount == before {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        clock.cancel()
+        XCTAssertEqual(pipeline.requestCount, before + 1, "a stale snapshot is recomputed when the clock starts")
+    }
+
     func testNothingIsScheduledAfterShutdown() async throws {
         let controller = try makeController(suite: try makeTemporaryDefaultsSuite())
         await controller.shutdown(reason: "test")

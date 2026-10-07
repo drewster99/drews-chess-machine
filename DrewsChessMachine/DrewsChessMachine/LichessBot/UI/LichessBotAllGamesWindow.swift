@@ -65,61 +65,7 @@ struct LichessBotAllGamesView: View {
                 Spacer()
                 LichessBotAllGamesOriginFilterPicker(filter: $originFilter)
             }
-            Table(shownRows, sortOrder: $sortOrder) {
-                TableColumn("") { row in
-                    LichessBotResultChip(ourScore: row.summary.ourScore)
-                }
-                .width(26)
-                TableColumn("When", value: \.createdAt) { row in
-                    Text(row.createdAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.system(.callout, design: .monospaced))
-                }
-                .width(min: 130, ideal: 150)
-                TableColumn("Color") { row in
-                    PieceColorDisc(color: row.summary.ourColor == .white ? .white : .black, diameter: 10)
-                }
-                .width(40)
-                TableColumn("Origin", value: \.originSortKey) { row in
-                    LichessBotGameOriginLabel(display: row.origin)
-                }
-                .width(min: 90, ideal: 120)
-                TableColumn("Opponent", value: \.opponentSortKey) { row in
-                    HStack(spacing: 4) {
-                        LichessBotFavoriteStar(controller: controller, userID: row.summary.opponentID)
-                        Text(row.summary.opponentTitle ?? "")
-                            .foregroundStyle(.orange)
-                            .shown(row.summary.opponentTitle != nil)
-                        Text(row.summary.opponentName ?? "?")
-                    }
-                }
-                TableColumn("Rating", value: \.opponentRatingSortKey) { row in
-                    Text(row.summary.opponentRating.map { "\($0)" } ?? "")
-                        .font(.system(.callout, design: .monospaced))
-                }
-                .width(min: 50, ideal: 60)
-                TableColumn("Speed", value: \.speed) { row in
-                    Text(row.summary.speed + (row.summary.rated ? " · rated" : ""))
-                }
-                .width(min: 90, ideal: 110)
-                TableColumn("End", value: \.status) { row in
-                    Text(row.summary.status)
-                        .foregroundStyle(.secondary)
-                }
-                .width(min: 70, ideal: 90)
-                TableColumn("Plies", value: \.plies) { row in
-                    Text("\(row.summary.plies)")
-                        .font(.system(.callout, design: .monospaced))
-                }
-                .width(50)
-                TableColumn("Game") { row in
-                    Button(row.summary.gameID) {
-                        LichessBotLinks.openGame(row.summary.gameID)
-                    }
-                    .buttonStyle(.link)
-                    .help("Open on lichess.org")
-                }
-                .width(min: 80, ideal: 90)
-            }
+            LichessBotAllGamesTable(controller: controller, rows: shownRows, sortOrder: $sortOrder)
         }
         .padding(12)
         .onChange(of: controller.index?.rows, initial: true) {
@@ -153,6 +99,72 @@ struct LichessBotAllGamesView: View {
         let filtered = LichessBotAllGamesRow.rows(index.rows, origins: controller.originsByGameID, filter: originFilter)
         shownRows = filtered.sorted(using: sortOrder)
         summary = LichessBotAllGamesRow.summary(filedCount: index.rows.count, shown: filtered, filter: originFilter)
+    }
+}
+
+/// The All Games window's table: one row per filed game, sortable by the
+/// columns that have a sort key.
+struct LichessBotAllGamesTable: View {
+    let controller: LichessBotController
+    let rows: [LichessBotAllGamesRow]
+    @Binding var sortOrder: [KeyPathComparator<LichessBotAllGamesRow>]
+
+    var body: some View {
+        Table(rows, sortOrder: $sortOrder) {
+            TableColumn("") { row in
+                LichessBotResultChip(ourScore: row.summary.ourScore)
+            }
+            .width(26)
+            TableColumn("When", value: \.createdAt) { row in
+                Text(row.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.system(.callout, design: .monospaced))
+            }
+            .width(min: 130, ideal: 150)
+            TableColumn("Color") { row in
+                PieceColorDisc(color: row.summary.ourColor == .white ? .white : .black, diameter: 10)
+            }
+            .width(40)
+            TableColumn("Origin", value: \.originSortKey) { row in
+                LichessBotGameOriginLabel(display: row.origin)
+            }
+            .width(min: 90, ideal: 120)
+            TableColumn("Opponent", value: \.opponentSortKey) { row in
+                HStack(spacing: 4) {
+                    LichessBotFavoriteStar(controller: controller, userID: row.summary.opponentID)
+                    Text(row.summary.opponentTitle ?? "")
+                        .foregroundStyle(.orange)
+                        .shown(row.summary.opponentTitle != nil)
+                    Text(row.summary.opponentName ?? "?")
+                }
+            }
+            TableColumn("Rating", value: \.opponentRatingSortKey) { row in
+                Text(row.summary.opponentRating.map { "\($0)" } ?? "")
+                    .font(.system(.callout, design: .monospaced))
+            }
+            .width(min: 50, ideal: 60)
+            TableColumn("Speed", value: \.speed) { row in
+                Text(row.summary.speed + (row.summary.rated ? " · rated" : ""))
+            }
+            .width(min: 90, ideal: 110)
+            TableColumn("End", value: \.status) { row in
+                Text(row.summary.status)
+                    .foregroundStyle(.secondary)
+            }
+            .width(min: 70, ideal: 90)
+            TableColumn("Plies", value: \.plies) { row in
+                Text("\(row.summary.plies)")
+                    .font(.system(.callout, design: .monospaced))
+            }
+            .width(50)
+            TableColumn("Game") { row in
+                Button(row.summary.gameID) {
+                    LichessBotLinks.openGame(row.summary.gameID)
+                }
+                .buttonStyle(.link)
+                .help("Open on lichess.org")
+            }
+            .width(min: 80, ideal: 90)
+        }
     }
 }
 

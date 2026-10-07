@@ -10,7 +10,7 @@ struct LichessBotFavoriteStar: View {
     let userID: String?
 
     var body: some View {
-        let isFavorite = userID.map { controller.playerNotes?.isFavorite($0) == true } ?? false
+        let isFavorite: Bool = userID.map { controller.playerNotes?.isFavorite($0) == true } ?? false
         Button(
             action: {
                 if let userID {
@@ -18,14 +18,33 @@ struct LichessBotFavoriteStar: View {
                 }
             },
             label: {
-                Image(systemName: isFavorite ? "star.fill" : "star")
-                    .foregroundStyle(isFavorite ? Color.yellow : Color.secondary)
+                LichessBotFavoriteStarSymbol(isFavorite: isFavorite)
             }
         )
         .buttonStyle(.plain)
         .disabled(controller.playerNotes == nil)
         .shown(userID != nil)
-        .help(isFavorite ? "Remove from favorites" : "Add to favorites")
-        .accessibilityLabel(isFavorite ? "Favorite; remove" : "Not a favorite; add")
+        .help(LichessBotFavoriteStarSymbol.helpText(isFavorite: isFavorite))
+        .accessibilityLabel(LichessBotFavoriteStarSymbol.accessibilityText(isFavorite: isFavorite))
+    }
+}
+
+/// The star itself: filled and yellow for a favorite.
+struct LichessBotFavoriteStarSymbol: View {
+    let isFavorite: Bool
+
+    var body: some View {
+        let symbolName: String = isFavorite ? "star.fill" : "star"
+        let color: Color = isFavorite ? Color.yellow : Color.secondary
+        Image(systemName: symbolName)
+            .foregroundStyle(color)
+    }
+
+    static func helpText(isFavorite: Bool) -> String {
+        isFavorite ? "Remove from favorites" : "Add to favorites"
+    }
+
+    static func accessibilityText(isFavorite: Bool) -> String {
+        isFavorite ? "Favorite; remove" : "Not a favorite; add"
     }
 }

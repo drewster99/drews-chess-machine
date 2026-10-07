@@ -173,7 +173,6 @@ final class LichessBotRecordStatisticsPipeline {
         }
     }
 
-    /// The games index changed: recompute from its rows.
     /// The controller's origin resolver (`originsByGameID`) changed: keep
     /// each game's category for the origin breakdown (§11 D1), and
     /// recompute when there are rows to compute from.
@@ -184,10 +183,20 @@ final class LichessBotRecordStatisticsPipeline {
         schedule(reason: .origins, now: Date())
     }
 
+    /// The games index changed: recompute from its rows.
     func indexChanged(rows: [LichessBotGameSummary]) {
         self.rows = rows
         indexLogPending = true
         schedule(reason: .index, now: Date())
+    }
+
+    /// The games index changed, and with it the origins resolved for its
+    /// games: take both, then recompute once. A new game gets an origin, so
+    /// reporting the two separately would compute the new origins over the
+    /// old rows first, only to throw that result away.
+    func indexChanged(rows: [LichessBotGameSummary], origins categories: [String: LichessBotGameOriginCategory]) {
+        origins = categories
+        indexChanged(rows: rows)
     }
 
     /// Recompute if a period boundary has passed since the snapshot, or the
@@ -197,6 +206,26 @@ final class LichessBotRecordStatisticsPipeline {
         guard case .ready(let statistics) = state else { return }
         if now >= statistics.validUntil || calendar().timeZone.identifier != statistics.timeZoneIdentifier {
             schedule(reason: .clock, now: now)
+        }
+    }
+
+    /// The Record card's clock (`LichessBotRecordStatisticsClock`): a
+    /// `clockTick` at once — a period boundary may have passed while the
+    /// window was closed — then every `tickInterval`. Returns when the task
+    /// is canceled (the window closed). `Task.sleep` runs on the continuous
+    /// clock, which keeps counting while the Mac sleeps, so a wake is
+    /// caught at the next tick.
+    func runClock(tickInterval: Duration) async {
+        clockTick(now: Date())
+        while true {
+            do {
+                try await Task.sleep(for: tickInterval)
+            } catch {
+                // Canceled: the window closed. `Task.sleep` throws nothing
+                // else.
+                return
+            }
+            clockTick(now: Date())
         }
     }
 

@@ -67,6 +67,13 @@ struct LichessBotGenerationInfo: Sendable, Equatable, Codable {
 /// record (follow-lineage plan §3.6): every move it chose is traceable to a
 /// run, a segment and a cumulative step.
 struct LichessBotGenerationLineage: Sendable, Equatable, Codable {
+    /// Where the generation's file stands in its lineage: what "newer"
+    /// means for the follow-lineage source (a generation ID only says when
+    /// it was built).
+    var rank: ModelLineageRank {
+        ModelLineageRank(segmentChain: segmentChain, segmentLocalStep: segmentLocalStep, recordedUnix: recordedUnix)
+    }
+
     let lineageRunID: String
     let segmentID: String
     let segmentIndex: Int
