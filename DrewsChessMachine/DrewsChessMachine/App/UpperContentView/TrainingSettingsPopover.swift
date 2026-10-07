@@ -292,6 +292,11 @@ struct TrainingSettingsPopover: View {
                     entropyText: $model.entropyText,
                     illegalMassWeightText: $model.illegalMassWeightText,
                     gradClipText: $model.gradClipText,
+                    relativeGradClipMode: $model.relativeGradClipModeValue,
+                    relativeGradClipMultipleText: $model.relativeGradClipMultipleText,
+                    relativeGradClipWindowStepsText: $model.relativeGradClipWindowStepsText,
+                    relativeGradClipMinHistoryStepsText: $model.relativeGradClipMinHistoryStepsText,
+                    relativeGradClipFloorText: $model.relativeGradClipFloorText,
                     weightDecayText: $model.weightDecayText,
                     dropoutRateText: $model.dropoutRateText,
                     policyLossWeightText: $model.policyLossWeightText,
@@ -309,6 +314,10 @@ struct TrainingSettingsPopover: View {
                     entropyError: model.entropyError,
                     illegalMassWeightError: model.illegalMassWeightError,
                     gradClipError: model.gradClipError,
+                    relativeGradClipMultipleError: model.relativeGradClipMultipleError,
+                    relativeGradClipWindowStepsError: model.relativeGradClipWindowStepsError,
+                    relativeGradClipMinHistoryStepsError: model.relativeGradClipMinHistoryStepsError,
+                    relativeGradClipFloorError: model.relativeGradClipFloorError,
                     weightDecayError: model.weightDecayError,
                     dropoutRateError: model.dropoutRateError,
                     policyLossWeightError: model.policyLossWeightError,
@@ -858,6 +867,11 @@ private struct OptimizerTab: View {
     @Binding var entropyText: String
     @Binding var illegalMassWeightText: String
     @Binding var gradClipText: String
+    @Binding var relativeGradClipMode: RelativeGradientCapMode
+    @Binding var relativeGradClipMultipleText: String
+    @Binding var relativeGradClipWindowStepsText: String
+    @Binding var relativeGradClipMinHistoryStepsText: String
+    @Binding var relativeGradClipFloorText: String
     @Binding var weightDecayText: String
     @Binding var dropoutRateText: String
     @Binding var policyLossWeightText: String
@@ -876,6 +890,10 @@ private struct OptimizerTab: View {
     let entropyError: Bool
     let illegalMassWeightError: Bool
     let gradClipError: Bool
+    let relativeGradClipMultipleError: Bool
+    let relativeGradClipWindowStepsError: Bool
+    let relativeGradClipMinHistoryStepsError: Bool
+    let relativeGradClipFloorError: Bool
     let weightDecayError: Bool
     let dropoutRateError: Bool
     let policyLossWeightError: Bool
@@ -1029,6 +1047,17 @@ private struct OptimizerTab: View {
                             step: 1.0
                         )
                     }
+                    RelativeGradientCapSection(
+                        mode: $relativeGradClipMode,
+                        multipleText: $relativeGradClipMultipleText,
+                        windowStepsText: $relativeGradClipWindowStepsText,
+                        minimumHistoryStepsText: $relativeGradClipMinHistoryStepsText,
+                        floorText: $relativeGradClipFloorText,
+                        multipleError: relativeGradClipMultipleError,
+                        windowStepsError: relativeGradClipWindowStepsError,
+                        minimumHistoryStepsError: relativeGradClipMinHistoryStepsError,
+                        floorError: relativeGradClipFloorError
+                    )
                     PopoverRow(
                         label: "Decay:",
                         text: $weightDecayText,
@@ -3063,7 +3092,7 @@ private struct ReplayTab: View {
 /// monospaced text field with red error overlay, optional trailing
 /// stepper, optional trailing hint string. Pulled out of the per-
 /// tab subviews so the row layout stays consistent across tabs.
-private struct PopoverRow<Stepper: View, Info: View>: View {
+struct PopoverRow<Stepper: View, Info: View>: View {
     let label: String
     @Binding var text: String
     let error: Bool
@@ -3148,7 +3177,7 @@ extension PopoverRow where Info == EmptyView {
 /// tabs. Each helper preserves the popover's transactional model:
 /// the displayed text moves with the Stepper, but the actual write
 /// to `trainingParams` still happens on Save in the parent.
-private enum PopoverBindings {
+enum PopoverBindings {
 
     /// `Binding<Double>` that reads the current edit text, parses
     /// it (falling back to `fallback` on parse failure), and writes

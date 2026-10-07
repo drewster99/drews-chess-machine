@@ -59,6 +59,10 @@ struct TrainerHyperparameters: Sendable, Equatable {
     /// flags off means the trainer uses the static `learningRate` and
     /// `momentumCoeff` — the switch that turns cycling off everywhere.
     var lrMomentumCycle: LRMomentumCycle
+    /// The relative gradient cap's five settings (validated where they
+    /// enter a run and again by the trainer each step; see
+    /// `RelativeGradientCapSettings`).
+    var relativeGradientCap: RelativeGradientCapSettings
 
     /// Resolve every trainer-level parameter from `parameters`.
     init(_ parameters: TrainingParametersSnapshot) {
@@ -83,6 +87,16 @@ struct TrainerHyperparameters: Sendable, Equatable {
         batchStatsInterval = parameters.batchStatsInterval
         klProbeInterval = parameters.klProbeInterval
         lrMomentumCycle = parameters.lrMomentumCycle
+        relativeGradientCap = RelativeGradientCapSettings(parameters)
+    }
+
+    /// `TrainerHyperparameters(parameters)`, or the relative cap's
+    /// configuration error (W > N) for the caller to surface: the check every
+    /// entry point runs before building a trainer configuration.
+    static func validated(_ parameters: TrainingParametersSnapshot) throws -> TrainerHyperparameters {
+        let hyperparameters = TrainerHyperparameters(parameters)
+        _ = try hyperparameters.relativeGradientCap.validated()
+        return hyperparameters
     }
 
     /// Read back the configuration a trainer currently holds. Used by the
@@ -109,6 +123,7 @@ struct TrainerHyperparameters: Sendable, Equatable {
         batchStatsInterval = trainer.batchStatsInterval
         klProbeInterval = trainer.klProbeInterval
         lrMomentumCycle = trainer.lrMomentumCycle
+        relativeGradientCap = trainer.relativeGradientCap
     }
 
     /// Write every trainer-level parameter onto `trainer`. Idempotent, and
@@ -137,6 +152,7 @@ struct TrainerHyperparameters: Sendable, Equatable {
         trainer.batchStatsInterval = batchStatsInterval
         trainer.klProbeInterval = klProbeInterval
         trainer.lrMomentumCycle = lrMomentumCycle
+        trainer.relativeGradientCap = relativeGradientCap
     }
 }
 
@@ -161,6 +177,7 @@ extension ChessTrainer {
             drawPenalty: hyperparameters.drawPenalty,
             weightDecayC: hyperparameters.weightDecayC,
             gradClipMaxNorm: hyperparameters.gradClipMaxNorm,
+            relativeGradientCap: hyperparameters.relativeGradientCap,
             policyLossWeight: hyperparameters.policyLossWeight,
             valueLossWeight: hyperparameters.valueLossWeight,
             illegalMassPenaltyWeight: hyperparameters.illegalMassPenaltyWeight,
@@ -203,6 +220,19 @@ extension ChessTrainer {
         lrMomentumCycle.values(
             completedTrainSteps: completedSteps ?? completedTrainSteps,
             lrWarmupSteps: lrWarmupSteps
+        )
+    }
+}
+
+extension RelativeGradientCapSettings {
+    /// The settings a parameter snapshot holds.
+    init(_ parameters: TrainingParametersSnapshot) {
+        self.init(
+            modeRawValue: parameters.relativeGradClipMode,
+            multiple: parameters.relativeGradClipMultiple,
+            windowSteps: parameters.relativeGradClipWindowSteps,
+            minimumHistorySteps: parameters.relativeGradClipMinHistorySteps,
+            floor: parameters.relativeGradClipFloor
         )
     }
 }

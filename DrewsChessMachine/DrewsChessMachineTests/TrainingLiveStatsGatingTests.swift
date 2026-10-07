@@ -34,6 +34,7 @@ final class TrainingLiveStatsGatingTests: XCTestCase {
             policyNonNegligibleCount: .nan,
             policyNonNegligibleIllegalCount: .nan,
             gradGlobalNorm: gradGlobalNorm,
+            gradientCap: .hardMaxOnly(hardMax: 15),
             valueMean: valueMean,
             valueAbsMean: .nan,
             valueProbWin: .nan, valueProbDraw: .nan, valueProbLoss: .nan,

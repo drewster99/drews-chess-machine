@@ -44,6 +44,9 @@ struct ReplayParams: Sendable {
     /// its settings from.
     let parameters: TrainingParametersSnapshot
     let trainer: TrainerHyperparameters
+    /// `trainer.relativeGradientCap`, validated (W ≤ N) when the run's
+    /// parameters were read.
+    let relativeGradientCap: RelativeGradientCapConfiguration
     let trainingBatchSize: Int
     let replayBufferCapacity: Int
     let replayRatioTarget: Double
@@ -57,7 +60,10 @@ struct ReplayParams: Sendable {
 
     init(_ parameters: TrainingParametersSnapshot) throws {
         self.parameters = parameters
+        // `validated` refuses a relative-cap configuration with W > N, naming
+        // both parameters, before any trainer exists.
         trainer = TrainerHyperparameters(parameters)
+        relativeGradientCap = try trainer.relativeGradientCap.validated()
         lineageParameters = try LineageRecord.Parameters(values: parameters.lineageValues())
         trainingBatchSize = parameters.trainingBatchSize
         replayBufferCapacity = parameters.replayBufferCapacity
@@ -1196,9 +1202,11 @@ enum CorpusReplayRunner {
             + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
+            + " relClip=\(p.relativeGradientCap.settings.compactDescription)"
             + " stepLineSec=" + String(format: "%g", p.parameters.stepLineIntervalSec)
             + p.samplingConstraints.logFields(batchSize: p.trainingBatchSize)
         emit(hparamsLine)
+        emit(RelativeGradientCapLogFormat.configLine(p.relativeGradientCap.settings, hardMax: hp.gradClipMaxNorm))
         // Rolling trainer-model output file. The same file is overwritten by
         // the periodic autosave and by the final save on exit/abort, so it
         // always holds the latest weights. Destination precedence: explicit
@@ -1392,6 +1400,11 @@ enum CorpusReplayRunner {
             }
             let parentRecord = startFile.lineageParent.lineage.record
             resumeGaps += ResumeGap.dropoutGaps(restoring: snapshot.dropoutRNG)
+            // A history-less checkpoint is a gap only when this run clips
+            // with the relative cap (its first W steps would feed the hard
+            // max where the uninterrupted run fed the relative cap).
+            resumeGaps += ResumeGap.gradNormHistoryGaps(
+                restoring: snapshot.gradNormHistory, runningMode: p.relativeGradientCap.mode)
             resumeGaps += PolicyTailPrecisionResume.gaps(
                 saved: startFile.metadata.trainerPolicyTailPrecision, running: config.policyTailPrecision)
             if let parentRecord, let corpus = parentRecord.fed.corpus {
@@ -1745,7 +1758,8 @@ enum CorpusReplayRunner {
                     parentModelID: parentModelID,
                     notes: "corpus replay \(reason) @ trainer step \(snapshot.schedule.completedTrainSteps) (segment step \(step))",
                     schedule: snapshot.schedule,
-                    policyTailPrecision: trainer.policyTailPrecision
+                    policyTailPrecision: trainer.policyTailPrecision,
+                    gradNormHistory: snapshot.gradNormHistory.history
                 )
                 // The corpus position (what `--resume-exact` resumes from)
                 // and the build that wrote it travel in the lineage record.
@@ -2038,6 +2052,9 @@ enum CorpusReplayRunner {
         // monotonic clock started here.
         var step = 0
         var stepLines = TrainingStepLineSchedule()
+        // Each step line's `gNormMax=` / `clips=` cover the steps since the
+        // previous line, starting from the clock the run resumed at.
+        var gradientCapWindow = GradientCapStepLineWindow(startTrainerStep: trainer.completedTrainSteps)
         let lineClock = ContinuousClock()
         let lineClockStart = lineClock.now
         var aborted = false
@@ -2120,6 +2137,15 @@ enum CorpusReplayRunner {
             // Training health: record the step, and on a live-evaluation step
             // (every 50 trainer steps) take its stamp before any read.
             trainingHealth.record(timing, trainerStep: observedSteps)
+            // Every clip — and, in log-only mode, every step the relative cap
+            // would have clipped — is one `[GRAD-CLIP]` line, whatever the
+            // step-line cadence. The LR is the one this step was fed (the
+            // clock before its increment).
+            if let clipLine = RelativeGradientCapLogFormat.eventLine(
+                trainerStep: observedSteps, preClipNorm: timing.gradGlobalNorm, decision: timing.gradientCap,
+                learningRate: Double(trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: observedSteps - 1))) {
+                emit(clipLine)
+            }
             let healthStamp = trainingHealth.liveEvaluationStamp(trainerStep: observedSteps)
             // The step line's live read, when the line falls on this step:
             // it also serves this step's live evaluation (one read).
@@ -2133,6 +2159,9 @@ enum CorpusReplayRunner {
                 let liveLR = trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: observedSteps)
                 let liveMomentum = trainer.effectiveMomentum(completedSteps: observedSteps)
                 let cycleValues = trainer.lrMomentumCycleValues(completedSteps: observedSteps)
+                let gradientCapReading = gradientCapWindow.take(
+                    history: try await trainer.exportGradNormHistory(), throughTrainerStep: observedSteps,
+                    fedCap: timing.gradientCap.fedCap)
                 let line = "[REPLAY] step=\(step)"
                     + String(format: " loss=%.4f pLoss=%.4f vLoss=%.4f", timing.loss, timing.policyLoss, timing.valueLoss)
                     + " pEnt=\(dg(timing.policyEntropy, 3)) pIllM=\(dg(timing.illegalMassPenalty, 4))"
@@ -2143,6 +2172,7 @@ enum CorpusReplayRunner {
                     + " buf=\(buffer.count) plies=\(feedTally.positions) games=\(feedTally.games)\(feedTally.countsSuffix) epoch=\(epochsCompleted)"
                     + String(format: " mom=%.4f", liveMomentum)
                     + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
+                    + gradientCapReading.logFields
                     + " trainerStep=\(observedSteps)"
                 emit(line)
                 // This step's own batch statistics ride the step line — to the session
@@ -2161,7 +2191,7 @@ enum CorpusReplayRunner {
                 lineLiveRead = liveRead
                 // Same cadence as the log line, so results.json and the log
                 // describe the same ticks.
-                recorder?.appendStats(CliTrainingRecorder.StatsLine(
+                var statsRow = CliTrainingRecorder.StatsLine(
                     elapsedSec: CFAbsoluteTimeGetCurrent() - runStart,
                     steps: step,
                     positionsFed: feedTally.positions,
@@ -2203,7 +2233,9 @@ enum CorpusReplayRunner {
                     lineageTotals: lineageTracker.totals(
                         trainerCompletedSteps: observedSteps,
                         segmentGames: feedTally.games - reconstructionFed.games)
-                ))
+                )
+                statsRow.recordGradientCap(gradientCapReading, settings: p.relativeGradientCap.settings)
+                recorder?.appendStats(statsRow)
             }
             // The live training-health evaluation, every 50 trainer steps:
             // after the step-line block and before the save block, so at a

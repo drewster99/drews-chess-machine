@@ -265,6 +265,10 @@ enum TrainVsUciRunner {
                 resumeGaps += PolicyTailPrecisionResume.gaps(
                     saved: file.metadata.trainerPolicyTailPrecision, running: ChessNetwork.PolicyTailPrecision.process)
                 resumeGaps += ResumeGap.dropoutGaps(restoring: snapshot.dropoutRNG)
+                // A history-less checkpoint is a gap only when this run clips
+                // with the relative cap.
+                resumeGaps += ResumeGap.gradNormHistoryGaps(
+                    restoring: snapshot.gradNormHistory, runningMode: p.relativeGradientCap.mode)
                 if let parentRecord = file.lineageParent.lineage.record {
                     if let streams = parentRecord.rng.streams, streams.nextGameSerial != nil {
                         do {
@@ -432,7 +436,9 @@ enum TrainVsUciRunner {
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
             + " stepLineSec=" + String(format: "%g", p.parameters.stepLineIntervalSec)
-            + p.samplingConstraints.logFields(batchSize: p.trainingBatchSize))
+            + p.samplingConstraints.logFields(batchSize: p.trainingBatchSize)
+            + " relClip=\(p.relativeGradientCap.settings.compactDescription)")
+        emit(RelativeGradientCapLogFormat.configLine(p.relativeGradientCap.settings, hardMax: hp.gradClipMaxNorm))
         let buffer = ReplayBuffer(
             capacity: p.replayBufferCapacity,
             inputEncoding: evalNet.inputEncoding,
@@ -625,7 +631,8 @@ enum TrainVsUciRunner {
                 parentModelID: parentModelID,
                 notes: "train-vs-uci \(reason) @ trainer step \(snapshot.schedule.completedTrainSteps) (segment step \(step))",
                 schedule: snapshot.schedule,
-                policyTailPrecision: trainer.policyTailPrecision)
+                policyTailPrecision: trainer.policyTailPrecision,
+                gradNormHistory: snapshot.gradNormHistory.history)
             // Games and plies the driver flushed into the buffer.
             let slots = driver.statsSnapshot()
             // Each pool's engine identity, from its first instance that has
@@ -869,6 +876,9 @@ enum TrainVsUciRunner {
             // (`TrainingStepLineSchedule`); its time rule reads a monotonic
             // clock started here.
             var stepLines = TrainingStepLineSchedule()
+            // Each step line's `gNormMax=` / `clips=` cover the steps since
+            // the previous line, starting from the clock the run resumed at.
+            var gradientCapWindow = GradientCapStepLineWindow(startTrainerStep: trainer.completedTrainSteps)
             let lineClock = ContinuousClock()
             let lineClockStart = lineClock.now
             while true {
@@ -904,6 +914,13 @@ enum TrainVsUciRunner {
                 // Training health: record the step, and on a live-evaluation
                 // step (every 50 trainer steps) take its stamp before any read.
                 trainingHealth.record(timing, trainerStep: observedSteps)
+                // Every clip (and every would-be clip in log-only mode) is one
+                // `[GRAD-CLIP]` line — see CorpusReplayRunner.
+                if let clipLine = RelativeGradientCapLogFormat.eventLine(
+                    trainerStep: observedSteps, preClipNorm: timing.gradGlobalNorm, decision: timing.gradientCap,
+                    learningRate: Double(trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: observedSteps - 1))) {
+                    emit(clipLine)
+                }
                 let healthStamp = trainingHealth.liveEvaluationStamp(trainerStep: observedSteps)
                 // The step line's live read, when the line falls on this
                 // step: it also serves this step's live evaluation.
@@ -915,6 +932,9 @@ enum TrainVsUciRunner {
                     let liveLR = trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: observedSteps)
                     let liveMomentum = trainer.effectiveMomentum(completedSteps: observedSteps)
                     let cycleValues = trainer.lrMomentumCycleValues(completedSteps: observedSteps)
+                    let gradientCapReading = gradientCapWindow.take(
+                        history: try await trainer.exportGradNormHistory(), throughTrainerStep: observedSteps,
+                        fedCap: timing.gradientCap.fedCap)
                     let line = "[VS-UCI] step=\(step)"
                         + String(format: " loss=%.4f pLoss=%.4f vLoss=%.4f", timing.loss, timing.policyLoss, timing.valueLoss)
                         + " pEnt=\(dg(timing.policyEntropy, 3)) playedP=\(dg(timing.playedMoveProb, 3))"
@@ -923,6 +943,7 @@ enum TrainVsUciRunner {
                         + " buf=\(buffer.count)"
                         + String(format: " mom=%.4f", liveMomentum)
                         + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
+                        + gradientCapReading.logFields
                         + " trainerStep=\(observedSteps)"
                     emit(line)
                     // This step's own batch statistics ride the step line — to the session
@@ -945,7 +966,7 @@ enum TrainVsUciRunner {
                     // COW array read, but taking it once keeps every derived
                     // field describing the same instant.
                     let slots = driver.statsSnapshot()
-                    recorder?.appendStats(CliTrainingRecorder.StatsLine(
+                    var statsRow = CliTrainingRecorder.StatsLine(
                         elapsedSec: CFAbsoluteTimeGetCurrent() - runStart,
                         steps: step,
                         // Plies appended to the replay buffer. `pliesPlayed`
@@ -998,7 +1019,9 @@ enum TrainVsUciRunner {
                         lineageTotals: lineageTracker.totals(
                             trainerCompletedSteps: observedSteps,
                             segmentGames: slots.reduce(0) { $0 + $1.gamesCompleted })
-                    ))
+                    )
+                    statsRow.recordGradientCap(gradientCapReading, settings: p.relativeGradientCap.settings)
+                    recorder?.appendStats(statsRow)
                 }
                 // The live training-health evaluation, every 50 trainer
                 // steps: after the step-line block, before the save block

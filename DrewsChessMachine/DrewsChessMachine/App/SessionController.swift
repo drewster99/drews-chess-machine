@@ -1041,7 +1041,16 @@ final class SessionController {
     func ensureTrainer() -> ChessTrainer? {
         // One resolution of every trainer-level parameter, shared with the
         // CLI runners (see `TrainerHyperparameters`).
-        let hyperparameters = TrainerHyperparameters(TrainingParameters.shared.snapshot())
+        // `validated` refuses a relative-cap configuration with W > N (which
+        // per-key validation of the stored settings cannot catch) before any
+        // trainer is configured, and the start reports it.
+        let hyperparameters: TrainerHyperparameters
+        do {
+            hyperparameters = try TrainerHyperparameters.validated(TrainingParameters.shared.snapshot())
+        } catch {
+            trainingError = "Training parameters refused: \(error.localizedDescription)"
+            return nil
+        }
         if let trainer {
             hyperparameters.apply(to: trainer)
             return trainer

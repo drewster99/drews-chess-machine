@@ -457,6 +457,77 @@ public enum ValueLabelSmoothingEpsilon: TrainingParameterKey {}
 )
 public enum GradClipMaxNorm: TrainingParameterKey {}
 
+// MARK: Relative gradient cap
+//
+// A per-step cap relative to the run's own recent pre-clip gradient norms:
+// cap = min(Gradient Clip Max Norm, max(floor, k × median of the last N
+// real-data steps' pre-clip norms)), applied once the window holds W entries.
+// The hard max stays in force; the relative term only tightens it. The mode is
+// the feature switch, so it alone is `.preFeature(0)` (`off` is what every run
+// before it did); k, N, W and the floor are inert while the mode resolves to
+// `off`, the LR-cycle dependents' convention (`.currentSetting`). Design and
+// evidence: `documentation/plans-active/RELATIVE_GRADIENT_CAP_PLAN.md`.
+
+@TrainingParameter(
+    name: "Relative Gradient Cap Mode",
+    description: "Relative gradient-norm cap: 0 = off (only Gradient Clip Max Norm clips), 1 = log only (the relative cap is computed and every step it would clip is logged as [GRAD-CLIP] … applied=false, but the hard max is what is fed), 2 = clip (the step's cap is min(Gradient Clip Max Norm, max(Relative Gradient Cap Floor, k × median)), where the median is of the pre-clip global gradient norms of the last N real-data SGD steps; applied once the window holds at least W entries).",
+    default: 1,
+    range: 0...2,
+    category: "Optimizer",
+    id: "relative_grad_clip_mode",
+    liveTunable: true,
+    absentValue: .preFeature(0)
+)
+public enum RelativeGradClipMode: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Relative Gradient Cap k",
+    description: "Multiple k of the trailing median pre-clip gradient norm in the relative cap min(Gradient Clip Max Norm, max(floor, k × median)). Read only when Relative Gradient Cap Mode is log only or clip.",
+    default: 3.0,
+    range: 1.0...20.0,
+    category: "Optimizer",
+    id: "relative_grad_clip_multiple",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum RelativeGradClipMultiple: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Relative Gradient Cap Window N",
+    description: "Number of most recent real-data SGD steps N whose pre-clip global gradient norms the relative cap takes the median of. Must be ≥ Relative Gradient Cap Min History W.",
+    default: 1000,
+    range: 100...10000,
+    category: "Optimizer",
+    id: "relative_grad_clip_window_steps",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum RelativeGradClipWindowSteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Relative Gradient Cap Min History W",
+    description: "Warm-up: the relative cap applies only once the window holds at least W recorded steps (until then only Gradient Clip Max Norm clips); until the window fills it takes the median of the steps it has. Must be ≤ Relative Gradient Cap Window N.",
+    default: 100,
+    range: 10...10000,
+    category: "Optimizer",
+    id: "relative_grad_clip_min_history_steps",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum RelativeGradClipMinHistorySteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Relative Gradient Cap Floor",
+    description: "Lower bound on the relative term: cap = min(Gradient Clip Max Norm, max(floor, k × median)). Keeps a run whose gradients have shrunk (a nearly dead network) from being clipped at a tiny multiple of its tiny norms. A floor at or above Gradient Clip Max Norm makes the relative term inert.",
+    default: 0.5,
+    range: 0.01...100.0,
+    category: "Optimizer",
+    id: "relative_grad_clip_floor",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum RelativeGradClipFloor: TrainingParameterKey {}
+
 @TrainingParameter(
     name: "Weight Decay",
     description: "L2 weight decay coefficient. Couples with batch size and the number of update steps per epoch.",
@@ -1639,6 +1710,11 @@ public extension TrainingParametersSnapshot {
     var policyLabelSmoothingPerMoveCap: Double { value(for: PolicyLabelSmoothingPerMoveCap.self) }
     var valueLabelSmoothingEpsilon: Double { value(for: ValueLabelSmoothingEpsilon.self) }
     var gradClipMaxNorm: Double { value(for: GradClipMaxNorm.self) }
+    var relativeGradClipMode: Int { value(for: RelativeGradClipMode.self) }
+    var relativeGradClipMultiple: Double { value(for: RelativeGradClipMultiple.self) }
+    var relativeGradClipWindowSteps: Int { value(for: RelativeGradClipWindowSteps.self) }
+    var relativeGradClipMinHistorySteps: Int { value(for: RelativeGradClipMinHistorySteps.self) }
+    var relativeGradClipFloor: Double { value(for: RelativeGradClipFloor.self) }
     var weightDecay: Double { value(for: WeightDecay.self) }
     var dropoutRate: Double { value(for: DropoutRate.self) }
     var policyLossWeight: Double { value(for: PolicyLossWeight.self) }
@@ -1807,6 +1883,11 @@ public final class TrainingParameters {
     public var policyLabelSmoothingPerMoveCap: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMoveCap.self, value: policyLabelSmoothingPerMoveCap, oldValue: oldValue) { policyLabelSmoothingPerMoveCap = oldValue } } }
     public var valueLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(ValueLabelSmoothingEpsilon.self, value: valueLabelSmoothingEpsilon, oldValue: oldValue) { valueLabelSmoothingEpsilon = oldValue } } }
     public var gradClipMaxNorm: Double { didSet { if !Self.commitAssignment(GradClipMaxNorm.self, value: gradClipMaxNorm, oldValue: oldValue) { gradClipMaxNorm = oldValue } } }
+    public var relativeGradClipMode: Int { didSet { if !Self.commitAssignment(RelativeGradClipMode.self, value: relativeGradClipMode, oldValue: oldValue) { relativeGradClipMode = oldValue } } }
+    public var relativeGradClipMultiple: Double { didSet { if !Self.commitAssignment(RelativeGradClipMultiple.self, value: relativeGradClipMultiple, oldValue: oldValue) { relativeGradClipMultiple = oldValue } } }
+    public var relativeGradClipWindowSteps: Int { didSet { if !Self.commitAssignment(RelativeGradClipWindowSteps.self, value: relativeGradClipWindowSteps, oldValue: oldValue) { relativeGradClipWindowSteps = oldValue } } }
+    public var relativeGradClipMinHistorySteps: Int { didSet { if !Self.commitAssignment(RelativeGradClipMinHistorySteps.self, value: relativeGradClipMinHistorySteps, oldValue: oldValue) { relativeGradClipMinHistorySteps = oldValue } } }
+    public var relativeGradClipFloor: Double { didSet { if !Self.commitAssignment(RelativeGradClipFloor.self, value: relativeGradClipFloor, oldValue: oldValue) { relativeGradClipFloor = oldValue } } }
     public var weightDecay: Double { didSet { if !Self.commitAssignment(WeightDecay.self, value: weightDecay, oldValue: oldValue) { weightDecay = oldValue } } }
     public var dropoutRate: Double { didSet { if !Self.commitAssignment(DropoutRate.self, value: dropoutRate, oldValue: oldValue) { dropoutRate = oldValue } } }
     public var policyLossWeight: Double { didSet { if !Self.commitAssignment(PolicyLossWeight.self, value: policyLossWeight, oldValue: oldValue) { policyLossWeight = oldValue } } }
@@ -1942,6 +2023,11 @@ public final class TrainingParameters {
         self.policyLabelSmoothingPerMoveCap = Self.read(PolicyLabelSmoothingPerMoveCap.self)
         self.valueLabelSmoothingEpsilon = Self.read(ValueLabelSmoothingEpsilon.self)
         self.gradClipMaxNorm = Self.read(GradClipMaxNorm.self)
+        self.relativeGradClipMode = Self.read(RelativeGradClipMode.self)
+        self.relativeGradClipMultiple = Self.read(RelativeGradClipMultiple.self)
+        self.relativeGradClipWindowSteps = Self.read(RelativeGradClipWindowSteps.self)
+        self.relativeGradClipMinHistorySteps = Self.read(RelativeGradClipMinHistorySteps.self)
+        self.relativeGradClipFloor = Self.read(RelativeGradClipFloor.self)
         self.weightDecay = Self.read(WeightDecay.self)
         self.dropoutRate = Self.read(DropoutRate.self)
         self.policyLossWeight = Self.read(PolicyLossWeight.self)
@@ -2057,6 +2143,11 @@ public final class TrainingParameters {
         v[PolicyLabelSmoothingPerMoveCap.id] = PolicyLabelSmoothingPerMoveCap.encode(policyLabelSmoothingPerMoveCap)
         v[ValueLabelSmoothingEpsilon.id] = ValueLabelSmoothingEpsilon.encode(valueLabelSmoothingEpsilon)
         v[GradClipMaxNorm.id] = GradClipMaxNorm.encode(gradClipMaxNorm)
+        v[RelativeGradClipMode.id] = RelativeGradClipMode.encode(relativeGradClipMode)
+        v[RelativeGradClipMultiple.id] = RelativeGradClipMultiple.encode(relativeGradClipMultiple)
+        v[RelativeGradClipWindowSteps.id] = RelativeGradClipWindowSteps.encode(relativeGradClipWindowSteps)
+        v[RelativeGradClipMinHistorySteps.id] = RelativeGradClipMinHistorySteps.encode(relativeGradClipMinHistorySteps)
+        v[RelativeGradClipFloor.id] = RelativeGradClipFloor.encode(relativeGradClipFloor)
         v[WeightDecay.id] = WeightDecay.encode(weightDecay)
         v[DropoutRate.id] = DropoutRate.encode(dropoutRate)
         v[PolicyLossWeight.id] = PolicyLossWeight.encode(policyLossWeight)
@@ -2165,6 +2256,7 @@ public final class TrainingParameters {
     /// instead of half-applied in dictionary order.
     public func apply(_ values: [String: ParameterValue]) throws {
         try Self.validate(values)
+        try checkRelativeGradientCapPair(afterApplying: values)
         for (id, raw) in values {
             try applyOne(id: id, raw: raw)
         }
@@ -2180,6 +2272,22 @@ public final class TrainingParameters {
                 throw TrainingConfigError.unknownParameter(id: id)
             }
             try definition.validate(raw)
+        }
+    }
+
+    /// The relative gradient cap's one cross-parameter rule, W ≤ N, over the
+    /// values the singleton would hold after `values` is applied (a file may
+    /// set either key alone). Per-key validation cannot see it, and a pair
+    /// that broke it would reach a trainer; refused before anything is
+    /// assigned, naming both ids.
+    private func checkRelativeGradientCapPair(afterApplying values: [String: ParameterValue]) throws {
+        let window = try values[RelativeGradClipWindowSteps.id].map(RelativeGradClipWindowSteps.decode)
+            ?? relativeGradClipWindowSteps
+        let minimumHistory = try values[RelativeGradClipMinHistorySteps.id].map(RelativeGradClipMinHistorySteps.decode)
+            ?? relativeGradClipMinHistorySteps
+        guard minimumHistory <= window else {
+            throw RelativeGradientCapConfigurationError.minimumHistoryAboveWindow(
+                minimumHistorySteps: minimumHistory, windowSteps: window)
         }
     }
 
@@ -2204,6 +2312,16 @@ public final class TrainingParameters {
             try ValueLabelSmoothingEpsilon.definition.validate(raw); valueLabelSmoothingEpsilon = try ValueLabelSmoothingEpsilon.decode(raw)
         case GradClipMaxNorm.id:
             try GradClipMaxNorm.definition.validate(raw); gradClipMaxNorm = try GradClipMaxNorm.decode(raw)
+        case RelativeGradClipMode.id:
+            try RelativeGradClipMode.definition.validate(raw); relativeGradClipMode = try RelativeGradClipMode.decode(raw)
+        case RelativeGradClipMultiple.id:
+            try RelativeGradClipMultiple.definition.validate(raw); relativeGradClipMultiple = try RelativeGradClipMultiple.decode(raw)
+        case RelativeGradClipWindowSteps.id:
+            try RelativeGradClipWindowSteps.definition.validate(raw); relativeGradClipWindowSteps = try RelativeGradClipWindowSteps.decode(raw)
+        case RelativeGradClipMinHistorySteps.id:
+            try RelativeGradClipMinHistorySteps.definition.validate(raw); relativeGradClipMinHistorySteps = try RelativeGradClipMinHistorySteps.decode(raw)
+        case RelativeGradClipFloor.id:
+            try RelativeGradClipFloor.definition.validate(raw); relativeGradClipFloor = try RelativeGradClipFloor.decode(raw)
         case WeightDecay.id:
             try WeightDecay.definition.validate(raw); weightDecay = try WeightDecay.decode(raw)
         case DropoutRate.id:
@@ -2893,6 +3011,11 @@ public final class TrainingParameters {
         PolicyLabelSmoothingPerMoveCap.self,
         ValueLabelSmoothingEpsilon.self,
         GradClipMaxNorm.self,
+        RelativeGradClipMode.self,
+        RelativeGradClipMultiple.self,
+        RelativeGradClipWindowSteps.self,
+        RelativeGradClipMinHistorySteps.self,
+        RelativeGradClipFloor.self,
         WeightDecay.self,
         DropoutRate.self,
         PolicyLossWeight.self,

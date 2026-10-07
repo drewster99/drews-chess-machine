@@ -200,6 +200,26 @@ struct TrainerResumeSnapshot: Sendable {
     var trainerWeights: [[Float]]
     var schedule: TrainerScheduleState
     var dropoutRNG: DropoutRNGResumeState
+    /// The relative gradient cap's per-step history
+    /// (`trainer_grad_norm_history`), or `.notInCheckpoint` for a source
+    /// written before it existed.
+    var gradNormHistory: GradNormHistoryResumeState
+
+    init(trainerWeights: [[Float]], schedule: TrainerScheduleState,
+         dropoutRNG: DropoutRNGResumeState, gradNormHistory: GradNormHistoryResumeState) {
+        self.trainerWeights = trainerWeights
+        self.schedule = schedule
+        self.dropoutRNG = dropoutRNG
+        self.gradNormHistory = gradNormHistory
+    }
+
+    /// A snapshot whose source carries no gradient-norm history — a source
+    /// that predates the relative cap. Every production path that has one
+    /// passes it through the four-argument init.
+    init(trainerWeights: [[Float]], schedule: TrainerScheduleState, dropoutRNG: DropoutRNGResumeState) {
+        self.init(trainerWeights: trainerWeights, schedule: schedule, dropoutRNG: dropoutRNG,
+                  gradNormHistory: .notInCheckpoint)
+    }
 }
 
 /// Where a resume's dropout Philox state comes from.
@@ -268,7 +288,20 @@ extension TrainerResumeSnapshot {
             throw TrainerResumeError.notExactlyResumable(file: fileName, missing: missing)
         }
         self.init(trainerWeights: file.weights, schedule: schedule,
-                  dropoutRNG: DropoutRNGResumeState(lineage: file.safetensorsProvenance?.lineage))
+                  dropoutRNG: DropoutRNGResumeState(lineage: file.safetensorsProvenance?.lineage),
+                  gradNormHistory: GradNormHistoryResumeState(file.metadata.trainerGradNormHistory))
+    }
+}
+
+extension GradNormHistoryResumeState {
+    /// `.restored` when a file carries a history, `.notInCheckpoint`
+    /// otherwise.
+    init(_ history: GradientNormHistory?) {
+        if let history {
+            self = .restored(history)
+        } else {
+            self = .notInCheckpoint
+        }
     }
 }
 
@@ -279,10 +312,16 @@ extension ChessTrainer {
     func exportResumeSnapshot() async throws -> TrainerResumeSnapshot {
         let weights = try await exportTrainerWeights()
         let dropoutState = try await captureDropoutState()
+        let history = try await exportGradNormHistory()
+        let schedule = TrainerScheduleState(currentlyRunningOn: self)
+        // Training is paused, so the history ends at the clock the schedule
+        // read; a mismatch is a bug, refused here rather than saved.
+        try history.checkEnds(atTrainerClock: schedule.completedTrainSteps)
         return TrainerResumeSnapshot(
             trainerWeights: weights,
-            schedule: TrainerScheduleState(currentlyRunningOn: self),
-            dropoutRNG: .philox(dropoutState)
+            schedule: schedule,
+            dropoutRNG: .philox(dropoutState),
+            gradNormHistory: .restored(history)
         )
     }
 
@@ -311,6 +350,77 @@ extension ChessTrainer {
                 + "masks continue from this run's own dropout seed)"
             )
         }
+        switch snapshot.gradNormHistory {
+        case .restored(let history):
+            // Throws unless the history ends at the clock just restored: a
+            // file whose history and clock disagree is internally
+            // inconsistent and is not resumed from.
+            try await restoreGradNormHistory(history)
+            SessionLogger.shared.log(
+                "[RESUME] grad-norm history: restored entries=\(history.count) "
+                + "last_trainer_step=\(history.lastTrainerStep.map(String.init) ?? "none")"
+            )
+        case .notInCheckpoint:
+            try await restoreGradNormHistory(GradientNormHistory())
+            SessionLogger.shared.log(
+                "[RESUME] grad-norm history: not in checkpoint (relative cap mode=\(relativeGradientCap.modeToken); "
+                + "the relative cap warms up from an empty history)"
+            )
+        }
+    }
+}
+
+/// The trainer state a GUI arena captures at its start, under the training
+/// pause, so a promotion can rewind the trainer to exactly it: the working
+/// weights the candidate was snapshotted from, the optimizer velocity that
+/// built them, the clock, the dropout Philox state and the relative cap's
+/// gradient-norm history — everything indexed by or accumulated along that
+/// trajectory.
+struct ArenaStartTrainerState: Sendable {
+    let weights: [[Float]]
+    let velocity: [[Float]]
+    let completedSteps: Int
+    let dropoutState: DropoutPhiloxState
+    let gradNormHistory: GradientNormHistory
+}
+
+extension ChessTrainer {
+    /// Capture the arena-start state. Caller MUST have paused training, which
+    /// is what keeps the clock read here consistent with the exports; the
+    /// history must end at that clock, or the capture is refused.
+    func captureArenaStartState() async throws -> ArenaStartTrainerState {
+        let weights = try await network.exportWeights()
+        let velocity = try await exportVelocitySnapshot()
+        let completedSteps = completedTrainSteps
+        let dropoutState = try await captureDropoutState()
+        let gradNormHistory = try await exportGradNormHistory()
+        try gradNormHistory.checkEnds(atTrainerClock: completedSteps)
+        return ArenaStartTrainerState(weights: weights, velocity: velocity, completedSteps: completedSteps,
+                                      dropoutState: dropoutState, gradNormHistory: gradNormHistory)
+    }
+
+    /// A promotion's rewind: the promoted candidate's `weights` (the
+    /// arena-start weights) with the fp32 masters re-seeded from them, and
+    /// the velocity, clock, dropout state and gradient-norm history captured
+    /// with them at the arena start. The clock is set before the history,
+    /// which must end at it. Caller MUST have paused training.
+    ///
+    /// Why the velocity is the snapshot's and not reset: it is the momentum
+    /// that built the validated candidate, so it belongs to the candidate's
+    /// weight surface, while the trainer's current velocity was built on the
+    /// post-arena surface just discarded. Why the clock rewinds: warmup, the
+    /// LR/momentum cycle and the decay envelope are functions of it, and a
+    /// clock ahead of the weights would drive them with the wrong LR.
+    func rewindToArenaStart(_ state: ArenaStartTrainerState, promotedWeights weights: [[Float]]) async throws {
+        // Open the replacement window; the trainer's new identity, stamped by
+        // the caller afterwards, closes it.
+        noteWeightsReplaced()
+        try await network.loadWeights(weights)
+        try await syncMastersFromWorking()
+        try await loadVelocitySnapshot(state.velocity)
+        completedTrainSteps = state.completedSteps
+        try await restoreDropoutState(state.dropoutState)
+        try await restoreGradNormHistory(state.gradNormHistory)
     }
 }
 

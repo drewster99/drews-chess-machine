@@ -102,6 +102,14 @@ struct ModelCheckpointMetadata: Codable, Equatable {
     /// trainer files (whose setting is unrecorded, not guessable from the
     /// build stamp). Safetensors only, like `trainerSchedule`.
     let trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision?
+    /// The relative gradient cap's per-step history at the moment the file
+    /// was written (`trainer_grad_norm_history`, `GradientNormHistory`) —
+    /// present on trainer-state files written since the relative cap, nil on
+    /// plain model files and on older trainer files. Decoded on its own,
+    /// not with the four schedule keys, because a file written before it
+    /// has the schedule but no history. Safetensors only, like
+    /// `trainerSchedule`.
+    let trainerGradNormHistory: GradientNormHistory?
 
     private enum CodingKeys: String, CodingKey {
         case creator, trainingStep, parentModelID, notes
@@ -126,7 +134,8 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         parentModelID: String,
         notes: String,
         trainerSchedule: TrainerScheduleState? = nil,
-        trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision? = nil
+        trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision? = nil,
+        trainerGradNormHistory: GradientNormHistory? = nil
     ) {
         self.creator = creator
         self.trainingStep = trainingStep
@@ -134,12 +143,37 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         self.notes = notes
         self.trainerSchedule = trainerSchedule
         self.trainerPolicyTailPrecision = trainerPolicyTailPrecision
+        self.trainerGradNormHistory = trainerGradNormHistory
     }
 
     /// Metadata for a trainer-state file: every trainer-file writer (corpus
     /// replay, train-vs-UCI, session saves, the post-promotion save) builds
-    /// its metadata here, so none can omit the trainer's schedule or the
-    /// policy-tail precision it trained with.
+    /// its metadata here, so none can omit the trainer's schedule, the
+    /// policy-tail precision it trained with, or its gradient-norm history.
+    static func trainerFile(
+        creator: String,
+        trainingStep: Int?,
+        parentModelID: String,
+        notes: String,
+        schedule: TrainerScheduleState,
+        policyTailPrecision: ChessNetwork.PolicyTailPrecision,
+        gradNormHistory: GradientNormHistory?
+    ) -> ModelCheckpointMetadata {
+        ModelCheckpointMetadata(
+            creator: creator,
+            trainingStep: trainingStep,
+            parentModelID: parentModelID,
+            notes: notes,
+            trainerSchedule: schedule,
+            trainerPolicyTailPrecision: policyTailPrecision,
+            trainerGradNormHistory: gradNormHistory
+        )
+    }
+
+    /// Metadata for a trainer-state file that records no gradient-norm
+    /// history — the form every trainer file had before the relative cap
+    /// (tests build such files to exercise the old-file path). Production
+    /// writers use the overload that takes the history.
     static func trainerFile(
         creator: String,
         trainingStep: Int?,
@@ -154,7 +188,8 @@ struct ModelCheckpointMetadata: Codable, Equatable {
             parentModelID: parentModelID,
             notes: notes,
             trainerSchedule: schedule,
-            trainerPolicyTailPrecision: policyTailPrecision
+            trainerPolicyTailPrecision: policyTailPrecision,
+            trainerGradNormHistory: nil
         )
     }
 
@@ -166,6 +201,7 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         notes = try container.decode(String.self, forKey: .notes)
         trainerSchedule = nil
         trainerPolicyTailPrecision = nil
+        trainerGradNormHistory = nil
     }
 }
 
@@ -440,7 +476,7 @@ struct ModelCheckpointFile {
     /// trailing SHA-256. Caller writes the result atomically to
     /// disk.
     func encode() throws -> Data {
-        if metadata.trainerSchedule != nil {
+        if metadata.trainerSchedule != nil || metadata.trainerGradNormHistory != nil {
             throw ModelCheckpointError.encodingFailed(
                 "the legacy .dcmmodel format cannot carry trainer schedule state; save as .safetensors"
             )

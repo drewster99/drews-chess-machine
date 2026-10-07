@@ -248,6 +248,11 @@ extension SessionController {
                     replayBufferRestored: replayBufferRestored,
                     runningPolicyTailPrecision: trainer.policyTailPrecision,
                     runningBuild: try .current, runningDevice: .current, runningFingerprint: behaviorFingerprint)
+                    // A history-less trainer file is a gap only when this run
+                    // clips with the relative cap.
+                    + ResumeGap.gradNormHistoryGaps(
+                        restoring: GradNormHistoryResumeState(resumed.trainerFile.metadata.trainerGradNormHistory),
+                        runningMode: try trainer.relativeGradientCap.validated().mode)
                 let exactness = ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps)
                 SessionLogger.shared.log(exactness.logLine)
                 checkpoint?.runResumeExactness = exactness

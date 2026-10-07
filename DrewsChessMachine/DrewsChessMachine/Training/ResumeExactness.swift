@@ -59,6 +59,13 @@ enum ResumeGap: String, CaseIterable, Sendable {
     /// The policy-head tail precision differs from the checkpoint's, or the
     /// checkpoint predates recording it.
     case policyTail = "policy_tail"
+    /// The checkpoint carries no relative gradient-cap history
+    /// (`trainer_grad_norm_history`; every trainer file written before the
+    /// relative cap) and the resumed run's cap mode is `clip`, so its first
+    /// W steps feed the hard max where the uninterrupted run fed the relative
+    /// cap. In `off` and `log_only` the history does not change what is fed,
+    /// so its absence is logged, not a gap.
+    case gradNormHistory = "grad_norm_history"
 
     /// The token logged and recorded for this gap.
     var token: String { rawValue }
@@ -75,6 +82,17 @@ enum ResumeGap: String, CaseIterable, Sendable {
             accepted.insert(gap)
         }
         return accepted
+    }
+
+    /// `gradNormHistory` when a resume restores no gradient-norm history and
+    /// the resumed run clips with the relative cap (the only mode in which
+    /// the history decides what the graph is fed).
+    static func gradNormHistoryGaps(restoring history: GradNormHistoryResumeState,
+                                    runningMode mode: RelativeGradientCapMode) -> [ResumeGap] {
+        switch (history, mode) {
+        case (.notInCheckpoint, .clip): return [.gradNormHistory]
+        case (.restored, _), (.notInCheckpoint, .off), (.notInCheckpoint, .logOnly): return []
+        }
     }
 
     /// `dropoutState` when a resume restores no dropout Philox state.

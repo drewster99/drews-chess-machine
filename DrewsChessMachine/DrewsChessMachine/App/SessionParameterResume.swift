@@ -143,6 +143,27 @@ extension SessionParameterResume {
         restore(ValueLabelSmoothingEpsilon.self, savedFloat: rs.valueLabelSmoothingEpsilon, into: \.valueLabelSmoothingEpsilon)
         restore(BatchStatsInterval.self, saved: rs.batchStatsInterval, into: \.batchStatsInterval)
         restore(KLProbeInterval.self, saved: rs.klProbeInterval, into: \.klProbeInterval)
+        // The relative gradient cap: a session written before it resumes with
+        // the mode off (what that run did); k, N, W and the floor are inert
+        // while off and keep the current settings.
+        restore(RelativeGradClipMode.self, saved: rs.relativeGradClipMode, into: \.relativeGradClipMode)
+        restore(RelativeGradClipMultiple.self, saved: rs.relativeGradClipMultiple, into: \.relativeGradClipMultiple)
+        // W ≤ N is checked on the pair the resume would leave (a session
+        // states both or neither); a pair that breaks it is refused and
+        // reported, and the current pair is kept, so a session saved with a
+        // bad pair can never stop every later start.
+        let resumedWindow = rs.relativeGradClipWindowSteps ?? p.relativeGradClipWindowSteps
+        let resumedMinimumHistory = rs.relativeGradClipMinHistorySteps ?? p.relativeGradClipMinHistorySteps
+        if resumedMinimumHistory <= resumedWindow {
+            restore(RelativeGradClipWindowSteps.self, saved: rs.relativeGradClipWindowSteps, into: \.relativeGradClipWindowSteps)
+            restore(RelativeGradClipMinHistorySteps.self, saved: rs.relativeGradClipMinHistorySteps,
+                    into: \.relativeGradClipMinHistorySteps)
+        } else {
+            log("[RESUME-DIFF] \(RelativeGradClipWindowSteps.id) / \(RelativeGradClipMinHistorySteps.id): "
+                + "saved pair refused (\(RelativeGradientCapConfigurationError.minimumHistoryAboveWindow(minimumHistorySteps: resumedMinimumHistory, windowSteps: resumedWindow))); "
+                + "keeping current N=\(p.relativeGradClipWindowSteps) W=\(p.relativeGradClipMinHistorySteps)")
+        }
+        restore(RelativeGradClipFloor.self, saved: rs.relativeGradClipFloor, into: \.relativeGradClipFloor)
         restore(StepLineIntervalSec.self, saved: rs.stepLineIntervalSec, into: \.stepLineIntervalSec)
         restore(TrainingHealthAlarmsEnabled.self, saved: rs.trainingHealthAlarmsEnabled, into: \.trainingHealthAlarmsEnabled)
         restore(TrainingHealthCheckIntervalSteps.self, saved: rs.trainingHealthCheckIntervalSteps, into: \.trainingHealthCheckIntervalSteps)
