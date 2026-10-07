@@ -22,11 +22,11 @@ struct ModelLineageNode: Identifiable, Sendable, Equatable {
     let children: [ModelLineageNode]?
 
     /// The file selecting this row chooses, if any.
-    var selectableURL: URL? {
+    var selectableEntry: ModelFileEntry? {
         switch kind {
-        case .segment(let line, _, _, _): return line.latest.url
-        case .file(let entry): return entry.url
-        case .sessionChampion(let champion): return champion.entry.url
+        case .segment(let line, _, _, _): return line.latest
+        case .file(let entry): return entry
+        case .sessionChampion(let champion): return champion.entry
         case .conflict: return nil
         }
     }

@@ -4,10 +4,13 @@ import SwiftUI
 /// through its training segments (by `parent_model_id`), each segment
 /// selecting its latest file and listing its earlier files, plus self-play
 /// session champions under their base ModelID. Built only from the files'
-/// metadata, never from their names.
+/// metadata, never from their names. With `.chooseLineageToFollow` only a
+/// training segment whose latest file records a followable lineage can be
+/// chosen (follow-lineage plan §3.9); every other row says why not.
 struct LichessBotModelLinePicker: View {
     @Binding var isPresented: Bool
-    let onChoose: (URL) -> Void
+    let purpose: LichessBotModelLinePickerPurpose
+    let onChoose: (ModelFileEntry) -> Void
 
     @State private var tree: [ModelLineageNode]?
     @State private var modelCount = (lineages: 0, files: 0, sessions: 0)
@@ -19,7 +22,7 @@ struct LichessBotModelLinePicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Choose a model by lineage")
+            Text(purpose.title)
                 .font(.title2.weight(.semibold))
             HStack {
                 TextField("Filter by model ID or session (a seed's ID shows its whole family)", text: $search)
@@ -43,14 +46,15 @@ struct LichessBotModelLinePicker: View {
                     OutlineGroup(filteredTree, children: \.children) { node in
                         LichessBotLineageNodeRow(node: node)
                             .tag(node.id)
-                            .selectionDisabled(node.selectableURL == nil)
+                            .selectionDisabled(purpose.selectableEntry(for: node) == nil)
+                            .help(purpose.unselectableReason(for: node) ?? "")
                     }
                 }
                 .shown(tree != nil)
             }
             .frame(minHeight: 380)
             HStack {
-                Text(selectedURL?.lastPathComponent ?? "Select a segment (its latest file), an earlier file, or a session champion")
+                Text(selectedEntry?.url.lastPathComponent ?? purpose.selectionPrompt)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -59,14 +63,14 @@ struct LichessBotModelLinePicker: View {
                     isPresented = false
                 }
                 .keyboardShortcut(.cancelAction)
-                Button("Use This Model") {
-                    if let selectedURL {
-                        onChoose(selectedURL)
+                Button(purpose.chooseButtonTitle) {
+                    if let selectedEntry {
+                        onChoose(selectedEntry)
                         isPresented = false
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(selectedURL == nil)
+                .disabled(selectedEntry == nil)
             }
         }
         .padding(20)
@@ -108,9 +112,9 @@ struct LichessBotModelLinePicker: View {
         return tree.filter { root in root.searchableIDs.contains { $0.contains(query) } }
     }
 
-    private var selectedURL: URL? {
-        guard let selection, let tree else { return nil }
-        return Self.find(selection, in: tree)?.selectableURL
+    private var selectedEntry: ModelFileEntry? {
+        guard let selection, let tree, let node = Self.find(selection, in: tree) else { return nil }
+        return purpose.selectableEntry(for: node)
     }
 
     private static func find(_ id: String, in nodes: [ModelLineageNode]) -> ModelLineageNode? {
