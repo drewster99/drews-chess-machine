@@ -9,6 +9,16 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 — Integration: step-line cadence (format v11), hyperparameter recording P4–P6 (lineage schema 3), training-health alarms P2–P5, Lichess record statistics, follow-lineage and challenge log on main
+
+- Merged in order: main (follow-lineage P0–P6, challenge log P1–P7 and the decline-key fix), hyperparameter recording P4–P6, training-health alarms P2–P5, Lichess record statistics P1–P8 + D1. Format v11 (`training_step` = trainer step) and lineage schema 3 are independent fields; both Swift and the Python mirrors (`scripts/dcm_arch.py` v11, `scripts/dcm_lineage.py` schema 2…3 with `step_reading`) read both.
+- `LichessBotIndex.schemaVersion` is 4: 3 is the challenge log's `origin`, 4 the record statistics' `facts`; both row fields are optional, and the tests name the version only through the symbol.
+- The training-health action parameters added by the alarms branch (`training_health_action_divergence`, `_value_saturation`, `_value_draw_saturation`, `_legal_mass_stall`) use the hyperparameter branch's `commitAssignment(_:value:oldValue:)`.
+- Follow-lineage P6 note applied: the generation's `trainingStep` doc states the v11 reading, and the record's segment step is labelled `segment step` / `segment_step=` wherever the followed lineage shows it.
+- `bn_liveness.py --selftest`: its v11 fixture record is a full schema-3 record (it failed on the hyperparameter branch since P4).
+- The `[weak self]` warning in `LichessBotController` (old line 1446) went with the challenge-outcome save closure that challenge log P6 removed; no warning remains there.
+- Verified at the integration head: full Swift suite 3161 tests, 0 failures, 1 skipped (`LegacyDcmmodelLoadTests.testRealLegacyDcmmodelsResolveBuildAndLoad`, environment-gated); `documentation/dashboards/tests` 206 OK; `bn_liveness.py --selftest` ok.
+
 ## 2026-10-07 — Lichess bot record statistics on the Overview (P1–P8, L1–L6, D1)
 
 Plan: `documentation/plans-active/LICHESS_BOT_RECORD_STATS_PLAN.md`.
