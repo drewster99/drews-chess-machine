@@ -328,6 +328,37 @@ grep -A16 'LAYER-HEALTH\] checkpoint replay-final' ~/Library/Logs/DrewsChessMach
   cap is credited; if neither blows up, the original blowup depended on its trajectory; if both do, the cap did not
   prevent it.
 
+### B-silu-ctl15 result at 19,800 (2026-10-06 ~19:55)
+
+- The control (cap 15) logs exactly what B-silu logged at trainer step 19,800 (loss 3.5357, gNorm 0.379), and
+  matches it at every 50-step line from 18,050. B-silu-clip1 differs there (loss 3.5356, gNorm 0.332). So the
+  clip1/B-silu split is caused by the cap, not by GPU nondeterminism. The earlier note above ("shared-GPU
+  nondeterminism") is superseded.
+- gNorm is logged only every 50 steps, and every logged clip1 value is below 1.0. The cap must therefore have
+  acted on an unlogged step between 19,751 and 19,799, where the pre-clip norm exceeded 1.0. B-silu's gradients
+  are identical through 19,750, so B-silu very likely had the same unlogged spike, unclipped, about 800 steps
+  before its logged blowup (gNorm 2.57 at 20,600).
+- clip1 so far: 21k 1386.6 and 22k 1412.8 pElo, 0 policy pre-BN channels parked. B-silu at the same steps:
+  457.4 / 833.8, 20 / 21 parked.
+
+### B-silu-ctl15 reproduces the blowup; the cap prevented it (2026-10-06 ~20:55)
+
+| trainer step | B-silu (cap 15) | ctl15 (cap 15, exact resume) | clip1 (cap 1.0, exact resume) |
+|---:|---|---|---|
+| 20,550 | loss 3.5416 · illegal 0.0078 · gNorm 0.363 | identical | loss 3.5256 · illegal 0.0072 · gNorm 0.368 |
+| 20,600 | loss 4.1303 · illegal 0.0095 · gNorm 2.566 | identical | loss 3.5584 · illegal 0.0065 · gNorm 0.364 |
+| 20,650 | loss 7.7890 · illegal 0.7988 · gNorm 0.264 | identical | loss 3.5245 · illegal 0.0075 · gNorm 0.364 |
+
+- The control reproduces B-silu bit for bit through the blowup: the 19k and 20k probes are equal to the last digit,
+  and every logged line matches. So the blowup is deterministic given the state at 18,000 and this feed. It is not
+  GPU noise.
+- The only difference between ctl15 and clip1 is `grad_clip_max_norm` (15 vs 1.0). clip1 diverged at an unlogged
+  step between 19,751 and 19,799, the first step where the pre-clip norm exceeded 1.0. It never blew up: 21k 1386.6,
+  22k 1412.8 pElo, 0 policy pre-BN channels parked. **A global-norm cap of 1.0 prevented the blowup.** Whether a
+  looser cap would also have prevented it is untested.
+- The logged gNorm (every 50 steps) never exceeded 0.44 in clip1 and showed nothing unusual before 20,600 in B-silu.
+  The precursor spike in 19,751–19,799 is invisible at this logging cadence (see the alarms plan's per-window max).
+
 ## Arm C-leaky (added 2026-10-05 23:13, owner)
 
 - Owner: "let's do a leaky version of C with the crazy high LR schedule". C's damage was not confined to the value head

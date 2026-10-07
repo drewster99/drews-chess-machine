@@ -24,6 +24,42 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 - `LichessBotDataDirectory`: `Challenges/` (created at startup), `challengeLogURL(for:)`, `reconstructedChallengesURL`, and one UTC day stamp shared with `protocolLogURL(for:)`.
 - `LICHESS_BOT_CHALLENGE_LOG_PLAN.md`: owner decisions recorded (all but OD-11, which stays open), implementation notes in §12. New tests: `FileSafetyAppendTests`, `LichessBotJSONLinesSynchronizationTests`, `LichessBotAppendPathCompatibilityTests`, `LichessBotDataDirectoryChallengePathsTests`.
 
+## 2026-10-06 — Hyperparameter recording P3: GUI records the values in force
+
+Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (gap 3).
+
+- **A GUI save records the batch size, pre-train fill and buffer capacity the run trains under**, not a later edit of the settings. `RunStartParameterCapture` is taken at every Play-and-Train start (Continue included; capacity from the run's buffer) by `SessionController.beginRunStartCapture(buffer:)`, logged `[PARAM] run-start capture: …`, kept through Stop, cleared when the trainer is dropped, and put back when a start fails before its lineage segment begins. It is the single source for: the lineage record's parameter snapshot (`inForce(over:)`), `session.json` `batchSize` / `trainingPositionsSeen`, the status-bar and chart effective-LR readouts, the progress rate, the arena record and log, the `[STATS]`/chart sample's batch, the replay-ratio controller and the results recorder at start. A missing capture where a run is described is an error (`noSegment`), never a fallback to the settings; the arena stops rather than record a value the run does not use.
+- The stats/chart sample now reports the promote threshold and arena game count the arena reads (live), not run-start copies.
+- Settings popover: an edit of one of the three keys while a run holds a capture logs `[PARAM] <key>: old -> new (applies at the next Play-and-Train start; this run keeps N)`, and the fields carry an "applies at the next Play-and-Train start" caption.
+- The effective-LR warmup readout is published only while a run's capture exists (a sweep's trainer steps at no run's batch size).
+- Tests: `RunStartParameterCaptureTests`; owner-approved setup edits (O-14 and 2026-10-06) to `GuiSaveHarness`, `GuiLineageLifecycleTests`, `ExactResumeCompletionTests`, `SessionSaveReplayBufferTests`.
+
+## 2026-10-06 — Hyperparameter recording P2: a CLI resume records what it trains
+
+Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (gaps 5-CLI and 13; B1's `session.json` fix).
+
+- **An exact resume's records now carry the schedule the trainer runs.** `--resume-exact` (corpus replay and train-vs-UCI) already trained under the checkpoint's warmup and LR/momentum cycle, but every lineage record of the resumed segment (and its `[RUN]` `params_sha`) carried the configured schedule from `--parameters`. `ReplayParams` is now immutable and derived from one snapshot; `ReplayParams.adoptingSchedule(_:)` rebuilds it from `TrainingParametersSnapshot.adoptingSchedule(_:)` (the 21 schedule keys written from the checkpoint's `TrainerScheduleState`, never validated or clamped), so the trainer, the record and the file's flat `trainer_*` keys come from one value.
+- **`[RESUME-DIFF] <id>: parent=… this_run=…`** on a CLI `--resume-exact`, one line per training parameter that differs from the parent's recorded snapshot (after schedule adoption, so an adopted schedule is never reported). Parent values are read by declared type, not range: a value outside today's range is reported `(parent value out of today's range)`, a key this build no longer declares `(parent only …)`, one the parent predates `(this run only …)`, seed settings as informational. A parent snapshot that cannot be read refuses the resume. Whether a difference should also be a resume gap is still owner decision O-4; today it is only logged.
+- **Train-vs-UCI `session.json` `maxPliesPerGame`** is the run's `--max-plies` (default 400), not the self-play ply cap this path never reads.
+- Tests: `ReplayResumeRecordedParametersTests`, `TrainVsUciSessionStateTests`; owner-approved edits (O-3) to `ResumeEquivalenceTests`, `CorpusReplayRefusalTests` (batch 16 → 64) and `FinalTrainerSaveFailureTests`, which now build their parameters with `declaredDefaults(overriding:)` instead of mutating fields, and to `TrainVsUciSessionTests` (the new `maxPliesPerGame:` argument at its two `sessionState` calls).
+
+## 2026-10-06 — Hyperparameter recording P1: build identity
+
+Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (gap 6 flag, B8 constants).
+
+- **`BuildInfo.gitDirty` now means "the compiled project differs from HEAD".** `generate-build-info.sh` tests only `DrewsChessMachine/` (project, scheme, test plan, sources, local packages), excludes the two files it writes itself (`build_counter.txt`, `App/BuildInfo.swift`), and counts staged, unstaged and untracked non-ignored files there. Before, it tested the whole repository after bumping the tracked counter, so every build said dirty (all lineage records on disk say `git_dirty: true`). Lineage records written by builds from this commit on carry the corrected flag; earlier records' flag is always true (risk R6).
+- **`BuildInfo.gitDiffSHA256`**: SHA-256 of `git diff --binary HEAD` over that scope plus each untracked file framed as `<path length>\n<path>\n<content length>\n<content>` in byte-sorted path order; `nil` exactly when clean. Not yet recorded in lineage (P4).
+- **`BuildInfo.xcodeBuild` / `sdkBuild` / `configuration`** from `XCODE_PRODUCT_BUILD_VERSION`, `SDK_PRODUCT_BUILD_VERSION`, `CONFIGURATION` (verified present in the Run Script phase); an empty or missing value fails the build. A git failure in the dirty test also fails the build instead of guessing.
+- New `scripts/safetensors_tensor_compare.py` (bit-exact or relative-tolerance tensor comparison, the plan's "no change to training math" check).
+- Tests: `test_build_info_script.py`, `test_safetensors_tensor_compare.py`, `BuildInfoConsistencyTests`.
+
+## 2026-10-06 — Per-site activations: independent review fixes
+
+- Build New Model: the group "Activation" picker and the "Use for every activation" menu list one shared `BuildNewModelView.activationChoices` (`ActivationFunction.functions`), pinned again by `testEveryActivationChoiceListIsTheFunctionsList`, so neither can come to offer `does_not_apply` unnoticed.
+- A pre-v9 block-groups file with neither the site keys nor `activation_function`: the error now also names a site key stated as JSON `null`, as `scripts/dcm_arch.py` does (it named none when only null keys were unresolved).
+- Python: `test_format_versions_match_the_swift_constants` compares every format-version constant `dcm_arch` / `dcm_lineage` copies with `ArchitectureFormat.swift`, parsing both sides.
+- Docs: `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md` §20 says what `fwd3.py` / `fwd4.py` and their callers do on a v9/v10 file; the ROADMAP entry lists every implementing commit; `HEAD_ACTIVATIONS_PLAN.md` ID-18 and its X2 row.
+
 ## 2026-10-06 — /stupid fixes: per-site activations review
 
 - Build New Model: one `Availability` decides each site picker's state and help; each architecture-level picker is built from its site and binds through `BuildNewModelModel.activationKeyPath(at:)`; the choice-list aliases are gone (`ActivationFunction.functions` everywhere).

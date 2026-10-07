@@ -40,14 +40,14 @@ final class CorpusReplayRefusalTests: XCTestCase {
     /// Declared-default parameters with the small batch and buffer the
     /// synthetic corpus is sized for, diagnostics off.
     private func params(batchSize: Int) throws -> ReplayParams {
-        var p = try ReplayParams(TrainingParametersSnapshot.declaredDefaults(overriding: [:]))
-        p.trainingBatchSize = batchSize
-        p.replayBufferCapacity = 2000
-        p.replayBufferMinPositionsBeforeTraining = 500
-        p.trainer.lrWarmupSteps = 5
-        p.trainer.klProbeInterval = 0
-        p.trainer.batchStatsInterval = 0
-        return p
+        try ReplayParams(TrainingParametersSnapshot.declaredDefaults(overriding: [
+            TrainingBatchSize.id: .int(batchSize),
+            ReplayBufferCapacity.id: .int(2000),
+            ReplayBufferMinPositionsBeforeTraining.id: .int(500),
+            LRWarmupSteps.id: .int(5),
+            KLProbeInterval.id: .int(0),
+            BatchStatsInterval.id: .int(0),
+        ]))
     }
 
     private func config(corpus: URL, stepLimit: Int, startModel: URL?, startShard: Int?, startGameIndex: Int?,
@@ -113,7 +113,7 @@ final class CorpusReplayRefusalTests: XCTestCase {
         let second = tempDir.appendingPathComponent("second.safetensors")
         let cfg = config(corpus: corpus, stepLimit: 3, startModel: first, startShard: nil, startGameIndex: nil,
                          resumeExact: true, out: second)
-        guard let refusal = await refusal(cfg, params: try params(batchSize: 16)) else { return }
+        guard let refusal = await refusal(cfg, params: try params(batchSize: 64)) else { return }
         XCTAssertTrue(refusal.message.contains("--resume-exact cannot continue this checkpoint exactly"), refusal.message)
         XCTAssertTrue(refusal.message.contains(ResumeGap.feedCarry.token), refusal.message)
         XCTAssertTrue(refusal.message.contains(ResumeGap.params.token), refusal.message)

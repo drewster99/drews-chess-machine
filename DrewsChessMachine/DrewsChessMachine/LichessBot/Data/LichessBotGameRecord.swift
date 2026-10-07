@@ -82,7 +82,19 @@ struct LichessBotGameRecord: Sendable, Codable, Equatable {
         let receivedAt: Date?
         let ours: Bool
         let decision: LichessBotMoveDecision?
+        /// The decision's generation number (`LichessBotGenerationInfo.generationID`).
+        /// Numbering restarts at 1 every time the bot goes online, so in a
+        /// game resumed after a relaunch one number can belong to two
+        /// generations; `generationIndex` names the one that decided.
         let generationID: Int?
+        /// Index into the record's `generations` of the generation that made
+        /// `decision`; nil when there is no decision. Also nil in records
+        /// written before this field existed: those list at most one
+        /// generation per `generationID`, so the ID finds it (for a game
+        /// resumed across a relaunch it is the first session's, whichever
+        /// model decided the move; only rebuilding the record from its kept
+        /// journal corrects that).
+        let generationIndex: Int?
         let postMilliseconds: Double?
         let offeredDraw: Bool?
     }
@@ -145,7 +157,9 @@ struct LichessBotGameRecord: Sendable, Codable, Equatable {
     let outcome: Outcome
     let openingECO: String?
     let openingName: String?
-    /// Every model generation that chose a move, in order of first use.
+    /// Every model generation that chose a move, in order of first use, each
+    /// once. Told apart by their whole info, not their `generationID`: a game
+    /// resumed after a relaunch can hold two generations numbered alike.
     let generations: [LichessBotGenerationInfo]
     let moves: [Move]
     let retractions: [Retraction]
@@ -493,8 +507,10 @@ enum LichessBotRecordBuilder {
         /// have several (a takeback and replay). They are matched to the move
         /// finally at each ply only in `finishMoves`, once the whole journal
         /// is replayed: a held move's echo is often journaled before its
-        /// POST, so matching at the stream line would miss it.
-        var decisions: [Int: [(decision: LichessBotMoveDecision, generationID: Int)]] = [:]
+        /// POST, so matching at the stream line would miss it. Each carries
+        /// the index into `generations` of the generation that made it, the
+        /// only exact reference once a game spans two going-online sessions.
+        var decisions: [Int: [(decision: LichessBotMoveDecision, generationID: Int, generationIndex: Int)]] = [:]
         var posts: [Int: [(uci: String, offeringDraw: Bool, milliseconds: Double)]] = [:]
         var offerFlags: [String: Bool] = [:]
 
@@ -517,10 +533,21 @@ enum LichessBotRecordBuilder {
             case .streamEnded, .positionSynced, .keepAlive, .request:
                 break
             case .moveDecided(let ply, let decision, let generation):
-                decisions[ply, default: []].append((decision, generation.generationID))
-                if !generations.contains(where: { $0.generationID == generation.generationID }) {
+                // Matched on the whole info, never the ID alone: IDs restart
+                // at 1 every time the bot goes online, so a game resumed
+                // after a relaunch can journal a different model under an ID
+                // the first session already used. Two sessions' generations
+                // always differ (`snapshotAt` is when each was built), while
+                // one generation, journaled with every move it decides, is
+                // listed once.
+                let generationIndex: Int
+                if let listedIndex = generations.firstIndex(of: generation) {
+                    generationIndex = listedIndex
+                } else {
+                    generationIndex = generations.count
                     generations.append(generation)
                 }
+                decisions[ply, default: []].append((decision, generation.generationID, generationIndex))
             case .movePosted(let ply, let uci, let offeringDraw, let milliseconds):
                 posts[ply, default: []].append((uci, offeringDraw, milliseconds))
             case .moveRejected(let ply, let uci, let error):
@@ -770,6 +797,7 @@ enum LichessBotRecordBuilder {
                     ours: ours,
                     decision: decision?.decision,
                     generationID: decision?.generationID,
+                    generationIndex: decision?.generationIndex,
                     postMilliseconds: post?.milliseconds,
                     offeredDraw: post?.offeringDraw
                 )

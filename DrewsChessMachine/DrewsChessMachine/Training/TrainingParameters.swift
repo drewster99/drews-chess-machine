@@ -1398,6 +1398,21 @@ public struct TrainingParametersSnapshot: Sendable {
         for (id, value) in overrides { values[id] = value }
         return TrainingParametersSnapshot(values: values)
     }
+
+    /// This snapshot with `key`'s value replaced by `value`, as it is: no
+    /// check against today's declared range. It exists for recording a value
+    /// that was *in force* — a resumed checkpoint's schedule
+    /// (`adoptingSchedule(_:)`), or a value a run captured at its start —
+    /// which is what trained the weights even when the declaration's range
+    /// has narrowed since. Anything that takes a value *from a user or a
+    /// file to apply* goes through the validators instead
+    /// (`declaredDefaults(overriding:)`, `TrainingParameters.validate`).
+    /// The key's type makes the stored value's type right by construction.
+    public func replacing<K: TrainingParameterKey>(_ key: K.Type, with value: K.Value) -> TrainingParametersSnapshot {
+        var replaced = values
+        replaced[K.id] = K.encode(value)
+        return TrainingParametersSnapshot(values: replaced)
+    }
 }
 
 // Typed accessors on the snapshot — keep parallel with the stored properties on TrainingParameters.

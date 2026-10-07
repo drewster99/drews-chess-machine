@@ -286,6 +286,23 @@ final class TrainingSettingsPopoverModel {
     /// Pushes the freshly-edited self-play τ-schedule into the live
     /// `samplingScheduleBox`. No-op before the first session.
     var pushSelfPlaySchedule: () -> Void = {}
+    /// Returns the current (or last stopped) Play-and-Train run's start-time
+    /// capture (`SessionController.runStartCapture`), nil when no run has
+    /// started, so an edit of a captured key can say the run keeps its value.
+    var runStartCaptureProvider: () -> RunStartParameterCapture? = { nil }
+
+    /// The `[PARAM]` line for an edit of a key a Play-and-Train run captures
+    /// at its start. While a run holds a capture the edit is saved for the
+    /// next start and the line names the value the run keeps; with none it
+    /// is the plain old -> new line.
+    private func capturedKeyEditLogLine(name: String, old: Int, new: Int,
+                                        inForce: KeyPath<RunStartParameterCapture, Int>) -> String {
+        guard let capture = runStartCaptureProvider() else {
+            return "[PARAM] \(name): \(old) -> \(new)"
+        }
+        return RunStartParameterCapture.deferredEditLogLine(
+            name: name, old: old, new: new, inForceValue: capture[keyPath: inForce])
+    }
 
     /// The self-play worker counts the Concurrency field and stepper accept:
     /// the declared range, capped at the injected worker limit. One range
@@ -1229,12 +1246,14 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
 
-        // Training batch size — Int in the declared range. Snapshot-only; the live
-        // trainer rebuilds its feed cache lazily on the next batch shape.
+        // Training batch size — Int in the declared range. Captured at each
+        // Play-and-Train start (`RunStartParameterCapture`): an edit during a
+        // run takes effect at the next start.
         if let n = editedValue(TrainingBatchSize.self, \.trainingBatchSizeText, current: p.trainingBatchSize) {
             trainingBatchSizeError = false
             if n != p.trainingBatchSize {
-                SessionLogger.shared.log("[PARAM] trainingBatchSize: \(p.trainingBatchSize) -> \(n)")
+                SessionLogger.shared.log(capturedKeyEditLogLine(
+                    name: "trainingBatchSize", old: p.trainingBatchSize, new: n, inForce: \.trainingBatchSize))
                 p.trainingBatchSize = n
             }
         } else {
@@ -1364,12 +1383,14 @@ final class TrainingSettingsPopoverModel {
         // `setSelfPlay` is a no-op before the first session.
         pushSelfPlaySchedule()
 
-        // Replay buffer capacity — Int in the declared range. Snapshot-only:
-        // the live ring cannot resize mid-session.
+        // Replay buffer capacity — Int in the declared range. Captured at each
+        // Play-and-Train start: the live ring cannot resize mid-run, so an edit
+        // takes effect when the next start builds a buffer.
         if let n = editedValue(ReplayBufferCapacity.self, \.replayBufferCapacityText, current: p.replayBufferCapacity) {
             replayBufferCapacityError = false
             if n != p.replayBufferCapacity {
-                SessionLogger.shared.log("[PARAM] replayBufferCapacity: \(p.replayBufferCapacity) -> \(n)")
+                SessionLogger.shared.log(capturedKeyEditLogLine(
+                    name: "replayBufferCapacity", old: p.replayBufferCapacity, new: n, inForce: \.replayBufferCapacity))
                 p.replayBufferCapacity = n
             }
         } else {
@@ -1377,13 +1398,15 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
 
-        // Pre-train fill threshold — Int in the declared range. Live-tunable.
+        // Pre-train fill threshold — Int in the declared range. Captured at
+        // each Play-and-Train start: an edit during a run takes effect at the
+        // next start.
         if let n = editedValue(ReplayBufferMinPositionsBeforeTraining.self, \.replayBufferMinPositionsText, current: p.replayBufferMinPositionsBeforeTraining) {
             replayBufferMinPositionsError = false
             if n != p.replayBufferMinPositionsBeforeTraining {
-                SessionLogger.shared.log(
-                    "[PARAM] replayBufferMinPositionsBeforeTraining: \(p.replayBufferMinPositionsBeforeTraining) -> \(n)"
-                )
+                SessionLogger.shared.log(capturedKeyEditLogLine(
+                    name: "replayBufferMinPositionsBeforeTraining", old: p.replayBufferMinPositionsBeforeTraining, new: n,
+                    inForce: \.replayBufferMinPositionsBeforeTraining))
                 p.replayBufferMinPositionsBeforeTraining = n
             }
         } else {

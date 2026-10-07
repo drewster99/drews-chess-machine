@@ -38,12 +38,15 @@ import Foundation
 // thresholds below are the report's labels (dead, mostly off, always on).
 // The model holds exactly only while the running statistics track the batch
 // statistics, but it needs nothing beyond γ and β, which is what makes the
-// live tier cheap. The classification is only meaningful where the
+// live tier cheap. The β/|γ| classification is only meaningful where the
 // activation has a hard zero/linear split — `relu` and `leaky_relu` (for
 // which "dead" means "always on the small negative-slope side"). SiLU and
-// GELU have no such split, so their sites report the classification as
-// explicitly not applicable rather than as zero counts that would read as
-// "healthy".
+// GELU have no such split, so their sites report it as explicitly not
+// applicable rather than as zero counts that would read as "healthy". Every
+// activated site — SiLU and GELU included — also gets the activation-aware
+// parked / mostly-off counts (`BatchNormPassThrough`: excess pass-through
+// below Φ(−3) / Φ(−2)), which equal dead / mostly off exactly for relu and
+// leaky_relu; those are what the `dead_channels` training-health rule reads.
 //
 // SITE ENUMERATION is derived from the architecture alone and mirrors the
 // graph builder (`ChessNetwork`): every BatchNorm in build order, each tagged

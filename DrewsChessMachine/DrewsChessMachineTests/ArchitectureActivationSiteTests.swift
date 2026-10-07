@@ -146,6 +146,8 @@ final class ArchitectureActivationSiteTests: XCTestCase {
     func testEveryActivationChoiceListIsTheFunctionsList() {
         XCTAssertFalse(ActivationFunction.functions.contains(.doesNotApply))
         XCTAssertEqual(ActivationFunction.functions, ActivationFunction.allCases.filter { $0 != .doesNotApply })
+        XCTAssertEqual(BuildNewModelView.activationChoices, ActivationFunction.functions)
+        XCTAssertFalse(BuildNewModelView.activationChoices.contains(.doesNotApply))
         let syntax = ActivationFunction.functions.map(\.rawValue).joined(separator: "|")
         XCTAssertEqual(SetActivationDeriveOperation.kind.valueSyntax, syntax)
         XCTAssertEqual(SetSEActivationDeriveOperation.kind.valueSyntax, syntax)
@@ -367,6 +369,31 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         let (decoded, format) = try decode(try object(arch), version: 5)
         XCTAssertEqual(decoded, arch)
         XCTAssertNil(format?.legacyLogLine)
+    }
+
+    /// A site key stated as JSON `null` is absent: `decodeIfPresent` reads it
+    /// as nil, exactly as `dcm_arch.site_activations` does. The error must
+    /// name it with the keys missing outright. `KeyedDecodingContainer.contains`
+    /// is true for a null key, so a list built from `contains` leaves it out —
+    /// with only null keys unresolved, the message would name no key at all.
+    func testPreV9FileWithANullSiteKeyNamesItAmongTheUnresolvedSites() throws {
+        let arch = NetworkArchitecture.current
+        var onlyNull = try object(arch)
+        onlyNull["stem_activation"] = NSNull()
+        XCTAssertThrowsError(try decode(onlyNull, version: 5, source: "old.json")) { error in
+            XCTAssertEqual(error as? ArchitectureFormat.FormatError,
+                           .legacyActivationFunctionMissing(unresolvedSites: ["stem_activation"], location: "the top level",
+                                                            formatVersion: 5, source: "old.json"))
+        }
+        var nullAndMissing = try object(arch)
+        nullAndMissing["policy_head_activation"] = NSNull()
+        nullAndMissing.removeValue(forKey: "tower_end_activation")
+        XCTAssertThrowsError(try decode(nullAndMissing, version: 5, source: "old.json")) { error in
+            XCTAssertEqual(error as? ArchitectureFormat.FormatError,
+                           .legacyActivationFunctionMissing(
+                            unresolvedSites: ["tower_end_activation", "policy_head_activation"],
+                            location: "the top level", formatVersion: 5, source: "old.json"))
+        }
     }
 
     func testV9BlockGroupsFileStatingActivationFunctionIsRefused() throws {

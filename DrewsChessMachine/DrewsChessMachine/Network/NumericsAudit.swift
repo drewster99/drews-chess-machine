@@ -205,8 +205,8 @@ enum NumericsAudit {
         modelID: String?,
         trainingStep: Int?
     ) async throws -> Result {
-        let staticResult = try runStatic(names: names, weights: weights, arch: arch, masters: masters, mastersNote: mastersNote)
-        let layerHealth = try LayerHealth.summarizePlanAligned(arch: arch, baseWeights: weights, velocity: velocity)
+        let (staticResult, layerHealth) = try await runStaticAndLayerHealthOffPool(
+            names: names, weights: weights, arch: arch, masters: masters, mastersNote: mastersNote, velocity: velocity)
         var dynamicResult: DynamicResult?
         if let positions {
             dynamicResult = try await runDynamic(
@@ -231,6 +231,35 @@ enum NumericsAudit {
             findings: findings,
             overallVerdict: overall
         )
+    }
+
+    /// `runStatic` and the plan-aligned layer-health summary on a GCD queue,
+    /// resuming the caller through a continuation. Both are synchronous scans
+    /// of every weight (and velocity) value, and the summary now integrates
+    /// SiLU / GELU pass-through per channel (`BatchNormPassThrough`), so on
+    /// the cooperative pool they would hold a thread for the whole scan;
+    /// `run`'s callers are async (the GUI's numerics-audit step, the CLI).
+    private static func runStaticAndLayerHealthOffPool(
+        names: [String],
+        weights: [[Float]],
+        arch: NetworkArchitecture,
+        masters: [[Float]]?,
+        mastersNote: String?,
+        velocity: LayerHealth.VelocitySource
+    ) async throws -> (StaticResult, LayerHealthSummary) {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let staticResult = try runStatic(
+                        names: names, weights: weights, arch: arch, masters: masters, mastersNote: mastersNote)
+                    let layerHealth = try LayerHealth.summarizePlanAligned(
+                        arch: arch, baseWeights: weights, velocity: velocity)
+                    continuation.resume(returning: (staticResult, layerHealth))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Static checks

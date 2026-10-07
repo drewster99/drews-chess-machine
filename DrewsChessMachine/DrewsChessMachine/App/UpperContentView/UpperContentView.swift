@@ -1784,6 +1784,7 @@ struct UpperContentView: View {
             samplingScheduleBox?.setArena(session.buildArenaSchedule())
         }
         trainingSettingsPopover.trainerProvider = { trainer }
+        trainingSettingsPopover.runStartCaptureProvider = { session.runStartCapture }
         trainingSettingsPopover.replayRatioControllerProvider = { replayRatioController }
         trainingSettingsPopover.pushSelfPlaySchedule = {
             samplingScheduleBox?.setSelfPlay(session.buildSelfPlaySchedule())

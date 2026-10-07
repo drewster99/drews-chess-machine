@@ -1,7 +1,8 @@
 """Tests for the format-v9 site activations in scripts/dcm_arch.py and the scripts that rely on them:
 the legacy resolution, the v9 gate, the retired top-level key, both mismatch directions, the
-`require_relu` guard, units.py's architecture check, and the keyword-only `md` of the forward
-passes in fwd16.py and bf16-head-offset/scripts/fwd.py.
+`require_relu` guard, units.py's architecture check, the keyword-only `md` of the forward
+passes in fwd16.py and bf16-head-offset/scripts/fwd.py, and the format-version constants
+against ArchitectureFormat.swift.
 
 Run: python3 -m unittest discover -s documentation/dashboards/tests
 Every test works on synthetic architectures; nothing reads a model file.
@@ -19,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 import dcm_arch  # noqa: E402
+import dcm_lineage  # noqa: E402
 
 FMA_SCRIPTS = os.path.join(REPO, "experiments", "20261001-se-fc1-leaky", "full-model-analysis", "scripts")
 FP16_SCRIPTS = os.path.join(REPO, "documentation", "research", "fp16-feasibility", "scripts")
@@ -272,6 +274,37 @@ class NormArchParityTests(unittest.TestCase):
             raw_values.append(raw or name)
         self.assertEqual(raw_values[-1], dcm_arch.DOES_NOT_APPLY)
         self.assertEqual(tuple(raw_values[:-1]), dcm_arch.ACTIVATION_FUNCTIONS)
+
+    # Each Python format-version constant that hand-copies an ArchitectureFormat
+    # constant, by its Swift name. A gate that moves in Swift but not here would
+    # make the scripts resolve or refuse files differently from the app.
+    SWIFT_FORMAT_CONSTANTS = (
+        ("currentVersion", dcm_arch, "CURRENT_FORMAT_VERSION"),
+        ("siteActivationsRequiredFromVersion", dcm_arch, "SITE_ACTIVATIONS_REQUIRED_FROM_VERSION"),
+        ("seLessSEActivationDoesNotApplyFromVersion", dcm_arch, "SE_LESS_SE_ACTIVATION_DOES_NOT_APPLY_FROM_VERSION"),
+        ("seBetaInitRequiredFromVersion", dcm_arch, "SE_BETA_INIT_REQUIRED_FROM_VERSION"),
+        ("seActivationRequiredFromVersion", dcm_arch, "SE_ACTIVATION_REQUIRED_FROM_VERSION"),
+        ("rezeroAlphaCapRequiredFromVersion", dcm_arch, "REZERO_ALPHA_CAP_REQUIRED_FROM_VERSION"),
+        ("unversionedLegacyVersion", dcm_arch, "UNVERSIONED_LEGACY_VERSION"),
+        ("lineageRequiredFromVersion", dcm_lineage, "LINEAGE_REQUIRED_FROM_VERSION"),
+        ("unversionedLegacyVersion", dcm_lineage, "UNVERSIONED_LEGACY_VERSION"),
+    )
+
+    def test_format_versions_match_the_swift_constants(self):
+        """Both sides are parsed, never written here as numbers, so a version bump
+        made in both places keeps this passing and one made in only one fails it."""
+        with open(os.path.join(REPO, "DrewsChessMachine", "DrewsChessMachine", "Network",
+                               "ArchitectureFormat.swift"), encoding="utf-8") as swift_file:
+            source = swift_file.read()
+        body = re.search(r"^enum ArchitectureFormat\b[^{]*\{(.*?)^\}", source, re.S | re.M).group(1)
+        swift = {}
+        for name, value in re.findall(r"^\s*static let (\w+) = (\d+)\s*$", body, re.M):
+            self.assertNotIn(name, swift, f"ArchitectureFormat.{name} is declared twice")
+            swift[name] = int(value)
+        for swift_name, module, python_name in self.SWIFT_FORMAT_CONSTANTS:
+            with self.subTest(swift_name=swift_name, python_name=f"{module.__name__}.{python_name}"):
+                self.assertIn(swift_name, swift, f"ArchitectureFormat.{swift_name} not found as an integer literal")
+                self.assertEqual(getattr(module, python_name), swift[swift_name])
 
 
 class RequireReluTests(unittest.TestCase):

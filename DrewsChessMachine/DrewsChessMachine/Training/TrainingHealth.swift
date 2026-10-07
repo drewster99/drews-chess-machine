@@ -4,7 +4,7 @@ import Foundation
 //
 // Every training path (GUI Play-and-Train, `--replay-corpus`,
 // `--train-vs-uci`) and the offline `--replay-health-log` judge a run's
-// health through the one evaluator in this file, so the eight rules and
+// health through the one evaluator in this file, so the nine rules and
 // their thresholds have exactly one home. Nothing here touches the GPU, the
 // trainer, the replay buffer, a file or the log: the inputs are values the
 // paths already compute (`TrainStepTiming`, `LayerHealthSummary`), the
@@ -90,7 +90,7 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
         case .illegalMass, .gradientCollapse, .policyOffsetDrift:
             return TrainingHealthThresholds.windowRuleSustain
         case .deadChannels, .batchNormRunningVarianceRunaway:
-            return TrainingHealthSustain(evaluations: 2, spanSteps: 0)
+            return TrainingHealthThresholds.layerHealthRuleClearSustain
         case .valueFC1ZeroVelocity, .lossSpike, .gradientSpike:
             return .immediate
         }
@@ -300,6 +300,22 @@ enum TrainingHealthThresholds {
     /// Sustain of the window rules (4, 5, 7), for both raise and clear.
     static let windowRuleSustain = TrainingHealthSustain(evaluations: 2, spanSteps: 50)
 
+    /// Clear sustain of the layer-health rules 2 and 8: two evaluations that
+    /// span at least one trainer step. The span is what makes it two observed
+    /// states rather than two reads of one: at every save step the live
+    /// evaluation and the save's checkpoint evaluation run at the same trainer
+    /// step and read the same batch-norm γ, β and running statistics, so
+    /// without it a single recovered state would clear the alarm and the
+    /// next damaged window would raise it again (raise → clear → raise). A
+    /// span rather than "count only steps above the streak's last" because
+    /// it is the same measure every other sustain uses (`isSustained`), and
+    /// with non-decreasing steps (the freshness check) the two are
+    /// equivalent: two evaluations spanning ≥ 1 step are exactly two
+    /// distinct trainer steps. One step is enough — any SGD step changes the
+    /// weights — so on the 50-step cadence a clear still comes at the live
+    /// evaluation after the first recovered one.
+    static let layerHealthRuleClearSustain = TrainingHealthSustain(evaluations: 2, spanSteps: 1)
+
     /// Live evaluations run every this many trainer steps on every path, on
     /// overall trainer-step multiples, independent of when the paths write
     /// their step lines (owner decision 2026-10-06).
@@ -467,7 +483,32 @@ struct TrainingHealthStepRecord: Sendable, Equatable {
 /// (offline replay). A nil field means the source did not carry it, so the
 /// rules that read it have no data — never "healthy".
 struct LayerHealthDigest: Sendable, Equatable {
-    enum Tier: String, Sendable { case live, checkpoint }
+    /// Which read produced the digest. It decides which rules the digest is
+    /// meant to feed, so a rule it never feeds is not counted as "no data"
+    /// on the `[HEALTH] check` line (only a source that should have carried
+    /// a rule's input and did not is).
+    enum Tier: String, Sendable {
+        /// The live read: BN state and ReZero α (rules 1, 2, 8).
+        case live
+        /// A save's full-tensor pass (rules 1, 2, 3, 8).
+        case checkpoint
+        /// The dedicated value-FC1 velocity read (D6): rule 3 only.
+        case valueFC1Read = "value-fc1"
+
+        /// Whether a digest from this read is meant to carry `rule`'s input.
+        /// The window rules (4–7, 9) come from step records, never from a
+        /// digest.
+        func feeds(_ rule: TrainingHealthRule) -> Bool {
+            switch rule {
+            case .nonFinite, .deadChannels, .batchNormRunningVarianceRunaway:
+                return self != .valueFC1Read
+            case .valueFC1ZeroVelocity:
+                return self != .live
+            case .illegalMass, .gradientCollapse, .lossSpike, .policyOffsetDrift, .gradientSpike:
+                return false
+            }
+        }
+    }
 
     /// One BN site an activation consumes, with its parked channels
     /// (`BatchNormPassThrough`; for relu / leaky_relu exactly the dead
@@ -477,24 +518,35 @@ struct LayerHealthDigest: Sendable, Equatable {
     /// is a lower bound.
     struct SiteDeadChannels: Sendable, Equatable {
         let site: String
-        let deadChannelCount: Int?
+        let parkedChannelCount: Int?
         let channelCount: Int?
     }
 
     /// Rule 2's input: parked channels over every site an activation
     /// consumes, whatever the function (owner decision 2026-10-06; for
-    /// relu / leaky_relu sites parked is dead).
+    /// relu / leaky_relu sites parked is dead). "Modeled" is a site or
+    /// channel with a pass-through model (`BatchNormPassThrough.isModeled`) —
+    /// every BN output an activation consumes — not `LayerHealthSummary`'s
+    /// relu / leaky_relu-only "classified" sites.
     struct DeadChannels: Sendable, Equatable {
-        /// 0 means no BN site feeds an activation: rule 2 does not apply.
-        let classifiedSiteCount: Int
-        let classifiedChannelCount: Int
-        let deadChannelCount: Int
+        /// Sites an activation consumes; 0 means none, so rule 2 does not
+        /// apply. nil when unknown (offline: a log line written before the
+        /// parked counts, in a run with no checkpoint table).
+        let modeledSiteCount: Int?
+        /// Every channel of those sites: the overall critical arm's
+        /// denominator (OD-18). nil when unknown, and then the overall arm has
+        /// no data — it is never computed over a partial count, which would
+        /// overstate the fraction.
+        let modeledChannelCount: Int?
+        let parkedChannelCount: Int
         /// The sites whose counts are known (in-app: every such site;
         /// offline: the sites the line names).
         let sites: [SiteDeadChannels]
-        /// False when only relu / leaky_relu sites were classified — an
-        /// offline log written before the parked counts existed, whose
-        /// silu / gelu sites were never checked.
+        /// False when only relu / leaky_relu sites were counted — an offline
+        /// log written before the parked counts existed, whose silu / gelu
+        /// sites were never checked. `parkedChannelCount` is then a lower
+        /// bound (over a full `modeledChannelCount`, so the overall fraction
+        /// is one too).
         let coversEveryActivation: Bool
     }
 
@@ -538,11 +590,11 @@ struct LayerHealthDigest: Sendable, Equatable {
         }
         let sites = summary.passThroughSites
         deadChannels = DeadChannels(
-            classifiedSiteCount: sites.count,
-            classifiedChannelCount: summary.passThroughChannelCount,
-            deadChannelCount: summary.parkedChannelCount,
+            modeledSiteCount: sites.count,
+            modeledChannelCount: summary.passThroughChannelCount,
+            parkedChannelCount: summary.parkedChannelCount,
             sites: sites.map {
-                SiteDeadChannels(site: $0.site, deadChannelCount: $0.parkedChannelCount, channelCount: $0.channelCount)
+                SiteDeadChannels(site: $0.site, parkedChannelCount: $0.parkedChannelCount, channelCount: $0.channelCount)
             },
             coversEveryActivation: true)
         nonFiniteValueCount = summary.nonFiniteValueCount
@@ -557,10 +609,11 @@ struct LayerHealthDigest: Sendable, Equatable {
     }
 
     /// A digest carrying only a value-FC1 velocity reading (the dedicated
-    /// read, D6): every other rule has no data from it.
+    /// read, D6). It feeds rule 3 alone, by design, so the other rules are
+    /// neither applied nor counted as "no data" on it.
     static func valueFC1Only(_ valueFC1: ValueFC1Velocity) -> LayerHealthDigest {
         LayerHealthDigest(
-            tier: .checkpoint, deadChannels: nil, nonFiniteValueCount: nil,
+            tier: .valueFC1Read, deadChannels: nil, nonFiniteValueCount: nil,
             runningVariance: nil, valueFC1: valueFC1)
     }
 }
@@ -762,7 +815,7 @@ struct TrainingHealthEvent: Encodable, Sendable, Equatable {
     /// The crossed threshold, rendered (`site>=0.2`); empty when none was
     /// crossed (worsen, active, clear, stop).
     let threshold: String
-    /// Extra `key=value` fields (`worst=value.bn(5/16)`, `was=5`); may be
+    /// Extra `key=value` fields (`sites=value.bn(5/16)`, `was=5`); may be
     /// empty.
     let detail: String
     let action: TrainingHealthAction
@@ -795,7 +848,9 @@ struct TrainingHealthEvaluation: Sendable {
     /// The first qualifying active alarm (R2), once per evaluator.
     let stopRequest: TrainingHealthEvent?
     let active: [TrainingHealthActiveAlarm]
-    /// Rules whose inputs had no data in this observation (state held).
+    /// Rules whose inputs had no data in this observation although its
+    /// source is meant to carry them (state held). A rule the source never
+    /// carries is not listed (`TrainingHealthEvaluator.observation(_:feeds:)`).
     let noDataRules: [TrainingHealthRule]
     /// Rules whose observation was older than the newest one they applied
     /// (not applied to them; counted `stale=`).
@@ -835,7 +890,7 @@ enum TrainingHealthStopPolicy {
 
 // MARK: - The evaluator
 
-/// The eight rules as a value type: per-rule sustain counters, hysteresis,
+/// The nine rules as a value type: per-rule sustain counters, hysteresis,
 /// the active set and the stop flag. The monitor runs every transition on a
 /// copy and commits it only if no trainer-clock rewind intervened (D2).
 struct TrainingHealthEvaluator: Sendable {
@@ -957,7 +1012,14 @@ struct TrainingHealthEvaluator: Sendable {
             events.append(contentsOf: outcome.events)
             switch outcome.status {
             case .applied: break
-            case .noData: noData.append(rule)
+            case .noData:
+                // R0 counts "no data" so that a silent rule is visible. A
+                // rule this observation's source never carries (the window
+                // rules on a checkpoint pass, rule 3 on a live read, all but
+                // rule 3 on a dedicated value-FC1 read) would be counted on
+                // every healthy evaluation, and a broken input path would
+                // look exactly like normal operation.
+                if Self.observation(observation, feeds: rule) { noData.append(rule) }
             case .stale: stale.append(rule)
             case .notApplicable(let reason, let first):
                 if first { newlyNotApplicable.append((rule, reason)) }
@@ -1003,6 +1065,30 @@ struct TrainingHealthEvaluator: Sendable {
             events: events, stopRequest: stopRequest, active: activeAlarms, noDataRules: noData,
             staleRules: stale, newlyNotApplicable: newlyNotApplicable, checkDue: checkDue,
             window: observation.window)
+    }
+
+    /// Whether `observation`'s source is meant to carry `rule`'s input. A
+    /// live evaluation carries the window (rules 1, 4–7, 9) and the live read
+    /// (rules 1, 2, 8) — whether or not that read succeeded, since a failed
+    /// read is exactly the no-data case the line must show; a checkpoint
+    /// evaluation carries only its digest, whose tier says which rules it
+    /// feeds.
+    static func observation(_ observation: TrainingHealthObservation, feeds rule: TrainingHealthRule) -> Bool {
+        if observation.isLive {
+            return LayerHealthDigest.Tier.live.feeds(rule) || isWindowRule(rule)
+        }
+        guard let tier = observation.layerHealth?.tier else { return false }
+        return tier.feeds(rule)
+    }
+
+    /// Rules whose input is the step window.
+    static func isWindowRule(_ rule: TrainingHealthRule) -> Bool {
+        switch rule {
+        case .illegalMass, .gradientCollapse, .lossSpike, .policyOffsetDrift, .gradientSpike:
+            return true
+        case .nonFinite, .deadChannels, .valueFC1ZeroVelocity, .batchNormRunningVarianceRunaway:
+            return false
+        }
     }
 
     // MARK: Assessment (one rule, one observation)
@@ -1074,18 +1160,23 @@ struct TrainingHealthEvaluator: Sendable {
 
     private func assessDeadChannels(_ dead: LayerHealthDigest.DeadChannels?) -> Assessment {
         guard let dead else { return .noData }
-        guard dead.classifiedSiteCount > 0 else {
+        guard dead.modeledSiteCount != 0 else {
             return .notApplicable(reason: "no BN site feeds an activation")
         }
-        let value = "dead=\(dead.deadChannelCount)/\(dead.classifiedChannelCount)"
+        let denominator = dead.modeledChannelCount.map(String.init) ?? TrainingHealthLog.notMeasured
+        let value = "dead=\(dead.parkedChannelCount)/\(denominator)"
         let coverage = dead.coversEveryActivation ? "" : " coverage=relu_leaky_relu_only"
-        guard dead.deadChannelCount > 0 else { return .clear(value: value, detail: String(coverage.dropFirst())) }
+        // A clear (or a pending one) still names the sites — none now — so a
+        // reminder of an alarm still active during its clear sustain says why
+        // it is quiet, and the check line's `dead_channels_sites=` is never
+        // empty (OD-22).
+        guard dead.parkedChannelCount > 0 else { return .clear(value: value, detail: "sites=none\(coverage)") }
 
         // Every site with a parked channel, named with its counts (owner
         // decision 2026-10-06): largest known fraction first, then sites
         // whose channel count is unknown, by count.
         let affected = dead.sites.compactMap { site -> (site: String, dead: Int, channels: Int?)? in
-            guard let count = site.deadChannelCount, count > 0 else { return nil }
+            guard let count = site.parkedChannelCount, count > 0 else { return nil }
             return (site.site, count, site.channelCount)
         }
         func fraction(_ entry: (site: String, dead: Int, channels: Int?)) -> Double? {
@@ -1107,21 +1198,23 @@ struct TrainingHealthEvaluator: Sendable {
         let detail = "sites=\(siteList)\(coverage)"
         let largestSiteFraction = ordered.compactMap(fraction).max()
 
-        let overall = dead.classifiedChannelCount > 0
-            ? Double(dead.deadChannelCount) / Double(dead.classifiedChannelCount) : 0
-        if overall >= TrainingHealthThresholds.deadChannelsCriticalOverallFraction {
+        // The overall arm judges only when the denominator is every modeled
+        // channel; with it unknown the arm has no data (the warning and the
+        // per-site arm still judge).
+        if let modeled = dead.modeledChannelCount, modeled > 0,
+           Double(dead.parkedChannelCount) / Double(modeled) >= TrainingHealthThresholds.deadChannelsCriticalOverallFraction {
             return .raise(
                 severity: .critical, value: value,
                 threshold: "overall>=\(Self.plain(TrainingHealthThresholds.deadChannelsCriticalOverallFraction))",
-                detail: detail, count: dead.deadChannelCount)
+                detail: detail, count: dead.parkedChannelCount)
         }
         if let largestSiteFraction, largestSiteFraction >= TrainingHealthThresholds.deadChannelsCriticalSiteFraction {
             return .raise(
                 severity: .critical, value: value,
                 threshold: "site>=\(Self.plain(TrainingHealthThresholds.deadChannelsCriticalSiteFraction))",
-                detail: detail, count: dead.deadChannelCount)
+                detail: detail, count: dead.parkedChannelCount)
         }
-        return .raise(severity: .warning, value: value, threshold: "dead>0", detail: detail, count: dead.deadChannelCount)
+        return .raise(severity: .warning, value: value, threshold: "dead>0", detail: detail, count: dead.parkedChannelCount)
     }
 
     private func assessValueFC1(_ observation: TrainingHealthObservation) -> Assessment {
