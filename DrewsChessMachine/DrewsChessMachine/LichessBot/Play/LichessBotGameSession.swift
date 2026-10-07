@@ -599,14 +599,21 @@ actor LichessBotGameSession {
             ply: ply
         )
 
-        // Only a live-trainer game follows new snapshots, and only to one
-        // already built: this runs on our clock, so it must never start or
-        // wait on a network build.
+        // Only a live-trainer or followed-lineage game follows new
+        // generations (follow-lineage plan §3.8), and only to one already
+        // built: this runs on our clock, so it must never start or wait on a
+        // network build. It stays with its source and, for a followed
+        // lineage, with the lineage it started on (a source re-pointed at
+        // another lineage never reaches a game in progress), and only moves
+        // forward.
+        let refreshingSource = settings.model.source
         if settings.model.midGameRefresh,
-           settings.model.source == .liveTrainer,
-           playingMoveSource.info.sourceKind == .liveTrainer {
+           refreshingSource == .liveTrainer || refreshingSource == .followLineage,
+           playingMoveSource.info.sourceKind == refreshingSource {
             let latest = await latestMoveSource()
-            if latest.info.sourceKind == .liveTrainer {
+            if latest.info.sourceKind == refreshingSource,
+               latest.info.lineage?.followed == playingMoveSource.info.lineage?.followed,
+               latest.info.generationID > playingMoveSource.info.generationID {
                 playingMoveSource = latest
             }
         }

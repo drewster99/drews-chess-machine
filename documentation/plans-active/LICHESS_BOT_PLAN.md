@@ -810,6 +810,7 @@ unavailable rows disabled and a `.help` reason.
 | **Trainer snapshot** | Export of `trainer.network`, pinned | Only when the operator clicks **Re-snapshot now** (or selects the source) |
 | **Live trainer** | Export of `trainer.network` into a **shared mirror** | On a cadence, `liveTrainerRefreshIntervalSec` (default 120). **Not per move**: human play's per-move export costs about 0.5 s per move and contends with SGD, which multiplies with concurrent games (§4). |
 | **Model file** | `.safetensors`/`.dcmmodel` via `CheckpointManager.loadModelFile` (the single loader) | Pinned. Records path, file SHA-256 and embedded ModelID. |
+| **Follow lineage** (added 2026-10-06, §9.2) | The newest `.safetensors` file in `Models/` of one training run (`lineage_run_id`), from a chosen segment on, through every exact resume; loaded through the same loader | Checked every `lineageCheckIntervalSeconds` (default 60, minimum the 15 s poll); a newer file of the lineage builds a new generation. Never steps back to an older file. Records the file's lineage position (run, segment, local and cumulative step, `content_sha256`). |
 
 **Default source: Model file** (since commit `c5542b8`, confirmed intentional 2026-10-01; it was **Champion** before). The default path is the owner's chosen checkpoint, hard-coded as an absolute path:
 `/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20260713-v5cont-resume-replay-step270000.safetensors`
@@ -832,6 +833,8 @@ is attributable to exact weights.
 selected but no trainer exists. New challenges are declined with `later`.
 The status chip shows "Model source unavailable: no trainer", and the log
 records it. Games in progress keep their generation and finish normally.
+
+*Superseded 2026-10-06 (owner rule OD-18; `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` §3.10):* the bot builds its model generation before it goes online, for every source, and a failed build keeps it offline with the error. While online a generation always exists, so nothing is declined for the model: a source that becomes unavailable (a vanished champion, a failed switch, a followed lineage with no file it can vouch for) keeps the last good generation playing, raises an alarm and is retried at the poll loop's backoff. There is still no fallback to another source.
 
 **Snapshot cost** is logged per refresh (`[LICHESS-BOT] snapshot ms=…`) and
 summed in Stats as "training time spent on bot snapshots", so the cost to
@@ -885,6 +888,10 @@ two sources per game, for example champion vs. a pinned baseline file.
 Lichess's human pool then becomes a live head-to-head comparison of models,
 and Stats-by-ModelID shows the result.
 
+### 9.2 Following a model lineage on disk (added 2026-10-06)
+
+The **Follow lineage** source plays the newest checkpoint of one training run written by a separate process (`--replay-corpus`, `--train-vs-uci`), which the in-process sources can't see. Identity comes only from each file's `dcm_lineage` record (run + chosen segment), never from filenames or modification times; the models folder is re-checked on a cadence with a header cache, and forks, conflicts and missing files are reported (alarm, last good generation keeps playing) rather than resolved silently. Design, owner decisions and implementation notes: `documentation/plans-active/LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md`.
+
 ## 10. Data layer
 
 The root is `CheckpointPaths.rootURL/LichessBot/`, using the central root.
@@ -899,6 +906,8 @@ LichessBot/
   Games/YYYY/MM/<YYYYMMDD-HHMMSS>-<gameId>.journal.jsonl  raw per-game journal, kept
   InProgress/<gameId>.journal.jsonl               journal while the game is live
   Protocol/events-YYYYMMDD.jsonl                  account-level protocol event log
+  Challenges/challenges-YYYYMMDD.jsonl            challenge log, one file per UTC day, kept forever (challenge-log plan)
+  Challenges/reconstructed-from-protocol.json     past challenges rebuilt from Protocol/ (derived, regenerable)
   index.json                                      rebuildable stats cache (never authoritative)
 ```
 

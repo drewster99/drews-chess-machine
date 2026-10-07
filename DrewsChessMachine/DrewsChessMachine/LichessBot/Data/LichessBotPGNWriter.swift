@@ -45,6 +45,11 @@ enum LichessBotPGNWriter {
         tags.append(("DCMBuilds", record.builds.map(String.init).joined(separator: ",")))
         tags.append(("DCMModelIDs", orderedUnique(record.generations.map(\.modelID)).joined(separator: ",")))
         tags.append(("DCMSources", orderedUnique(record.generations.map(\.sourceKind.rawValue)).joined(separator: ",")))
+        // New games only: a record from before origins were recorded has
+        // none, and its PGN is never rewritten (OD-10).
+        if let origin = record.origin {
+            tags.append(("DCMOrigin", origin.token))
+        }
 
         var text = tags.map { "[\($0.0) \"\(escape($0.1))\"]" }.joined(separator: "\n")
         text += "\n\n"

@@ -66,6 +66,18 @@ final class LichessBotLiveGame: Identifiable {
     let startedAt: Date
     private let ourAccountID: String
 
+    /// How the game began (challenge-log plan §3.5); nil while not yet
+    /// known — shown as "Not yet known", never blank. Set by the controller
+    /// when it decides, and by `replay` from a resumed journal.
+    private(set) var origin: LichessBotGameOrigin?
+
+    /// What the game shows for how it began; nil while not yet known. A
+    /// live game's origin is decided by this run or read from its own
+    /// journal, so it is always shown as recorded.
+    var originDisplay: LichessBotGameOriginDisplay? {
+        origin.map { LichessBotGameOriginDisplay.display($0, basis: .recorded) }
+    }
+
     private(set) var ourColor: PieceColor?
     private(set) var white: Player?
     private(set) var black: Player?
@@ -377,12 +389,23 @@ final class LichessBotLiveGame: Identifiable {
                 apply(.takebackAccepted, at: entry.at)
             case .commandReplyQueued:
                 break
+            case .gameOrigin(let recorded):
+                // The journal's rule: the first determined origin, else the
+                // latest undetermined one.
+                if origin?.isDetermined != true {
+                    origin = recorded
+                }
             }
         }
         if journal.droppedTrailingByteCount > 0 {
             note("the journal ended in \(journal.droppedTrailingByteCount) bytes of an unfinished line (an interrupted write)", isProblem: true, at: journal.lastJournaledAt)
         }
         note("DCM was not following this game from \(journal.lastJournaledAt.formatted(date: .omitted, time: .standard)) until now", isProblem: true, at: Date())
+    }
+
+    /// The controller decided how the game began.
+    func setOrigin(_ decided: LichessBotGameOrigin) {
+        origin = decided
     }
 
     /// The status of a game DCM stopped following before it ended: the only

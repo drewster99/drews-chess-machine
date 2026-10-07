@@ -350,5 +350,47 @@ window.DCM_EXPERIMENTS = [
    "E-0018"
   ],
   "supersededBy": null
+ },
+ {
+  "id": "E-0020",
+  "date": "2026-10-06",
+  "file": "E-0020_2026-10-06_gradient-cap-bsilu-blowup.html",
+  "title": "Gradient-norm cap 1.0 vs B-silu's step-20,600 blowup (exact-resume A/B with a cap-15 control)",
+  "status": "running",
+  "tags": [
+   "gradient-clipping",
+   "silu",
+   "lr-schedule",
+   "training-stability",
+   "exact-resume",
+   "basic24"
+  ],
+  "takeaway": "An exact rerun of B-silu from 18k with its own cap 15 reproduced the step-20,600 blowup bit for bit, while the same rerun with grad_clip_max_norm 1.0 never blew up (0 dead channels at 22k vs 22, pElo 1597.5 at 24k vs 951.9, equal to ReLU B); the precursor gradient spike fell between 50-step log lines, so cap the global gradient norm near 1.0 and log the per-window maximum.",
+  "related": [
+   "E-0017",
+   "E-0019"
+  ],
+  "supersededBy": null
+ },
+ {
+  "id": "E-0021",
+  "date": "2026-10-05",
+  "file": "E-0021_2026-10-05_silu-tower-lr-cycle.html",
+  "title": "SiLU tower with leaky heads on B's LR cycle (arm B-silu)",
+  "status": "stopped",
+  "tags": [
+   "silu",
+   "activations",
+   "lr-schedule",
+   "training-stability",
+   "basic24"
+  ],
+  "takeaway": "SiLU in the tower (leaky ReLU in the heads) tracked ReLU B to 19k (mean −3.7 pElo), but at gradient cap 15 it blew up at the second LR peak (20,600) and 20 of 128 policy pre-BN channels stayed parked for the remaining 16k steps, ending 1250.0 vs B's 1620.7 at 36k; the SiLU tower itself kept every channel, and the same start with a 1.0 cap avoids the blowup (E-0020), so SiLU towers need the cap.",
+  "related": [
+   "E-0017",
+   "E-0019",
+   "E-0020"
+  ],
+  "supersededBy": null
  }
 ];

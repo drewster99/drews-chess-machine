@@ -102,6 +102,9 @@ enum LichessBotModelSourceKind: String, Sendable, Equatable, Codable, CaseIterab
     case liveTrainer
     /// A model file.
     case file
+    /// A model lineage on disk: the newest file of one training run, from a
+    /// chosen segment on, re-checked on a cadence (follow-lineage plan).
+    case followLineage
 
     /// The operator-facing name, as the source picker shows it.
     var displayName: String {
@@ -110,6 +113,7 @@ enum LichessBotModelSourceKind: String, Sendable, Equatable, Codable, CaseIterab
         case .trainerSnapshot: return "Trainer snapshot"
         case .liveTrainer: return "Live trainer"
         case .file: return "Model file"
+        case .followLineage: return "Follow lineage"
         }
     }
 }
@@ -128,14 +132,17 @@ struct LichessBotFollowedLineage: Sendable, Equatable, Hashable, Codable {
 }
 
 /// What selects a model generation's weights: the source kind, plus the
-/// file for the file source. Settings with equal generation sources play the
-/// same weights; the other model fields (refresh interval, mid-game toggle)
-/// and a file path left over while another source is chosen don't change
-/// which weights are played (follow-lineage plan §3.4, §3.10).
+/// file for the file source and the lineage for the follow-lineage source.
+/// Settings with equal generation sources play the same weights; the other
+/// model fields (intervals, mid-game toggle) and a file path or lineage left
+/// over while another source is chosen don't change which weights are
+/// played (follow-lineage plan §3.4, §3.10).
 struct LichessBotGenerationSource: Sendable, Equatable {
     let kind: LichessBotModelSourceKind
     /// The model file's path; nil unless `kind` is `.file`.
     let filePath: String?
+    /// The followed lineage; nil unless `kind` is `.followLineage`.
+    let followedLineage: LichessBotFollowedLineage?
 }
 
 struct LichessBotModelSettings: Sendable, Equatable, Codable {
@@ -143,8 +150,10 @@ struct LichessBotModelSettings: Sendable, Equatable, Codable {
     /// The model file, when `source == .file`.
     var filePath: String? = "/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20260713-v5cont-resume-replay-step270000.safetensors"
     var liveTrainerRefreshIntervalSeconds = 120
-    /// Live trainer only: whether games already in progress switch to each
-    /// new snapshot, or keep the one they started with.
+    /// Live trainer and followed lineage: whether games already in progress
+    /// switch to each new generation of their source, or keep the one they
+    /// started with. (The key predates the followed lineage; it keeps its
+    /// name so saved settings load unchanged.)
     var midGameRefresh = false
     /// The lineage the follow-lineage source plays. Optional, nil by
     /// default: settings saved before it existed load as nil.
@@ -156,7 +165,10 @@ struct LichessBotModelSettings: Sendable, Equatable, Codable {
 
     /// The weights these settings select.
     var generationSource: LichessBotGenerationSource {
-        LichessBotGenerationSource(kind: source, filePath: source == .file ? filePath : nil)
+        LichessBotGenerationSource(
+            kind: source,
+            filePath: source == .file ? filePath : nil,
+            followedLineage: source == .followLineage ? followedLineage : nil)
     }
 }
 
@@ -303,6 +315,13 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(model.liveTrainerRefreshIntervalSeconds >= LichessBotLimits.minimumLiveTrainerRefreshSeconds, "Live-trainer refresh must be at least \(LichessBotLimits.minimumLiveTrainerRefreshSeconds) seconds")
         if model.source == .file {
             require(!(model.filePath ?? "").isEmpty, "Choose a model file")
+        }
+        if model.source == .followLineage {
+            if let followed = model.followedLineage {
+                require(!followed.lineageRunID.isEmpty && !followed.anchorSegmentID.isEmpty, "The followed lineage names no run or segment; choose it again")
+            } else {
+                problems.append("Choose a lineage to follow")
+            }
         }
         require(model.lineageCheckIntervalSeconds >= LichessBotLimits.minimumLineageCheckSeconds, "Lineage checks must be at least \(LichessBotLimits.minimumLineageCheckSeconds) seconds apart")
 

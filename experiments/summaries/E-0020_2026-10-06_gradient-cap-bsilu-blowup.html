@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0020">
+<meta name="dcm-date" content="2026-10-06">
+<meta name="dcm-title" content="Gradient-norm cap 1.0 vs B-silu's step-20,600 blowup (exact-resume A/B with a cap-15 control)">
+<meta name="dcm-status" content="running">
+<meta name="dcm-tags" content="gradient-clipping, silu, lr-schedule, training-stability, exact-resume, basic24">
+<meta name="dcm-takeaway" content="An exact rerun of B-silu from 18k with its own cap 15 reproduced the step-20,600 blowup bit for bit, while the same rerun with grad_clip_max_norm 1.0 never blew up (0 dead channels at 22k vs 22, pElo 1597.5 at 24k vs 951.9, equal to ReLU B); the precursor gradient spike fell between 50-step log lines, so cap the global gradient norm near 1.0 and log the per-window maximum.">
+<meta name="dcm-related" content="E-0017, E-0019">
+<meta name="dcm-superseded-by" content="">
+<title>E-0020 · Gradient-norm cap 1.0 vs B-silu's step-20,600 blowup (exact-resume A/B with a cap-15 control)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0020</span><span>2026-10-06</span><span class="status running">running</span></div>
+<h1>Gradient-norm cap 1.0 vs B-silu's step-20,600 blowup (exact-resume A/B with a cap-15 control)</h1>
+<div class="tags"><span class="tag">gradient-clipping</span><span class="tag">silu</span><span class="tag">lr-schedule</span><span class="tag">training-stability</span><span class="tag">exact-resume</span><span class="tag">basic24</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>Arm B-silu (B's 1.0 ↔ 0.001 LR cycle with SiLU in the tower and leaky ReLU in the heads) blew up at trainer step 20,600 on the way to the second LR peak. Logged gNorm jumped to 2.566, loss to 4.13 and then 7.79, illegal-move mass to 0.80 at 20,650, and 20–21 of 128 policy pre-BN channels went past β/|γ| = −3 and stayed there (pElo 457.4 at 21k, still 1230.4 at 34k). B-silu used <code>grad_clip_max_norm</code> 15, which never bound after the first steps. Would a global-norm cap of 1.0 have prevented it, and is the blowup deterministic or chance?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Start</dt><dd>B-silu's step-18,000 checkpoint <code>20261005-lrBsilu-cyc1-replay-step18000</code> (lineage run <code>085EF48A…</code>, ModelID <code>20261006-44-8ipq</code>, content sha <code>4697674c64a7</code>), before the blowup. Both arms are <code>--resume-exact</code> (sampler and dropout streams restored; <code>[RESUME] EXACT</code>), same corpus <code>20260624-192615-w3aA5b</code>, <code>--seed 20261005</code>, <code>--policy-tail-precision fp32_from_pre_bn</code>, frozen build 2330 (<code>DCM-2331-4e70c615-p1headact.app</code>).</dd><dt>clip1</dt><dd><code>parameters-Bsilu-clip1.json</code> = <code>parameters-B.json</code> with <code>grad_clip_max_norm</code> 1.0, <code>--accept-inexact params</code>, to trainer step 40,000 (segment limit 22,000). Stem <code>20261006-lrBsilu-clip1</code>, ModelID <code>20261006-56-L1gS</code>, log <code>dcm_log_20261006-170000.txt</code>. Started 2026-10-06 17:00; still running.</dd><dt>ctl15 (control)</dt><dd>Same resume with the original <code>parameters-B.json</code> (cap 15), to 23,000. Stem <code>20261006-lrBsilu-ctl15</code>, ModelID <code>20261006-61-xecu</code>, log <code>dcm_log_20261006-181510.txt</code>. 18:15 → 21:57; stopped by the owner's rule (stop after the 22k probe if it still matches B-silu): SIGINT, clean abort save at 22,030, rc 0.</dd><dt>Measured</dt><dd><code>[REPLAY]</code> lines every 50 steps (loss, gNorm pre-clip, illegal mass); policy probes every 1,000 steps (<code>--probe-set wide</code>); checkpoint <code>[LAYER-HEALTH]</code>; <code>bn_liveness.py</code> per site.</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<figure class="chart">
+<script type="application/json">{"x": {"label": "trainer step"}, "y": {"label": "pElo (wide probe set)"}, "series": [{"name": "B (ReLU, cap 15)", "points": [[14000, 1557.5], [15000, 1566.2], [16000, 1571.4], [17000, 1581.6], [18000, 1573.9], [19000, 1558.5], [20000, 1471.3], [21000, 1332.5], [22000, 1372.2], [23000, 1573.4], [24000, 1597.5], [25000, 1604.7], [26000, 1609.4], [27000, 1603.7], [28000, 1598.6], [29000, 1596.0], [30000, 1504.6], [31000, 1372.7], [32000, 1431.3], [33000, 1578.5], [34000, 1614.0], [35000, 1628.4], [36000, 1620.7]]}, {"name": "B-silu (cap 15)", "points": [[14000, 1554.4], [15000, 1559.0], [16000, 1566.2], [17000, 1558.5], [18000, 1560.1], [19000, 1571.9], [20000, 1390.2], [21000, 457.4], [22000, 833.8], [23000, 927.2], [24000, 951.9], [25000, 953.5], [26000, 963.3], [27000, 968.7], [28000, 960.6], [29000, 977.9], [30000, 773.9], [31000, 1013.4], [32000, 1048.5], [33000, 1216.4], [34000, 1230.4], [35000, 1251.6], [36000, 1250.0], [36066, 1247.4]]}, {"name": "B-silu-ctl15 (cap 15, resumed at 18k; identical to B-silu)", "points": [[19000, 1571.9], [20000, 1390.2], [21000, 457.4], [22000, 833.8]]}, {"name": "B-silu-clip1 (cap 1.0, resumed at 18k)", "points": [[19000, 1571.9], [20000, 1442.5], [21000, 1386.6], [22000, 1412.8], [23000, 1567.8], [24000, 1597.5]]}], "vlines": [{"x": 18000, "label": "resume"}, {"x": 20600, "label": "blowup"}]}</script>
+<figcaption>Policy pElo every 1,000 steps. ctl15's points are exactly B-silu's. B-silu was stopped by the owner at 36,066 (last point: the abort checkpoint; E-0021). clip1 continues to 40,000.</figcaption>
+</figure>
+<div class="tablebox"><table><caption>Logged lines (loss · gNorm before clipping · illegal mass). ctl15 equals B-silu on all 80 lines from 18,050 to 22,000.</caption><thead><tr><th>trainer step</th><th>B-silu = ctl15 (cap 15)</th><th>clip1 (cap 1.0)</th></tr></thead><tbody><tr><td>19,700</td><td>3.5525 · 0.353 · 0.0036</td><td>3.5525 · 0.353 · 0.0036</td></tr><tr><td>19,750</td><td>3.5110 · 0.327 · 0.0036</td><td>3.5110 · 0.327 · 0.0036</td></tr><tr><td>19,800</td><td>3.5357 · 0.379 · 0.0046</td><td>3.5356 · 0.332 · 0.0042</td></tr><tr><td>19,850</td><td>3.5672 · 0.335 · 0.0042</td><td>3.5520 · 0.341 · 0.0040</td></tr><tr><td>20,550</td><td>3.5416 · 0.363 · 0.0078</td><td>3.5256 · 0.368 · 0.0072</td></tr><tr><td>20,600</td><td>4.1303 · <strong>2.566</strong> · 0.0095</td><td>3.5584 · 0.364 · 0.0065</td></tr><tr><td>20,650</td><td>7.7890 · 0.264 · <strong>0.7988</strong></td><td>3.5245 · 0.364 · 0.0075</td></tr></tbody></table></div>
+<div class="tablebox"><table><caption>Probe pElo. ctl15's pElo equals B-silu's to the last digit at every probe it made.</caption><thead><tr><th>trainer step</th><th class="n">B (ReLU)</th><th class="n">B-silu</th><th class="n">ctl15</th><th class="n">clip1</th></tr></thead><tbody><tr><td>19,000</td><td class="n">1558.5</td><td class="n">1571.876115055085</td><td class="n">1571.876115055085</td><td class="n">1571.9</td></tr><tr><td>20,000</td><td class="n">1471.3</td><td class="n">1390.1540696698366</td><td class="n">1390.1540696698366</td><td class="n">1442.5</td></tr><tr><td>21,000</td><td class="n">1332.5</td><td class="n">457.37418729915294</td><td class="n">457.37418729915294</td><td class="n">1386.6</td></tr><tr><td>22,000</td><td class="n">1372.2</td><td class="n">833.7791475626248</td><td class="n">833.7791475626248</td><td class="n">1412.8</td></tr><tr><td>23,000</td><td class="n">1573.4</td><td class="n">927.2</td><td class="n"></td><td class="n">1567.8</td></tr><tr><td>24,000</td><td class="n">1597.5</td><td class="n">951.9</td><td class="n"></td><td class="n">1597.5</td></tr></tbody></table></div>
+<div class="tablebox"><table><caption>Per site at trainer step 22,000 (<code>bn_liveness.py</code>): parked / mostly off / lowest pass-through. ctl15 = B-silu.</caption><thead><tr><th>site</th><th class="n">B-silu = ctl15</th><th class="n">clip1</th></tr></thead><tbody><tr><td>blocks.0.bn1 (silu)</td><td class="n">0 / 1 / 0.0215</td><td class="n">0 / 0 / 0.3148</td></tr><tr><td>blocks.1.bn1 (silu)</td><td class="n">0 / 0 / 0.0349</td><td class="n">0 / 0 / 0.1655</td></tr><tr><td>blocks.2.bn1 (silu)</td><td class="n">0 / 0 / 0.0318</td><td class="n">0 / 0 / 0.0589</td></tr><tr><td>tower_final_bn (silu)</td><td class="n">0 / 0 / 0.2195</td><td class="n">0 / 0 / 0.3327</td></tr><tr><td>policy.pre_bn (leaky_relu)</td><td class="n">21 / 8 / 0.0100</td><td class="n">0 / 0 / 0.1906</td></tr><tr><td>value.bn (leaky_relu)</td><td class="n">1 / 4 / 0.0100</td><td class="n">0 / 0 / 0.0566</td></tr></tbody></table></div>
+<p>clip1's logged lines equal B-silu's through 19,750 and first differ at 19,800; no logged clip1 gNorm exceeds 1.0 (largest 0.462 through 24,400). The cap therefore acted first on an unlogged step in 19,751–19,799 whose pre-clip norm was above 1.0, at least 2.8× the 0.33–0.38 logged around it. At 22,000 B-silu (and ctl15) has 22 dead BN-fed channels, min β/|γ| −95.53 at <code>policy.pre_bn[75]</code> and a running-variance max/median of 16,194 at <code>blocks.1.bn1</code>; clip1 has 0 dead, min β/|γ| −1.67 and 95.4. The training-health alarms (phase 2, being merged) raise <code>gradient_spike</code> at 20,600 when replaying B-silu's log.</p>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>The blowup is deterministic given the 18k state and the feed: a third run with the same cap reproduced it bit for bit, so it is not GPU noise. Changing only the cap to 1.0 avoided it, and through 24k clip1 is as strong as ReLU B (−28.8 … +54.1 pElo over 19k–24k, equal at 24k). The warning sign was a single unlogged gradient spike about 800 steps before the logged blowup; a 50-step log cannot show it, which is why the alarms evaluate every step's norm. One start state and one seed; untested: whether a looser cap (2 or 5) also prevents it, and what the cap does to the long-run result. When clip1 reaches 40,000 this page gets its full probe table, its behaviour at the 30–31k LR peak, final layer health and the comparison with B and B-silu at 40k.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">An exact rerun of B-silu from 18k with its own cap 15 reproduced the step-20,600 blowup bit for bit, while the same rerun with grad_clip_max_norm 1.0 never blew up (0 dead channels at 22k vs 22, pElo 1597.5 at 24k vs 951.9, equal to ReLU B); the precursor gradient spike fell between 50-step log lines, so cap the global gradient norm near 1.0 and log the per-window maximum.</p>
+</section>
+
+<section>
+<h2>Reproduce</h2>
+<p>Launch scripts (session scratchpad copies are recorded in the README): clip1 = <code>--replay-corpus 20260624-192615-w3aA5b --start-model …/20261005-lrBsilu-cyc1-replay-step18000.safetensors --resume-exact --accept-inexact params --out-model …/20261006-lrBsilu-clip1-replay-latest.safetensors --parameters experiments/20261005-lr-schedule-ab/parameters-Bsilu-clip1.json --epochs 12 --training-step-limit 22000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005</code>; ctl15 = the same with <code>--parameters …/parameters-B.json</code>, no <code>--accept-inexact</code>, <code>--training-step-limit 5000</code> and stem <code>20261006-lrBsilu-ctl15</code>. Probes: <code>PROBE_SEGMENT=1 experiments/probe_loop.sh &lt;stem&gt; probes-Bsilu-&lt;arm&gt;-seg1.jsonl</code> with <code>PROBE_BIN</code> = the frozen build. Analysis: compare the three logs' <code>[REPLAY]</code> lines; <code>bn_liveness.analyze()</code> on the step-22,000 checkpoints named in the README.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261005-lr-schedule-ab/README.md">experiments/20261005-lr-schedule-ab/</a> — "Arm B-silu-clip1", "Arm B-silu-ctl15", "Gradient-cap experiment: results"</li><li><a href="../20261005-lr-schedule-ab/parameters-Bsilu-clip1.json">parameters-Bsilu-clip1.json</a> — the cap-1.0 recipe</li><li><a href="../20261005-lr-schedule-ab/probes-Bsilu-clip1-seg1.jsonl">probes-Bsilu-clip1-seg1.jsonl</a>, <a href="../20261005-lr-schedule-ab/probes-Bsilu-ctl15-seg1.jsonl">probes-Bsilu-ctl15-seg1.jsonl</a>, <a href="../20261005-lr-schedule-ab/probes-Bsilu.jsonl">probes-Bsilu.jsonl</a> — probes (segment steps; trainer step = +18,000)</li><li><a href="../20261005-lr-schedule-ab/bn_liveness.py">bn_liveness.py</a> — per-site BN liveness</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>
