@@ -5666,11 +5666,16 @@ final class ChessTrainer: @unchecked Sendable {
     // (`ModelCheckpointFile` v2) records this as the same flat tensor
     // list — no schema change beyond version bump.
     //
-    // Thread-safety: callers MUST have paused both selfPlayGate and
-    // trainingGate before invoking these methods. They drive
-    // `network.graph.run` directly (bypassing the trainer's
-    // executionQueue) and rely on no concurrent SGD step or self-play
-    // evaluator touching the same variables.
+    // Thread-safety: every read and write of trainer state runs on
+    // `executionQueue`, where SGD steps run and `internalResetNetwork`
+    // replaces the variables, so each graph.run falls between whole steps.
+    // The export reads base weights and velocity in ONE turn
+    // (`exportTrainerWeights`), so they describe the same step. A load is
+    // several turns (masters, working weights on the network's queue,
+    // velocity), so callers still pause training around a load — a step
+    // between those turns would train on half-loaded state — and pause it
+    // around a save so the step counters, replay buffer and champion the
+    // save records beside the weights don't move either.
 
     /// Total expected weight count for a v2 trainer state.
     private var trainerWeightCountV2: Int {
@@ -5690,22 +5695,24 @@ final class ChessTrainer: @unchecked Sendable {
     /// read through a load-gated reader, so a trainer built for loaded
     /// weights throws `weightsNotLoaded` until its load.
     func exportTrainerWeights() async throws -> [[Float]] {
-        // Base portion: under the canonical mixed-precision path emit the
-        // fp32 *masters* (full precision — that's the whole point of
-        // persisting them) in place of the bf16 working weights; they're
-        // parallel to `trainableVariables + bnRunningStatsVariables`, so the
-        // count and on-disk layout are identical to the bf16-native export.
-        // Under `.float32` (no masters) fall back to the working weights.
-        let baseWeights: [[Float]]
-        if masterVariables.isEmpty {
-            baseWeights = try await network.exportWeights()
-        } else {
-            baseWeights = try await readMasterValues()
+        // One turn of `executionQueue`: base and velocity describe the same
+        // step, and `masterVariables` / `network` are read on the queue that
+        // replaces them. The working-weight export waits on the network's
+        // queue from here, the same edge `exportWeightsWithCompletedSteps`
+        // uses (nothing on that queue ever waits on this one).
+        try await enqueue { [self] in
+            // Base portion: under the canonical mixed-precision path emit the
+            // fp32 *masters* (full precision — that's the whole point of
+            // persisting them) in place of the bf16 working weights; they're
+            // parallel to `trainableVariables + bnRunningStatsVariables`, so
+            // the count and on-disk layout are identical to the bf16-native
+            // export. Under `.float32` there are no masters, so the working
+            // weights are the full-precision values.
+            let baseWeights: [[Float]] = masterVariables.isEmpty
+                ? try network.exportWeightsBlocking()
+                : try internalReadMasterValues()
+            return baseWeights + (try internalReadVelocityValues())
         }
-        // Velocities via a separate small graph.run on the same graph.
-        // No race because the caller has paused training.
-        let velocityWeights = try await readVelocityValues()
-        return baseWeights + velocityWeights
     }
 
     /// Load exact trainer state (weights + bn + velocities) from a
@@ -5790,9 +5797,9 @@ final class ChessTrainer: @unchecked Sendable {
     /// `[[Float]]` (one sub-array per trainable variable, parallel to
     /// `network.trainableVariables`). Used at arena start to snapshot
     /// the velocity that built the candidate weights, then restored
-    /// on promotion via `loadVelocitySnapshot(_:)`. Caller must have
-    /// paused training (the readback drives `network.graph.run`
-    /// directly and races against concurrent SGD steps). Throws
+    /// on promotion via `loadVelocitySnapshot(_:)`. The readback runs on
+    /// `executionQueue`, between SGD steps; the arena pauses training
+    /// anyway, so the snapshot matches the candidate it exported. Throws
     /// `weightsNotLoaded` for a trainer built for loaded weights until its
     /// load.
     func exportVelocitySnapshot() async throws -> [[Float]] {

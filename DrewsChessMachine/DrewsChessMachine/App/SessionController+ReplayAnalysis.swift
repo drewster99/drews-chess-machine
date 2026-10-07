@@ -21,8 +21,9 @@ import Foundation
 /// when there is one: the champion's policy is frozen between promotions,
 /// so probing it gives bit-identical entropy stats across snapshots and
 /// hides the "is illegal mass falling?" signal. The probe network is a
-/// fresh inference network carrying the trainer's analysis snapshot
-/// (`analysisSnapshot(of: .trainer, initReferences:)`, identity checked).
+/// fresh inference network carrying the trainer's weights from its
+/// identity-checked cut (`trainerCut()`): the probe reads only the weights,
+/// so it does not build the init reference a full analysis snapshot carries.
 extension SessionController {
 
     /// Entry point invoked by the Debug menu item. Runs the analyzer
@@ -42,7 +43,9 @@ extension SessionController {
         // trainer (or its snapshot fails); the ref captured here outlives the
         // task regardless of any concurrent session change.
         let champion = network
-        let modelLabel = champion?.identifier?.description ?? "<no-id>"
+        // The buffer is the champion's self-play data; labelled as Run All
+        // labels it, so both paths name their files alike.
+        let modelLabel = AnalyzedNetworkSnapshot.modelLabel(role: .champion, modelID: champion?.identifier?.description)
         let hasTrainer = trainer != nil
         guard beginAnalysis("Replay Buffer") else { return }
         // Snapshot training-progress context on the main actor before
@@ -59,9 +62,10 @@ extension SessionController {
             var entropyProbe: (network: ChessMPSNetwork, label: String)?
             if hasTrainer {
                 do {
-                    let capture = try await self.analysisSnapshot(
-                        of: .trainer, initReferences: AnalysisInitReferenceCache())
-                    entropyProbe = await Self.buildEntropyProbe(from: capture.snapshot)
+                    let cut = try await self.trainerCut()
+                    entropyProbe = await Self.buildEntropyProbe(
+                        weights: cut.state.weights, architecture: cut.state.architecture,
+                        modelLabel: cut.modelLabel, trainingStep: cut.state.completedSteps)
                 } catch {
                     SessionLogger.shared.log(
                         "[ANALYSIS] Trainer entropy-probe snapshot failed: \(error.localizedDescription)"
@@ -142,20 +146,20 @@ extension SessionController {
         return await ReplayBufferAnalyzer.runOffPool(buffer: buffer, modelLabel: modelLabel)
     }
 
-    /// The entropy probe from a trainer snapshot: an inference network
-    /// carrying `snapshot.weights` (the trainer's weights at
-    /// `snapshot.trainingStep`, the same weights the trainer's other analyses
-    /// read), labelled "trainer:<id> step <N>" — an unknown step is written
-    /// as "unknown", never dropped. Built through `InferenceNetworkFactory`,
+    /// The entropy probe from the trainer's weights: an inference network
+    /// carrying `weights` (the trainer's weights at `trainingStep`, taken in
+    /// an identity-checked cut — Run All's trainer snapshot, or
+    /// `trainerCut()`), labelled "trainer:<id> step <N>" — an unknown step is
+    /// written as "unknown", never dropped. Built through `InferenceNetworkFactory`,
     /// so the MPSGraph construction runs on GCD, never on the cooperative
     /// pool. Nil — logged — when the build fails; the analyzer then probes the
     /// champion. Short-lived: dropped with the analysis.
     nonisolated static func buildEntropyProbe(
-        from snapshot: AnalyzedNetworkSnapshot
+        weights: [[Float]], architecture: NetworkArchitecture, modelLabel: String, trainingStep: Int?
     ) async -> (network: ChessMPSNetwork, label: String)? {
-        let label = "\(snapshot.modelLabel) step \(snapshot.trainingStep.map { String($0) } ?? "unknown")"
+        let label = "\(modelLabel) step \(trainingStep.map { String($0) } ?? "unknown")"
         do {
-            let network = try await InferenceNetworkFactory.build(loading: snapshot.weights, arch: snapshot.architecture)
+            let network = try await InferenceNetworkFactory.build(loading: weights, arch: architecture)
             return (network, label)
         } catch {
             SessionLogger.shared.log(

@@ -9,6 +9,25 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 15:45 — Policy tail precision is an architecture field (format v12) `5d192c0a`
+
+- `NetworkArchitecture.policyTailPrecision` (`fp32_from_pre_bn` / `mixed_final_projection`, `does_not_apply` exactly on fp32) is chosen in Build New Model and set with `--derive-model --set-policy-tail-precision`; architecture format v12 requires it. A pre-v12 file resolves to the tail it records (flat key, else lineage; refused when they disagree), else `mixed_final_projection`; fp32 always resolves to `does_not_apply`. A session's unrecorded champion takes its trainer file's tail.
+- The process-wide `--policy-tail-precision` flag is removed (now an unknown argument). Inference (probes, UCI, the bot, arenas) runs each file's own tail, so re-probes of `fp32_from_pre_bn` files differ from probes run without the flag after `de0f22be`.
+- 517 unrecorded model files from the fp32-tail era now record their tail: `scripts/policy_tail_audit.py` resolved each from its writing build and session log (no conflicts), and `scripts/policy_tail_header_edit.py` added only the flat key to each header (format version, every other header byte and the weights unchanged; original headers backed up; `scripts/policy_tail_header_undo.py` restores byte for byte). 17 untrained files with no recorded build left alone. Report and manifest in `documentation/plans-active/`.
+- Numerics audit builds each reduced dtype under both tails.
+
+## 2026-10-07 14:29 — Training health rule 14: BN running-variance jump `1a69f8a6`
+
+- `bn_running_variance_jump`: a BN channel at ≥ 10× its site median that rose ≥ 10× over its own low in the previous 1,000 trainer steps (critical at ≥ 100×), or the ≥ 10× channel count doubling (+5). Reads in a process's first 100 trained steps build the baseline only; default action log. On the evidence checkpoints it fires critical on B-silu at 20,000 (~19,800 at live-read spacing), before the 20,599 burst; the existing 1000× level rule is unchanged.
+- `[LAYER-HEALTH]` gains `rvOver10xMedian=` and an `rv≥10x` table column.
+
+## 2026-10-07 13:28 — Race fixes: trainer network reads, Promote Trainee Now, Lichess champion snapshot `c5675fd2`
+
+- `ChessTrainer.network` is held in a lock: a reset replaces it on the trainer's queue while human play, probes, the bot and promotion read it from other threads.
+- Promote Trainee Now copies the trainer's weights through the trainer's queue, never through a network reference taken at the click.
+- The Lichess bot's champion snapshot refuses while a champion replacement is open or overlapped the export, as the analyses do.
+- Removed the unused `LichessBotRecordSummary.botGames(rows:since:)`.
+
 ## 2026-10-07 12:14 — Review fixes: Lichess bot-game limit, analyses, SPRT drain count, KL window `b98d1813`
 
 - **Correction to `88cb3a55`:** Lichess' bot-vs-bot limit is not a fixed 24 h window. lila keeps one `RateLimit` entry per account (Caffeine expire-after-write, a day after the last game it counted): below 100 a game adds one without moving the clear time; at 100 nothing is counted until the clear time passes, and a count past its clear time can no longer limit the account. `LichessBotBotGameWindow` replays exactly that; the old model kept matchmaking paused up to a day longer than Lichess does.

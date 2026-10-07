@@ -76,6 +76,35 @@ extension SessionController {
     /// reset stays open until the next Play-and-Train start stamps an ID, so
     /// sweep-drawn weights are never labeled with the run's seed.
     private func trainerAnalysisSnapshot(initReferences: AnalysisInitReferenceCache) async throws -> AnalysisCapture {
+        let cut = try await trainerCut()
+        let state = cut.state
+        let snapshot = try await Self.makeAnalysisSnapshot(
+            role: .trainer, modelID: cut.modelID, architecture: state.architecture,
+            names: state.names, weights: state.weights,
+            trainableCount: state.trainableCount, trainingStep: state.completedSteps,
+            trainingStepSource: "the trainer's completed SGD steps, read with the weights in one trainer-queue turn",
+            takenAt: cut.takenAt, initialization: cut.initialization, initReferences: initReferences)
+        return AnalysisCapture(snapshot: snapshot,
+                               optimizerState: .trainer(masters: state.masters, velocity: state.velocity))
+    }
+
+    /// The trainer's weights, step, masters and velocity as one cut, with
+    /// the identity read around it (see `trainerAnalysisSnapshot`). Exposed
+    /// apart from the snapshot for a reader that needs only the weights —
+    /// the single replay analysis's entropy probe — so it gets the same
+    /// identity-checked cut without paying for an init reference it never
+    /// reads.
+    struct TrainerCut: Sendable {
+        let state: ChessTrainer.AnalysisState
+        let modelID: String?
+        /// How the weights' run drew its starting weights, nil when unknown.
+        let initialization: ModelInitRecord?
+        let takenAt: Date
+
+        var modelLabel: String { AnalyzedNetworkSnapshot.modelLabel(role: .trainer, modelID: modelID) }
+    }
+
+    func trainerCut() async throws -> TrainerCut {
         guard let trainer else { throw AnalysisSnapshotError.noNetwork(.trainer) }
         let identityBefore = trainer.weightIdentityState
         guard !identityBefore.awaitingIdentity else {
@@ -87,15 +116,7 @@ extension SessionController {
         guard self.trainer === trainer, trainer.weightIdentityState == identityBefore, trainer.identifier == modelID else {
             throw AnalysisSnapshotError.changedDuringExport(.trainer)
         }
-        let takenAt = Date()
-        let snapshot = try await Self.makeAnalysisSnapshot(
-            role: .trainer, modelID: modelID?.description, architecture: state.architecture,
-            names: state.names, weights: state.weights,
-            trainableCount: state.trainableCount, trainingStep: state.completedSteps,
-            trainingStepSource: "the trainer's completed SGD steps, read with the weights in one trainer-queue turn",
-            takenAt: takenAt, initialization: initialization, initReferences: initReferences)
-        return AnalysisCapture(snapshot: snapshot,
-                               optimizerState: .trainer(masters: state.masters, velocity: state.velocity))
+        return TrainerCut(state: state, modelID: modelID?.description, initialization: initialization, takenAt: Date())
     }
 
     /// What the champion's origin says about its weights: the step (the

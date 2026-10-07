@@ -50,6 +50,9 @@ extension SessionController {
         // the replay step's trainer entropy probe — describes those captured
         // weights.
         let analyzesChampion = championRef != nil
+        // The replay file's label, read here on the main actor that owns
+        // the champion's identifier, never from the detached task below.
+        let replayModelLabel = AnalyzedNetworkSnapshot.modelLabel(role: .champion, modelID: championRef?.identifier?.description)
         let analyzesTrainer = trainer != nil
         // One init-reference cache for the request: the champion and trainer
         // of one architecture and seed share one build.
@@ -113,12 +116,13 @@ extension SessionController {
             //    the "is illegal mass falling?" signal that is the whole point
             //    of the probe.
             if let buf = bufferRef {
-                let modelLabel = "champion:\(championRef?.identifier?.description ?? "<no-id>")"
                 SessionLogger.shared.log("[ANALYSIS] replay-buffer entropy probe positions: \(entropySample.description)")
                 let entropyProbe: (network: ChessMPSNetwork, label: String)?
                 switch trainerCapture {
                 case .success(let capture)?:
-                    entropyProbe = await Self.buildEntropyProbe(from: capture.snapshot)
+                    entropyProbe = await Self.buildEntropyProbe(
+                        weights: capture.snapshot.weights, architecture: capture.snapshot.architecture,
+                        modelLabel: capture.snapshot.modelLabel, trainingStep: capture.snapshot.trainingStep)
                 case .failure?:
                     SessionLogger.shared.log("[ANALYSIS] Entropy probe: the trainer snapshot failed — replay analyzer will fall back to champion for the entropy probe.")
                     entropyProbe = nil
@@ -126,7 +130,7 @@ extension SessionController {
                     entropyProbe = nil
                 }
                 let step = await Self.runReplayBufferStep(
-                    buffer: buf, champion: championRef, modelLabel: modelLabel,
+                    buffer: buf, champion: championRef, modelLabel: replayModelLabel,
                     entropyProbe: entropyProbe, sampleRandom: entropySample.random, metadata: exportMetadata)
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
