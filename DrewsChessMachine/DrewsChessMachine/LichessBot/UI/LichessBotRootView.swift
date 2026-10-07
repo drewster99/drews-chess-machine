@@ -50,6 +50,7 @@ struct LichessBotRootView: View {
             await controller.refreshIndex()
             await controller.loadPlayerNotes()
             await controller.loadChallengeOutcomes()
+            await controller.loadChallengeLog()
             if controller.tokenState == .unknown {
                 await controller.refreshTokenState()
             }

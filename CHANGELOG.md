@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Lichess bot challenge log P2: every challenge fact recorded
+
+- New `LichessBotChallengeLogRecorder` (owned by the controller): the ledger, its one funnel, loading (go-online and the bot window, once), held echoes of our own challenges (written only when unmatched, attributed to a single unanswered send), game starts, and replays that write nothing.
+- The controller records `outgoingCreated` / `outgoingNotCreated` (offline, refused, no answer) with who sent it, every withdrawal and Lichess's answer, incoming challenges and DCM's decisions, stream declines and cancels, and game starts. `ChallengeOrigin` gains `.casualResendOffer`, `.challengeQueue` and a matchmaking `trigger` (automatic pass or Fill Open Slots).
+- Manager events: `.challengeArrived` carries the challenge; new `.challengeAnsweredOnStream` and `.gameStartReceived`.
+- New tests: `LichessBotUnmatchedEchoTests`, `LichessBotChallengeLogControllerTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §13.
+
 ## 2026-10-06 — Lichess bot challenge log P1: entry schema, writer, reader, ledger
 
 - `Data/LichessBotChallengeLog.swift`: `LichessBotChallengeLogEntry` (`schemaVersion` 1, time, build, event) and its 12 event cases with their supporting types; the writer `LichessBotChallengeLog` (`F_FULLFSYNC` per append, the folder of a new day file too, timed syncs, torn tails recorded as `unterminatedLineCut`); the reader (newer-build lines skipped and counted, a corrupt day file left out with file and line, an unterminated tail dropped).

@@ -18,8 +18,18 @@ enum LichessBotManagerEvent: Sendable {
     /// client is using the same token. The manager stops (plan §6.1).
     case takeoverSuspected(consecutiveShortStreams: Int)
     /// A challenge event arrived, before any decision. Includes our own
-    /// outgoing echo; the listener decides what that means for it.
-    case challengeArrived(challengeID: String, challengerID: String, challengerTitle: String?)
+    /// outgoing echo; the listener decides what that means for it (the
+    /// alert sound, and the challenge log's record of the challenge).
+    case challengeArrived(LichessBotChallenge)
+    /// A `challengeDeclined` or `challengeCanceled` line, for any challenge
+    /// in either direction, as Lichess sent it (the challenge log records
+    /// every one; `outgoingChallengeResolved` covers only DCM's pending
+    /// challenges).
+    case challengeAnsweredOnStream(LichessBotChallengeReference, LichessBotChallengeStreamAnswer)
+    /// A `gameStart` arrived, before its session starts (the challenge log
+    /// records that a challenge's game started; the game-origin resolver
+    /// keeps the game's `source`).
+    case gameStartReceived(LichessBotGameEventInfo)
     case challengeDecision(challengeID: String, challengerID: String, decision: LichessBotChallengeDecision)
     case challengeResponseFailed(challengeID: String, error: String)
     /// A session started for a game: a new one, or one resumed from a
@@ -50,6 +60,12 @@ enum LichessBotManagerEvent: Sendable {
     case tokenRejected(String)
     /// The manager's `run()` returned; `reason` says why.
     case stopped(reason: String)
+}
+
+/// Which answer a challenge got on the event stream.
+enum LichessBotChallengeStreamAnswer: Sendable, Equatable {
+    case declined
+    case canceled
 }
 
 enum LichessBotOutgoingChallengeOutcome: Sendable, Equatable {
@@ -571,6 +587,7 @@ actor LichessBotSessionManager {
         case .challenge(let challenge, let compat):
             await handleChallenge(challenge, compat: compat)
         case .gameStart(let info):
+            onEvent(.gameStartReceived(info))
             if pendingOutgoingChallenges.contains(where: { $0.id == info.gameId }) {
                 // An accepted challenge's game has the challenge's id.
                 pendingOutgoingChallenges.removeAll { $0.id == info.gameId }
@@ -584,8 +601,10 @@ actor LichessBotSessionManager {
             // The game stream may never deliver the final state (plan E22).
             sessions[info.gameId]?.requestResync(reason: "gameFinish on the event stream")
         case .challengeDeclined(let reference):
+            onEvent(.challengeAnsweredOnStream(reference, .declined))
             resolveChallenge(reference.id, outcome: .declined(reason: reference.declineReason ?? reference.declineReasonKey, reasonKey: reference.declineReasonKey))
         case .challengeCanceled(let reference):
+            onEvent(.challengeAnsweredOnStream(reference, .canceled))
             acceptedAwaitingStart[reference.id] = nil
             resolveChallenge(reference.id, outcome: .canceled)
         case .unknown(let type):
@@ -611,7 +630,7 @@ actor LichessBotSessionManager {
         // Our own outgoing challenges are echoed on the event stream. Lichess
         // omits `direction` there (observed live, contrary to the spec's
         // example), so they are recognized by the challenger being us.
-        onEvent(.challengeArrived(challengeID: challenge.id, challengerID: challenge.challenger.id, challengerTitle: challenge.challenger.title))
+        onEvent(.challengeArrived(challenge))
         if LichessBotChallengeAlert.isOwnOutgoingEcho(challengerID: challenge.challenger.id, ourAccountID: ourAccountID) {
             onEvent(.challengeDecision(challengeID: challenge.id, challengerID: challenge.challenger.id, decision: .ignore(rule: "our own outgoing challenge")))
             return

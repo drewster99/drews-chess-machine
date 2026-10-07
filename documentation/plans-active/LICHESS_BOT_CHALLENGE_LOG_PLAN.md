@@ -945,6 +945,33 @@ Tests (new files; no existing test changed):
 - `LichessBotAppendPathCompatibilityTests`: literal journal and protocol lines in the earlier builds' format decode and re-encode byte for byte; such files, clean or with a torn tail, are appended in place (same inode and mode, old bytes kept, new lines in the same format) and stay readable; a fragment another instance left after this launch's append is cut and recorded; a new day file gets the earlier builds' permissions.
 - `LichessBotDataDirectoryChallengePathsTests`: the `Challenges/` paths, UTC day naming in three time zones (shared with the protocol log), `createDirectories()`.
 
+## 13. Implementation notes: P2 recording (2026-10-06)
+
+The team lead's directive of 2026-10-06 overrode §7's sequencing: P2–P7 are implemented now, on the same branch, merging `main` (where follow-lineage lands) at every phase boundary and keeping both sides' behavior.
+
+Implemented:
+- **`App/LichessBotChallengeLogRecorder.swift`** (new, `@MainActor @Observable`), owned by the controller as `challengeLogRecorder`. It holds the ledger, `eventsAwaitingLedger`, the held echoes, this run's unanswered sends and `gameStartsSeen`, and owns the writer. `record(_:)` is the one funnel (the controller's `recordChallengeEvent` calls it). The bookkeeping that writes facts (echo expiry, teardown flush, `gameStarted`) goes through the same `record`. Moving it out of the 3,600-line controller keeps it unit-testable without a runtime.
+- **Load:** `loadChallengeLog()` runs at go-online, after the player notes and outcome log, and when the bot window opens. It loads only while nil and only once at a time. Facts recorded before the read are dropped from the buffer when the load starts, because their appends were enqueued ahead of the read; facts recorded after it are folded on top. A failed read gives a `failed` ledger holding this run's facts, plus an alarm. Skipped newer lines and left-out files each raise an alarm. The `[LICHESS-BOT] challenge log loaded: …` line is logged as §3.4 specifies.
+- **Manager events:** `.challengeArrived` carries the `LichessBotChallenge`. New `.challengeAnsweredOnStream(reference, .declined|.canceled)` for every such line, and `.gameStartReceived(info)` before the session starts.
+- **`ChallengeOrigin`:** `.manual` (Challenge sheet only), plus `.casualResendOffer` and `.challengeQueue`. `.matchmaking` gains `trigger:`, and `ChallengeOrigin.sender` is the one mapping to `LichessBotChallengeSender`. The queue pump and Resend as Casual call the private send with their own origin, and `runMatchmakingPass(trigger:fillMode:)` gets `.fillOpenSlots` from Fill Open Slots and `.automaticPass` from the poll loop.
+- **Call sites:**
+  - `outgoingCreated`: after the POST, before the went-offline check.
+  - `outgoingNotCreated`: offline, refused, and no answer.
+  - `withdrawalRequested` and `withdrawalResult`: the public `cancelChallenge(id:)` forwards `.operatorCancel` to a private `cancelChallenge(id:reason:)`, and the timeout path passes `.unansweredTimeout(seconds:)`. `withdraw(challengeID:client:reason:)` takes `.goingOffline` or `.wentOfflineWhileSending`; `CancellationError` becomes `.abandonedAtShutdown`, and 400/404 becomes `.alreadyGone`.
+  - Incoming: `incomingReceived` once per id, `incomingDecided` for a challenger that isn't us, and `incomingResponseFailed`.
+  - From the stream: `declinedOnLichess` / `canceledOnLichess`, `gameStarted`, and echoes held, then written on expiry from the poll loop or at teardown.
+- **Shutdown** logs `[LICHESS-BOT] challenge log: N appends, slowest sync … ms` after the file queue closes.
+
+Decisions:
+- **No-answer sends** (§3.4 "POST failed without an answer"): recorded for every failure that may have reached Lichess. That excludes the gate refusing to send and an unbuildable URL (`challengePostMayHaveReachedLichess`), and includes a cancellation in flight. The credit cost is the worst case (the opponent's cost), so P6's credit counts never understate.
+- **Outcome-log call sites stay where they are in P2.** §3.8's "move them into the funnel" is skipped, because P6 (OD-2, decided) replaces the outcome log with a fold of the challenge log. Doing both would rewrite the same sites twice.
+- **Echo attribution window:** a no-answer send to the same player (lowercased) within `echoMatchWindow` (2 × 30 s) on either side of the echo's arrival.
+- **Alarm routing:** the recorder raises through the controller's alarm list (which also logs). The writer's failures reach it through a relay. With no controller wired, a failure is still written to the session log.
+
+Tests (new files; no existing test changed):
+- `LichessBotUnmatchedEchoTests` (11): echo matched → nothing written; one no-answer send (case-insensitive) → attributed; none or two → not recorded; teardown writes every held echo; an echo of an id already on disk is not held; a game start before the created line is written right after it; a game start with its echo held is written at once and not again; an unknown game start writes nothing; a replayed incoming challenge is written once; a fact recorded during the load is in the ledger once; a failed load keeps this run's facts and raises an alarm.
+- `LichessBotChallengeLogControllerTests` (8, fake Lichess): sheet, queue and Fill Open Slots senders; the operator's Resend as Casual; operator cancel (and a cancel of a non-pending id writes nothing); going-offline withdrawal; game start → accepted; our echo after the created line never written; an incoming challenge, DCM's decision and the challenger's cancel; files only under the temporary data folder.
+
 ## Appendix A. Measured data (2026-10-06, read-only)
 
 - Protocol files:

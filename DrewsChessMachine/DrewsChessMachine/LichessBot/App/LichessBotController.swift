@@ -104,17 +104,34 @@ final class LichessBotController {
     /// automatic resend itself is never resent, so a decline can't start a
     /// loop.
     enum ChallengeOrigin: Equatable {
-        /// The operator: the Challenge sheet, the challenge queue, or the
-        /// manual Resend as Casual.
+        /// The operator, from the Challenge sheet.
         case manual
-        /// A matchmaking pass, filling slots the way `fillMode` does, picked
-        /// `opponent` from the online-bots list. Both are kept so a casual
-        /// resend is checked against the same slot rule and candidate rules
-        /// as the pass that picked them.
-        case matchmaking(fillMode: LichessBotMatchmakingSettings.FillMode, opponent: LichessBotUserSummary)
+        /// The operator's Resend as Casual after a rated challenge was
+        /// declined.
+        case casualResendOffer
+        /// The operator's challenge queue.
+        case challengeQueue
+        /// A matchmaking pass, started by `trigger`, filling slots the way
+        /// `fillMode` does, picked `opponent` from the online-bots list.
+        /// `fillMode` and `opponent` are kept so a casual resend is checked
+        /// against the same slot rule and candidate rules as the pass that
+        /// picked them; `trigger` is recorded in the challenge log (OD-13).
+        case matchmaking(trigger: LichessBotMatchmakingTrigger, fillMode: LichessBotMatchmakingSettings.FillMode, opponent: LichessBotUserSummary)
         /// Matchmaking's one automatic casual resend of a declined rated
         /// challenge.
         case matchmakingCasualResend
+
+        /// Who sent it, as the challenge log records it: the one mapping to
+        /// the persisted form.
+        var sender: LichessBotChallengeSender {
+            switch self {
+            case .manual: return .challengeSheet
+            case .casualResendOffer: return .casualResendOffer
+            case .challengeQueue: return .challengeQueue
+            case .matchmaking(let trigger, let fillMode, _): return .matchmaking(trigger: trigger, fillMode: fillMode)
+            case .matchmakingCasualResend: return .matchmakingCasualResend
+            }
+        }
     }
 
     struct PendingChallenge: Equatable {
@@ -367,6 +384,9 @@ final class LichessBotController {
     private let modelProvider: any LichessBotModelProvider
     private let services: LichessBotControllerServices
     let protocolLog: LichessBotProtocolLog
+    /// The challenge log and its ledger (challenge-log plan §3.4). Every
+    /// challenge fact goes through `recordChallengeEvent`, its one funnel.
+    let challengeLogRecorder: LichessBotChallengeLogRecorder
     private var nextAlarmID = 0
 
     // MARK: - Runtime
@@ -429,6 +449,8 @@ final class LichessBotController {
         self.protocolLog = LichessBotProtocolLog(directory: dataDirectory, fileQueue: fileQueue) { error in
             SessionLogger.shared.log("[ALARM] LICHESS-BOT protocol log write failed: \(error.localizedDescription)")
         }
+        self.challengeLogRecorder = LichessBotChallengeLogRecorder(
+            directory: dataDirectory, fileQueue: fileQueue, systemCalls: .system, clock: { Date() })
         let loadedSettings: LichessBotSettings
         do {
             let loaded = try LichessBotSettingsStore.loadReporting(from: defaults)
@@ -461,6 +483,13 @@ final class LichessBotController {
         ) { event in
             log.record(LichessBotController.kind(of: event), LichessBotController.describe(event))
             sink.value?.yield(.gate(event))
+        }
+        challengeLogRecorder.alarmSink = { [weak self] text in
+            if let self {
+                self.raiseAlarm(text)
+            } else {
+                SessionLogger.shared.log("[ALARM] LICHESS-BOT \(text)")
+            }
         }
     }
 
@@ -836,6 +865,9 @@ final class LichessBotController {
         }
         if challengeOutcomeLog == nil {
             await loadChallengeOutcomes()
+        }
+        if challengeLedger == nil {
+            await loadChallengeLog()
         }
         do {
             try await startRuntime(oneGame: oneGame)
@@ -1265,6 +1297,8 @@ final class LichessBotController {
         // journal lines it already queued are on it.
         await journalQueue.close(reason: "the bot shut down: \(reason)")
         await fileQueue.close(reason: "the bot shut down: \(reason)")
+        // After the close, so every append queued before it is counted.
+        challengeLogRecorder.logSummary()
         SessionLogger.shared.log("[LICHESS-BOT] shut down: \(reason)")
     }
 
@@ -1395,6 +1429,27 @@ final class LichessBotController {
         } catch {
             raiseAlarm("Loading favorites failed (\(url.lastPathComponent)): \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Challenge log (challenge-log plan §3.4)
+
+    /// The challenge log's ledger: every challenge, in both directions, and
+    /// where it ended up. Nil until loaded.
+    var challengeLedger: LichessBotChallengeLedger? {
+        challengeLogRecorder.ledger
+    }
+
+    /// Load the challenge log's ledger, once (the bot window opening, going
+    /// online). Losing it never stops the bot: a failed load is an alarm,
+    /// and recording goes on.
+    func loadChallengeLog() async {
+        await challengeLogRecorder.load()
+    }
+
+    /// The one funnel for challenge facts: the ledger and the log's files
+    /// change only here (through the recorder), in one synchronous step.
+    private func recordChallengeEvent(_ event: LichessBotChallengeLogEvent) {
+        challengeLogRecorder.record(event)
     }
 
     // MARK: - Challenge outcomes
@@ -1753,6 +1808,9 @@ final class LichessBotController {
                 updateChallengeOutcomeLog("\(opponentID) offline") { log in
                     log.recordNotCreated(opponentID: opponentID, kind: offlineKind, outcome: .offline, at: Date())
                 }
+                recordChallengeEvent(.outgoingNotCreated(
+                    attemptID: UUID(), opponentID: opponentID, sender: origin.sender, request: request,
+                    opponentKind: offlineKind, reason: .opponentOffline, creditCost: 0))
                 throw LichessBotControllerError.opponentOffline(status.name)
             }
             // The status check was awaited, so the bot may have gone
@@ -1775,6 +1833,18 @@ final class LichessBotController {
                     updateChallengeOutcomeLog("\(opponentID) \(Self.describe(outcome)); counted \(charged) credits (worst case)") { log in
                         log.recordNotCreated(opponentID: opponentID, kind: opponentKind, outcome: outcome, at: Date())
                     }
+                    recordChallengeEvent(.outgoingNotCreated(
+                        attemptID: UUID(), opponentID: opponentID, sender: origin.sender, request: request,
+                        opponentKind: opponentKind, reason: .refused(refusal), creditCost: charged))
+                } else if Self.challengePostMayHaveReachedLichess(error) {
+                    protocolLog.record(.anomaly, "challenge to \(opponentID) failed without an answer from Lichess; outcome not recorded: \(Self.safeDescription(error))")
+                    // A challenge may exist after all; its echo, if one comes,
+                    // is attributed to this send. Counted at the worst-case
+                    // cost, since it may have been charged.
+                    recordChallengeEvent(.outgoingNotCreated(
+                        attemptID: UUID(), opponentID: opponentID, sender: origin.sender, request: request,
+                        opponentKind: opponentKind, reason: .noAnswer(error: Self.safeDescription(error)),
+                        creditCost: LichessBotChallengeCredits.cost(for: opponentKind)))
                 } else {
                     protocolLog.record(.anomaly, "challenge to \(opponentID) failed without an answer from Lichess; outcome not recorded: \(Self.safeDescription(error))")
                 }
@@ -1783,11 +1853,14 @@ final class LichessBotController {
             updateChallengeOutcomeLog("\(opponentID) challenge \(created.id) created; counted \(LichessBotChallengeCredits.cost(for: opponentKind)) credits (worst case: Lichess charges nothing if they follow DCM)") { log in
                 log.recordCreated(challengeID: created.id, opponentID: opponentID, kind: opponentKind, at: Date())
             }
+            recordChallengeEvent(.outgoingCreated(
+                challenge: LichessBotChallengeSnapshot(created), sender: origin.sender, request: request,
+                opponentKind: opponentKind, creditCost: LichessBotChallengeCredits.cost(for: opponentKind)))
             guard self.runtime?.manager === manager, connection == .online else {
                 // The bot went offline, or began going offline, while the
                 // challenge was being sent: withdraw it, or an acceptance
                 // would start an abandoned game.
-                withdraw(challengeID: created.id, client: client)
+                withdraw(challengeID: created.id, client: client, reason: .wentOfflineWhileSending)
                 resolveChallengeOutcome(challengeID: created.id, .canceled)
                 throw LichessBotControllerError.notOnline
             }
@@ -1805,21 +1878,56 @@ final class LichessBotController {
         protocolLog.record(.challenge, "challenge sent to \(username)", fields: ["id": created.id, "rated": "\(request.rated)", "clock": "\(request.clockLimitSeconds)+\(request.clockIncrementSeconds)", "color": request.color.rawValue])
     }
 
+    /// A failed withdrawal's result for the challenge log: Lichess answering
+    /// 400/404 means the challenge is already gone (expired or answered);
+    /// anything else is a failure.
+    nonisolated static func withdrawalResult(forFailure error: Error) -> LichessBotWithdrawalResult {
+        if case LichessBotAPIError.http(let status, let message) = error, status == 400 || status == 404 {
+            return .alreadyGone(message: message.map(LichessBotRedaction.redact))
+        }
+        return .failed(error: safeDescription(error))
+    }
+
+    /// Whether a challenge POST that failed without Lichess's refusal may
+    /// still have created a challenge: anything but the gate refusing to
+    /// send it, or a URL that could not be built. A transport failure, a
+    /// cancellation in flight or an undecodable success may all have left a
+    /// challenge on Lichess, so the challenge log records them as sends with
+    /// no answer.
+    nonisolated static func challengePostMayHaveReachedLichess(_ error: Error) -> Bool {
+        if error is LichessBotGateError {
+            return false
+        }
+        if case LichessBotAPIError.invalidURL = error {
+            return false
+        }
+        return true
+    }
+
     /// Send the declined rated challenge again as casual, as the player
     /// asked. A failure is reported in the outcome line and the offer stays.
     func resendAsCasual() async {
         guard let offer = casualResendOffer else { return }
         do {
-            try await sendChallenge(to: offer.username, request: offer.request)
+            try await sendChallenge(to: offer.username, request: offer.request, origin: .casualResendOffer)
         } catch {
             lastChallengeOutcome = "\(offer.username): resending as casual failed: \(Self.safeDescription(error))"
         }
     }
 
+    /// The operator's Cancel.
     func cancelChallenge(id: String) async {
+        await cancelChallenge(id: id, reason: .operatorCancel)
+    }
+
+    /// Withdraw a pending challenge and wait for Lichess's answer. A cancel
+    /// of an id that isn't pending does nothing and writes nothing.
+    private func cancelChallenge(id: String, reason: LichessBotWithdrawalReason) async {
         guard let runtime, let pending = pendingChallenges.first(where: { $0.id == id }) else { return }
+        recordChallengeEvent(.withdrawalRequested(challengeID: id, reason: reason))
         do {
             try await runtime.client.cancelChallenge(id: id)
+            recordChallengeEvent(.withdrawalResult(challengeID: id, result: .confirmed))
             await runtime.manager.clearOutgoingChallenge(id: id)
             if pendingChallenges.contains(where: { $0.id == id }) {
                 pendingChallenges.removeAll { $0.id == id }
@@ -1830,30 +1938,38 @@ final class LichessBotController {
         } catch LichessBotAPIError.http(let status, let message) where status == 400 || status == 404 {
             // Lichess no longer knows the challenge: it expired or was
             // answered. It is no longer pending.
+            recordChallengeEvent(.withdrawalResult(challengeID: id, result: .alreadyGone(message: message.map(LichessBotRedaction.redact))))
             await runtime.manager.clearOutgoingChallenge(id: id)
             pendingChallenges.removeAll { $0.id == id }
             lastChallengeOutcome = "\(pending.username): no longer pending (\(message ?? "HTTP \(status)"))"
             resolveChallengeOutcome(challengeID: id, .canceled)
             scheduleChallengeQueuePump()
         } catch {
+            recordChallengeEvent(.withdrawalResult(challengeID: id, result: .failed(error: Self.safeDescription(error))))
             raiseAlarm("Cancelling the challenge to \(pending.username) failed: \(Self.safeDescription(error))")
         }
     }
 
     /// Withdraw a challenge on Lichess without waiting; a failure is logged.
     /// The withdrawal is tracked until its request ends, so shutdown can
-    /// wait for it.
-    private func withdraw(challengeID: String, client: LichessBotAPIClient) {
+    /// wait for it. The challenge log gets the request now and Lichess's
+    /// answer when it comes — which can be after the runtime, and its
+    /// instance lock, are gone (the log's per-append lock covers that).
+    private func withdraw(challengeID: String, client: LichessBotAPIClient, reason: LichessBotWithdrawalReason) {
         let log = protocolLog
         let token = UUID()
+        recordChallengeEvent(.withdrawalRequested(challengeID: challengeID, reason: reason))
         let task = Task {
             do {
                 try await client.cancelChallenge(id: challengeID)
                 log.record(.challenge, "withdrew challenge \(challengeID) on going offline")
+                self.recordChallengeEvent(.withdrawalResult(challengeID: challengeID, result: .confirmed))
             } catch is CancellationError {
                 log.record(.anomaly, "withdrawal of challenge \(challengeID) abandoned: the bot shut down before Lichess answered; the challenge may still stand")
+                self.recordChallengeEvent(.withdrawalResult(challengeID: challengeID, result: .abandonedAtShutdown))
             } catch {
                 log.record(.anomaly, "withdrawing challenge \(challengeID) failed: \(Self.safeDescription(error))")
+                self.recordChallengeEvent(.withdrawalResult(challengeID: challengeID, result: Self.withdrawalResult(forFailure: error)))
             }
             // Only this withdrawal's own entry: a later withdrawal of the
             // same id replaced it and removes itself.
@@ -2022,7 +2138,7 @@ final class LichessBotController {
             challengeQueue.markSending(entry.id)
             let outcome: LichessBotChallengeQueue.SendOutcome
             do {
-                try await sendChallenge(to: entry.username, request: entry.request)
+                try await sendChallenge(to: entry.username, request: entry.request, origin: .challengeQueue)
                 outcome = .sent
             } catch {
                 outcome = Self.queueOutcome(for: error)
@@ -2136,7 +2252,7 @@ final class LichessBotController {
                 }
                 guard current() else { return }
             }
-            let outcome = await runMatchmakingPass(fillMode: .everyFreeSlot)
+            let outcome = await runMatchmakingPass(trigger: .fillOpenSlots, fillMode: .everyFreeSlot)
             guard current() else { return }
             switch outcome {
             case .sent:
@@ -2188,7 +2304,7 @@ final class LichessBotController {
         nextAutomaticMatchmakingPassAt = .distantFuture
         let generation = runtimeGeneration
         Task {
-            let outcome = await runMatchmakingPass(fillMode: matchmaking.fillMode)
+            let outcome = await runMatchmakingPass(trigger: .automaticPass, fillMode: matchmaking.fillMode)
             // Teardown reset the schedule for the next runtime.
             guard runtimeGeneration == generation else { return }
             nextAutomaticMatchmakingPassAt = Self.nextAutomaticPass(after: outcome, now: Date())
@@ -2221,7 +2337,7 @@ final class LichessBotController {
     /// One matchmaking pass: at most one challenge, sent only if every
     /// condition holds before the send (plan §7.3 B). The conditions are
     /// checked again after the online-bots refresh, since that awaits.
-    private func runMatchmakingPass(fillMode: LichessBotMatchmakingSettings.FillMode) async -> MatchmakingPassOutcome {
+    private func runMatchmakingPass(trigger: LichessBotMatchmakingTrigger, fillMode: LichessBotMatchmakingSettings.FillMode) async -> MatchmakingPassOutcome {
         guard !matchmakingPassRunning else { return .blocked(reason: "another matchmaking pass is running") }
         matchmakingPassRunning = true
         let generationAtStart = runtimeGeneration
@@ -2272,7 +2388,7 @@ final class LichessBotController {
         protocolLog.record(.challenge, "matchmaking pick: \(pick.bot.username) (\(speed.rawValue) \(rating)) at \(pick.clock.rawValue), uniformly from \(pick.candidateCount) candidate(s)\(pick.fromFavorites ? ", favorites first" : ""); rating window \(pick.bounds.description(speed: speed)); excluded: \(LichessBotMatchmaking.describe(pick.exclusions))")
         let request = pick.clock.challenge(rated: matchmaking.rated, color: .random)
         let outcome = await sendMatchmakingChallenge(
-            to: pick.bot.username, request: request, origin: .matchmaking(fillMode: fillMode, opponent: pick.bot))
+            to: pick.bot.username, request: request, origin: .matchmaking(trigger: trigger, fillMode: fillMode, opponent: pick.bot))
         switch outcome {
         case .sent:
             protocolLog.record(.challenge, "matchmaking sent a challenge to \(pick.bot.username)", fields: ["clock": request.clockText, "rated": "\(request.rated)", "window": pick.bounds.description(speed: speed)])
@@ -2448,7 +2564,7 @@ final class LichessBotController {
         guard settings.matchmaking.fallBackToCasual,
               reasonKey == LichessBotDeclineReason.casual.rawValue,
               pending.request.rated,
-              case .matchmaking(let fillMode, let opponent) = pending.origin else { return nil }
+              case .matchmaking(_, let fillMode, let opponent) = pending.origin else { return nil }
         var request = pending.request
         request.rated = false
         return MatchmakingCasualResend(
@@ -2892,10 +3008,12 @@ final class LichessBotController {
         settingsBox = nil
         gateEventSink.value = nil
         for pending in pendingChallenges {
-            withdraw(challengeID: pending.id, client: runtime.client)
+            withdraw(challengeID: pending.id, client: runtime.client, reason: .goingOffline)
             resolveChallengeOutcome(challengeID: pending.id, .canceled)
         }
         pendingChallenges = []
+        // No send of this runtime can be matched to an echo any more.
+        challengeLogRecorder.writeAllHeldEchoes()
         clearChallengeQueue(reason: "offline: \(reason)")
         // Work tied to the old runtime checks its generation and leaves
         // these alone; they are reset here for the next runtime.
@@ -2987,10 +3105,11 @@ final class LichessBotController {
                 for pending in expired {
                     autoWithdrawAttemptedChallengeIDs.insert(pending.id)
                     protocolLog.record(.challenge, "withdrawing unanswered challenge to \(pending.username) after \(timeout) s")
-                    await cancelChallenge(id: pending.id)
+                    await cancelChallenge(id: pending.id, reason: .unansweredTimeout(seconds: timeout))
                     guard current() else { return }
                 }
             }
+            challengeLogRecorder.writeExpiredEchoes()
             if settings.model != lastSeenModelSettings {
                 lastSeenModelSettings = settings.model
                 consecutiveModelRefreshFailures = 0
@@ -3159,12 +3278,19 @@ final class LichessBotController {
             raiseAlarm("Another client appears to be using this token (\(count) immediate closes)")
         case .tokenRejected(let detail):
             failRuntime("Lichess rejected the token: \(detail)")
-        case .challengeArrived(let challengeID, let challengerID, let challengerTitle):
+        case .challengeArrived(let challenge):
+            let challengeID = challenge.id
+            let snapshot = LichessBotChallengeSnapshot(challenge)
+            if LichessBotChallengeAlert.isOwnOutgoingEcho(challengerID: challenge.challenger.id, ourAccountID: accountID) {
+                challengeLogRecorder.noteOwnEcho(snapshot)
+            } else {
+                challengeLogRecorder.noteIncomingChallenge(snapshot)
+            }
             // Settings are read here, on arrival, so a changed tone applies
             // to the very next challenge.
             let soundName = LichessBotChallengeAlert.soundName(
-                challengerID: challengerID,
-                challengerTitle: challengerTitle,
+                challengerID: challenge.challenger.id,
+                challengerTitle: challenge.challenger.title,
                 ourAccountID: accountID,
                 alerts: settings.alerts
             )
@@ -3177,6 +3303,9 @@ final class LichessBotController {
             }
         case .challengeDecision(let challengeID, let challengerID, let decision):
             protocolLog.record(.challenge, "\(challengerID): \(Self.describe(decision))", fields: ["challenge": challengeID])
+            if !LichessBotChallengeAlert.isOwnOutgoingEcho(challengerID: challengerID, ourAccountID: accountID) {
+                recordChallengeEvent(.incomingDecided(challengeID: challengeID, decision: LichessBotIncomingDecisionRecord(decision)))
+            }
             if decision == .accept {
                 // Fetch before the game starts, so it never competes
                 // with a move (plan §14.3b).
@@ -3184,6 +3313,19 @@ final class LichessBotController {
             }
         case .challengeResponseFailed(let challengeID, let error):
             protocolLog.record(.anomaly, "challenge response failed: \(error)", fields: ["challenge": challengeID])
+            recordChallengeEvent(.incomingResponseFailed(challengeID: challengeID, error: LichessBotRedaction.redact(error)))
+        case .challengeAnsweredOnStream(let reference, let answer):
+            switch answer {
+            case .declined:
+                recordChallengeEvent(.declinedOnLichess(
+                    challengeID: reference.id,
+                    reason: LichessBotDeclineReasonRecord(reasonKey: reference.declineReasonKey),
+                    text: reference.declineReason))
+            case .canceled:
+                recordChallengeEvent(.canceledOnLichess(challengeID: reference.id))
+            }
+        case .gameStartReceived(let info):
+            challengeLogRecorder.noteGameStart(gameID: info.gameId)
         case .gameSessionStarted(let gameID, let generation, let origin):
             if let pending = pendingChallenges.first(where: { $0.id == gameID }) {
                 // The accepted challenge's game can start before the
