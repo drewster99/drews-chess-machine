@@ -20,8 +20,8 @@ struct AnalyzedNetworkSnapshot: Sendable {
 
     let role: Role
     let modelID: String?
+    /// Carries the policy tail precision the weights are built under.
     let architecture: NetworkArchitecture
-    let policyTailPrecision: ChessNetwork.PolicyTailPrecision
     /// Graph variable names, in `exportWeights()` order: the trainables, then
     /// the BN running statistics.
     let names: [String]

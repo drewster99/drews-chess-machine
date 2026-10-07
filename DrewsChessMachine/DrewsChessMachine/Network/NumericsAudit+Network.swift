@@ -33,7 +33,6 @@ extension NumericsAudit {
             velocity: optimizer.velocity,
             positions: positions,
             dynamicSkippedReason: nil,
-            policyTailPrecision: snapshot.policyTailPrecision,
             modelLabel: modelLabel,
             modelID: snapshot.modelID,
             trainingStep: snapshot.trainingStep

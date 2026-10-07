@@ -75,6 +75,19 @@
 //    `SafetensorsModelIO.trainingStepReading`. Presets and `architecture.json`
 //    are stamped v11 with nothing new in them (as at v7), so a build before
 //    v11 refuses every file written from v11 on instead of misreading it.
+//  - v12: the architecture must state `policy_tail_precision` (where the
+//    policy head leaves the compute dtype for fp32; `does_not_apply` exactly
+//    on fp32), which was a process-wide launch flag before. An older file
+//    resolves it to the tail it records outside the architecture JSON — its
+//    flat `trainer_policy_tail_precision` key, else its lineage
+//    `configuration.policy_tail_precision`, which must agree when both are
+//    present — and to `mixed_final_projection` when it records neither;
+//    on fp32 to `does_not_apply` whatever it records (the recorded value had
+//    no effect on an fp32 graph). The recorded tail reaches the decoder on
+//    `DecodeFormat.recordedPolicyTailPrecision`, filled by
+//    `SafetensorsModelIO.decodeArchitecture(fromMetadata:source:)`; carriers
+//    without a metadata map (presets, `architecture.json`, a session
+//    manifest's embedded architecture) record none.
 //
 
 import Foundation
@@ -84,7 +97,7 @@ enum ArchitectureFormat {
     /// The version every writer stamps today. Safetensors write it as the
     /// string `dcm_format_version`; presets and `architecture.json` write it
     /// as the integer `format_version`.
-    static let currentVersion = 11
+    static let currentVersion = 12
 
     /// First version whose block groups must carry `se_beta_init`
     /// (`BlockGroup.seBetaInit`). Files older than this resolve a missing
@@ -153,6 +166,13 @@ enum ArchitectureFormat {
     /// writer wrote there, read by `SafetensorsModelIO.trainingStepReading`
     /// from the file's `creator` and flagged on load.
     static let trainingStepIsTrainerStepFromVersion = 11
+
+    /// First version whose architectures must carry `policy_tail_precision`
+    /// (`NetworkArchitecture.policyTailPrecision`). A file older than this
+    /// resolves it to the tail it records (`DecodeFormat.recordedPolicyTailPrecision`),
+    /// else to `PolicyTailPrecisionSetting.historical(for:)` — on fp32 always
+    /// `does_not_apply`.
+    static let policyTailPrecisionRequiredFromVersion = 12
 
     /// The version reported for a carrier that predates version markers
     /// entirely — a safetensors file with no `dcm_format_version`, or a
@@ -242,6 +262,7 @@ enum ArchitectureFormat {
     /// to the same list.
     final class LegacyResolutionLog: Sendable {
         private let entries = SyncBox<[String]>([])
+        private let policyTailOrigin = SyncBox<PolicyTailPrecisionOrigin?>(nil)
 
         init() {}
 
@@ -250,6 +271,17 @@ enum ArchitectureFormat {
         }
 
         var resolutions: [String] { entries.value }
+
+        /// Where the decoded architecture's `policy_tail_precision` came
+        /// from, set by `decodePolicyTailPrecision`; nil before an
+        /// architecture is decoded under this log. A session load reads it to
+        /// tell a champion that records no tail from one that does (PT-D3
+        /// rule 4).
+        var policyTailPrecisionOrigin: PolicyTailPrecisionOrigin? { policyTailOrigin.value }
+
+        func notePolicyTailPrecisionOrigin(_ origin: PolicyTailPrecisionOrigin) {
+            policyTailOrigin.value = origin
+        }
     }
 
     /// Which format version the architecture JSON being decoded belongs to,
@@ -259,11 +291,21 @@ enum ArchitectureFormat {
         let formatVersion: Int
         let source: String
         let legacyLog: LegacyResolutionLog
+        /// The policy tail the carrier records outside the architecture JSON
+        /// (a model file's `trainer_policy_tail_precision` key or lineage
+        /// configuration), which a file older than
+        /// `policyTailPrecisionRequiredFromVersion` resolves a missing
+        /// `policy_tail_precision` to. Nil for a carrier that records none or
+        /// has no metadata map. Used only when the field is missing and
+        /// allowed to be.
+        let recordedPolicyTailPrecision: RecordedPolicyTailPrecision?
 
-        init(formatVersion: Int, source: String, legacyLog: LegacyResolutionLog = LegacyResolutionLog()) {
+        init(formatVersion: Int, source: String, legacyLog: LegacyResolutionLog = LegacyResolutionLog(),
+             recordedPolicyTailPrecision: RecordedPolicyTailPrecision? = nil) {
             self.formatVersion = formatVersion
             self.source = source
             self.legacyLog = legacyLog
+            self.recordedPolicyTailPrecision = recordedPolicyTailPrecision
         }
 
         /// True when `se_beta_init` may be absent and resolves to `.glorot`.
@@ -289,11 +331,17 @@ enum ArchitectureFormat {
         var allowsLegacySELessSEActivation: Bool {
             formatVersion < ArchitectureFormat.seLessSEActivationDoesNotApplyFromVersion
         }
+        /// True when `policy_tail_precision` may be absent and resolves to
+        /// the recorded tail or the historical one.
+        var allowsMissingPolicyTailPrecision: Bool {
+            formatVersion < ArchitectureFormat.policyTailPrecisionRequiredFromVersion
+        }
 
         /// The same file, re-stamped with the version a nested carrier
         /// declares (a preset's `format_version`), sharing the log.
         func withFormatVersion(_ version: Int) -> DecodeFormat {
-            DecodeFormat(formatVersion: version, source: source, legacyLog: legacyLog)
+            DecodeFormat(formatVersion: version, source: source, legacyLog: legacyLog,
+                         recordedPolicyTailPrecision: recordedPolicyTailPrecision)
         }
 
         /// The format used when a decoder carries none: the current version,
@@ -379,6 +427,81 @@ enum ArchitectureFormat {
         let prefix = decoder.codingPath.isEmpty ? "" : "\(location(of: decoder))."
         format.legacyLog.record("\(prefix)\(key.stringValue) := \(rendered(standard))")
         return standard
+    }
+
+    // MARK: Policy tail precision
+
+    /// A policy tail a pre-v12 model file records outside its architecture
+    /// JSON, and where (for the legacy log line).
+    struct RecordedPolicyTailPrecision: Sendable, Equatable {
+        let value: PolicyTailPrecisionSetting
+        /// The metadata that states it, e.g. `trainer_policy_tail_precision`.
+        let recordedIn: String
+    }
+
+    /// How a decoded architecture's `policy_tail_precision` was obtained.
+    enum PolicyTailPrecisionOrigin: Sendable, Equatable {
+        /// The architecture JSON states it (every v12 file).
+        case stated
+        /// A pre-v12 file: the tail its carrier records
+        /// (`RecordedPolicyTailPrecision`), or `does_not_apply` on fp32,
+        /// where a recorded value is ignored.
+        case recorded(RecordedPolicyTailPrecision)
+        /// A pre-v12 file recording no tail: `historical(for:)`.
+        case notRecorded
+    }
+
+    /// Decodes `policy_tail_precision` (PT-D2 / PT-D3 rule 1): the stated
+    /// value at any version (real pre-v12 files never state it, but the
+    /// tests' re-stamped current encodes do, as `decodeInitOption` allows);
+    /// else, for a file older than `policyTailPrecisionRequiredFromVersion`
+    /// or in the uniform-tower form (`legacyByConstruction`), the tail the
+    /// carrier records (`format.recordedPolicyTailPrecision`), else
+    /// `PolicyTailPrecisionSetting.historical(for:)` — on fp32 always
+    /// `does_not_apply`, whatever is recorded, because the recorded value had
+    /// no effect on an fp32 graph (every trainer-file writer recorded the
+    /// process value regardless of dtype). Each resolution is one entry on the
+    /// legacy log. A current-version file without it is `missingRequiredField`.
+    static func decodePolicyTailPrecision<Key: CodingKey>(
+        key: Key,
+        in container: KeyedDecodingContainer<Key>,
+        decoder: Decoder,
+        format: DecodeFormat,
+        legacyByConstruction: Bool,
+        computeDataType: ComputeDataType
+    ) throws -> PolicyTailPrecisionSetting {
+        if let stated = try container.decodeIfPresent(PolicyTailPrecisionSetting.self, forKey: key) {
+            format.legacyLog.notePolicyTailPrecisionOrigin(.stated)
+            return stated
+        }
+        guard legacyByConstruction || format.allowsMissingPolicyTailPrecision else {
+            throw FormatError.missingRequiredField(
+                field: key.stringValue,
+                location: location(of: decoder),
+                formatVersion: format.formatVersion,
+                source: format.source)
+        }
+        let resolved: PolicyTailPrecisionSetting
+        let reason: String
+        switch (computeDataType, format.recordedPolicyTailPrecision) {
+        case (.float32, .some(let recorded)):
+            resolved = .doesNotApply
+            reason = "recorded \(recorded.value.rawValue) ignored: \(computeDataType.rawValue)"
+        case (.float32, .none):
+            resolved = .doesNotApply
+            reason = computeDataType.rawValue
+        case (_, .some(let recorded)):
+            resolved = recorded.value
+            reason = "recorded in \(recorded.recordedIn)"
+        case (_, .none):
+            resolved = PolicyTailPrecisionSetting.historical(for: computeDataType)
+            reason = "not recorded"
+        }
+        format.legacyLog.notePolicyTailPrecisionOrigin(
+            format.recordedPolicyTailPrecision.map { .recorded($0) } ?? .notRecorded)
+        let prefix = decoder.codingPath.isEmpty ? "" : "\(location(of: decoder))."
+        format.legacyLog.record("\(prefix)\(key.stringValue) := \(resolved.rawValue) (\(reason))")
+        return resolved
     }
 
     // MARK: Site activations

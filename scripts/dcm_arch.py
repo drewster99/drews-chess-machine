@@ -76,7 +76,22 @@ UNVERSIONED_LEGACY_VERSION = 3
 # architecture field: from it a header's `training_step` is the trainer step
 # (`dcm_lineage.step_reading` reads a file's step under either rule), and a copy
 # of this module that predates it refuses a v11 file instead of misreading it.
-CURRENT_FORMAT_VERSION = 11
+# v12 adds `policy_tail_precision` (POLICY_TAIL_PRECISION_REQUIRED_FROM_VERSION).
+CURRENT_FORMAT_VERSION = 12
+# ArchitectureFormat.policyTailPrecisionRequiredFromVersion: from v12 the
+# architecture states `policy_tail_precision`; an older file resolves it to the
+# tail it records (`trainer_policy_tail_precision`, else its lineage
+# configuration's), else 'mixed_final_projection' — on fp32 always
+# 'does_not_apply' (`policy_tail_precision`).
+POLICY_TAIL_PRECISION_REQUIRED_FROM_VERSION = 12
+# PolicyTailPrecisionSetting's tokens: the two a bf16 / fp16 model can hold, and
+# DOES_NOT_APPLY, the only one an fp32 model holds.
+POLICY_TAILS_REDUCED_PRECISION = ('fp32_from_pre_bn', 'mixed_final_projection')
+# PolicyTailPrecisionSetting.historical(for:) on bf16 / fp16.
+HISTORICAL_REDUCED_PRECISION_POLICY_TAIL = 'mixed_final_projection'
+# The flat key pre-v12 trainer files (and files the PT-D3 header edit approves)
+# record their tail under.
+TRAINER_POLICY_TAIL_PRECISION_KEY = 'trainer_policy_tail_precision'
 # A safetensors header larger than this is not a DCM model header (theirs are
 # a few kilobytes); refusing it keeps a damaged length prefix from being read
 # as a request for gigabytes.
@@ -259,6 +274,60 @@ def norm_arch_md(md):
     if 'architecture' not in md:
         raise ArchitectureError("safetensors __metadata__ has no 'architecture'")
     return norm_arch(md['architecture'], md.get('dcm_format_version'))
+
+
+def recorded_policy_tail(md):
+    """The policy tail a safetensors __metadata__ dict records outside its architecture
+    JSON, mirroring SafetensorsModelIO.recordedPolicyTailPrecision: the flat
+    `trainer_policy_tail_precision`, else the lineage record's
+    `configuration.policy_tail_precision`, else None. Both present and different
+    raises (the app refuses such a file)."""
+    allowed = POLICY_TAILS_REDUCED_PRECISION + (DOES_NOT_APPLY,)
+    flat = md.get(TRAINER_POLICY_TAIL_PRECISION_KEY)
+    if flat is not None and flat not in allowed:
+        raise ArchitectureError(f"{TRAINER_POLICY_TAIL_PRECISION_KEY} is {flat!r}, expected one of {allowed}")
+    configured = None
+    lineage_text = md.get('dcm_lineage')
+    if lineage_text is not None:
+        configuration = (json.loads(lineage_text) or {}).get('configuration')
+        if isinstance(configuration, dict):
+            configured = configuration.get('policy_tail_precision')
+            if configured is not None and configured not in allowed:
+                raise ArchitectureError(f"lineage configuration policy_tail_precision is {configured!r}")
+    if flat is not None and configured is not None and flat != configured:
+        raise ArchitectureError(
+            f"{TRAINER_POLICY_TAIL_PRECISION_KEY} {flat} disagrees with the lineage configuration's {configured}")
+    return flat if flat is not None else configured
+
+
+def policy_tail_precision(md):
+    """The policy tail a safetensors __metadata__ dict's model builds with, as the app
+    resolves it (ArchitectureFormat.decodePolicyTailPrecision): the architecture's stated
+    `policy_tail_precision` at any version; required from
+    POLICY_TAIL_PRECISION_REQUIRED_FROM_VERSION (a v12 block-groups file without it
+    raises); else 'does_not_apply' on fp32 whatever is recorded, else the recorded tail
+    (`recorded_policy_tail`), else HISTORICAL_REDUCED_PRECISION_POLICY_TAIL.
+    Returns (tail, how) with how one of 'stated', 'recorded', 'not_recorded',
+    'fp32'."""
+    if 'architecture' not in md:
+        raise ArchitectureError("safetensors __metadata__ has no 'architecture'")
+    arch = json.loads(md['architecture']) if isinstance(md['architecture'], str) else md['architecture']
+    version = checked_format_version(md.get('dcm_format_version'))
+    stated = arch.get('policy_tail_precision')
+    if stated is not None:
+        return stated, 'stated'
+    uniform = 'block_groups' not in arch
+    if not uniform and version is not None and version >= POLICY_TAIL_PRECISION_REQUIRED_FROM_VERSION:
+        raise ArchitectureError(f"policy_tail_precision missing in a format v{version} architecture")
+    if version is not None and version >= POLICY_TAIL_PRECISION_REQUIRED_FROM_VERSION:
+        recorded = None
+    else:
+        recorded = recorded_policy_tail(md)
+    if arch.get('compute_data_type') == 'float32':
+        return DOES_NOT_APPLY, 'fp32'
+    if recorded is not None:
+        return recorded, 'recorded'
+    return HISTORICAL_REDUCED_PRECISION_POLICY_TAIL, 'not_recorded'
 
 
 _SITE_ABSENT_REASON = {

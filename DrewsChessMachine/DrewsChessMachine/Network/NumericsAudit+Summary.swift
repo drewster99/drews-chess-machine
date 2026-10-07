@@ -12,7 +12,7 @@ extension NumericsAudit.Result {
         var lines: [String] = []
         let id = modelID.map { " id \($0)" } ?? ""
         let step = trainingStep.map { " step \($0)" } ?? ""
-        lines.append("model \(modelLabel)\(id)\(step), compute \(computeDataType)\(dynamicChecks == nil ? "" : ", policy tail \(policyTailPrecision)")")
+        lines.append("model \(modelLabel)\(id)\(step), compute \(computeDataType), policy tail \(policyTailPrecision)")
         lines.append("overall: \(overallVerdict.rawValue)")
 
         if let offset = staticChecks.valueHeadOffset {
@@ -50,21 +50,21 @@ extension NumericsAudit.Result {
             if let note = p.lichessNote { positionLine += "; Lichess: \(note)" }
             if !p.lichessGamesSkipped.isEmpty { positionLine += "; \(p.lichessGamesSkipped.count) Lichess game(s) skipped (listed in the JSON)" }
             lines.append(positionLine)
-            for (format, error) in dynamic.formatBuildErrors.sorted(by: { $0.key < $1.key }) {
-                lines.append("\(format) network not built: \(error)")
+            for (build, error) in dynamic.formatBuildErrors.sorted(by: { $0.key < $1.key }) {
+                lines.append("\(build) network not built: \(error)")
             }
             if let value = dynamic.valueHead {
                 for report in value {
                     let median = report.sharedLogitPercentiles.count > 2 ? report.sharedLogitPercentiles[2] : nil
                     let wdl = report.startPositionWDL.map { String(format: "%.3f", $0) }.joined(separator: "/")
-                    lines.append("value \(report.format.rawValue): ties \(A.fmt(report.tieFraction)), CE \(A.fmt(report.crossEntropyMean)) (delta \(A.fmt(report.crossEntropyDeltaVsFP32))), mean |dv| \(A.fmt(report.meanAbsDeltaV)), argmax changed \(A.fmt(report.argmaxChangedFraction)), shared logit median \(A.fmt(median)), start W/D/L \(wdl) -> \(report.verdict.rawValue)")
+                    lines.append("value \(A.AuditBuild(format: report.format, policyTail: report.policyTail).label): ties \(A.fmt(report.tieFraction)), CE \(A.fmt(report.crossEntropyMean)) (delta \(A.fmt(report.crossEntropyDeltaVsFP32))), mean |dv| \(A.fmt(report.meanAbsDeltaV)), argmax changed \(A.fmt(report.argmaxChangedFraction)), shared logit median \(A.fmt(median)), start W/D/L \(wdl) -> \(report.verdict.rawValue)")
                 }
             } else if let note = dynamic.valueHeadNote {
                 lines.append("value head: \(note)")
             }
             for report in dynamic.policyHead {
                 let level = report.legalMeanPercentiles.count > 2 ? report.legalMeanPercentiles[2] : nil
-                lines.append("policy \(report.format.rawValue): KL \(A.fmt(report.klMean)), top-2 ties \(A.fmt(report.top2TieFraction)), top-1 changed \(A.fmt(report.top1ChangedFraction)), legal level median \(A.fmt(level)), legal spread median \(A.fmt(report.legalSpreadMedian)), all-move mean median \(A.fmt(report.allMoveMeanMedian)) -> \(report.verdict.rawValue)")
+                lines.append("policy \(A.AuditBuild(format: report.format, policyTail: report.policyTail).label): KL \(A.fmt(report.klMean)), top-2 ties \(A.fmt(report.top2TieFraction)), top-1 changed \(A.fmt(report.top1ChangedFraction)), legal level median \(A.fmt(level)), legal spread median \(A.fmt(report.legalSpreadMedian)), all-move mean median \(A.fmt(report.allMoveMeanMedian)) -> \(report.verdict.rawValue)")
             }
             lines.append("activation taps: \(dynamic.taps.count)")
         } else if let reason = dynamicSkippedReason {

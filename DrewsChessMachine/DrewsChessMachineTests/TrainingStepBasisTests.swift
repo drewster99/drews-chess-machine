@@ -65,7 +65,7 @@ final class TrainingStepBasisTests: XCTestCase {
             modelID: "20261006-2-TRNR", createdAtUnix: 1_790_000_000,
             metadata: ModelCheckpointMetadata.trainerFile(
                 creator: creator, trainingStep: 1_513, parentModelID: "20261006-1-PRNT", notes: "basis test",
-                schedule: schedule(1_513), policyTailPrecision: .float32FromPreBatchNorm),
+                schedule: schedule(1_513)),
             weights: trainerWeights(), architecture: arch, includesVelocity: true,
             lineage: try resumedRecord(startTrainerStep: 1_000, segmentStep: 513))
     }
@@ -127,8 +127,7 @@ final class TrainingStepBasisTests: XCTestCase {
                 modelID: "20261006-2-TRNR", createdAtUnix: 1_790_000_000,
                 metadata: ModelCheckpointMetadata.trainerFile(
                     creator: ModelCheckpointMetadata.corpusReplayCreator, trainingStep: stated,
-                    parentModelID: "", notes: "", schedule: schedule(1_513),
-                    policyTailPrecision: .float32FromPreBatchNorm),
+                    parentModelID: "", notes: "", schedule: schedule(1_513)),
                 weights: trainerWeights(), architecture: arch, includesVelocity: true,
                 lineage: try resumedRecord(startTrainerStep: 1_000, segmentStep: 513))) { error in
                 guard case .trainingStepDisagreesWithTrainerClock(let step, let clock)? =

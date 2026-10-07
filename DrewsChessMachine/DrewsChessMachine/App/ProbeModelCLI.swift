@@ -617,7 +617,7 @@ enum ProbeModelCLI {
             "modelID": file.modelID,
             "params": file.architecture.parameterCount,
             "encoding": file.architecture.inputEncoding.rawValue,
-            "policyTailPrecision": ChessNetwork.PolicyTailPrecision.process.rawValue,
+            "policyTailPrecision": file.architecture.policyTailPrecision.rawValue,
             "set": setLabel,
             "n": overall.totalProbes,
             "argmaxCorrect": overall.argmaxCorrect,

@@ -171,9 +171,10 @@ extension SessionController {
             case .freshOrFromLoadedSession:
                 if let resumed = pendingLoadedSession {
                     // A GUI resume never refuses (determinism plan D-1);
-                    // what it could not restore — the policy-tail precision
-                    // included — is named on the one `[RESUME]` line
-                    // `beginLineageSegment` logs.
+                    // what it could not restore is named on the one
+                    // `[RESUME]` line `beginLineageSegment` logs. (The
+                    // policy-tail precision is the architecture's, which the
+                    // trainer is built with, so it is always restored.)
                     trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
                 } else {
                     trainer.identifier = ModelIDMinter.mintTrainerGeneration(from: try Self.requiredChampionID(championIdentifier))
@@ -274,7 +275,6 @@ extension SessionController {
                 let gaps = Self.guiResumeGaps(
                     resumed: resumed, continuedRunStreams: continuedRunStreams,
                     replayBufferRestored: replayBufferRestored,
-                    runningPolicyTailPrecision: trainer.policyTailPrecision,
                     runningBuild: try .current, runningDevice: .current, runningFingerprint: behaviorFingerprint)
                     // A history-less trainer file is a gap only when this run
                     // clips with the relative cap.
@@ -411,7 +411,7 @@ extension SessionController {
                                        trainingTimeLimitSec: cliConfig?.trainingTimeLimitSec, epochLimit: nil)
                 : .none
             try tracker.configureSegment(LineageTracker.SegmentConfiguration(
-                policyTailPrecision: trainer.policyTailPrecision, budget: budget, vsuci: nil,
+                policyTailPrecision: trainer.arch.policyTailPrecision, budget: budget, vsuci: nil,
                 selfPlayDirichlet: LineageRecord.Dirichlet(dirichlet),
                 startValueHeadRecentered: startValueHeadRecentered))
             tracker.noteRunSeed(seed, atTrainerStep: clock)
@@ -568,7 +568,6 @@ extension SessionController {
     static func guiResumeGaps(resumed: LoadedSession,
                               continuedRunStreams: LineageRecord.RunStreams?,
                               replayBufferRestored: Bool,
-                              runningPolicyTailPrecision: ChessNetwork.PolicyTailPrecision,
                               runningBuild: LineageRecord.Build,
                               runningDevice: LineageRecord.Device,
                               runningFingerprint: BehaviorFingerprint.Record) -> [ResumeGap] {
@@ -578,8 +577,6 @@ extension SessionController {
             gaps.append(.clocks)
         }
         gaps += ResumeGap.dropoutGaps(restoring: DropoutRNGResumeState(lineage: lineage))
-        gaps += PolicyTailPrecisionResume.gaps(
-            saved: resumed.trainerFile.metadata.trainerPolicyTailPrecision, running: runningPolicyTailPrecision)
         if !replayBufferRestored {
             gaps.append(.buffer)
         }

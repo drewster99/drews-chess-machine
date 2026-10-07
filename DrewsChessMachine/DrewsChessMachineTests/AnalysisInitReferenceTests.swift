@@ -16,7 +16,7 @@ final class AnalysisInitReferenceTests: XCTestCase {
         try reference.requireMatches(variableNames: names, trainableCount: network.trainableVariables.count)
         return AnalyzedNetworkSnapshot(
             role: .trainer, modelID: "20261007-1-TEST", architecture: network.arch,
-            policyTailPrecision: network.policyTailPrecision, names: names, weights: weights,
+            names: names, weights: weights,
             trainableCount: network.trainableVariables.count, trainingStep: 0,
             trainingStepSource: "test", takenAt: Date(), initReference: reference)
     }
@@ -121,7 +121,7 @@ final class AnalysisInitReferenceTests: XCTestCase {
             try await NumericsAudit.run(
                 names: reference.variableNames, weights: weights, arch: auditedArch, initReference: reference,
                 masters: nil, mastersNote: "test", velocity: .unavailable(reason: "test"), positions: nil,
-                dynamicSkippedReason: "test", policyTailPrecision: network.policyTailPrecision,
+                dynamicSkippedReason: "test",
                 modelLabel: "test", modelID: nil, trainingStep: nil)
         }
         // The stored start: a bf16 model rounds the prior to its dtype.

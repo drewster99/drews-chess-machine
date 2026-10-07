@@ -36,7 +36,7 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
   but states no `training_step` and no derivation history reads as untrained. Operations
   that change no tensor (`--set-activation`, `--set-se-activation`, the per-site
   activation setters such as `--set-value-head-fc1-hidden-activation`,
-  `--set-rezero-alpha-cap`) work on a champion too.
+  `--set-rezero-alpha-cap`, `--set-policy-tail-precision`) work on a champion too.
 - `--out`: the destination. It must end in `.safetensors`, must not exist, and must
   differ from `--from`. Nothing is ever overwritten.
 - `--group <index>`: a 0-based block-group index (repeatable). It narrows operations that
@@ -72,6 +72,7 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
 | `--set-policy-head-final-init` | `he` \| `zero` | `policy_head_final_init` | `policy.conv.weight` (`simple_conv`, `intermediate_conv`) or `policy.fc.weight` (`fc_bottleneck`): zeros, or a He draw |
 | `--set-value-head-final-init` | `he` \| `zero` | `value_head_final_init` | `value.wdl_fc2.weight` (or `value.scalar_fc2.weight`): zeros, or a He draw; the bias is untouched |
 | `--set-value-head-draw-prior` | a probability in (0, 1) | `value_head_draw_prior` (W/D/L head only) | `value.wdl_fc2.bias`, set to `[0, ln(2p/(1−p)), 0]` |
+| `--set-policy-tail-precision` | `fp32_from_pre_bn` \| `mixed_final_projection` \| `does_not_apply` | `policy_tail_precision` (format v12): where the policy head leaves the compute dtype for fp32. A bf16 / fp16 model takes one of the first two; `does_not_apply` is the only value an fp32 model holds, and any other combination is refused by the architecture's validation. A value the model already holds is refused ("nothing to derive"). | none (no tensor depends on it) |
 
 `zero` writes exact zeros to the β weights and bias. `glorot` re-draws the β weights
 with the graph builder's own seeded per-tensor draw (the tensor's `init/<name>` stream

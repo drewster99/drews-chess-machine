@@ -769,7 +769,7 @@ final class ResumeEquivalenceTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent) is written")
             guard FileManager.default.fileExists(atPath: url.path) else { continue }
             let md = try ModelFileCatalog.headerMetadata(at: url)
-            XCTAssertEqual(md[SafetensorsModelIO.Key.formatVersion], "11", "\(url.lastPathComponent): format v11")
+            XCTAssertEqual(md[SafetensorsModelIO.Key.formatVersion], "12", "\(url.lastPathComponent): format v12")
             XCTAssertEqual(md[SafetensorsModelIO.Key.trainingStep], String(trainerStep),
                            "\(url.lastPathComponent): training_step is the trainer step")
             XCTAssertEqual(md[TrainerScheduleState.MetadataKey.completedTrainSteps], String(trainerStep),

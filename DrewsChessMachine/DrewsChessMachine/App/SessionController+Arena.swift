@@ -770,7 +770,6 @@ extension SessionController {
                 // promotion record composes its schedule keys from; its clock
                 // is `promotionSaveTrainerStep` (training was paused).
                 schedule: arenaStartCut.schedule,
-                policyTailPrecision: trainer.policyTailPrecision,
                 // The history captured with the arena-start weights and
                 // clock, which the trainer was rewound to.
                 gradNormHistory: trainerSnapshotGradNormHistory

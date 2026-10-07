@@ -44,7 +44,7 @@ final class LineageRecordTests: XCTestCase {
             modelID: modelID, createdAtUnix: 1_790_000_000,
             metadata: ModelCheckpointMetadata.trainerFile(
                 creator: "replay", trainingStep: steps, parentModelID: "", notes: "lineage test",
-                schedule: schedule(steps), policyTailPrecision: .float32FromPreBatchNorm),
+                schedule: schedule(steps)),
             weights: trainerWeights(), architecture: arch, includesVelocity: true, lineage: lineage)
     }
 

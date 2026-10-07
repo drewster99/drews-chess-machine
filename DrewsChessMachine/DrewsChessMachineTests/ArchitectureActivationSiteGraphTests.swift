@@ -307,14 +307,14 @@ final class ArchitectureActivationSiteGraphTests: XCTestCase {
 
     func testLeakyHeadsTrainOneFiniteStep() async throws {
         try requireMetal()
-        var arch = ArchitectureActivationSiteTests.tiny(seStyle: .scaleAndBias)
-        arch.computeDataType = .bFloat16
+        var leaky = ArchitectureActivationSiteTests.tiny(seStyle: .scaleAndBias)
         for site in [ArchitectureActivationSite.policyHead, .valueHeadConv, .valueHeadFC1Hidden] {
-            try arch.setActivation(.leakyRelu, at: site)
+            try leaky.setActivation(.leakyRelu, at: site)
         }
-        for precision in ChessNetwork.PolicyTailPrecision.allCases {
+        for precision in PolicyTailPrecisionSetting.reducedPrecisionCases {
+            let arch = try leaky.withComputeDataType(.bFloat16, tail: precision)
             let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: arch,
-                                           initialization: .seeded(initSeed: 1), policyTailPrecision: precision)
+                                           initialization: .seeded(initSeed: 1))
             let timing = try await trainer.trainStep(batchSize: 8)
             XCTAssertTrue(timing.policyLoss.isFinite, "\(precision.rawValue): policy loss must be finite")
             XCTAssertTrue(timing.valueLoss.isFinite, "\(precision.rawValue): value loss must be finite")
@@ -329,10 +329,10 @@ final class ArchitectureActivationSiteGraphTests: XCTestCase {
         var leakyValue = relu
         try leakyValue.setActivation(.leakyRelu, at: .valueHeadFC1Hidden)
         let base = try await BehaviorFingerprint.computeUncached(
-            for: BehaviorFingerprint.Settings(arch: relu, policyTailPrecision: .float32FromPreBatchNorm),
+            for: BehaviorFingerprint.Settings(arch: relu),
             streamDerivation: DCMRandomStreams.self)
         let changed = try await BehaviorFingerprint.computeUncached(
-            for: BehaviorFingerprint.Settings(arch: leakyValue, policyTailPrecision: .float32FromPreBatchNorm),
+            for: BehaviorFingerprint.Settings(arch: leakyValue),
             streamDerivation: DCMRandomStreams.self)
         XCTAssertNotEqual(base.sha256, changed.sha256)
     }

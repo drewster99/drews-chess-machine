@@ -103,7 +103,9 @@ struct ArchitectureDiagramView: View {
             Divider()
                 .frame(width: 240)
                 .padding(.vertical, 8)
-            Text("Σ \(segs.total.formatted(.number)) params · \(arch.computeDataType.rawValue)")
+            // The policy tail beside the dtype it qualifies (`policyTailClause`
+            // is empty on fp32, which has none).
+            Text("Σ \(segs.total.formatted(.number)) params · \(arch.computeDataType.rawValue)\(arch.policyTailClause)")
                 .font(.system(.caption, design: .monospaced).weight(.semibold))
                 .monospacedDigit()
         }

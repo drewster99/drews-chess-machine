@@ -185,8 +185,7 @@ final class FP16ConversionTests: XCTestCase {
     /// encodes to its `"float16"` key and decodes back. Guards the persistence
     /// path for fp16 models without depending on which presets ship fp16.
     func testFP16ArchitectureJSONRoundTrips() throws {
-        var arch = NetworkArchitecture.current
-        arch.computeDataType = .float16
+        let arch = try NetworkArchitecture.current.withComputeDataTypeForTests(.float16)
         let data = try JSONEncoder().encode(arch)
         let json = String(decoding: data, as: UTF8.self)
         XCTAssertTrue(
@@ -202,8 +201,6 @@ final class FP16ConversionTests: XCTestCase {
     /// to the requested dtype, so the mapping test covers every case without
     /// depending on which presets happen to use which precision.
     private func makeArch(_ dtype: ComputeDataType) throws -> NetworkArchitecture {
-        var arch = NetworkArchitecture.current
-        arch.computeDataType = dtype
-        return arch
+        try NetworkArchitecture.current.withComputeDataTypeForTests(dtype)
     }
 }

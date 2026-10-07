@@ -31,8 +31,7 @@ final class BehaviorFingerprintTests: XCTestCase {
         )
     }
 
-    private let fp32 = BehaviorFingerprint.Settings(
-        arch: BehaviorFingerprintTests.architecture(), policyTailPrecision: .float32FromPreBatchNorm)
+    private let fp32 = BehaviorFingerprint.Settings(arch: BehaviorFingerprintTests.architecture())
 
     /// Run streams named under another derivation: every stream's master
     /// seed is shifted, as a changed derivation would shift them.
@@ -60,18 +59,17 @@ final class BehaviorFingerprintTests: XCTestCase {
 
     func testNumericsSettingsChangeTheFingerprint() async throws {
         let base = try await BehaviorFingerprint.computeUncached(for: fp32, streamDerivation: DCMRandomStreams.self)
-        let bf16 = BehaviorFingerprint.Settings(arch: Self.architecture(compute: .bFloat16),
-                                                policyTailPrecision: .float32FromPreBatchNorm)
+        var bf16FromPreBN = Self.architecture(compute: .bFloat16)
+        bf16FromPreBN.policyTailPrecision = .float32FromPreBatchNorm
+        let bf16 = BehaviorFingerprint.Settings(arch: bf16FromPreBN)
         let bf16Fingerprint = try await BehaviorFingerprint.computeUncached(for: bf16, streamDerivation: DCMRandomStreams.self)
         XCTAssertNotEqual(base.sha256, bf16Fingerprint.sha256)
         let otherTail = try await BehaviorFingerprint.computeUncached(
-            for: BehaviorFingerprint.Settings(arch: Self.architecture(compute: .bFloat16),
-                                              policyTailPrecision: .mixedFinalProjection),
+            for: BehaviorFingerprint.Settings(arch: Self.architecture(compute: .bFloat16)),
             streamDerivation: DCMRandomStreams.self)
         XCTAssertNotEqual(bf16Fingerprint.sha256, otherTail.sha256)
         let otherEncoding = try await BehaviorFingerprint.computeUncached(
-            for: BehaviorFingerprint.Settings(arch: Self.architecture(encoding: .basic20),
-                                              policyTailPrecision: .float32FromPreBatchNorm),
+            for: BehaviorFingerprint.Settings(arch: Self.architecture(encoding: .basic20)),
             streamDerivation: DCMRandomStreams.self)
         XCTAssertNotEqual(base.sha256, otherEncoding.sha256)
     }
@@ -81,8 +79,7 @@ final class BehaviorFingerprintTests: XCTestCase {
     func testAnArchitectureOnlyChangeChangesTheFingerprint() async throws {
         let base = try await BehaviorFingerprint.computeUncached(for: fp32, streamDerivation: DCMRandomStreams.self)
         let otherSE = try await BehaviorFingerprint.computeUncached(
-            for: BehaviorFingerprint.Settings(arch: Self.architecture(seReductionRatio: 2),
-                                              policyTailPrecision: .float32FromPreBatchNorm),
+            for: BehaviorFingerprint.Settings(arch: Self.architecture(seReductionRatio: 2)),
             streamDerivation: DCMRandomStreams.self)
         XCTAssertNotEqual(base.sha256, otherSE.sha256)
     }
@@ -90,8 +87,7 @@ final class BehaviorFingerprintTests: XCTestCase {
     /// A history encoding trains from stacks the buffer rebuilds, and is as
     /// repeatable as a single-frame one.
     func testAHistoryEncodingFingerprintIsRepeatable() async throws {
-        let settings = BehaviorFingerprint.Settings(arch: Self.architecture(encoding: .full10ply200),
-                                                    policyTailPrecision: .float32FromPreBatchNorm)
+        let settings = BehaviorFingerprint.Settings(arch: Self.architecture(encoding: .full10ply200))
         let first = try await BehaviorFingerprint.computeUncached(for: settings, streamDerivation: DCMRandomStreams.self)
         let second = try await BehaviorFingerprint.computeUncached(for: settings, streamDerivation: DCMRandomStreams.self)
         XCTAssertEqual(first, second)
@@ -274,7 +270,7 @@ final class BehaviorFingerprintTests: XCTestCase {
     func testTheFingerprintRepeatsUnderConcurrentGPULoad() async throws {
         guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("Metal not available") }
         let arch = NetworkArchitecture.newModelDefault
-        let settings = BehaviorFingerprint.Settings(arch: arch, policyTailPrecision: .process)
+        let settings = BehaviorFingerprint.Settings(arch: arch)
         let idle = try await BehaviorFingerprint.computeUncached(for: settings, streamDerivation: DCMRandomStreams.self)
 
         let load = try ChessTrainer(dropoutStream: DCMRandom(seed: 9), arch: arch, initialization: .seeded(initSeed: 9))

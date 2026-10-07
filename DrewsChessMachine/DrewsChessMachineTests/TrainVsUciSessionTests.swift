@@ -198,7 +198,7 @@ final class TrainVsUciSessionTests: XCTestCase {
             trainerID: "20261003-9-TeSt",
             trainerMetadata: ModelCheckpointMetadata.trainerFile(
                 creator: "train-vs-uci", trainingStep: 0, parentModelID: "", notes: "test",
-                schedule: snapshot.schedule, policyTailPrecision: trainer.policyTailPrecision),
+                schedule: snapshot.schedule),
             trainerCreatedAtUnix: Int64(saved.timeIntervalSince1970),
             state: state, lineage: lineage, championLineage: try lineage.withoutTrainerState(), architecture: arch,
             replayBuffer: buffer, chartSnapshot: nil,

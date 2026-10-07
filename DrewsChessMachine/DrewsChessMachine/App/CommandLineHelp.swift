@@ -118,10 +118,10 @@ enum CommandLineHelp {
                                       never be a probed checkpoint or each other. Exits non-zero if an
                                       output cannot be written, or after the sweep if any checkpoint failed.
       --analyze-numerics <path> [--numerics-corpus <shard>] [--numerics-out <dir>] [--numerics-static-only]
-                         [--policy-tail-precision fp32_from_pre_bn|mixed_final_projection]
                                       Numerics audit of a weight file or every weight file under a folder:
                                       fp32/bf16/fp16 fitness of weights and activations, head offsets,
-                                      ties and cross-entropy. JSON per checkpoint (default: the analyses
+                                      ties and cross-entropy; bf16 and fp16 are each built under both
+                                      policy tail precisions (fp32_from_pre_bn, mixed_final_projection). JSON per checkpoint (default: the analyses
                                       folder), one summary line each to stdout, then exit.
       --replay-health-log <log> [<log> ...] [--learning-grace-steps <n>] [--lr-warmup-steps <n>]
                          [--segment-step-as-trainer-step]
@@ -228,13 +228,6 @@ enum CommandLineHelp {
                                       n within --training-step-limit, the trace's folder writable, nothing
                                       at the trace path. If the capture cannot start at step n, the run
                                       stops there, saves, and fails; a run that ends before step n warns.
-      --policy-tail-precision fp32_from_pre_bn|mixed_final_projection
-                                      (any mode: GUI, every CLI) Fixed for the process and recorded in its
-                                      logs, trainer checkpoints, results.json and probe output. Where the policy head
-                                      switches to fp32. Default mixed_final_projection: the pre-block and
-                                      final projection run in the compute dtype and only the logits are
-                                      widened. fp32_from_pre_bn widens from the pre-block's BatchNorm on
-                                      (slower; slightly closer to an fp32 network on old pre-fix weights).
       --import-pgn <path>             Convert a .pgn / .pgn.zst (e.g. a Lichess monthly dump) into a
                                       corpus, then exit. .zst needs the `zstd` CLI on PATH; standard-start
                                       games only. Filters: --min-rating <elo> (both sides),

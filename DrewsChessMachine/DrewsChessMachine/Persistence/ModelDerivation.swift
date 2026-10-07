@@ -136,6 +136,7 @@ enum ModelDerivation {
         SetPolicyHeadFinalInitDeriveOperation.kind,
         SetValueHeadFinalInitDeriveOperation.kind,
         SetValueHeadDrawPriorDeriveOperation.kind,
+        SetPolicyTailPrecisionDeriveOperation.kind,
     ]
 
     /// The kind whose `flag` is `flag`, if any.
@@ -161,6 +162,10 @@ enum ModelDerivation {
         SafetensorsFile.contentHashKey,
         derivationHistoryKey,
         LineageRecord.metadataKey,
+        // A pre-v12 source's recorded tail is resolved into the target
+        // architecture, which states it from v12; a copied key would be a
+        // second copy, refused on load at v12.
+        SafetensorsModelIO.Key.trainerPolicyTailPrecision,
     ]).union(LineageRecord.MirrorKey.all)
 
     enum DeriveError: Error, CustomStringConvertible, Equatable {

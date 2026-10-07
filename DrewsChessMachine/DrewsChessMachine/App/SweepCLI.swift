@@ -22,7 +22,9 @@ enum SweepCLI {
             "[SWEEP-CLI] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirty) branch=\(BuildInfo.gitBranch)"
         )
 
-        SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
+        // The sweep's trainer is built at the current preset (below), so
+        // that preset's tail is the one measured.
+        SessionLogger.shared.log(NetworkArchitecture.current.policyTailLogLine)
         let sweepSizes = sizes ?? SessionController.sweepSizes
 
         print("Batch Size Sweep (training-mode BN, fresh random weights)")

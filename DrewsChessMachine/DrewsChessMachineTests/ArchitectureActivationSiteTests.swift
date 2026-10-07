@@ -877,7 +877,8 @@ final class ArchitectureActivationSiteTests: XCTestCase {
                 valueHeadConvActivation: sites, valueHeadFC1HiddenActivation: sites,
                 policyHeadFinalInit: .he, valueHeadFinalInit: .he,
                 valueHeadDrawPrior: NetworkArchitecture.standardValueHeadDrawPrior,
-                computeDataType: .float32, featureSkipSource: .none, featureSkipFusion: .concatDirect,
+                computeDataType: .float32, policyTailPrecision: .doesNotApply,
+                featureSkipSource: .none, featureSkipFusion: .concatDirect,
                 featureSkipToPolicyHead: false, featureSkipToValueHead: false, featureSkipToFinalBlock: false)
         }
         var mixed = architecture(groups: [

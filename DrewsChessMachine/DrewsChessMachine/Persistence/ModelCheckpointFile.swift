@@ -9,6 +9,9 @@ enum ModelCheckpointError: LocalizedError {
     case unsupportedVersion(UInt32)
     case archMismatch(expected: UInt32, got: UInt32)
     case archNotLegacyEncodable(archHash: UInt32)
+    /// The architecture's policy tail is not the tail of the preset its
+    /// legacy hash rebuilds on read.
+    case policyTailNotLegacyEncodable(policyTailPrecision: PolicyTailPrecisionSetting, presetPolicyTailPrecision: PolicyTailPrecisionSetting)
     case tensorCountMismatch(expected: Int, got: Int)
     case tensorIndexMismatch(expected: Int, got: UInt32)
     case elementCountMismatch(tensorIndex: Int, expected: Int, got: Int)
@@ -32,6 +35,9 @@ enum ModelCheckpointError: LocalizedError {
             return "Architecture mismatch: file was saved with archHash 0x\(String(got, radix: 16)), current build expects 0x\(String(expected, radix: 16))"
         case .archNotLegacyEncodable(let archHash):
             return "This architecture (archHash 0x\(String(archHash, radix: 16))) has no legacy .dcmmodel hash and could not be read back from a .dcmmodel file — save it as .safetensors (which carries the full embedded config) instead."
+        case .policyTailNotLegacyEncodable(let tail, let presetTail):
+            return "This architecture's policy tail precision is \(tail.rawValue), but a .dcmmodel file reads back as its "
+                + "preset, whose tail is \(presetTail.rawValue) — save it as .safetensors (which carries the full embedded config) instead."
         case .tensorCountMismatch(let expected, let got):
             return "Tensor count mismatch: file has \(got) tensors, current build expects \(expected)"
         case .tensorIndexMismatch(let expected, let got):
@@ -96,12 +102,6 @@ struct ModelCheckpointMetadata: Codable, Equatable {
     /// the legacy `.dcmmodel` writer refuses a file that carries one rather
     /// than dropping it.
     let trainerSchedule: TrainerScheduleState?
-    /// The policy-head tail arithmetic the trainer that wrote this file ran
-    /// (`ChessNetwork.PolicyTailPrecision`) — present on trainer files written
-    /// since the setting was recorded, nil on plain model files and on older
-    /// trainer files (whose setting is unrecorded, not guessable from the
-    /// build stamp). Safetensors only, like `trainerSchedule`.
-    let trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision?
     /// The relative gradient cap's per-step history at the moment the file
     /// was written (`trainer_grad_norm_history`, `GradientNormHistory`) —
     /// present on trainer-state files written since the relative cap, nil on
@@ -134,7 +134,6 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         parentModelID: String,
         notes: String,
         trainerSchedule: TrainerScheduleState? = nil,
-        trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision? = nil,
         trainerGradNormHistory: GradientNormHistory? = nil
     ) {
         self.creator = creator
@@ -142,21 +141,22 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         self.parentModelID = parentModelID
         self.notes = notes
         self.trainerSchedule = trainerSchedule
-        self.trainerPolicyTailPrecision = trainerPolicyTailPrecision
         self.trainerGradNormHistory = trainerGradNormHistory
     }
 
     /// Metadata for a trainer-state file: every trainer-file writer (corpus
     /// replay, train-vs-UCI, session saves, the post-promotion save) builds
-    /// its metadata here, so none can omit the trainer's schedule, the
-    /// policy-tail precision it trained with, or its gradient-norm history.
+    /// its metadata here, so none can omit the trainer's schedule or its
+    /// gradient-norm history. (The policy-tail precision it trained with is
+    /// the architecture's from format v12, so it is not metadata; files
+    /// before v12 recorded it as `trainer_policy_tail_precision`, which only
+    /// `SafetensorsModelIO.recordedPolicyTailPrecision` reads.)
     static func trainerFile(
         creator: String,
         trainingStep: Int?,
         parentModelID: String,
         notes: String,
         schedule: TrainerScheduleState,
-        policyTailPrecision: ChessNetwork.PolicyTailPrecision,
         gradNormHistory: GradientNormHistory?
     ) -> ModelCheckpointMetadata {
         ModelCheckpointMetadata(
@@ -165,7 +165,6 @@ struct ModelCheckpointMetadata: Codable, Equatable {
             parentModelID: parentModelID,
             notes: notes,
             trainerSchedule: schedule,
-            trainerPolicyTailPrecision: policyTailPrecision,
             trainerGradNormHistory: gradNormHistory
         )
     }
@@ -179,8 +178,7 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         trainingStep: Int?,
         parentModelID: String,
         notes: String,
-        schedule: TrainerScheduleState,
-        policyTailPrecision: ChessNetwork.PolicyTailPrecision
+        schedule: TrainerScheduleState
     ) -> ModelCheckpointMetadata {
         ModelCheckpointMetadata(
             creator: creator,
@@ -188,7 +186,6 @@ struct ModelCheckpointMetadata: Codable, Equatable {
             parentModelID: parentModelID,
             notes: notes,
             trainerSchedule: schedule,
-            trainerPolicyTailPrecision: policyTailPrecision,
             trainerGradNormHistory: nil
         )
     }
@@ -200,7 +197,6 @@ struct ModelCheckpointMetadata: Codable, Equatable {
         parentModelID = try container.decode(String.self, forKey: .parentModelID)
         notes = try container.decode(String.self, forKey: .notes)
         trainerSchedule = nil
-        trainerPolicyTailPrecision = nil
         trainerGradNormHistory = nil
     }
 }
@@ -497,8 +493,17 @@ struct ModelCheckpointFile {
         // rather than discover it on the next load; modern saves use safetensors,
         // which carries the full embedded architecture and has no such limit.
         let hash = Self.archHash(for: architecture)
-        guard NetworkArchitecture.legacyDcmmodelArchHashes[hash] != nil else {
+        guard let legacyPreset = NetworkArchitecture.legacyDcmmodelArchHashes[hash] else {
             throw ModelCheckpointError.archNotLegacyEncodable(archHash: hash)
+        }
+        // The shape-only hash cannot carry the policy tail, and the reader
+        // rebuilds the preset — whose tail is its dtype's historical one. A
+        // file at another tail would load as a different graph than it was
+        // written from.
+        let presetTail = NetworkArchitecture.preset(legacyPreset).policyTailPrecision
+        guard architecture.policyTailPrecision == presetTail else {
+            throw ModelCheckpointError.policyTailNotLegacyEncodable(
+                policyTailPrecision: architecture.policyTailPrecision, presetPolicyTailPrecision: presetTail)
         }
 
         var out = Data()

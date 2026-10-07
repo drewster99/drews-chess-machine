@@ -77,6 +77,14 @@ final class BuildNewModelModel {
     var valueHeadFinalInit: HeadFinalInit
     var valueHeadDrawPrior: Float
     var computeDataType: ComputeDataType
+    /// The policy tail the Policy tail picker holds for a bf16 / fp16 model.
+    /// Kept while the dtype is fp32 (whose architecture states
+    /// `does_not_apply`, `architecture` below), so switching back restores
+    /// the user's choice. Seeded from a loaded architecture's tail; a loaded
+    /// fp32 architecture has none, and the picker then starts at
+    /// `PolicyTailPrecisionSetting.historical(for:)` for bf16 — the value it
+    /// shows, never applied unseen.
+    var reducedPrecisionPolicyTail: PolicyTailPrecisionSetting
     /// Feature skip (optional long concat skip). `featureSkipSource == .none`
     /// disables the whole feature. All destinations (policy/value heads, final
     /// block) and both fusion modes are supported; `validate()` rejects only
@@ -145,6 +153,7 @@ final class BuildNewModelModel {
         self.valueHeadFinalInit = a.valueHeadFinalInit
         self.valueHeadDrawPrior = a.valueHeadDrawPrior
         self.computeDataType = a.computeDataType
+        self.reducedPrecisionPolicyTail = Self.pickerPolicyTail(of: a)
         self.featureSkipSource = a.featureSkipSource
         self.featureSkipFusion = a.featureSkipFusion
         self.featureSkipToPolicyHead = a.featureSkipToPolicyHead
@@ -199,6 +208,7 @@ final class BuildNewModelModel {
         valueHeadFinalInit = a.valueHeadFinalInit
         valueHeadDrawPrior = a.valueHeadDrawPrior
         computeDataType = a.computeDataType
+        reducedPrecisionPolicyTail = Self.pickerPolicyTail(of: a)
         featureSkipSource = a.featureSkipSource
         featureSkipFusion = a.featureSkipFusion
         featureSkipToPolicyHead = a.featureSkipToPolicyHead
@@ -237,6 +247,9 @@ final class BuildNewModelModel {
             valueHeadFinalInit: valueHeadFinalInit,
             valueHeadDrawPrior: valueHeadDrawPrior,
             computeDataType: computeDataType,
+            // fp32 has no tail to choose (`validate()` requires
+            // `does_not_apply` there); bf16 / fp16 take the picker's.
+            policyTailPrecision: computeDataType == .float32 ? .doesNotApply : reducedPrecisionPolicyTail,
             featureSkipSource: featureSkipSource,
             featureSkipFusion: featureSkipFusion,
             featureSkipToPolicyHead: featureSkipToPolicyHead,
@@ -245,6 +258,14 @@ final class BuildNewModelModel {
         )
         composed.clearActivationSitesTheTopologyLacks()
         return composed
+    }
+
+    /// The picker's starting tail for `architecture`: its own on bf16 /
+    /// fp16; on fp32, which has none, bf16's historical tail.
+    private static func pickerPolicyTail(of architecture: NetworkArchitecture) -> PolicyTailPrecisionSetting {
+        architecture.policyTailPrecision == .doesNotApply
+            ? PolicyTailPrecisionSetting.historical(for: .bFloat16)
+            : architecture.policyTailPrecision
     }
 
     // MARK: Architecture-level activation sites

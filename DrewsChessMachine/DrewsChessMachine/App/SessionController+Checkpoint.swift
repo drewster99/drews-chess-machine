@@ -586,7 +586,6 @@ extension SessionController {
                 parentModelID: championID,
                 notes: "Trainer lineage at session checkpoint (\(diskTag))",
                 schedule: trainerSnapshot.schedule,
-                policyTailPrecision: trainer.policyTailPrecision,
                 gradNormHistory: trainerSnapshot.gradNormHistory.history
             )
             let now = Int64(Date().timeIntervalSince1970)
@@ -1032,9 +1031,19 @@ extension SessionController {
             if forceFloat32 && championArch.computeDataType != .float32 {
                 SessionLogger.shared.log(
                     "[RESUME] forceFloat32: overriding saved computeDataType "
-                    + "\(championArch.computeDataType.rawValue) -> float32 for champion + trainer + all inference nets"
+                    + "\(championArch.computeDataType.rawValue) -> float32 (policy tail "
+                    + "\(championArch.policyTailPrecision.rawValue) -> \(PolicyTailPrecisionSetting.doesNotApply.rawValue)) "
+                    + "for champion + trainer + all inference nets"
                 )
-                championArch.computeDataType = .float32
+                do {
+                    championArch = try championArch.withComputeDataType(.float32, tail: nil)
+                } catch {
+                    checkpoint?.checkpointSaveInFlight = false
+                    checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
+                    SessionLogger.shared.log("[CHECKPOINT] Load session forceFloat32 failed: \(error.localizedDescription)")
+                    if startAfterLoad { onResumeFinished() }
+                    return
+                }
             }
             let championResult = await self.ensureChampionBuilt(arch: championArch)
             guard case .success(let champion) = championResult else {

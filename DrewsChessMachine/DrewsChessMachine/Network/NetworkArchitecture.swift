@@ -680,6 +680,69 @@ enum ComputeDataType: String, Codable, CaseIterable, Sendable, Hashable {
     case float16
 }
 
+/// Where the policy head leaves the compute dtype for fp32 (format v12; plan
+/// `documentation/plans-active/POLICY_TAIL_ARCHITECTURE_PLAN.md`). An
+/// architecture field, like `ComputeDataType`, because it changes the graph a
+/// model is built as: the weights are the same under both reduced-precision
+/// values, the arithmetic is not, and the policy outputs differ by what the
+/// numerics audit measures. It was a process-wide launch flag
+/// (`--policy-tail-precision`) before v12, which meant it did not travel with
+/// a model and every launch had to repeat it; that flag is gone.
+///
+/// Why there are two reduced-precision values: the head-numerics fix first
+/// started the fp32 tail at the policy pre-BN. That cost training throughput,
+/// because the final projection left the bf16-input conv kernels for generic
+/// fp32 ones and BN / ReLU ran in fp32 over a twice-as-large tensor.
+/// `mixedFinalProjection` keeps both in the compute dtype and widens only the
+/// projection's output, which recovers most of that cost. What it gives back:
+/// the policy features are rounded to the compute dtype before the
+/// projection. On models trained with the fix that adds little to the
+/// bf16-vs-fp32 policy divergence; on older weights whose projection carries a
+/// large shared row it adds noticeably more (the numerics audit measures it).
+///
+/// An fp32 model has no narrow dtype to leave, so its tail is `doesNotApply`
+/// and only that (`validate()`), the rule the v9/v10 activation sites use for
+/// a setting a topology cannot have: one value per graph, so two
+/// architectures that build the identical network compare and hash equal.
+enum PolicyTailPrecisionSetting: String, Codable, CaseIterable, Sendable, Hashable {
+    /// fp32 from the pre-BN normalize on (from the final projection's input
+    /// for `simple_conv`, which has no pre-block).
+    case float32FromPreBatchNorm = "fp32_from_pre_bn"
+    /// Pre-block and final projection in the compute dtype; the projection's
+    /// output, its bias add and everything after are fp32.
+    case mixedFinalProjection = "mixed_final_projection"
+    /// An fp32 model: the whole head already runs in fp32.
+    case doesNotApply = "does_not_apply"
+
+    /// The values a bf16 / fp16 model can hold, in declaration order — what
+    /// the Build New Model picker offers and what the numerics audit compares.
+    static let reducedPrecisionCases: [PolicyTailPrecisionSetting] = [.float32FromPreBatchNorm, .mixedFinalProjection]
+
+    /// Whether `computeDataType` can hold this value: `doesNotApply` exactly
+    /// on fp32.
+    func isConsistent(with computeDataType: ComputeDataType) -> Bool {
+        (self == .doesNotApply) == (computeDataType == .float32)
+    }
+
+    /// The tail every model of `computeDataType` was built with before the
+    /// field existed and had no record saying otherwise: `mixedFinalProjection`
+    /// (the build default from `de0f22be`, 2026-10-01) on bf16 / fp16,
+    /// `doesNotApply` on fp32. What the uniform convenience init (every
+    /// built-in preset) states, and what a pre-v12 file recording no tail
+    /// resolves to (PT-D3 rule 1). Never a fallback for a value a v12 file
+    /// omits — that is a decode error.
+    static func historical(for computeDataType: ComputeDataType) -> PolicyTailPrecisionSetting {
+        computeDataType == .float32 ? .doesNotApply : .mixedFinalProjection
+    }
+
+    /// The rule `validate()` and the decoder state when a value and the
+    /// compute dtype disagree.
+    static let consistencyRule = "policy_tail_precision is '\(PolicyTailPrecisionSetting.doesNotApply.rawValue)' "
+        + "exactly when compute_data_type is '\(ComputeDataType.float32.rawValue)' (an fp32 model has no narrow "
+        + "dtype to leave); a bf16 / fp16 model states one of "
+        + PolicyTailPrecisionSetting.reducedPrecisionCases.map(\.rawValue).joined(separator: ", ")
+}
+
 // MARK: - BlockGroup
 
 /// One run of identical residual blocks: a fully-specified block recipe (flat
@@ -1302,9 +1365,22 @@ enum NetworkArchitectureError: Error, CustomStringConvertible, Equatable {
     /// a site that exists whenever its group does. (A group's `seActivation`
     /// follows its SE style instead: `seActivationMismatch`.)
     case doesNotApplyAtAnAlwaysPresentSite(group: Int)
+    /// `policyTailPrecision` disagrees with `computeDataType`
+    /// (`PolicyTailPrecisionSetting.isConsistent(with:)`): a tail on an fp32
+    /// model, or `does_not_apply` on a bf16 / fp16 one.
+    case policyTailPrecisionMismatch(computeDataType: ComputeDataType, policyTailPrecision: PolicyTailPrecisionSetting)
+    /// `withComputeDataType` to bf16 / fp16 without a tail: the dtype alone
+    /// implies none.
+    case policyTailPrecisionRequired(computeDataType: ComputeDataType)
 
     var description: String {
         switch self {
+        case .policyTailPrecisionMismatch(let computeDataType, let policyTailPrecision):
+            return "policy_tail_precision is '\(policyTailPrecision.rawValue)' on a "
+                + "'\(computeDataType.rawValue)' model, but " + PolicyTailPrecisionSetting.consistencyRule
+        case .policyTailPrecisionRequired(let computeDataType):
+            return "changing the compute dtype to '\(computeDataType.rawValue)' needs a policy tail precision (one of "
+                + PolicyTailPrecisionSetting.reducedPrecisionCases.map(\.rawValue).joined(separator: ", ") + ")"
         case .activationSiteMismatch(let mismatch):
             return mismatch.description
         case .notAnActivationFunction(let context):
@@ -1420,7 +1496,13 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
     var valueHeadDrawPrior: Float
 
     // Precision -----------------------------------------------------------
-    var computeDataType: ComputeDataType
+    /// `private(set)`: a change of compute dtype must also set the policy
+    /// tail consistently, so it goes through `withComputeDataType(_:tail:)`.
+    private(set) var computeDataType: ComputeDataType
+    /// Where the policy head leaves the compute dtype for fp32 (format v12).
+    /// `doesNotApply` exactly on fp32 (`validate()`). Set on its own only
+    /// within one reduced dtype; see `PolicyTailPrecisionSetting`.
+    var policyTailPrecision: PolicyTailPrecisionSetting
 
     // Feature skip (optional long concat skip) ----------------------------
     /// Source tensor for the feature skip; `.none` = disabled (default).
@@ -1462,6 +1544,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         valueHeadFinalInit: HeadFinalInit,
         valueHeadDrawPrior: Float,
         computeDataType: ComputeDataType,
+        policyTailPrecision: PolicyTailPrecisionSetting,
         featureSkipSource: FeatureSkipSource,
         featureSkipFusion: FeatureSkipFusion,
         featureSkipToPolicyHead: Bool,
@@ -1486,6 +1569,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         self.valueHeadFinalInit = valueHeadFinalInit
         self.valueHeadDrawPrior = valueHeadDrawPrior
         self.computeDataType = computeDataType
+        self.policyTailPrecision = policyTailPrecision
         self.featureSkipSource = featureSkipSource
         self.featureSkipFusion = featureSkipFusion
         self.featureSkipToPolicyHead = featureSkipToPolicyHead
@@ -1575,6 +1659,10 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             valueHeadFinalInit: .he,
             valueHeadDrawPrior: Self.standardValueHeadDrawPrior,
             computeDataType: computeDataType,
+            // Every historical tower (every built-in preset) states the tail
+            // its dtype was built with before the field existed; a tower with
+            // another tail sets `policyTailPrecision` on the returned value.
+            policyTailPrecision: PolicyTailPrecisionSetting.historical(for: computeDataType),
             // Uniform towers default to feature-skip OFF; presets that enable it
             // mutate the returned value's `featureSkip*` fields.
             featureSkipSource: .none,
@@ -1626,6 +1714,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         case valueHeadFinalInit = "value_head_final_init"
         case valueHeadDrawPrior = "value_head_draw_prior"
         case computeDataType = "compute_data_type"
+        case policyTailPrecision = "policy_tail_precision"
         case featureSkipSource = "feature_skip_source"
         case featureSkipFusion = "feature_skip_fusion"
         case featureSkipToPolicyHead = "feature_skip_to_policy_head"
@@ -1758,6 +1847,9 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             legacyByConstruction: isUniformTowerForm,
             standard: Self.standardValueHeadDrawPrior, rendered: { "\($0)" })
         computeDataType = try c.decode(ComputeDataType.self, forKey: .computeDataType)
+        policyTailPrecision = try ArchitectureFormat.decodePolicyTailPrecision(
+            key: CodingKeys.policyTailPrecision, in: c, decoder: decoder, format: format,
+            legacyByConstruction: isUniformTowerForm, computeDataType: computeDataType)
         // Feature skip: optional + defaulted so every pre-feature-skip file decodes
         // to a fully-off (byte-identical) configuration.
         featureSkipSource = try c.decodeIfPresent(FeatureSkipSource.self, forKey: .featureSkipSource) ?? .none
@@ -1877,6 +1969,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         try c.encode(valueHeadFinalInit, forKey: .valueHeadFinalInit)
         try c.encode(valueHeadDrawPrior, forKey: .valueHeadDrawPrior)
         try c.encode(computeDataType, forKey: .computeDataType)
+        try c.encode(policyTailPrecision, forKey: .policyTailPrecision)
         try c.encode(featureSkipSource, forKey: .featureSkipSource)
         try c.encode(featureSkipFusion, forKey: .featureSkipFusion)
         try c.encode(featureSkipToPolicyHead, forKey: .featureSkipToPolicyHead)
@@ -2167,6 +2260,10 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         if let mismatch = activationSiteMismatch {
             throw NetworkArchitectureError.activationSiteMismatch(mismatch)
         }
+        guard policyTailPrecision.isConsistent(with: computeDataType) else {
+            throw NetworkArchitectureError.policyTailPrecisionMismatch(
+                computeDataType: computeDataType, policyTailPrecision: policyTailPrecision)
+        }
         // Last: every width, kernel and count it multiplies is now known to
         // be positive, so the only way it can fail is an overflow.
         _ = try checkedParameterCountBreakdown()
@@ -2410,7 +2507,48 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
             + " . value \(valueDesc)"
             + headInitMarker
             + skipDesc
-            + " . \(computeDataType.rawValue) . \(parameterCount.formatted(.number)) params"
+            + " . \(computeDataType.rawValue)" + policyTailClause
+            + " . \(parameterCount.formatted(.number)) params"
+    }
+
+    /// The one `[NUMERICS]` line naming the tail a path builds its networks
+    /// with — the same key the process-wide flag's line used before format
+    /// v12, so a log grep for `policy_tail_precision=` keeps working;
+    /// `source=architecture` marks the line written since.
+    var policyTailLogLine: String {
+        "[NUMERICS] policy_tail_precision=\(policyTailPrecision.rawValue) source=architecture"
+    }
+
+    /// The policy tail in `architectureSummary`: rendered on a bf16 / fp16
+    /// model, where it is a choice; empty on fp32, which has none.
+    var policyTailClause: String {
+        policyTailPrecision == .doesNotApply ? "" : " policy-tail \(policyTailPrecision.rawValue)"
+    }
+
+    /// This architecture with compute dtype `computeDataType` and a policy
+    /// tail consistent with it — the one way to change the dtype, so no path
+    /// can leave the two disagreeing. To fp32 the tail becomes
+    /// `doesNotApply` (`tail` must be nil or `doesNotApply`); to bf16 / fp16
+    /// the caller states the tail (`tail` must be one of
+    /// `PolicyTailPrecisionSetting.reducedPrecisionCases`), because no tail
+    /// is implied by the dtype alone — the numerics audit passes the one under
+    /// test, Build New Model the picker's value.
+    func withComputeDataType(_ computeDataType: ComputeDataType, tail: PolicyTailPrecisionSetting?) throws -> NetworkArchitecture {
+        let resolvedTail: PolicyTailPrecisionSetting
+        if computeDataType == .float32 {
+            resolvedTail = tail ?? .doesNotApply
+        } else {
+            guard let tail else { throw NetworkArchitectureError.policyTailPrecisionRequired(computeDataType: computeDataType) }
+            resolvedTail = tail
+        }
+        guard resolvedTail.isConsistent(with: computeDataType) else {
+            throw NetworkArchitectureError.policyTailPrecisionMismatch(
+                computeDataType: computeDataType, policyTailPrecision: resolvedTail)
+        }
+        var changed = self
+        changed.computeDataType = computeDataType
+        changed.policyTailPrecision = resolvedTail
+        return changed
     }
 
     /// Multiplier on the per-block ReZero init `α₀` that gave the asymptotic

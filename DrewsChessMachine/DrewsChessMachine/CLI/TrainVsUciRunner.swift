@@ -233,7 +233,8 @@ enum TrainVsUciRunner {
             case .modelFile(let url):
                 file = try CheckpointManager.loadModelFile(at: url)
                 fileName = url.lastPathComponent
-                emit("[VS-UCI] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(file.architecture.inputEncoding.rawValue)")
+                emit("[VS-UCI] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(file.architecture.inputEncoding.rawValue) "
+                    + "policy_tail=\(file.architecture.policyTailPrecision.rawValue)")
             case .session(let url):
                 let loaded = try CheckpointManager.loadSession(at: url)
                 startSession = loaded
@@ -241,6 +242,7 @@ enum TrainVsUciRunner {
                 fileName = "\(url.lastPathComponent)/\(SessionCheckpointLayout.trainerFilename)"
                 emit("[VS-UCI] start-model: session \(url.lastPathComponent) trainer modelID=\(file.modelID) "
                     + "encoding=\(file.architecture.inputEncoding.rawValue) "
+                    + "policy_tail=\(file.architecture.policyTailPrecision.rawValue) "
                     + "replayBuffer=\(loaded.replayBufferURL == nil ? "not saved" : "saved")")
             }
             startModelFile = file
@@ -260,10 +262,6 @@ enum TrainVsUciRunner {
                     emit("[VS-UCI-RESUME] WARNING \(line)")
                 }
                 p = try configuredParams.adoptingSchedule(snapshot.schedule)
-                emit(PolicyTailPrecisionResume.exactResumeLogLine(
-                    saved: file.metadata.trainerPolicyTailPrecision, running: ChessNetwork.PolicyTailPrecision.process))
-                resumeGaps += PolicyTailPrecisionResume.gaps(
-                    saved: file.metadata.trainerPolicyTailPrecision, running: ChessNetwork.PolicyTailPrecision.process)
                 resumeGaps += ResumeGap.dropoutGaps(restoring: snapshot.dropoutRNG)
                 // A history-less checkpoint is a gap only when this run clips
                 // with the relative cap.
@@ -304,7 +302,7 @@ enum TrainVsUciRunner {
                     let environment = ResumeGap.environmentGaps(
                         writtenBy: parentRecord, runningBuild: try .current, runningDevice: .current,
                         runningFingerprint: try await BehaviorFingerprint.compute(
-                            for: .init(arch: arch, policyTailPrecision: ChessNetwork.PolicyTailPrecision.process)))
+                            for: .init(arch: arch)))
                     for line in environment.logLines { emit(line) }
                     resumeGaps += environment.gaps
                 } else {
@@ -418,7 +416,7 @@ enum TrainVsUciRunner {
             dropoutStream: runSeed.streams.generator(.dropout),
             hyperparameters: hp, arch: arch, initialization: trainerInitialization
         )
-        emit(ChessNetwork.PolicyTailPrecision.processLogLine)
+        emit(arch.policyTailLogLine)
         // Field for field with `[REPLAY-HPARAMS]` so the two CLI paths can be
         // diffed directly.
         emit(String(
@@ -508,7 +506,7 @@ enum TrainVsUciRunner {
             start: lineageStart, pathKind: .vsuci, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
         try lineageTracker.configureSegment(LineageTracker.SegmentConfiguration(
-            policyTailPrecision: trainer.policyTailPrecision,
+            policyTailPrecision: trainer.arch.policyTailPrecision,
             budget: LineageRecord.Budget(trainingStepLimit: config.stepLimit, trainingTimeLimitSec: config.timeLimitSec,
                                          epochLimit: nil),
             vsuci: try TrainVsUciSession.lineageGeneration(config: config, executableDigests: executableDigests,
@@ -631,7 +629,6 @@ enum TrainVsUciRunner {
                 parentModelID: parentModelID,
                 notes: "train-vs-uci \(reason) @ trainer step \(snapshot.schedule.completedTrainSteps) (segment step \(step))",
                 schedule: snapshot.schedule,
-                policyTailPrecision: trainer.policyTailPrecision,
                 gradNormHistory: snapshot.gradNormHistory.history)
             // Games and plies the driver flushed into the buffer.
             let slots = driver.statsSnapshot()
@@ -656,7 +653,7 @@ enum TrainVsUciRunner {
                 rng: LineageRecord.RNG(
                     dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams,
                     behaviorFingerprint: try await BehaviorFingerprint.compute(
-                        for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))),
+                        for: .init(arch: arch))),
                 inputs: lineageTracker.saveInputs(
                     scheduleAtSave: LRMomentumCycleReadout.scheduleAtSave(
                         inForce: p.parameters, completedTrainSteps: snapshot.schedule.completedTrainSteps),
@@ -996,6 +993,7 @@ enum TrainVsUciRunner {
                         // Static base plus the cycle evaluated at this step —
                         // see CorpusReplayRunner.
                         trainerHyperparameters: hp,
+                        policyTailPrecision: trainer.arch.policyTailPrecision,
                         cycleValues: cycleValues,
                         buildNumber: BuildInfo.buildNumber,
                         trainerID: config.runModelID,

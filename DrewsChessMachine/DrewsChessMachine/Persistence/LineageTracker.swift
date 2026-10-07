@@ -153,7 +153,9 @@ final class LineageTracker: @unchecked Sendable {
     /// What a segment's configuration holds that does not change while the
     /// segment runs, set once when it begins (`configureSegment`).
     struct SegmentConfiguration: Sendable, Equatable {
-        let policyTailPrecision: ChessNetwork.PolicyTailPrecision
+        /// The trainer architecture's policy tail (format v12: an
+        /// architecture field; every path passes `trainer.arch`'s).
+        let policyTailPrecision: PolicyTailPrecisionSetting
         let budget: LineageRecord.Budget
         /// Train-vs-UCI only.
         let vsuci: LineageRecord.VsUciGeneration?

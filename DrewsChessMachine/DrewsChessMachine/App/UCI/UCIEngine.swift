@@ -71,7 +71,9 @@ enum UCIEngine {
             SessionLogger.shared.shutdown()
             Darwin.exit(1)
         }
-        SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
+        // No process-wide policy tail: each loaded model builds at its own
+        // architecture's, which its `[UCI] model loaded` line's arch summary
+        // names.
 
         var session = Session()
         if let path = modelPath {

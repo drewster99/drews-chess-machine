@@ -166,13 +166,13 @@ final class LineageSchema3Tests: XCTestCase {
 
         let noSeed = try tracker(.replay)
         try noSeed.configureSegment(LineageTracker.SegmentConfiguration(
-            policyTailPrecision: .default, budget: .none, vsuci: nil, selfPlayDirichlet: nil,
+            policyTailPrecision: .mixedFinalProjection, budget: .none, vsuci: nil, selfPlayDirichlet: nil,
             startValueHeadRecentered: .recorded(false)))
         XCTAssertThrowsError(try record(noSeed, clock: 1)) { error in
             guard case LineageTracker.TrackerError.noRunSeedNoted = error else { return XCTFail("\(error)") }
         }
         XCTAssertThrowsError(try noSeed.configureSegment(LineageTracker.SegmentConfiguration(
-            policyTailPrecision: .default, budget: .none, vsuci: nil, selfPlayDirichlet: nil,
+            policyTailPrecision: .mixedFinalProjection, budget: .none, vsuci: nil, selfPlayDirichlet: nil,
             startValueHeadRecentered: .recorded(false)))) { error in
             guard case LineageTracker.TrackerError.segmentConfiguredTwice = error else { return XCTFail("\(error)") }
         }
@@ -189,7 +189,7 @@ final class LineageSchema3Tests: XCTestCase {
     func testAGuiRecordNeedsItsSegmentStartChampion() throws {
         let gui = try tracker(.gui)
         try gui.configureSegment(LineageTracker.SegmentConfiguration(
-            policyTailPrecision: .default, budget: .none, vsuci: nil,
+            policyTailPrecision: .mixedFinalProjection, budget: .none, vsuci: nil,
             selfPlayDirichlet: LineageRecord.Dirichlet(.alphaZero), startValueHeadRecentered: .recorded(false)))
         gui.noteRunSeed(RunRandomSeed.resolve(mode: .seeded, configuredSeed: 7, commandLineSeed: nil, drawSeed: { 0 }),
                         atTrainerStep: 0)
@@ -298,7 +298,7 @@ final class LineageSchema3Tests: XCTestCase {
             goLimit: "nodes 1", options: [LineageRecord.VsUciGeneration.Option(name: "Threads", value: "1")],
             identity: .unrecorded)
         try vsuci.configureSegment(LineageTracker.SegmentConfiguration(
-            policyTailPrecision: .default, budget: .none,
+            policyTailPrecision: .mixedFinalProjection, budget: .none,
             vsuci: LineageRecord.VsUciGeneration(maxPliesPerGame: 400, evalSyncEverySteps: 10,
                                                  trainerMoveSelection: LineageRecord.MoveSelection(.argmax),
                                                  opponents: [opponent]),

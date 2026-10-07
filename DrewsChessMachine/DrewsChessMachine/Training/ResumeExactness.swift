@@ -56,9 +56,11 @@ enum ResumeGap: String, CaseIterable, Sendable {
     /// carry the GPU core count, so two configurations of one chip compare
     /// equal.)
     case device
-    /// The policy-head tail precision differs from the checkpoint's, or the
-    /// checkpoint predates recording it.
-    case policyTail = "policy_tail"
+    // (`policy_tail`, a policy-tail precision other than the checkpoint's,
+    // was removed with format v12: a resume builds the trainer from the
+    // file's own architecture, which carries the tail, so the two cannot
+    // differ. `--accept-inexact policy_tail` is refused as an unknown token;
+    // recorded `not_exact_items` strings naming it still decode.)
     /// The checkpoint carries no relative gradient-cap history
     /// (`trainer_grad_norm_history`; every trainer file written before the
     /// relative cap) and the resumed run's cap mode is `clip`, so its first

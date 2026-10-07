@@ -184,7 +184,7 @@ final class DropoutRNGStateTests: XCTestCase {
             modelID: "20261002-1-DRPF", createdAtUnix: 1_790_000_000,
             metadata: ModelCheckpointMetadata.trainerFile(
                 creator: "replay", trainingStep: snapshot.schedule.completedTrainSteps, parentModelID: "", notes: "dropout state file test",
-                schedule: snapshot.schedule, policyTailPrecision: source.policyTailPrecision),
+                schedule: snapshot.schedule),
             weights: snapshot.trainerWeights, architecture: archWithDropout(), includesVelocity: true, lineage: lineage)
 
         let file = try CheckpointManager.decodeAnyModelFile(data)

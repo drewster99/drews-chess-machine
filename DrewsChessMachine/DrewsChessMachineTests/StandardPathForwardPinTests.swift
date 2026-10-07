@@ -27,7 +27,8 @@ final class StandardPathForwardPinTests: XCTestCase {
         let label: String
         let dtype: ComputeDataType
         let policyStyle: PolicyHeadStyle
-        let tail: ChessNetwork.PolicyTailPrecision
+        /// The tail a bf16 fixture builds under; nil on fp32, which has none.
+        let tail: PolicyTailPrecisionSetting?
     }
 
     /// FNV-1a over the bit patterns of every policy logit and the value scalar.
@@ -56,10 +57,11 @@ final class StandardPathForwardPinTests: XCTestCase {
     }
 
     private func forwardFingerprint(_ fixture: Fixture) async throws -> UInt64 {
-        var arch = NetworkArchitecture.current
-        arch.computeDataType = fixture.dtype
+        // The tail is the architecture's (format v12); the pinned hashes were
+        // recorded with it passed to the network beside the architecture.
+        var arch = try NetworkArchitecture.current.withComputeDataType(fixture.dtype, tail: fixture.tail)
         arch.policyHeadStyle = fixture.policyStyle
-        let net = try ChessNetwork(arch: arch, initialization: .seeded(initSeed: 1), policyTailPrecision: fixture.tail)
+        let net = try ChessNetwork(arch: arch, initialization: .seeded(initSeed: 1))
         try await net.loadWeights(Self.deterministicWeights(for: arch))
         let board = BoardEncoder.encode(.starting, encoding: arch.inputEncoding)
         let result = SyncBox<UInt64?>(nil)
@@ -87,7 +89,10 @@ final class StandardPathForwardPinTests: XCTestCase {
             .init(label: "bf16 current mixed", dtype: .bFloat16, policyStyle: NetworkArchitecture.current.policyHeadStyle, tail: .mixedFinalProjection),
             .init(label: "bf16 current fp32-tail", dtype: .bFloat16, policyStyle: NetworkArchitecture.current.policyHeadStyle, tail: .float32FromPreBatchNorm),
             .init(label: "bf16 fc_bottleneck fp32-tail", dtype: .bFloat16, policyStyle: .fcBottleneck, tail: .float32FromPreBatchNorm),
-            .init(label: "fp32 current mixed", dtype: .float32, policyStyle: NetworkArchitecture.current.policyHeadStyle, tail: .mixedFinalProjection),
+            // Built with the mixed tail when the tail was a process setting;
+            // an fp32 architecture's is `does_not_apply`, which builds that
+            // same graph, so the pin is unchanged.
+            .init(label: "fp32 current mixed", dtype: .float32, policyStyle: NetworkArchitecture.current.policyHeadStyle, tail: nil),
         ]
         for fixture in fixtures {
             let fingerprint = try await forwardFingerprint(fixture)

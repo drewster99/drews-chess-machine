@@ -166,11 +166,6 @@ struct CorpusReplayConfig: Sendable {
     }
     var gpuCapture: GPUCapture? = nil
 
-    /// Where the trainer's policy head leaves the compute dtype for fp32
-    /// (`--policy-tail-precision`). An A/B knob for the head-numerics cost;
-    /// see `ChessNetwork.PolicyTailPrecision`.
-    var policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process
-
     /// The run's master seed (`RunRandomSeed.resolve`, at launch): the
     /// replay buffer's `sampler` stream and, for a run without
     /// `--start-model`, the fresh model's init seed derive from it.
@@ -1137,15 +1132,14 @@ enum CorpusReplayRunner {
             startModelFile = file
             parentModelID = file.modelID
             arch = file.architecture
-            emit("[REPLAY] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(arch.inputEncoding.rawValue)")
+            emit("[REPLAY] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(arch.inputEncoding.rawValue) "
+                + "policy_tail=\(arch.policyTailPrecision.rawValue)")
             if config.resumeExact {
                 do {
                     resumeSnapshot = try TrainerResumeSnapshot(checkpoint: file, fileName: url.lastPathComponent)
                 } catch {
                     throw CLIRunRefusal(message: "--resume-exact: \(error.localizedDescription)")
                 }
-                emit(PolicyTailPrecisionResume.exactResumeLogLine(
-                    saved: file.metadata.trainerPolicyTailPrecision, running: config.policyTailPrecision))
             }
         } else {
             startModelFile = nil
@@ -1405,8 +1399,6 @@ enum CorpusReplayRunner {
             // max where the uninterrupted run fed the relative cap).
             resumeGaps += ResumeGap.gradNormHistoryGaps(
                 restoring: snapshot.gradNormHistory, runningMode: p.relativeGradientCap.mode)
-            resumeGaps += PolicyTailPrecisionResume.gaps(
-                saved: startFile.metadata.trainerPolicyTailPrecision, running: config.policyTailPrecision)
             if let parentRecord, let corpus = parentRecord.fed.corpus {
                 // The corpus must be the one the checkpoint fed: same shards,
                 // same content. A changed corpus is not a gap anyone can
@@ -1448,7 +1440,7 @@ enum CorpusReplayRunner {
                 let environment = ResumeGap.environmentGaps(
                     writtenBy: parentRecord, runningBuild: try .current, runningDevice: .current,
                     runningFingerprint: try await BehaviorFingerprint.compute(
-                        for: .init(arch: arch, policyTailPrecision: config.policyTailPrecision)))
+                        for: .init(arch: arch)))
                 for line in environment.logLines { emit(line) }
                 resumeGaps += environment.gaps
             } else {
@@ -1605,9 +1597,8 @@ enum CorpusReplayRunner {
         // is inert and the static LR and momentum apply, exactly as in the GUI.
         let trainer = try ChessTrainer(
             dropoutStream: runSeed.streams.generator(.dropout),
-            hyperparameters: hp, arch: arch, initialization: trainerInitialization,
-            policyTailPrecision: config.policyTailPrecision)
-        emit(ChessNetwork.PolicyTailPrecision.processLogLine)
+            hyperparameters: hp, arch: arch, initialization: trainerInitialization)
+        emit(arch.policyTailLogLine)
         // A requested GPU capture must be possible before any buffer fill or
         // training is spent on the run (the capture itself starts at its step).
         if let capture = config.gpuCapture {
@@ -1686,7 +1677,7 @@ enum CorpusReplayRunner {
             start: lineageStart, pathKind: .replay, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
         try lineageTracker.configureSegment(LineageTracker.SegmentConfiguration(
-            policyTailPrecision: trainer.policyTailPrecision, budget: budget, vsuci: nil, selfPlayDirichlet: nil,
+            policyTailPrecision: trainer.arch.policyTailPrecision, budget: budget, vsuci: nil, selfPlayDirichlet: nil,
             startValueHeadRecentered: .recorded(try LineageTracker.startValueHeadRecentered(of: startModelFile))))
         lineageTracker.noteRunSeed(runSeed, atTrainerStep: trainer.completedTrainSteps)
         emit(RunProvenanceLine.line(
@@ -1758,7 +1749,6 @@ enum CorpusReplayRunner {
                     parentModelID: parentModelID,
                     notes: "corpus replay \(reason) @ trainer step \(snapshot.schedule.completedTrainSteps) (segment step \(step))",
                     schedule: snapshot.schedule,
-                    policyTailPrecision: trainer.policyTailPrecision,
                     gradNormHistory: snapshot.gradNormHistory.history
                 )
                 // The corpus position (what `--resume-exact` resumes from)
@@ -1780,7 +1770,7 @@ enum CorpusReplayRunner {
                     rng: LineageRecord.RNG(
                         dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams,
                         behaviorFingerprint: try await BehaviorFingerprint.compute(
-                            for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))),
+                            for: .init(arch: arch))),
                     inputs: lineageTracker.saveInputs(
                         scheduleAtSave: LRMomentumCycleReadout.scheduleAtSave(
                             inForce: p.parameters, completedTrainSteps: snapshot.schedule.completedTrainSteps),
@@ -2220,6 +2210,7 @@ enum CorpusReplayRunner {
                     // `liveLR` (warmup- and sqrt-batch-scaled) stays in the
                     // [REPLAY] log line, where `lr=` is the honest label for it.
                     trainerHyperparameters: hp,
+                    policyTailPrecision: trainer.arch.policyTailPrecision,
                     cycleValues: cycleValues,
                     buildNumber: BuildInfo.buildNumber,
                     trainerID: config.runModelID,

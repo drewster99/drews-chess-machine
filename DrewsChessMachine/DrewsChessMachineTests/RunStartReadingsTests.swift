@@ -364,8 +364,7 @@ final class RunStartReadingsTests: XCTestCase {
             modelID: "20261006-2-RSPS", createdAtUnix: 1_790_000_060,
             metadata: ModelCheckpointMetadata.trainerFile(
                 creator: "manual", trainingStep: trainingSteps, parentModelID: "", notes: "run start readings test",
-                schedule: TrainerScheduleState(completedTrainSteps: trainingSteps, lrWarmupSteps: 3, lrMomentumCycle: .disabled),
-                policyTailPrecision: .default),
+                schedule: TrainerScheduleState(completedTrainSteps: trainingSteps, lrWarmupSteps: 3, lrMomentumCycle: .disabled)),
             weights: weights, architecture: arch, includesVelocity: true, lineage: record)
         let file = try SafetensorsModelIO.decode(data).file
         let state = SessionCheckpointState(

@@ -180,8 +180,10 @@ enum NumericsAudit {
         let modelID: String?
         let trainingStep: Int?
         let computeDataType: String
-        /// Where the audited non-fp32 builds' policy tail began
-        /// (`ChessNetwork.PolicyTailPrecision` raw value).
+        /// The audited model's own policy tail precision
+        /// (`PolicyTailPrecisionSetting` raw value; `does_not_apply` for an
+        /// fp32 model). The dynamic checks build bf16 and fp16 under both
+        /// reduced-precision tails whatever it is (`AuditBuild`).
         let policyTailPrecision: String
         var exportMetadata: AnalysisExportMetadata? = nil
         let staticChecks: StaticResult
@@ -215,7 +217,6 @@ enum NumericsAudit {
         velocity: LayerHealth.VelocitySource,
         positions: PositionSet?,
         dynamicSkippedReason: String?,
-        policyTailPrecision: ChessNetwork.PolicyTailPrecision,
         modelLabel: String,
         modelID: String?,
         trainingStep: Int?
@@ -228,8 +229,7 @@ enum NumericsAudit {
             masters: masters, mastersNote: mastersNote, velocity: velocity)
         var dynamicResult: DynamicResult?
         if let positions {
-            dynamicResult = try await runDynamic(
-                weights: weights, arch: arch, positions: positions, policyTailPrecision: policyTailPrecision)
+            dynamicResult = try await runDynamic(weights: weights, arch: arch, positions: positions)
         }
         let findings = (collectFindings(staticResult: staticResult, dynamicResult: dynamicResult)
             + layerHealthFindings(layerHealth)).sorted { $0.verdict > $1.verdict }
@@ -242,7 +242,7 @@ enum NumericsAudit {
             modelID: modelID,
             trainingStep: trainingStep,
             computeDataType: arch.computeDataType.rawValue,
-            policyTailPrecision: policyTailPrecision.rawValue,
+            policyTailPrecision: arch.policyTailPrecision.rawValue,
             staticChecks: staticResult,
             layerHealth: layerHealth,
             dynamicChecks: dynamicResult,

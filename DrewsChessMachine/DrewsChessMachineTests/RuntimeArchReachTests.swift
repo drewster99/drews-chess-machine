@@ -232,14 +232,12 @@ final class RuntimeArchReachTests: XCTestCase {
 
     /// `.current` with the compute precision overridden to bf16, independent of
     /// whichever preset (fp32 or bf16) is active.
-    private func bf16Arch() -> NetworkArchitecture {
-        var arch = NetworkArchitecture.current
-        arch.computeDataType = .bFloat16
-        return arch
+    private func bf16Arch() throws -> NetworkArchitecture {
+        try NetworkArchitecture.current.withComputeDataTypeForTests(.bFloat16)
     }
 
     func testBF16ArchitectureShape() throws {
-        XCTAssertEqual(bf16Arch().computeDataType, .bFloat16)
+        XCTAssertEqual(try bf16Arch().computeDataType, .bFloat16)
     }
 
     func testBF16NetworkBuildsAndEvaluatesFinite() async throws {

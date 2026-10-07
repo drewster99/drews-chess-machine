@@ -120,8 +120,7 @@ final class WeightInitializationTests: XCTestCase {
     /// A bf16 build holds the round-to-nearest-even of the fp32 draw.
     func testBFloat16BuildIsTheRoundedFP32Draw() async throws {
         try requireMetal()
-        var bf16 = Self.smallArchitecture()
-        bf16.computeDataType = .bFloat16
+        let bf16 = try Self.smallArchitecture().withComputeDataTypeForTests(.bFloat16)
         let fp32 = Self.smallArchitecture()
         let bf16Weights = try await ChessNetwork(arch: bf16, initialization: .seeded(initSeed: 5)).exportWeights()
         let fp32Weights = try await ChessNetwork(arch: fp32, initialization: .seeded(initSeed: 5)).exportWeights()

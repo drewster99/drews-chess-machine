@@ -263,3 +263,21 @@ Final tallies, every 1k checkpoint (pElo):
   (+32.7 mean, 9 of 9) is larger than that spread; the gap over no-SE is not. A
   second leaky seed would separate "leaky helps" from "this seed's trajectory".
 - **Cost:** none measurable — leaky ReLU runs on 4096 × 32 values per block.
+
+
+## Policy tail precision is now an architecture field (format v12)
+
+The `--policy-tail-precision` launch flag used above was removed when the tail
+became an architecture field (`documentation/plans-active/POLICY_TAIL_ARCHITECTURE_PLAN.md`);
+current builds refuse it as an unknown argument, and the launch lines above are kept
+as the record of what ran. To reproduce a run under `fp32_from_pre_bn`, derive its
+start model with the tail set and launch without the flag:
+`DrewsChessMachine --derive-model --from <start.safetensors> --set-policy-tail-precision fp32_from_pre_bn --out <start-fp32tail.safetensors>`.
+Every network is now built at its file's own tail, inference included: a checkpoint
+recording `fp32_from_pre_bn` (its `trainer_policy_tail_precision` key or lineage
+configuration) loads, plays and probes under it, while `experiments/probe_loop.sh`
+never passed the flag, so probes made with a build from `de0f22be` (2026-10-01
+15:18) on ran `mixed_final_projection`; re-probing such a checkpoint gives different
+numbers from those probes. A checkpoint recording no tail loads as
+`mixed_final_projection` until the owner-reviewed PT-D3 audit and header edit give it
+the tail it ran.

@@ -42,8 +42,7 @@ final class LineageProvenanceTests: XCTestCase {
             modelID: modelID, createdAtUnix: 1_790_000_300,
             metadata: ModelCheckpointMetadata.trainerFile(
                 creator: "replay", trainingStep: steps, parentModelID: "", notes: "provenance test",
-                schedule: TrainerScheduleState(completedTrainSteps: steps, lrWarmupSteps: 3, lrMomentumCycle: .disabled),
-                policyTailPrecision: .float32FromPreBatchNorm),
+                schedule: TrainerScheduleState(completedTrainSteps: steps, lrWarmupSteps: 3, lrMomentumCycle: .disabled)),
             weights: trainerWeights(), architecture: architecture, includesVelocity: true, lineage: lineage)
     }
 
@@ -185,7 +184,7 @@ final class LineageProvenanceTests: XCTestCase {
             "os=",
             "seed=42 mode=seeded(--seed) derivation=\(DCMRandomStreams.derivationVersion)",
             "params_sha=\(try XCTUnwrap(record.parameters?.sha256).prefix(12))",
-            "policy_tail=\(ChessNetwork.PolicyTailPrecision.default.rawValue)",
+            "policy_tail=\(PolicyTailPrecisionSetting.mixedFinalProjection.rawValue)",
             "git_diff=",
             "cum_step=10",
             "cum_games=7",

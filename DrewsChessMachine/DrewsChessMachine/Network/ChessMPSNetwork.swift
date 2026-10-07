@@ -26,8 +26,9 @@ enum NetworkInitMode {
     /// same seed gives bit-identical trainable tensors on every machine. The
     /// batch-norm running statistics come from one GPU forward pass, so they
     /// match only to float tolerance: across chips or OS builds, and for a
-    /// bf16 or fp16 model across `--policy-tail-precision` values (the
-    /// calibration runs under the process's), their last bits can differ.
+    /// bf16 or fp16 model across policy tail precisions (the calibration
+    /// runs under the architecture's `policyTailPrecision`), their last bits
+    /// can differ.
     case randomWeights(initSeed: UInt64)
 
     /// A container whose weights and batch-norm statistics are replaced by a

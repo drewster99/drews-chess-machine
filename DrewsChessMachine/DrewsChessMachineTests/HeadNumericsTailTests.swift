@@ -32,9 +32,8 @@ final class HeadNumericsTailTests: XCTestCase {
         _ dtype: ComputeDataType,
         policy: PolicyHeadStyle? = nil,
         value: ValueHeadStyle? = nil
-    ) -> NetworkArchitecture {
-        var a = NetworkArchitecture.current
-        a.computeDataType = dtype
+    ) throws -> NetworkArchitecture {
+        var a = try NetworkArchitecture.current.withComputeDataTypeForTests(dtype)
         if let policy { a.policyHeadStyle = policy }
         a.clearActivationSitesTheTopologyLacks()
         if let value { a.valueHeadStyle = value }
@@ -126,7 +125,7 @@ final class HeadNumericsTailTests: XCTestCase {
 
     func testTrainingGraphGivesTheHeadsSharedDirectionZeroGradient() async throws {
         try requireMetal()
-        let architecture = arch(.float32)
+        let architecture = try arch(.float32)
         let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0, lrWarmupSteps: 0, arch: architecture, initialization: .seeded(initSeed: 1))
         let timing = try await trainer.trainStep(batchSize: 32)
         XCTAssertTrue(timing.hasDiagnostics, "the synthetic-data step always computes diagnostics")
@@ -156,7 +155,7 @@ final class HeadNumericsTailTests: XCTestCase {
 
     func testScalarTanhValueHeadIsNotCentered() async throws {
         try requireMetal()
-        let architecture = arch(.float32, value: .scalarTanh)
+        let architecture = try arch(.float32, value: .scalarTanh)
         let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), momentumCoeff: 0, lrWarmupSteps: 0, arch: architecture, initialization: .seeded(initSeed: 1))
         _ = try await trainer.trainStep(batchSize: 32)
         let exported = try await velocities(after: trainer, architecture: architecture)

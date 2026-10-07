@@ -13,8 +13,8 @@
 //  logged and written into the file, so the same seed re-mints bit-identical
 //  trainable tensors; the BN running statistics come from the GPU warmup
 //  forward and match only to float tolerance (across chips or OS builds, and
-//  for a bf16/fp16 model across `--policy-tail-precision` values, their last
-//  bits can differ, which is why the notes record the precision). Forward-only, so it coexists with a running training job the same way
+//  for a bf16/fp16 model across policy tail precisions, their last bits can
+//  differ; the architecture records the tail, and the notes repeat it). Forward-only, so it coexists with a running training job the same way
 //  a probe does (it does NOT open a second training command stream).
 //
 
@@ -133,7 +133,7 @@ enum NewModelCLI {
                 trainingStep: nil,
                 parentModelID: "",
                 notes: "fresh \(name) net (untrained), arch v\(arch.architectureVersionLabel), "
-                    + "BN warm-up under policy tail precision \(ChessNetwork.PolicyTailPrecision.process.rawValue)"
+                    + "BN warm-up under policy tail precision \(arch.policyTailPrecision.rawValue)"
             )
             let mintDate = Date()
             let encoded = try SafetensorsModelIO.encode(

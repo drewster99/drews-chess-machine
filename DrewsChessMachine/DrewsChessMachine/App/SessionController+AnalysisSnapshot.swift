@@ -59,7 +59,6 @@ extension SessionController {
         let net = champion.network
         let snapshot = try await Self.makeAnalysisSnapshot(
             role: .champion, modelID: modelID?.description, architecture: net.arch,
-            policyTailPrecision: net.policyTailPrecision,
             names: (net.trainableVariables + net.bnRunningStatsVariables).map { $0.operation.name },
             weights: weights, trainableCount: net.trainableVariables.count,
             trainingStep: described.trainingStep, trainingStepSource: described.stepSource,
@@ -91,7 +90,7 @@ extension SessionController {
         let takenAt = Date()
         let snapshot = try await Self.makeAnalysisSnapshot(
             role: .trainer, modelID: modelID?.description, architecture: state.architecture,
-            policyTailPrecision: state.policyTailPrecision, names: state.names, weights: state.weights,
+            names: state.names, weights: state.weights,
             trainableCount: state.trainableCount, trainingStep: state.completedSteps,
             trainingStepSource: "the trainer's completed SGD steps, read with the weights in one trainer-queue turn",
             takenAt: takenAt, initialization: initialization, initReferences: initReferences)
@@ -126,7 +125,7 @@ extension SessionController {
     /// build runs on GCD).
     nonisolated private static func makeAnalysisSnapshot(
         role: AnalyzedNetworkSnapshot.Role, modelID: String?, architecture: NetworkArchitecture,
-        policyTailPrecision: ChessNetwork.PolicyTailPrecision, names: [String], weights: [[Float]],
+        names: [String], weights: [[Float]],
         trainableCount: Int, trainingStep: Int?, trainingStepSource: String, takenAt: Date,
         initialization: ModelInitRecord?, initReferences: AnalysisInitReferenceCache
     ) async throws -> AnalyzedNetworkSnapshot {
@@ -137,7 +136,7 @@ extension SessionController {
         try reference.requireMatches(variableNames: names, trainableCount: trainableCount)
         return AnalyzedNetworkSnapshot(
             role: role, modelID: modelID, architecture: architecture,
-            policyTailPrecision: policyTailPrecision, names: names, weights: weights,
+            names: names, weights: weights,
             trainableCount: trainableCount, trainingStep: trainingStep,
             trainingStepSource: trainingStepSource, takenAt: takenAt, initReference: reference)
     }

@@ -105,7 +105,7 @@ extension LineageTracker {
     /// training behind it: the segment's configuration and the run's seed,
     /// and on a gui segment its `segment_start` champion.
     func noteSegmentStartForTests(trainerStep: Int,
-                                  policyTailPrecision: ChessNetwork.PolicyTailPrecision = .default,
+                                  policyTailPrecision: PolicyTailPrecisionSetting = .mixedFinalProjection,
                                   seed: RunRandomSeed = RunRandomSeed.resolve(mode: .seeded, configuredSeed: 7,
                                                                               commandLineSeed: nil, drawSeed: { 0 })) throws {
         try configureSegment(SegmentConfiguration(

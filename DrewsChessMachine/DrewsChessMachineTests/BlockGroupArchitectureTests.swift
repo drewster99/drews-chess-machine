@@ -140,7 +140,7 @@ final class BlockGroupArchitectureTests: XCTestCase {
             "v4 . in basic30(30) -> stem 128 (7x7)"
             + " . 5x[7x7+7x7 @128, SE+/4, relu/pre, clean_add, ReZero(0.447·tanh≤0.447), drop*1]"
             + " . act relu . policy intermediate_conv(4864)"
-            + " . value WDL(16->FC128) . bfloat16 . \(params) params"
+            + " . value WDL(16->FC128) . bfloat16 policy-tail mixed_final_projection . \(params) params"
         )
     }
 
@@ -153,7 +153,7 @@ final class BlockGroupArchitectureTests: XCTestCase {
             + " . 1x[7x7+3x3 @64, SE+/4, relu/pre, clean_add, ReZero(0.5·tanh≤0.5), drop*1]"
             + " -> 3x[3x3+3x3 @128, SE+/4, relu/pre, clean_add, ReZero(0.5·tanh≤0.5), drop*0.5]"
             + " . act relu . policy intermediate_conv(4864)"
-            + " . value WDL(16->FC128) . bfloat16 . \(params) params"
+            + " . value WDL(16->FC128) . bfloat16 policy-tail mixed_final_projection . \(params) params"
         )
     }
 

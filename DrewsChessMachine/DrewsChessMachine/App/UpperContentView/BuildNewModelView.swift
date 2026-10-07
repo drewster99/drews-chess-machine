@@ -224,6 +224,7 @@ struct BuildNewModelView: View {
 
                     Section("Precision") {
                         enumPicker("Compute dtype", $model.computeDataType, ComputeDataType.allCases)
+                        PolicyTailPrecisionPicker(model: model)
                     }
 
                     Section("Name") {

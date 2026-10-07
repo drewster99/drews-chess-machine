@@ -123,16 +123,6 @@ struct DrewsChessMachineApp: App {
         // what a command does never starts it.
         CommandLineHelp.handleIfRequested(rawArgs: rawArgs)
 
-        // `--policy-tail-precision` applies to every mode and is fixed for the
-        // process (`ChessNetwork.PolicyTailPrecision.process`), so it is
-        // checked once here, before any mode runs or any network is built.
-        do {
-            _ = try ChessNetwork.PolicyTailPrecision.resolve(arguments: rawArgs)
-        } catch {
-            FileHandle.standardError.write(Data("error: \(error)\n".utf8))
-            Darwin.exit(2)
-        }
-
         // Pre-flight: handle the two defaults-emitter flags BEFORE any
         // SwiftUI / AppKit / Metal initialization. They're sub-second
         // exits and never touch the singleton; the only user-visible
@@ -291,13 +281,6 @@ struct DrewsChessMachineApp: App {
         // divergent position. Read in `MoveGenerator` via `CommandLine.arguments`;
         // consumed here so the unknown-argument scan accepts it.
         let crosscheckMovegenIndices = rawArgs.indices.filter { rawArgs[$0] == "--crosscheck-movegen" }
-        // `--policy-tail-precision <value>` — validated at the top of `init`
-        // and read through `ChessNetwork.PolicyTailPrecision.process`;
-        // consumed here (flag and value) so the unknown-argument scan accepts it.
-        for idx in rawArgs.indices where rawArgs[idx] == ChessNetwork.PolicyTailPrecision.flag {
-            consumedIndices.insert(idx)
-            consumedIndices.insert(idx + 1)
-        }
         for idx in crosscheckMovegenIndices { consumedIndices.insert(idx) }
 
         // `--parameters <path>` — optional hyperparameter override
@@ -471,7 +454,6 @@ struct DrewsChessMachineApp: App {
         SessionLogger.shared.log(
             "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp)\(autoTrainMarker)\(playChessMarker)"
         )
-        SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
         // The head-numerics fix changes outputs for identical weights (tie
         // breaking, W/D/L thresholds), so probe trends step once at the first
         // build carrying it. This line marks every launch of such a build, so
@@ -884,7 +866,7 @@ struct DrewsChessMachineApp: App {
         // `--crosscheck-movegen` is a global diagnostic (read in
         // `MoveGenerator` via `CommandLine.arguments`); permit it so a UCI
         // self-play run can exercise the move-generator cross-check.
-        let allowedFlags: Set<String> = [uciFlag, modelFlag, "--crosscheck-movegen", ChessNetwork.PolicyTailPrecision.flag]
+        let allowedFlags: Set<String> = [uciFlag, modelFlag, "--crosscheck-movegen"]
         if let badFlag = rawArgs.first(where: {
             $0.hasPrefix("--") && !allowedFlags.contains($0)
         }) {
@@ -931,12 +913,6 @@ struct DrewsChessMachineApp: App {
         // via `CommandLine.arguments`; consume it so it isn't flagged as a stray.
         for (i, arg) in rawArgs.enumerated() where arg == "--crosscheck-movegen" {
             consumed.insert(i)
-        }
-        // `--policy-tail-precision <value>`: validated at launch, read through
-        // `ChessNetwork.PolicyTailPrecision.process`.
-        for (i, arg) in rawArgs.enumerated() where arg == ChessNetwork.PolicyTailPrecision.flag {
-            consumed.insert(i)
-            consumed.insert(i + 1)
         }
         for (i, arg) in rawArgs.enumerated() where !consumed.contains(i) {
             FileHandle.standardError.write(Data(
@@ -1052,9 +1028,6 @@ struct DrewsChessMachineApp: App {
                 gpuCaptureStep = requireInt(arg, nextValue); i += 2
             case "--gpu-capture-out":
                 gpuCaptureOutPath = requireValue(arg, nextValue); i += 2
-            case ChessNetwork.PolicyTailPrecision.flag:
-                // Validated at launch; the process value is read below.
-                _ = requireValue(arg, nextValue); i += 2
             case "--seed":
                 guard commandLineSeed == nil else {
                     FileHandle.standardError.write(Data("error: --seed specified more than once\n".utf8))
@@ -1174,7 +1147,6 @@ struct DrewsChessMachineApp: App {
                         outputURL: URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
                 }
             },
-            policyTailPrecision: ChessNetwork.PolicyTailPrecision.process,
             runRandomSeed: runRandomSeed
         )
         CorpusReplayRunner.runAndExit(config: config, params: params)
@@ -1361,9 +1333,6 @@ struct DrewsChessMachineApp: App {
                 resumeExact = true; i += 1   // boolean flag, no value
             case "--accept-inexact":
                 acceptInexact = parseAcceptInexactOrExit(requireValue(arg, nextValue), current: acceptInexact); i += 2
-            case ChessNetwork.PolicyTailPrecision.flag:
-                // Validated at launch; read through `PolicyTailPrecision.process`.
-                _ = requireValue(arg, nextValue); i += 2
             case "--seed":
                 guard commandLineSeed == nil else {
                     FileHandle.standardError.write(Data("error: --seed specified more than once\n".utf8))
@@ -1764,7 +1733,7 @@ struct DrewsChessMachineApp: App {
         guard rawArgs.contains(sweepFlag) else { return }
 
         // Only the two companion flags are allowed alongside.
-        let allowedFlags: Set<String> = [sweepFlag, sizesFlag, secondsFlag, ChessNetwork.PolicyTailPrecision.flag]
+        let allowedFlags: Set<String> = [sweepFlag, sizesFlag, secondsFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data(
                 "error: \(sweepFlag) does not accept '\(bad)' (only \(sizesFlag) <csv> and \(secondsFlag) <n> allowed)\n".utf8
@@ -1826,7 +1795,7 @@ struct DrewsChessMachineApp: App {
         let outFlag = "--arch-sweep-out"
         let replaceOutFlag = ArchSweepCLI.replaceExistingOutFlag
 
-        let allowedFlags: Set<String> = [flag, blocksFlag, stepsFlag, batchFlag, outFlag, replaceOutFlag, ChessNetwork.PolicyTailPrecision.flag]
+        let allowedFlags: Set<String> = [flag, blocksFlag, stepsFlag, batchFlag, outFlag, replaceOutFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data(
                 "error: \(flag) does not accept '\(bad)'\n".utf8
@@ -1892,7 +1861,7 @@ struct DrewsChessMachineApp: App {
         let replaceOutFlag = ProbeModelCLI.replaceExistingOutFlag
         let positionsOutFlag = ProbeModelCLI.positionsOutFlag
 
-        let allowedFlags: Set<String> = [flag, setFlag, outFlag, positionsOutFlag, replaceOutFlag, ChessNetwork.PolicyTailPrecision.flag]
+        let allowedFlags: Set<String> = [flag, setFlag, outFlag, positionsOutFlag, replaceOutFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data(
                 "error: \(flag) does not accept '\(bad)'\n".utf8
@@ -1951,9 +1920,8 @@ struct DrewsChessMachineApp: App {
         let corpusFlag = "--numerics-corpus"
         let outFlag = "--numerics-out"
         let staticOnlyFlag = "--numerics-static-only"
-        let policyTailFlag = ChessNetwork.PolicyTailPrecision.flag
 
-        let allowedFlags: Set<String> = [flag, corpusFlag, outFlag, staticOnlyFlag, policyTailFlag]
+        let allowedFlags: Set<String> = [flag, corpusFlag, outFlag, staticOnlyFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data("error: \(flag) does not accept '\(bad)'\n".utf8))
             Darwin.exit(80)
@@ -1977,8 +1945,7 @@ struct DrewsChessMachineApp: App {
             path: path,
             corpusShardPath: value(after: corpusFlag),
             outDirectory: value(after: outFlag),
-            staticOnly: rawArgs.contains(staticOnlyFlag),
-            policyTailPrecision: ChessNetwork.PolicyTailPrecision.process
+            staticOnly: rawArgs.contains(staticOnlyFlag)
         )
     }
 
@@ -2004,7 +1971,7 @@ struct DrewsChessMachineApp: App {
         let outFlag = "--out-model"
         let initSeedFlag = "--init-seed"
 
-        let allowedFlags: Set<String> = [flag, archFlag, outFlag, initSeedFlag, ChessNetwork.PolicyTailPrecision.flag]
+        let allowedFlags: Set<String> = [flag, archFlag, outFlag, initSeedFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data(
                 "error: \(flag) does not accept '\(bad)'\n".utf8

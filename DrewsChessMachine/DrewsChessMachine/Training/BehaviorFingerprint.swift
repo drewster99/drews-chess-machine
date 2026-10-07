@@ -25,7 +25,7 @@
 //     stream; and the dropout Philox state MPSGraph derives from a seed.
 //  3. Training: the checkpoint's own architecture — its block groups,
 //     convolutions, SE, ReZero, activations, heads, input encoding and
-//     compute data type — under the running policy-tail precision,
+//     compute data type and policy-tail precision —
 //     initialized from a fixed init seed (never the checkpoint's trained
 //     weights), trained one SGD step (with dropout, which includes the
 //     value-baseline forward pass) on a batch drawn from that buffer — its
@@ -43,8 +43,8 @@
 //  The recipe's numbers (seeds, hyperparameters) are constants of the
 //  recipe, deliberately not the run's settings or the parameters' declared
 //  defaults, so a fingerprint depends on code, platform and the checkpoint's
-//  architecture only. It is computed once per process for each (architecture,
-//  policy-tail precision) and cached.
+//  architecture only. It is computed once per process for each architecture
+//  and cached.
 //
 
 import CryptoKit
@@ -73,16 +73,15 @@ enum BehaviorFingerprint {
         }
     }
 
-    /// What the fingerprint is computed for: the checkpoint's architecture
-    /// (which carries its input encoding and compute data type) and the
-    /// policy-tail precision its trainer runs under.
+    /// What the fingerprint is computed for: the checkpoint's architecture,
+    /// which carries its input encoding, compute data type and policy-tail
+    /// precision (format v12; before it the tail was a separate process-wide
+    /// setting passed beside the architecture).
     struct Settings: Hashable, Sendable {
         let architecture: NetworkArchitecture
-        let policyTailPrecision: ChessNetwork.PolicyTailPrecision
 
-        init(arch: NetworkArchitecture, policyTailPrecision: ChessNetwork.PolicyTailPrecision) {
+        init(arch: NetworkArchitecture) {
             self.architecture = arch
-            self.policyTailPrecision = policyTailPrecision
         }
     }
 
@@ -175,16 +174,27 @@ enum BehaviorFingerprint {
 
     private static let queue = DispatchQueue(label: "drewschess.behavior-fingerprint", qos: .userInitiated)
 
+    /// The text hashed first, naming the recipe and the policy tail.
+    ///
+    /// The architecture itself is not hashed: what it computes is, by the
+    /// recipe's steps. Hashing its serialized form would make a change in how
+    /// it is written (a new Codable field) read as a change in behavior. The
+    /// header keeps the `policy_tail=` text it had when the tail was a process
+    /// setting, now filled from the architecture (format v12), so every bf16 /
+    /// fp16 fingerprint recorded before the tail moved into the architecture
+    /// recomputes identically; an fp32 one changes once (`does_not_apply`
+    /// where the header used to read the process value). The recipe stays 3.
+    static func header(for settings: Settings) -> String {
+        "dcm-behavior-fingerprint recipe=\(recipe) policy_tail=\(settings.architecture.policyTailPrecision.rawValue)"
+    }
+
     /// Steps 1 and 2, and the checkpoint-architecture trainer for step 3 (built, not yet
     /// trained). Runs on `queue`.
     private static func prepare<Streams: FingerprintStreamSource>(
         settings: Settings, streams: Streams.Type
     ) throws -> (hasher: SHA256, buffer: ReplayBuffer, trainer: ChessTrainer) {
         var hasher = SHA256()
-        // The architecture itself is not hashed: what it computes is, below.
-        // Hashing its serialized form would make a change in how it is
-        // written (a new Codable field) read as a change in behavior.
-        let header = "dcm-behavior-fingerprint recipe=\(recipe) policy_tail=\(settings.policyTailPrecision.rawValue)"
+        let header = Self.header(for: settings)
         hasher.update(data: Data(header.utf8))
         let arch = settings.architecture
         let encoding = arch.inputEncoding
@@ -256,7 +266,6 @@ enum BehaviorFingerprint {
             initialization: .seeded(initSeed: initSeed),
             executableOptimizationLevel: .level1,
             splitWorkingWeightSync: true,
-            policyTailPrecision: settings.policyTailPrecision,
             disableAutoLayoutConversion: false,
             reducedPrecisionFastMathRaw: nil)
         trainer.dropoutRate = 0.1

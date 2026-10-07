@@ -280,6 +280,7 @@ class NormArchParityTests(unittest.TestCase):
     # make the scripts resolve or refuse files differently from the app.
     SWIFT_FORMAT_CONSTANTS = (
         ("currentVersion", dcm_arch, "CURRENT_FORMAT_VERSION"),
+        ("policyTailPrecisionRequiredFromVersion", dcm_arch, "POLICY_TAIL_PRECISION_REQUIRED_FROM_VERSION"),
         ("siteActivationsRequiredFromVersion", dcm_arch, "SITE_ACTIVATIONS_REQUIRED_FROM_VERSION"),
         ("seLessSEActivationDoesNotApplyFromVersion", dcm_arch, "SE_LESS_SE_ACTIVATION_DOES_NOT_APPLY_FROM_VERSION"),
         ("seBetaInitRequiredFromVersion", dcm_arch, "SE_BETA_INIT_REQUIRED_FROM_VERSION"),

@@ -22,8 +22,7 @@ import Foundation
 enum NumericsAuditCLI {
 
     static func runAndExit(
-        path: String, corpusShardPath: String?, outDirectory: String?, staticOnly: Bool,
-        policyTailPrecision: ChessNetwork.PolicyTailPrecision
+        path: String, corpusShardPath: String?, outDirectory: String?, staticOnly: Bool
     ) -> Never {
         SessionLogger.shared.start()
 
@@ -43,7 +42,7 @@ enum NumericsAuditCLI {
         let outURL = outDirectory.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? CheckpointPaths.analysesDir
 
         FileHandle.standardError.write(Data(
-            "[NUMERICS] \(targets.count) checkpoint(s)\(staticOnly ? ", static checks only" : ", policy tail \(policyTailPrecision.rawValue)")\(corpusURL.map { ", corpus \($0.path)" } ?? ", no corpus shard")\n".utf8
+            "[NUMERICS] \(targets.count) checkpoint(s)\(staticOnly ? ", static checks only" : ", bf16/fp16 under both policy tails")\(corpusURL.map { ", corpus \($0.path)" } ?? ", no corpus shard")\n".utf8
         ))
 
         var failures = 0
@@ -101,7 +100,6 @@ enum NumericsAuditCLI {
                         velocity: velocity,
                         positions: auditPositions,
                         dynamicSkippedReason: staticOnly ? "--numerics-static-only" : nil,
-                        policyTailPrecision: policyTailPrecision,
                         modelLabel: label,
                         modelID: modelID,
                         trainingStep: stepValue
@@ -176,18 +174,24 @@ enum NumericsAuditCLI {
         if let value = health.valueFC1 {
             line["layer_health_value_fc1_zero_velocity_units"] = value.zeroVelocityUnitCount
         }
+        line["policy_tail_precision"] = result.policyTailPrecision
         if let dynamic = result.dynamicChecks {
             line["positions"] = dynamic.positions.total
-            line["policy_tail_precision"] = result.policyTailPrecision
+            // One key per reduced-precision build, suffixed `<format>_<tail>`
+            // (e.g. `policy_kl_bf16_mixed_final_projection`): the audit builds
+            // bf16 and fp16 under both tails, so a bare `<format>` key would
+            // not say which.
             if let value = dynamic.valueHead {
                 for report in value where report.format != .fp32 {
-                    line["value_ties_\(report.format.rawValue)"] = report.tieFraction
-                    if let delta = report.crossEntropyDeltaVsFP32 { line["value_ce_delta_\(report.format.rawValue)"] = delta }
+                    let suffix = "\(report.format.rawValue)_\(report.policyTail.rawValue)"
+                    line["value_ties_\(suffix)"] = report.tieFraction
+                    if let delta = report.crossEntropyDeltaVsFP32 { line["value_ce_delta_\(suffix)"] = delta }
                 }
             }
             for report in dynamic.policyHead where report.format != .fp32 {
-                line["policy_top2_ties_\(report.format.rawValue)"] = report.top2TieFraction
-                if let kl = report.klMean { line["policy_kl_\(report.format.rawValue)"] = kl }
+                let suffix = "\(report.format.rawValue)_\(report.policyTail.rawValue)"
+                line["policy_top2_ties_\(suffix)"] = report.top2TieFraction
+                if let kl = report.klMean { line["policy_kl_\(suffix)"] = kl }
             }
         }
         return line

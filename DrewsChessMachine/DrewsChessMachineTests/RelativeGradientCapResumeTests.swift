@@ -27,14 +27,14 @@ final class RelativeGradientCapResumeTests: XCTestCase {
             metadata = ModelCheckpointMetadata.trainerFile(
                 creator: ModelCheckpointMetadata.corpusReplayCreator,
                 trainingStep: snapshot.schedule.completedTrainSteps, parentModelID: "", notes: "unit test",
-                schedule: snapshot.schedule, policyTailPrecision: .process,
+                schedule: snapshot.schedule,
                 gradNormHistory: snapshot.gradNormHistory.history)
         } else {
             // The form of every trainer file written before the relative cap.
             metadata = ModelCheckpointMetadata.trainerFile(
                 creator: ModelCheckpointMetadata.corpusReplayCreator,
                 trainingStep: snapshot.schedule.completedTrainSteps, parentModelID: "", notes: "unit test",
-                schedule: snapshot.schedule, policyTailPrecision: .process)
+                schedule: snapshot.schedule)
         }
         let data = try SafetensorsModelIO.encode(
             modelID: "20261007-1-TEST", createdAtUnix: 1_790_000_000, metadata: metadata,
@@ -128,7 +128,7 @@ final class RelativeGradientCapResumeTests: XCTestCase {
         let schedule = TrainerScheduleState(completedTrainSteps: 4, lrWarmupSteps: 3, lrMomentumCycle: .disabled)
         let metadata = ModelCheckpointMetadata.trainerFile(
             creator: ModelCheckpointMetadata.corpusReplayCreator, trainingStep: 4, parentModelID: "", notes: "unit test",
-            schedule: schedule, policyTailPrecision: .process, gradNormHistory: history)
+            schedule: schedule, gradNormHistory: history)
         XCTAssertThrowsError(try SafetensorsModelIO.encode(
             modelID: "20261007-1-TEST", createdAtUnix: 1_790_000_000, metadata: metadata,
             weights: weights, architecture: .current, includesVelocity: true,

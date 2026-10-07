@@ -15,7 +15,9 @@ import XCTest
 final class GuiResumeGapsTests: XCTestCase {
 
     private let arch = NetworkArchitecture.current
-    private let savedPrecision = ChessNetwork.PolicyTailPrecision.float32FromPreBatchNorm
+    // The architecture's own tail: from format v12 the record's configuration
+    // is composed from it.
+    private let savedPrecision = NetworkArchitecture.current.policyTailPrecision
     private static let fingerprint = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab")
 
     private func trainerWeights() -> [[Float]] {
@@ -49,8 +51,7 @@ final class GuiResumeGapsTests: XCTestCase {
             modelID: "20261002-1-GUIR", createdAtUnix: 1_790_000_060,
             metadata: ModelCheckpointMetadata.trainerFile(
                 creator: "manual", trainingStep: 4, parentModelID: "", notes: "gui resume gaps test",
-                schedule: TrainerScheduleState(completedTrainSteps: 4, lrWarmupSteps: 3, lrMomentumCycle: .disabled),
-                policyTailPrecision: savedPrecision),
+                schedule: TrainerScheduleState(completedTrainSteps: 4, lrWarmupSteps: 3, lrMomentumCycle: .disabled)),
             weights: trainerWeights(), architecture: arch, includesVelocity: true, lineage: record)
         return try SafetensorsModelIO.decode(data).file
     }
@@ -79,12 +80,10 @@ final class GuiResumeGapsTests: XCTestCase {
             chartDataURLs: nil)
     }
 
-    private func gaps(_ resumed: LoadedSession,
-                      running: ChessNetwork.PolicyTailPrecision? = nil) throws -> [String] {
+    private func gaps(_ resumed: LoadedSession) throws -> [String] {
         let gaps = SessionController.guiResumeGaps(
             resumed: resumed, continuedRunStreams: SessionController.resumableRunStreams(of: resumed),
             replayBufferRestored: resumed.replayBufferURL != nil,
-            runningPolicyTailPrecision: running ?? savedPrecision,
             runningBuild: try .current, runningDevice: .current, runningFingerprint: Self.fingerprint)
         return ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps).tokens
     }
@@ -98,9 +97,10 @@ final class GuiResumeGapsTests: XCTestCase {
         let file = try trainerFile(withStreams: true)
         XCTAssertEqual(try gaps(session(file: file, buffer: false, arenaClock: 30)), ["buffer"])
         XCTAssertEqual(try gaps(session(file: file, buffer: true, arenaClock: nil)), ["clocks"])
-        let otherPrecision = ChessNetwork.PolicyTailPrecision.allCases.first { $0 != savedPrecision }
-        XCTAssertEqual(try gaps(session(file: file, buffer: true, arenaClock: 30),
-                            running: try XCTUnwrap(otherPrecision)), ["policy_tail"])
+        // The policy tail is the architecture's (format v12), which the
+        // resumed trainer is built from, so it is never a gap; the removed
+        // `policy_tail` token is unknown.
+        XCTAssertNil(ResumeGap(rawValue: "policy_tail"))
         let withoutStreams = try trainerFile(withStreams: false)
         XCTAssertEqual(try gaps(session(file: withoutStreams, buffer: false, arenaClock: nil)),
                        ["rng_sampler", "buffer", "serials", "clocks"])

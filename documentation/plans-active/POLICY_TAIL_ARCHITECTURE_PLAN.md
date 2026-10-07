@@ -1,6 +1,15 @@
 # Policy tail precision as an architecture field
 
-Status: **planned, not started** — waiting for the owner's go. All owner decisions recorded (PT-D3 rules 3 and 4 decided 2026-10-07).
+Status: **phases 1–4 implemented 2026-10-07 (awaiting build, tests and commit); phase 5 audit tool written and run** — report `documentation/plans-active/POLICY_TAIL_AUDIT_2026-10-07.md` (+ `.json`), produced read-only by `scripts/policy_tail_audit.py`. No header has been rewritten; rule 3's edit waits for the owner's review of the audit. All owner decisions recorded (PT-D3 rules 3 and 4 decided 2026-10-07).
+
+**Implementation notes (2026-10-07)** — where the code differs from the text below, and why:
+- One enum, `PolicyTailPrecisionSetting` (in `NetworkArchitecture.swift`), replaces `ChessNetwork.PolicyTailPrecision` everywhere; its bf16 case keeps the Swift name `float32FromPreBatchNorm` (raw value `fp32_from_pre_bn` as planned), matching `ComputeDataType.float32` and the existing tests. `does_not_apply` builds the `mixed_final_projection` branch of `policyHead` (the graph fp32 models were built as under the default since `de0f22be`; the pinned fp32 forward hash is unchanged).
+- `ModelCheckpointMetadata.trainerPolicyTailPrecision` is removed rather than kept as a decoded value: nothing read it once the resume gap was gone, and the recorded tail is resolved into the architecture by `SafetensorsModelIO.recordedPolicyTailPrecision` (one copy). A v12 file carrying the flat key is refused (`retiredTrainerPolicyTailPrecisionKey`); `--derive-model` drops the key from a pre-v12 source (it is in `rewrittenMetadataKeys`).
+- Rule 4 is applied in `CheckpointManager.loadSession` (`decodeSessionChampionFile`), so a train-vs-UCI session load gets it too; the champion takes the trainer file's tail only when the trainer file states or records one (never one the trainer itself resolved as unrecorded), named on the champion's `[ARCH] legacy file` line.
+- `--set-policy-tail-precision` refuses a value the model already holds, as every other derive operation does ("nothing to derive"); the text below says no derive op rejects a no-op, which the code contradicts (`SetRezeroAlphaCapDeriveOperation`, `SetSiteActivationDeriveOperation`, …).
+- `architectureSummary` renders ` policy-tail <value>` after a bf16 / fp16 dtype (nothing on fp32); the diagram shows the same clause.
+- The numerics audit's dynamic checks build fp32 once and bf16 / fp16 under both reduced tails (`AuditBuild`); reports carry `policyTail`, `formatsBuilt` became `buildsBuilt`, and the CLI's compact keys are suffixed `<format>_<tail>`.
+- Process-wide `[NUMERICS] policy_tail_precision=… source=…` lines became `… source=architecture`, logged per path from the architecture it builds (UCI names the tail in its `[UCI] model loaded` arch summary instead).
 
 **Review 2026-10-07** (external review, each finding checked against this plan and the code; the edits it led to are in place below):
 - Confirmed: recorded tail not visible to the architecture decode (§2 Decode); derive/graft records cite sources by whole-file hash (PT-D3 rule 2/3); phases 1–2 would not each compile (Phases); nt8y presets use the convenience init, not the memberwise one (§1).

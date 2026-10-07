@@ -1834,6 +1834,39 @@ enum CheckpointManager {
         return try SafetensorsModelIO.decode(data, valueHead: valueHead, source: source).file
     }
 
+    /// A session's `champion.safetensors`, decoded with PT-D3 rule 4: a
+    /// pre-v12 champion records no policy tail (it is a plain file; only the
+    /// trainer file recorded the tail the process ran), so where it records
+    /// none it takes the tail the same session's trainer file records, stated
+    /// or recorded — never one the trainer file itself only resolved as
+    /// unrecorded. Without that, a session trained under `fp32_from_pre_bn`
+    /// would resume with its trainer on `fp32_from_pre_bn` and its champion on
+    /// `mixed_final_projection`. The resolution names its source on the
+    /// champion's `[ARCH] legacy file` line. A legacy `.dcmmodel` champion
+    /// rebuilds its preset as always.
+    static func decodeSessionChampionFile(
+        _ data: Data, source: String, trainerFile: ModelCheckpointFile
+    ) throws -> ModelCheckpointFile {
+        if data.count >= 8, Array(data.prefix(8)) == ModelCheckpointFile.magic {
+            return try ModelCheckpointFile.decode(data, valueHead: .recenterUnlessMarked)
+        }
+        let trainerTail: ArchitectureFormat.RecordedPolicyTailPrecision?
+        switch trainerFile.architectureFormat?.legacyLog.policyTailPrecisionOrigin {
+        case .stated?, .recorded?:
+            // An fp32 trainer has no tail to lend; an fp32 champion resolves
+            // to `does_not_apply` on its own.
+            trainerTail = trainerFile.architecture.policyTailPrecision == .doesNotApply
+                ? nil
+                : ArchitectureFormat.RecordedPolicyTailPrecision(
+                value: trainerFile.architecture.policyTailPrecision,
+                recordedIn: "the same session's trainer.safetensors")
+        case .notRecorded?, nil:
+            trainerTail = nil
+        }
+        return try SafetensorsModelIO.decode(
+            data, valueHead: .recenterUnlessMarked, source: source, sessionTrainerPolicyTail: trainerTail).file
+    }
+
     /// A model file exactly as stored, for the numerics audit: the value
     /// head is not recentered, so the audit sees the offset the file holds.
     /// Never used to play or train.
@@ -1943,12 +1976,11 @@ enum CheckpointManager {
     static func loadSession(at directoryURL: URL) throws -> LoadedSession {
         let (stateData, championData, trainerData) = try SessionCheckpointLayout.readAll(from: directoryURL)
         let state = try SessionCheckpointState.decode(stateData)
-        let championFile = try decodeAnyModelFile(
-            championData, valueHead: .recenterUnlessMarked,
-            source: "\(directoryURL.lastPathComponent) champion")
         let trainerFile = try decodeAnyModelFile(
             trainerData, valueHead: .recenterUnlessMarked,
             source: "\(directoryURL.lastPathComponent) trainer")
+        let championFile = try decodeSessionChampionFile(
+            championData, source: "\(directoryURL.lastPathComponent) champion", trainerFile: trainerFile)
         logLegacyFileFacts(championFile, source: "\(directoryURL.lastPathComponent) champion")
         logLegacyFileFacts(trainerFile, source: "\(directoryURL.lastPathComponent) trainer")
         logValueHeadCentering(championFile, source: "\(directoryURL.lastPathComponent) champion")

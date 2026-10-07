@@ -20,7 +20,9 @@ import XCTest
 final class GuiResumeContinuationGapsTests: XCTestCase {
 
     private let arch = NetworkArchitecture.current
-    private let savedPrecision = ChessNetwork.PolicyTailPrecision.float32FromPreBatchNorm
+    // The architecture's own tail: from format v12 the record's configuration
+    // is composed from it.
+    private let savedPrecision = NetworkArchitecture.current.policyTailPrecision
     private static let fingerprint = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab")
 
     /// A trainer file whose record is a GUI save's, with the run's streams.
@@ -48,8 +50,7 @@ final class GuiResumeContinuationGapsTests: XCTestCase {
             modelID: "20261003-1-GUIC", createdAtUnix: 1_790_000_060,
             metadata: ModelCheckpointMetadata.trainerFile(
                 creator: "manual", trainingStep: 4, parentModelID: "", notes: "gui resume continuation test",
-                schedule: TrainerScheduleState(completedTrainSteps: 4, lrWarmupSteps: 3, lrMomentumCycle: .disabled),
-                policyTailPrecision: savedPrecision),
+                schedule: TrainerScheduleState(completedTrainSteps: 4, lrWarmupSteps: 3, lrMomentumCycle: .disabled)),
             weights: weights, architecture: arch, includesVelocity: true, lineage: record)
         return try SafetensorsModelIO.decode(data).file
     }
@@ -77,7 +78,7 @@ final class GuiResumeContinuationGapsTests: XCTestCase {
                       replayBufferRestored: Bool) throws -> [String] {
         let gaps = SessionController.guiResumeGaps(
             resumed: resumed, continuedRunStreams: continuedRunStreams, replayBufferRestored: replayBufferRestored,
-            runningPolicyTailPrecision: savedPrecision, runningBuild: try .current, runningDevice: .current,
+            runningBuild: try .current, runningDevice: .current,
             runningFingerprint: Self.fingerprint)
         return ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps).tokens
     }

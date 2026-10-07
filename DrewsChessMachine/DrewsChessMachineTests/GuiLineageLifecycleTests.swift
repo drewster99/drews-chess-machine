@@ -66,8 +66,7 @@ final class GuiLineageLifecycleTests: XCTestCase {
             modelID: "20261003-2-LDED", createdAtUnix: 1_790_000_060,
             metadata: ModelCheckpointMetadata.trainerFile(
                 creator: "manual", trainingStep: 4, parentModelID: "", notes: "gui lineage lifecycle test",
-                schedule: TrainerScheduleState(completedTrainSteps: 4, lrWarmupSteps: 3, lrMomentumCycle: .disabled),
-                policyTailPrecision: .default),
+                schedule: TrainerScheduleState(completedTrainSteps: 4, lrWarmupSteps: 3, lrMomentumCycle: .disabled)),
             weights: weights, architecture: arch, includesVelocity: true, lineage: record)
         let file = try SafetensorsModelIO.decode(data).file
         let state = SessionCheckpointState(

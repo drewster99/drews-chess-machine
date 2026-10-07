@@ -222,7 +222,7 @@ final class RelativeGradientCapIntegrationTests: XCTestCase {
             metadata: ModelCheckpointMetadata.trainerFile(
                 creator: ModelCheckpointMetadata.corpusReplayCreator,
                 trainingStep: saved.schedule.completedTrainSteps, parentModelID: "", notes: "unit test",
-                schedule: saved.schedule, policyTailPrecision: .process,
+                schedule: saved.schedule,
                 gradNormHistory: saved.gradNormHistory.history),
             weights: saved.trainerWeights, architecture: .current, includesVelocity: true,
             lineage: try LineageRecord.forTests(trainerCompletedSteps: saved.schedule.completedTrainSteps, corpus: nil))

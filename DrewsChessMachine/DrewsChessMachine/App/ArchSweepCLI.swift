@@ -101,15 +101,17 @@ enum ArchSweepCLI {
             }
         }
 
-        SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
         emit([
             "event": "sweep_start", "blocks": blocks, "steps": steps, "batch": batch,
-            "policy_tail_precision": ChessNetwork.PolicyTailPrecision.process.rawValue,
         ])
 
         for n in blocks {
             let arch = benchArch(blocks: n)
-            emit(["event": "build_begin", "blocks": n, "params": arch.parameterCount])
+            // The tail is the architecture's (format v12), so each build
+            // reports its own.
+            SessionLogger.shared.log(arch.policyTailLogLine)
+            emit(["event": "build_begin", "blocks": n, "params": arch.parameterCount,
+                  "policy_tail_precision": arch.policyTailPrecision.rawValue])
             do {
                 let t0 = CFAbsoluteTimeGetCurrent()
                 let trainer = try ChessTrainer(

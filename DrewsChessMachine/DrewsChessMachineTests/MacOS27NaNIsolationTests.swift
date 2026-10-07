@@ -49,10 +49,8 @@ final class MacOS27NaNIsolationTests: XCTestCase {
 
     /// The standard production tower (uniform v4_5block_7x7, 128ch, 7×7), with
     /// only the compute precision swapped.
-    private func arch(_ precision: ComputeDataType) -> NetworkArchitecture {
-        var a = NetworkArchitecture.current
-        a.computeDataType = precision
-        return a
+    private func arch(_ precision: ComputeDataType) throws -> NetworkArchitecture {
+        try NetworkArchitecture.current.withComputeDataTypeForTests(precision)
     }
 
     /// Runs `steps` trainStep calls at `batchSize` on a FRESH trainer of the
@@ -210,7 +208,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     private func layoutForwardDivergence(_ precision: ComputeDataType, count: Int) async throws
         -> (policyMaxAbs: Float, valueMaxAbs: Float) {
         try requireMetal()
-        let a = arch(precision)
+        let a = try arch(precision)
         let netDefault = try ChessNetwork(arch: a, bnMode: .inference, initialization: .seeded(initSeed: 1), disableAutoLayoutConversion: false)
         let netNoConv  = try ChessNetwork(arch: a, bnMode: .inference, initialization: .seeded(initSeed: 2), disableAutoLayoutConversion: true)
         // Make the two nets bit-identical: copy net-default's He-init weights + BN
@@ -335,7 +333,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     /// in two separate processes, and compare checksums.
     private func fixedForwardChecksumAmbient() async throws -> Double {
         try requireMetal()
-        let a = arch(.bFloat16)
+        let a = try arch(.bFloat16)
         let net = try ChessNetwork(arch: a, bnMode: .inference, initialization: .seeded(initSeed: 1))
         // Overwrite all variables with a deterministic SplitMix64 pattern (~N(0,
         // 0.06)) so the forward is reproducible across runs/combos and activations
@@ -527,7 +525,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
 
     private func runRealPathTrajectory(_ precision: ComputeDataType, blocking: Bool, steps: Int) async throws {
         try requireMetal()
-        let a = arch(precision)
+        let a = try arch(precision)
         let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), lrWarmupSteps: 0, arch: a, initialization: .seeded(initSeed: 1))
         trainer.network.blockingValueBaseline = blocking
         let buf = populateReplayBuffer(a, positions: 4096)
@@ -981,8 +979,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     /// the per-tensor non-finite report to cast_probe_single_block.txt.
     func test_bf16_singleBlock_pinpoint() async throws {
         try requireMetal()
-        var a = NetworkArchitecture.current
-        a.computeDataType = .bFloat16
+        var a = try NetworkArchitecture.current.withComputeDataTypeForTests(.bFloat16)
         var g = a.blockGroups[0]
         g.count = 1
         a.blockGroups = [g]
@@ -1146,8 +1143,7 @@ final class MacOS27NaNIsolationTests: XCTestCase {
     // it; kept for reference. The split A/B below is the decisive experiment.
     func DISABLED_bf16_fingerprintAliasingProbe() async throws {
         try requireMetal()
-        var a = NetworkArchitecture.current
-        a.computeDataType = .bFloat16
+        var a = try NetworkArchitecture.current.withComputeDataTypeForTests(.bFloat16)
         var g = a.blockGroups[0]
         g.count = 1
         a.blockGroups = [g]
@@ -1245,9 +1241,8 @@ final class MacOS27NaNIsolationTests: XCTestCase {
         try? "split test STARTED\n".write(
             to: dir.appendingPathComponent("cast_probe_split.txt"),
             atomically: true, encoding: .utf8)
-        func singleBlockBf16() -> NetworkArchitecture {
-            var a = NetworkArchitecture.current
-            a.computeDataType = .bFloat16
+        func singleBlockBf16() throws -> NetworkArchitecture {
+            var a = try NetworkArchitecture.current.withComputeDataTypeForTests(.bFloat16)
             var grp = a.blockGroups[0]
             grp.count = 1
             a.blockGroups = [grp]

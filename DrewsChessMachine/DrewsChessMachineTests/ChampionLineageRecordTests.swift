@@ -163,7 +163,7 @@ final class ChampionLineageRecordTests: XCTestCase {
             trainerID: "20261003-2-TRNR",
             trainerMetadata: ModelCheckpointMetadata.trainerFile(
                 creator: "manual", trainingStep: 1000, parentModelID: "20261003-1-CHMP", notes: "trainer",
-                schedule: schedule, policyTailPrecision: .default),
+                schedule: schedule),
             trainerCreatedAtUnix: 1_790_000_500,
             state: state,
             lineage: runRecord,

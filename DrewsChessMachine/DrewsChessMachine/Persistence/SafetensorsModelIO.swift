@@ -34,8 +34,16 @@ enum SafetensorsModelIO {
         /// tensors, on write or read.
         case trainerScheduleWithoutVelocity
         case gradNormHistoryWithoutTrainerSchedule
-        /// `trainer_policy_tail_precision` holds a value no precision spells.
-        case malformedTrainerPolicyTailPrecision(String)
+        /// `trainer_policy_tail_precision`, or a pre-v12 lineage
+        /// configuration's `policy_tail_precision`, holds a value no
+        /// precision spells.
+        case malformedRecordedPolicyTailPrecision(key: String, value: String)
+        /// A format-v12-or-later file carries the flat
+        /// `trainer_policy_tail_precision` key, which only files written
+        /// before the tail was an architecture field hold (and the PT-D3
+        /// header edit adds only to such files); in a v12 file it would be a
+        /// second copy of the architecture's value.
+        case retiredTrainerPolicyTailPrecisionKey(formatVersion: Int, source: String)
         /// A file at a format version that requires `dcm_lineage` has none.
         case missingLineage(formatVersion: Int)
         /// `dcm_lineage` is present but does not decode.
@@ -51,8 +59,9 @@ enum SafetensorsModelIO {
         /// key, or holds a value other than the file's flat `trainer_*`
         /// schedule (hyperparameter recording plan, gap 5 backstop), on write.
         case scheduleDisagreesWithLineage(key: String, detail: String)
-        /// A trainer-state file's lineage configuration names another
-        /// policy-tail precision than its flat key, on write.
+        /// A pre-v12 file's flat `trainer_policy_tail_precision` and its
+        /// lineage configuration name different tails, on read (the writer of
+        /// that era refused to write such a file).
         case policyTailDisagreesWithLineage(flat: String, lineage: String)
         /// A trainer-state file's `training_step` is not its trainer clock
         /// (`trainer_completed_steps`), on write: from format v11 the two are
@@ -80,9 +89,14 @@ enum SafetensorsModelIO {
             case .gradNormHistoryWithoutTrainerSchedule:
                 return "safetensors model: \(GradientNormHistory.metadataKey) without trainer schedule metadata — "
                     + "the history is indexed by the trainer clock the schedule carries"
-            case .malformedTrainerPolicyTailPrecision(let raw):
-                let allowed = ChessNetwork.PolicyTailPrecision.allCases.map(\.rawValue).joined(separator: ", ")
-                return "safetensors model: trainer_policy_tail_precision is '\(raw)', expected one of \(allowed)"
+            case .malformedRecordedPolicyTailPrecision(let key, let raw):
+                let allowed = PolicyTailPrecisionSetting.allCases.map(\.rawValue).joined(separator: ", ")
+                return "safetensors model: \(key) is '\(raw)', expected one of \(allowed)"
+            case .retiredTrainerPolicyTailPrecisionKey(let version, let source):
+                return "safetensors model \(source): format v\(version) carries \(Key.trainerPolicyTailPrecision), "
+                    + "which only files written before format v\(ArchitectureFormat.policyTailPrecisionRequiredFromVersion) "
+                    + "may hold; from v\(ArchitectureFormat.policyTailPrecisionRequiredFromVersion) the tail is the "
+                    + "architecture's policy_tail_precision"
             case .missingLineage(let version):
                 return "safetensors model: format version \(version) requires a \(LineageRecord.metadataKey) record "
                     + "in __metadata__ (required from version \(ArchitectureFormat.lineageRequiredFromVersion)), and this file has none"
@@ -121,6 +135,9 @@ enum SafetensorsModelIO {
         static let parentModelID = "parent_model_id"
         static let notes = "notes"
         static let architecture = "architecture"
+        /// Written by trainer-file writers before format v12 (the tail they
+        /// trained under); never written now, read only to resolve a pre-v12
+        /// file's tail (`recordedPolicyTailPrecision`).
         static let trainerPolicyTailPrecision = "trainer_policy_tail_precision"
     }
 
@@ -215,12 +232,6 @@ enum SafetensorsModelIO {
                 try checkScheduleAgrees(parameters, with: schedule)
             }
         }
-        if let precision = metadata.trainerPolicyTailPrecision {
-            md[Key.trainerPolicyTailPrecision] = precision.rawValue
-            if let configured = lineage.configuration.value?.policyTailPrecision, configured != precision.rawValue {
-                throw IOError.policyTailDisagreesWithLineage(flat: precision.rawValue, lineage: configured)
-            }
-        }
         // Every save marks the value head centered, so a file is recentered
         // at most once in its life and every new file round-trips bit-exactly
         // (see `ValueHeadRecentering`).
@@ -290,15 +301,41 @@ enum SafetensorsModelIO {
     /// Decode the architecture embedded in a safetensors `__metadata__` map
     /// under the file's own `dcm_format_version`. Shared by the full decode
     /// and the header-only readers (model catalog, `--derive-model`) so every
-    /// reader applies the same version gate.
+    /// reader applies the same version gate — and the same policy-tail
+    /// resolution for a pre-v12 file (`recordedPolicyTailPrecision`), so the
+    /// catalog shows the tail a load builds.
     static func decodeArchitecture(
         fromMetadata md: [String: String],
         source: String
     ) throws -> (architecture: NetworkArchitecture, format: ArchitectureFormat.DecodeFormat) {
+        try decodeArchitecture(fromMetadata: md, source: source, sessionTrainerPolicyTail: nil)
+    }
+
+    /// `decodeArchitecture(fromMetadata:source:)` for a session's
+    /// `champion.safetensors`: a pre-v12 champion that records no tail takes
+    /// `sessionTrainerPolicyTail`, the tail the same session's
+    /// `trainer.safetensors` records (PT-D3 rule 4) — the champion is a plain
+    /// file and never recorded one, while the process that wrote both ran one
+    /// tail. Nil applies rule 1 alone.
+    static func decodeArchitecture(
+        fromMetadata md: [String: String],
+        source: String,
+        sessionTrainerPolicyTail: ArchitectureFormat.RecordedPolicyTailPrecision?
+    ) throws -> (architecture: NetworkArchitecture, format: ArchitectureFormat.DecodeFormat) {
         guard let archJSON = md[Key.architecture] else { throw IOError.missingArchitecture }
         let version = try ArchitectureFormat.safetensorsFormatVersion(
             metadataValue: md[Key.formatVersion], source: source)
-        let format = ArchitectureFormat.DecodeFormat(formatVersion: version, source: source)
+        let recorded: ArchitectureFormat.RecordedPolicyTailPrecision?
+        if version < ArchitectureFormat.policyTailPrecisionRequiredFromVersion {
+            recorded = try recordedPolicyTailPrecision(fromMetadata: md, formatVersion: version) ?? sessionTrainerPolicyTail
+        } else {
+            guard md[Key.trainerPolicyTailPrecision] == nil else {
+                throw IOError.retiredTrainerPolicyTailPrecisionKey(formatVersion: version, source: source)
+            }
+            recorded = nil
+        }
+        let format = ArchitectureFormat.DecodeFormat(
+            formatVersion: version, source: source, recordedPolicyTailPrecision: recorded)
         do {
             let architecture = try ArchitectureFormat.makeDecoder(format: format)
                 .decode(NetworkArchitecture.self, from: Data(archJSON.utf8))
@@ -311,9 +348,56 @@ enum SafetensorsModelIO {
         }
     }
 
+    /// The policy tail a pre-v12 file records outside its architecture JSON
+    /// (PT-D3 rule 1): its flat `trainer_policy_tail_precision` key (trainer
+    /// files from `4582aca0`, and files the PT-D3 header edit approves), else
+    /// its lineage record's `configuration.policy_tail_precision` (schema 3),
+    /// else nil. Both present and different is refused — the writers of that
+    /// era refused to write such a file, so it is damage, and neither value
+    /// can be preferred over the other.
+    static func recordedPolicyTailPrecision(
+        fromMetadata md: [String: String], formatVersion: Int
+    ) throws -> ArchitectureFormat.RecordedPolicyTailPrecision? {
+        var flat: PolicyTailPrecisionSetting?
+        if let raw = md[Key.trainerPolicyTailPrecision] {
+            guard let value = PolicyTailPrecisionSetting(rawValue: raw) else {
+                throw IOError.malformedRecordedPolicyTailPrecision(key: Key.trainerPolicyTailPrecision, value: raw)
+            }
+            flat = value
+        }
+        var configured: PolicyTailPrecisionSetting?
+        if let raw = try lineage(fromMetadata: md, formatVersion: formatVersion).record?.configuration.value?.policyTailPrecision {
+            guard let value = PolicyTailPrecisionSetting(rawValue: raw) else {
+                throw IOError.malformedRecordedPolicyTailPrecision(
+                    key: "\(LineageRecord.metadataKey) configuration.policy_tail_precision", value: raw)
+            }
+            configured = value
+        }
+        switch (flat, configured) {
+        case (.some(let flat), .some(let configured)) where flat != configured:
+            throw IOError.policyTailDisagreesWithLineage(flat: flat.rawValue, lineage: configured.rawValue)
+        case (.some(let flat), _):
+            return ArchitectureFormat.RecordedPolicyTailPrecision(value: flat, recordedIn: Key.trainerPolicyTailPrecision)
+        case (.none, .some(let configured)):
+            return ArchitectureFormat.RecordedPolicyTailPrecision(
+                value: configured, recordedIn: "\(LineageRecord.metadataKey) configuration")
+        case (.none, .none):
+            return nil
+        }
+    }
+
     /// `decode(_:valueHead:)` for bytes read from `source` (a file name used in
     /// format-version errors and the legacy-resolution log line).
     static func decode(_ data: Data, valueHead: ValueHeadDecoding, source: String) throws -> Decoded {
+        try decode(data, valueHead: valueHead, source: source, sessionTrainerPolicyTail: nil)
+    }
+
+    /// `decode(_:valueHead:source:)` for a session's `champion.safetensors`
+    /// (see `decodeArchitecture(fromMetadata:source:sessionTrainerPolicyTail:)`).
+    static func decode(
+        _ data: Data, valueHead: ValueHeadDecoding, source: String,
+        sessionTrainerPolicyTail: ArchitectureFormat.RecordedPolicyTailPrecision?
+    ) throws -> Decoded {
         let (tensors, md) = try SafetensorsFile.decode(data)
         // Keep each tensor's stored SHAPE, not just its data: the dimensions are
         // what decide whether `fromTorchLayout` un-transposes correctly, and
@@ -323,7 +407,8 @@ enum SafetensorsModelIO {
         byName.reserveCapacity(tensors.count)
         for t in tensors { byName[t.name] = t }
 
-        let (architecture, architectureFormat) = try decodeArchitecture(fromMetadata: md, source: source)
+        let (architecture, architectureFormat) = try decodeArchitecture(
+            fromMetadata: md, source: source, sessionTrainerPolicyTail: sessionTrainerPolicyTail)
 
         // Identity is the embedded architecture itself (no arch_hash); integrity
         // is content_sha256 (verified in SafetensorsFile). A hand-edited config
@@ -413,15 +498,6 @@ enum SafetensorsModelIO {
             guard let schedule = trainerSchedule else { throw IOError.gradNormHistoryWithoutTrainerSchedule }
             try history.checkEnds(atTrainerClock: schedule.completedTrainSteps)
         }
-        let trainerPolicyTailPrecision: ChessNetwork.PolicyTailPrecision?
-        if let raw = md[Key.trainerPolicyTailPrecision] {
-            guard let precision = ChessNetwork.PolicyTailPrecision(rawValue: raw) else {
-                throw IOError.malformedTrainerPolicyTailPrecision(raw)
-            }
-            trainerPolicyTailPrecision = precision
-        } else {
-            trainerPolicyTailPrecision = nil
-        }
         let fileLineage = try lineage(fromMetadata: md, formatVersion: architectureFormat.formatVersion)
         let provenance = ModelCheckpointFile.SafetensorsProvenance(
             contentSHA256: md[SafetensorsFile.contentHashKey],
@@ -434,7 +510,6 @@ enum SafetensorsModelIO {
             parentModelID: md[Key.parentModelID] ?? "",
             notes: md[Key.notes] ?? "",
             trainerSchedule: trainerSchedule,
-            trainerPolicyTailPrecision: trainerPolicyTailPrecision,
             trainerGradNormHistory: trainerGradNormHistory
         )
         // What `training_step` means in this file (format v11 or its

@@ -1715,9 +1715,6 @@ final class ChessTrainer: @unchecked Sendable {
     /// `.level0` trainer and check whether the level-1 codegen path is what
     /// turns bf16 multi-step gradients non-finite.
     let executableOptimizationLevel: MPSGraphOptimization
-    /// Where the policy head's fp32 tail begins in every `ChessNetwork` the
-    /// trainer builds (see `ChessNetwork.PolicyTailPrecision`).
-    let policyTailPrecision: ChessNetwork.PolicyTailPrecision
     /// A/B knob for the macOS-27 NaN-isolation matrix: when true, every
     /// `ChessNetwork` this trainer builds calls `disableAutoLayoutConversion()`
     /// on its `MPSGraph`, opting out of the new (Xcode 27 b1 / macOS 27 beta)
@@ -2228,7 +2225,6 @@ final class ChessTrainer: @unchecked Sendable {
         initialization: WeightInitialization,
         executableOptimizationLevel: MPSGraphOptimization = .level1,
         splitWorkingWeightSync: Bool = true,
-        policyTailPrecision: ChessNetwork.PolicyTailPrecision = .process,
         disableAutoLayoutConversion: Bool = false,
         reducedPrecisionFastMathRaw: UInt? = nil
     ) throws {
@@ -2254,11 +2250,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.arch = arch
         self.executableOptimizationLevel = executableOptimizationLevel
         self.splitWorkingWeightSync = splitWorkingWeightSync
-        self.policyTailPrecision = policyTailPrecision
         self.disableAutoLayoutConversion = disableAutoLayoutConversion
         self.reducedPrecisionFastMathRaw = reducedPrecisionFastMathRaw
         let net = try ChessNetwork(arch: arch, bnMode: .training, initialization: initialization,
-                                   policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
         net.commandQueue.label = "ChessTrainer.net(init)"
@@ -2494,7 +2488,6 @@ final class ChessTrainer: @unchecked Sendable {
 
     private func internalResetNetwork(initialization: WeightInitialization) throws {
         let net = try ChessNetwork(arch: arch, bnMode: .training, initialization: initialization,
-                                   policyTailPrecision: policyTailPrecision,
                                    disableAutoLayoutConversion: disableAutoLayoutConversion,
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
         net.commandQueue.label = "ChessTrainer.net(reset)"
@@ -4551,8 +4544,8 @@ final class ChessTrainer: @unchecked Sendable {
         let names: [String]
         /// How many leading entries of `names` are trainables.
         let trainableCount: Int
+        /// Carries the policy tail precision the weights were built under.
         let architecture: NetworkArchitecture
-        let policyTailPrecision: ChessNetwork.PolicyTailPrecision
         /// Working weights in the compute dtype, parallel to `names`.
         let weights: [[Float]]
         /// SGD steps the weights include.
@@ -4577,8 +4570,8 @@ final class ChessTrainer: @unchecked Sendable {
     /// rewind), which the caller detects through `weightIdentityState`; the
     /// working-weight export runs on the network's queue under
     /// `weightAccessLock`, as in `exportWeightsWithCompletedSteps`, and no
-    /// holder of that lock waits on this queue. The variable names, the
-    /// architecture and the tail precision are read in the same turn because
+    /// holder of that lock waits on this queue. The variable names and the
+    /// architecture (with its tail precision) are read in the same turn because
     /// `internalResetNetwork` replaces `network` on this queue.
     ///
     /// Costs two extra GPU readbacks (masters, velocity — each the size of the
@@ -4606,7 +4599,7 @@ final class ChessTrainer: @unchecked Sendable {
             }
             return AnalysisState(
                 names: names, trainableCount: trainableCount, architecture: network.arch,
-                policyTailPrecision: network.policyTailPrecision, weights: weights,
+                weights: weights,
                 completedSteps: completedSteps, masters: masters.isEmpty ? nil : masters, velocity: velocity)
         }
     }

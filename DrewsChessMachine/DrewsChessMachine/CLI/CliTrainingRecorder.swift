@@ -962,9 +962,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
         var policyLabelSmoothingMode: String? = nil
         var policyLabelSmoothingPerMove: Double? = nil
         var policyLabelSmoothingPerMoveCap: Double? = nil
-        /// The process's policy-head tail precision
-        /// (`ChessNetwork.PolicyTailPrecision.process`), which every network
-        /// and trainer of the run is built with. Nil only on a construction
+        /// The trainer architecture's policy-head tail precision
+        /// (`PolicyTailPrecisionSetting` raw value; format v12 — before it
+        /// the process-wide launch flag's value). Nil only on a construction
         /// site that predates it; every production call site sets it.
         var policyTailPrecision: String? = nil
         /// The run's lineage totals at this tick (`LineageTracker.totals`):
@@ -1407,6 +1407,7 @@ extension CliTrainingRecorder.StatsLine {
         valueLogitMean: Double?,
         batchSize: Int,
         trainerHyperparameters hyperparameters: TrainerHyperparameters,
+        policyTailPrecision: PolicyTailPrecisionSetting,
         cycleValues: LRMomentumCycle.Values,
         buildNumber: Int,
         trainerID: String,
@@ -1466,7 +1467,7 @@ extension CliTrainingRecorder.StatsLine {
         policyLabelSmoothingMode = hyperparameters.policyLabelSmoothingMode.logToken
         policyLabelSmoothingPerMove = Double(hyperparameters.policyLabelSmoothingPerMove)
         policyLabelSmoothingPerMoveCap = Double(hyperparameters.policyLabelSmoothingPerMoveCap)
-        policyTailPrecision = ChessNetwork.PolicyTailPrecision.process.rawValue
+        self.policyTailPrecision = policyTailPrecision.rawValue
     }
 }
 

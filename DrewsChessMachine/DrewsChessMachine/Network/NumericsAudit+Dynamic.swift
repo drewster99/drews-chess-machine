@@ -2,13 +2,19 @@ import Foundation
 
 // MARK: - Dynamic checks
 //
-// The same weights are built as one audit network per format (fp32, bf16,
-// fp16; `ChessNetwork(analysisTaps:)`), and the position set is run through
-// each. The fp32 build is the reference: the heads are compared against it
-// (value ties, cross-entropy against game results, W/D/L error; policy KL,
-// top-move changes and ties, the legal-logit level and spread), and every
-// analysis tap gets per-format range, headroom, channel offset-to-spread, and
-// error against the fp32 values.
+// The same weights are built as one audit network per build — fp32, and
+// bf16 and fp16 under each policy tail precision a reduced-precision model
+// can have (`AuditBuild`; `ChessNetwork(analysisTaps:)`) — and the position
+// set is run through each. The fp32 build is the reference: the heads are
+// compared against it (value ties, cross-entropy against game results, W/D/L
+// error; policy KL, top-move changes and ties, the legal-logit level and
+// spread), and every analysis tap gets per-build range, headroom, channel
+// offset-to-spread, and error against the fp32 values.
+//
+// Why both tails in one run: the tail is an architecture field (format v12),
+// so the audited model states one, but what the other would cost is the
+// question the comparison answers. Before v12 that took two runs of the CLI
+// under the two values of the removed `--policy-tail-precision` flag.
 
 extension NumericsAudit {
 
@@ -19,8 +25,38 @@ extension NumericsAudit {
 
     // MARK: Result types
 
+    /// One audit network: a numeric format, and the policy tail its
+    /// architecture is built with (`does_not_apply` exactly for fp32).
+    struct AuditBuild: Codable, Hashable, Sendable {
+        let format: NumericFormat
+        let policyTail: PolicyTailPrecisionSetting
+
+        /// The fp32 build every other build is compared against.
+        static let reference = AuditBuild(format: .fp32, policyTail: .doesNotApply)
+
+        /// Every build the dynamic checks run, reference first: fp32, then
+        /// each reduced format under each reduced-precision tail.
+        static let all: [AuditBuild] = [reference] + NumericFormat.allCases
+            .filter { $0 != .fp32 }
+            .flatMap { format in
+                PolicyTailPrecisionSetting.reducedPrecisionCases.map { AuditBuild(format: format, policyTail: $0) }
+            }
+
+        /// `bf16/mixed_final_projection`; just the format for fp32.
+        var label: String {
+            policyTail == .doesNotApply ? format.rawValue : "\(format.rawValue)/\(policyTail.rawValue)"
+        }
+
+        /// `arch` built as this build: its compute dtype and tail replaced
+        /// through the one function that keeps them consistent.
+        func architecture(from arch: NetworkArchitecture) throws -> NetworkArchitecture {
+            try arch.withComputeDataType(format.computeDataType, tail: policyTail)
+        }
+    }
+
     struct ValueHeadFormatReport: Codable, Sendable {
         let format: NumericFormat
+        let policyTail: PolicyTailPrecisionSetting
         let nonFiniteFraction: Double
         /// Positions with two or more W/D/L logits exactly equal.
         let tieFraction: Double
@@ -40,6 +76,7 @@ extension NumericsAudit {
 
     struct PolicyHeadFormatReport: Codable, Sendable {
         let format: NumericFormat
+        let policyTail: PolicyTailPrecisionSetting
         let nonFiniteFraction: Double
         /// Mean KL(fp32 ‖ format) over the legal-move softmax.
         let klMean: Double?
@@ -57,6 +94,7 @@ extension NumericsAudit {
 
     struct TapFormatReport: Codable, Sendable {
         let format: NumericFormat
+        let policyTail: PolicyTailPrecisionSetting
         let maxAbs: Double
         let minNonzeroAbs: Double?
         let nonFiniteFraction: Double
@@ -80,8 +118,9 @@ extension NumericsAudit {
 
     struct DynamicResult: Codable, Sendable {
         let positions: PositionSetSummary
-        let formatsBuilt: [NumericFormat]
-        /// Formats whose network couldn't be built, with the error.
+        let buildsBuilt: [AuditBuild]
+        /// Builds whose network couldn't be built, by `AuditBuild.label`,
+        /// with the error.
         let formatBuildErrors: [String: String]
         let valueHead: [ValueHeadFormatReport]?
         /// Why there is no value-head report, when there isn't one.
@@ -95,31 +134,28 @@ extension NumericsAudit {
     static func runDynamic(
         weights: [[Float]],
         arch: NetworkArchitecture,
-        positions: PositionSet,
-        policyTailPrecision: ChessNetwork.PolicyTailPrecision
+        positions: PositionSet
     ) async throws -> DynamicResult {
         guard !positions.positions.isEmpty else { throw NumericsAuditError.positionSetEmpty }
 
-        var networks: [(format: NumericFormat, network: ChessNetwork)] = []
+        var networks: [(build: AuditBuild, network: ChessNetwork)] = []
         var buildErrors: [String: String] = [:]
-        for format in NumericFormat.allCases {
-            var formatArch = arch
-            formatArch.computeDataType = format.computeDataType
+        for build in AuditBuild.all {
             do {
-                let network = try await buildAuditNetwork(arch: formatArch, policyTailPrecision: policyTailPrecision)
+                let network = try await buildAuditNetwork(arch: try build.architecture(from: arch))
                 try await network.loadWeights(weights)
-                networks.append((format, network))
+                networks.append((build, network))
             } catch {
                 // Without the fp32 reference nothing can be compared.
-                if format == .fp32 {
-                    throw NumericsAuditError.formatBuildFailed(format: format, error: "\(error)")
+                if build == .reference {
+                    throw NumericsAuditError.formatBuildFailed(format: build.format, error: "\(error)")
                 }
-                buildErrors[format.rawValue] = "\(error)"
+                buildErrors[build.label] = "\(error)"
             }
         }
 
         let accumulator = DynamicAccumulator(
-            formats: networks.map(\.format),
+            builds: networks.map(\.build),
             valueClasses: arch.valueHeadClasses
         )
         let all = positions.positions
@@ -130,30 +166,27 @@ extension NumericsAudit {
             var boards: [Float] = []
             boards.reserveCapacity(batch.count * planeCount)
             for position in batch { boards.append(contentsOf: position.board) }
-            var outputs: [NumericFormat: [ChessNetwork.AnalysisTapValues]] = [:]
-            for (format, network) in networks {
-                outputs[format] = try await network.evaluateAnalysisTaps(boards: boards, count: batch.count)
+            var outputs: [AuditBuild: [ChessNetwork.AnalysisTapValues]] = [:]
+            for (build, network) in networks {
+                outputs[build] = try await network.evaluateAnalysisTaps(boards: boards, count: batch.count)
             }
             let isFirstBatch = start == 0
             try await accumulate(accumulator: accumulator, batch: batch, outputs: outputs, isFirstBatch: isFirstBatch)
             start += batch.count
         }
 
-        return try accumulator.result(positions: positions.summary, formatsBuilt: networks.map(\.format), buildErrors: buildErrors)
+        return try accumulator.result(positions: positions.summary, buildsBuilt: networks.map(\.build), buildErrors: buildErrors)
     }
 
     /// Build an audit network off the cooperative pool (graph construction
-    /// is long synchronous work). `policyTailPrecision` is moot for the fp32
-    /// build, where the whole graph is fp32 either way.
-    private static func buildAuditNetwork(
-        arch: NetworkArchitecture, policyTailPrecision: ChessNetwork.PolicyTailPrecision
-    ) async throws -> ChessNetwork {
+    /// is long synchronous work), at `arch`'s own compute dtype and policy
+    /// tail.
+    private static func buildAuditNetwork(arch: NetworkArchitecture) async throws -> ChessNetwork {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     continuation.resume(returning: try ChessNetwork(
-                        arch: arch, bnMode: .inference, initialization: .overwrittenByLoad,
-                        policyTailPrecision: policyTailPrecision, analysisTaps: true))
+                        arch: arch, bnMode: .inference, initialization: .overwrittenByLoad, analysisTaps: true))
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -168,7 +201,7 @@ extension NumericsAudit {
     private static func accumulate(
         accumulator: DynamicAccumulator,
         batch: [AuditPosition],
-        outputs: [NumericFormat: [ChessNetwork.AnalysisTapValues]],
+        outputs: [AuditBuild: [ChessNetwork.AnalysisTapValues]],
         isFirstBatch: Bool
     ) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -185,32 +218,39 @@ extension NumericsAudit {
 
     static func dynamicFindings(_ result: DynamicResult) -> [Finding] {
         var findings: [Finding] = []
-        for (format, error) in result.formatBuildErrors.sorted(by: { $0.key < $1.key }) {
-            findings.append(Finding(area: "network build", subject: format, format: NumericFormat(rawValue: format), verdict: .bad, detail: error))
+        let failedBuilds = Dictionary(uniqueKeysWithValues: AuditBuild.all.map { ($0.label, $0) })
+        for (label, error) in result.formatBuildErrors.sorted(by: { $0.key < $1.key }) {
+            findings.append(Finding(area: "network build", subject: label, format: failedBuilds[label]?.format, verdict: .bad, detail: error))
         }
         if let valueHead = result.valueHead {
             for report in valueHead where report.verdict != .fine {
                 findings.append(Finding(
-                    area: "value head", subject: "W/D/L", format: report.format, verdict: report.verdict,
+                    area: "value head", subject: "W/D/L" + tailSuffix(report.policyTail), format: report.format, verdict: report.verdict,
                     detail: "ties \(fmt(report.tieFraction)), CE delta \(fmt(report.crossEntropyDeltaVsFP32)), mean |dv| \(fmt(report.meanAbsDeltaV)), shared logit median \(fmt(report.sharedLogitPercentiles.count > 2 ? report.sharedLogitPercentiles[2] : nil))"
                 ))
             }
         }
         for report in result.policyHead where report.verdict != .fine {
             findings.append(Finding(
-                area: "policy head", subject: "legal moves", format: report.format, verdict: report.verdict,
+                area: "policy head", subject: "legal moves" + tailSuffix(report.policyTail), format: report.format, verdict: report.verdict,
                 detail: "KL \(fmt(report.klMean)), top-2 ties \(fmt(report.top2TieFraction)), top-1 changed \(fmt(report.top1ChangedFraction)), legal level median \(fmt(report.legalMeanPercentiles.count > 2 ? report.legalMeanPercentiles[2] : nil))"
             ))
         }
         for tap in result.taps {
             for report in tap.perFormat where report.verdict != .fine {
                 findings.append(Finding(
-                    area: "activations", subject: tap.name, format: report.format, verdict: report.verdict,
+                    area: "activations", subject: tap.name + tailSuffix(report.policyTail), format: report.format, verdict: report.verdict,
                     detail: "max |x| \(fmt(report.maxAbs)), headroom \(fmt(report.headroomToFormatMax)), max channel |mean|/std \(fmt(report.maxChannelOffsetToSpread)), error vs fp32 \(fmt(report.relativeRMSErrorVsFP32)), non-finite \(fmt(report.nonFiniteFraction))"
                 ))
             }
         }
         return findings
+    }
+
+    /// ` (policy tail <value>)` for a reduced-precision build's finding, so
+    /// the two tails' findings for one format stay apart; empty for fp32.
+    private static func tailSuffix(_ tail: PolicyTailPrecisionSetting) -> String {
+        tail == .doesNotApply ? "" : " (policy tail \(tail.rawValue))"
     }
 }
 
@@ -266,24 +306,26 @@ private final class DynamicAccumulator: @unchecked Sendable {
         var allMoveMeans: [Double] = []
     }
 
-    let formats: [NumericFormat]
+    typealias AuditBuild = NumericsAudit.AuditBuild
+
+    let builds: [AuditBuild]
     let valueClasses: Int
     private var tapOrder: [String] = []
-    private var taps: [String: [NumericFormat: TapStats]] = [:]
-    private var value: [NumericFormat: ValueStats] = [:]
-    private var policy: [NumericFormat: PolicyStats] = [:]
+    private var taps: [String: [AuditBuild: TapStats]] = [:]
+    private var value: [AuditBuild: ValueStats] = [:]
+    private var policy: [AuditBuild: PolicyStats] = [:]
 
-    init(formats: [NumericFormat], valueClasses: Int) {
-        self.formats = formats
+    init(builds: [AuditBuild], valueClasses: Int) {
+        self.builds = builds
         self.valueClasses = valueClasses
-        for format in formats {
-            value[format] = ValueStats()
-            policy[format] = PolicyStats()
+        for build in builds {
+            value[build] = ValueStats()
+            policy[build] = PolicyStats()
         }
     }
 
-    func add(batch: [NumericsAudit.AuditPosition], outputs: [NumericFormat: [ChessNetwork.AnalysisTapValues]], isFirstBatch: Bool) throws {
-        guard let reference = outputs[.fp32] else { throw NumericsAuditError.tapMissing("fp32 reference outputs") }
+    func add(batch: [NumericsAudit.AuditPosition], outputs: [AuditBuild: [ChessNetwork.AnalysisTapValues]], isFirstBatch: Bool) throws {
+        guard let reference = outputs[.reference] else { throw NumericsAuditError.tapMissing("fp32 reference outputs") }
         let count = batch.count
         if tapOrder.isEmpty {
             tapOrder = reference.map(\.name)
@@ -291,8 +333,8 @@ private final class DynamicAccumulator: @unchecked Sendable {
         var referenceByName: [String: ChessNetwork.AnalysisTapValues] = [:]
         for tap in reference { referenceByName[tap.name] = tap }
 
-        for format in formats {
-            guard let formatOutputs = outputs[format] else { throw NumericsAuditError.tapMissing("\(format.rawValue) outputs") }
+        for build in builds {
+            guard let formatOutputs = outputs[build] else { throw NumericsAuditError.tapMissing("\(build.label) outputs") }
             var byName: [String: ChessNetwork.AnalysisTapValues] = [:]
             for tap in formatOutputs { byName[tap.name] = tap }
 
@@ -302,7 +344,7 @@ private final class DynamicAccumulator: @unchecked Sendable {
                     throw NumericsAuditError.tapShapeMismatch(name: name, detail: "shape \(tap.shape) for \(count) positions")
                 }
                 // Accumulators start empty on a tap's first batch.
-                accumulateTap(&taps[name, default: [:]][format, default: TapStats()], tap: tap, reference: ref)
+                accumulateTap(&taps[name, default: [:]][build, default: TapStats()], tap: tap, reference: ref)
             }
 
             guard let policyTap = byName["policy_logits"], let policyRef = referenceByName["policy_logits"] else {
@@ -315,15 +357,15 @@ private final class DynamicAccumulator: @unchecked Sendable {
             let policyWidth = policyTap.values.count / count
             let valueWidth = valueTap.values.count / count
             for (row, position) in batch.enumerated() {
-                accumulatePolicy(format: format, row: row, width: policyWidth, logits: policyTap.values, reference: policyRef.values, legal: position.legalPolicyIndices)
+                accumulatePolicy(build: build, row: row, width: policyWidth, logits: policyTap.values, reference: policyRef.values, legal: position.legalPolicyIndices)
                 if valueWidth == 3 {
-                    accumulateValue(format: format, row: row, logits: valueTap.values, reference: valueRef.values, target: position.valueTarget)
+                    accumulateValue(build: build, row: row, logits: valueTap.values, reference: valueRef.values, target: position.valueTarget)
                 }
             }
-            if isFirstBatch, var stats = value[format] {
+            if isFirstBatch, var stats = value[build] {
                 let probsWidth = probsTap.values.count / count
                 stats.startWDL = probsTap.values[0..<probsWidth].map { Double($0) }
-                value[format] = stats
+                value[build] = stats
             }
         }
     }
@@ -371,8 +413,8 @@ private final class DynamicAccumulator: @unchecked Sendable {
         }
     }
 
-    private func accumulatePolicy(format: NumericFormat, row: Int, width: Int, logits: [Float], reference: [Float], legal: [Int]) {
-        guard var stats = policy[format] else { return }
+    private func accumulatePolicy(build: AuditBuild, row: Int, width: Int, logits: [Float], reference: [Float], legal: [Int]) {
+        guard var stats = policy[build] else { return }
         stats.positions += 1
         let base = row * width
         var allSum = 0.0
@@ -384,7 +426,7 @@ private final class DynamicAccumulator: @unchecked Sendable {
         }
         guard finite, !legal.isEmpty else {
             if !finite { stats.nonFinite += 1 }
-            policy[format] = stats
+            policy[build] = stats
             return
         }
         stats.allMoveMeans.append(allSum / Double(width))
@@ -412,17 +454,17 @@ private final class DynamicAccumulator: @unchecked Sendable {
             stats.top1Count += 1
             if Self.argmax(ref) != Self.argmax(own) { stats.top1Changed += 1 }
         }
-        policy[format] = stats
+        policy[build] = stats
     }
 
-    private func accumulateValue(format: NumericFormat, row: Int, logits: [Float], reference: [Float], target: Int?) {
-        guard var stats = value[format] else { return }
+    private func accumulateValue(build: AuditBuild, row: Int, logits: [Float], reference: [Float], target: Int?) {
+        guard var stats = value[build] else { return }
         stats.positions += 1
         let own = (0..<3).map { Double(logits[row * 3 + $0]) }
         let ref = (0..<3).map { Double(reference[row * 3 + $0]) }
         guard own.allSatisfy({ $0.isFinite }) else {
             stats.nonFinite += 1
-            value[format] = stats
+            value[build] = stats
             return
         }
         if own[0] == own[1] || own[0] == own[2] || own[1] == own[2] { stats.ties += 1 }
@@ -439,7 +481,7 @@ private final class DynamicAccumulator: @unchecked Sendable {
             stats.argmaxCount += 1
             if Self.argmax(own) != Self.argmax(ref) { stats.argmaxChanged += 1 }
         }
-        value[format] = stats
+        value[build] = stats
     }
 
     private static func softmax(_ logits: [Double]) -> [Double] {
@@ -478,17 +520,17 @@ private final class DynamicAccumulator: @unchecked Sendable {
         whole > 0 ? Double(part) / Double(whole) : 0
     }
 
-    func result(positions: NumericsAudit.PositionSetSummary, formatsBuilt: [NumericFormat], buildErrors: [String: String]) throws -> NumericsAudit.DynamicResult {
+    func result(positions: NumericsAudit.PositionSetSummary, buildsBuilt: [AuditBuild], buildErrors: [String: String]) throws -> NumericsAudit.DynamicResult {
         typealias T = NumericsAudit.Threshold
 
-        let referenceValue = value[.fp32]
+        let referenceValue = value[.reference]
         let referenceCE: Double? = referenceValue.flatMap { $0.ceCount > 0 ? $0.ceSum / Double($0.ceCount) : nil }
 
         var valueReports: [NumericsAudit.ValueHeadFormatReport]?
         var valueNote: String?
         if valueClasses == 3 {
-            valueReports = formats.compactMap { format in
-                guard let s = value[format] else { return nil }
+            valueReports = builds.compactMap { build in
+                guard let s = value[build] else { return nil }
                 let ce: Double? = s.ceCount > 0 ? s.ceSum / Double(s.ceCount) : nil
                 let ceDelta: Double? = ce.flatMap { own in referenceCE.map { own - $0 } }
                 let ties = Self.fraction(s.ties, s.positions)
@@ -500,7 +542,8 @@ private final class DynamicAccumulator: @unchecked Sendable {
                     verdict = .degraded
                 }
                 return NumericsAudit.ValueHeadFormatReport(
-                    format: format,
+                    format: build.format,
+                    policyTail: build.policyTail,
                     nonFiniteFraction: nonFinite,
                     tieFraction: ties,
                     crossEntropyMean: ce,
@@ -516,8 +559,8 @@ private final class DynamicAccumulator: @unchecked Sendable {
             valueNote = "the value head has \(valueClasses) output(s), not W/D/L; its checks don't apply"
         }
 
-        let policyReports: [NumericsAudit.PolicyHeadFormatReport] = formats.compactMap { format in
-            guard let s = policy[format] else { return nil }
+        let policyReports: [NumericsAudit.PolicyHeadFormatReport] = builds.compactMap { build in
+            guard let s = policy[build] else { return nil }
             let kl: Double? = s.klCount > 0 ? s.klSum / Double(s.klCount) : nil
             let ties = Self.fraction(s.top2Ties, s.top2Count)
             let nonFinite = Self.fraction(s.nonFinite, s.positions)
@@ -528,7 +571,8 @@ private final class DynamicAccumulator: @unchecked Sendable {
                 verdict = .degraded
             }
             return NumericsAudit.PolicyHeadFormatReport(
-                format: format,
+                format: build.format,
+                policyTail: build.policyTail,
                 nonFiniteFraction: nonFinite,
                 klMean: kl,
                 top1ChangedFraction: s.top1Count > 0 ? Self.fraction(s.top1Changed, s.top1Count) : nil,
@@ -542,14 +586,15 @@ private final class DynamicAccumulator: @unchecked Sendable {
 
         var tapReports: [NumericsAudit.TapReport] = []
         for name in tapOrder {
-            guard let perFormat = taps[name], let reference = perFormat[.fp32] else { throw NumericsAuditError.tapMissing(name) }
+            guard let perFormat = taps[name], let reference = perFormat[.reference] else { throw NumericsAuditError.tapMissing(name) }
             let referenceCount = reference.total - reference.nonFinite
             let referenceStd: Double? = referenceCount > 0
                 ? max(0, reference.sumSq / Double(referenceCount) - pow(reference.sum / Double(referenceCount), 2)).squareRoot()
                 : nil
             let isNormalizationInput = name.hasSuffix("_input")
-            let reports: [NumericsAudit.TapFormatReport] = formats.compactMap { format in
-                guard let s = perFormat[format] else { return nil }
+            let reports: [NumericsAudit.TapFormatReport] = builds.compactMap { build in
+                guard let s = perFormat[build] else { return nil }
+                let format = build.format
                 var ratios: [Double] = []
                 for c in 0..<s.channelSum.count where s.channelCount[c] > 0 {
                     let n = Double(s.channelCount[c])
@@ -576,6 +621,7 @@ private final class DynamicAccumulator: @unchecked Sendable {
                 }
                 return NumericsAudit.TapFormatReport(
                     format: format,
+                    policyTail: build.policyTail,
                     maxAbs: s.maxAbs,
                     minNonzeroAbs: s.minNonzeroAbs.isFinite ? s.minNonzeroAbs : nil,
                     nonFiniteFraction: nonFinite,
@@ -591,7 +637,7 @@ private final class DynamicAccumulator: @unchecked Sendable {
 
         return NumericsAudit.DynamicResult(
             positions: positions,
-            formatsBuilt: formatsBuilt,
+            buildsBuilt: buildsBuilt,
             formatBuildErrors: buildErrors,
             valueHead: valueReports,
             valueHeadNote: valueNote,

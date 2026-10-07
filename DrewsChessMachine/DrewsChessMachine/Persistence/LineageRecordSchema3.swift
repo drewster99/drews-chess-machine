@@ -208,8 +208,10 @@ extension LineageRecord {
         /// path-dependent invariant reads (never the record's own
         /// `invocation.path_kind`, which a derive or copy replaces).
         let pathKind: PathKind
-        /// The process-wide policy-tail precision the trainer ran
-        /// (`ChessNetwork.PolicyTailPrecision`), as its token.
+        /// The policy-tail precision the trainer ran, as its token
+        /// (`PolicyTailPrecisionSetting`): from format v12 the trainer
+        /// architecture's (`does_not_apply` on fp32); before it the
+        /// process-wide launch flag's value, recorded whatever the dtype.
         let policyTailPrecision: String
         let budget: Budget
         /// Every committed settings change during the segment, in commit
@@ -312,7 +314,7 @@ extension LineageRecord {
             case .gui, .replay, .vsuci:
                 break
             }
-            guard ChessNetwork.PolicyTailPrecision(rawValue: policyTailPrecision) != nil else {
+            guard PolicyTailPrecisionSetting(rawValue: policyTailPrecision) != nil else {
                 throw SchemaError.invalidConfiguration("policy_tail_precision '\(policyTailPrecision)' is not a known precision")
             }
             guard (vsuci != nil) == (pathKind == .vsuci) else {

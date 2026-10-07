@@ -547,9 +547,6 @@ final class ChessNetwork: @unchecked Sendable {
         if awaitingWeightLoad.value { throw ChessNetworkError.weightsNotLoaded(operation: operation) }
     }
 
-    /// Where the policy head's fp32 tail begins (see `PolicyTailPrecision`).
-    let policyTailPrecision: PolicyTailPrecision
-
     /// When true, every `graph.compile` site sets `disableAutoLayoutConversion`
     /// on its `MPSGraphCompilationDescriptor`, opting out of the new (Xcode 27 b1
     /// / macOS 27 beta) default that auto-converts conv layouts on the GPU. A/B
@@ -579,11 +576,10 @@ final class ChessNetwork: @unchecked Sendable {
     /// copy whose BN layers compute fresh batch stats on every forward pass
     /// (used by ChessTrainer for accurate training-step benchmarks).
     ///
-    /// `policyTailPrecision` defaults to the process's value
-    /// (`PolicyTailPrecision.process`).
+    /// The policy head's fp32 tail is `arch.policyTailPrecision` (format v12;
+    /// see `PolicyTailPrecisionSetting`).
     init(arch: NetworkArchitecture = .current, bnMode: BNMode = .inference,
          initialization: WeightInitialization,
-         policyTailPrecision: PolicyTailPrecision = .process,
          disableAutoLayoutConversion: Bool = false,
          reducedPrecisionFastMathRaw: UInt? = nil,
          analysisTaps: Bool = false) throws {
@@ -605,7 +601,6 @@ final class ChessNetwork: @unchecked Sendable {
         self.arch = arch
         self.initialization = initialization
         self.awaitingWeightLoad = SyncBox(initialization == .overwrittenByLoad)
-        self.policyTailPrecision = policyTailPrecision
         // macOS 27 / Xcode 27 b1 made automatic NCHW->NHWC layout conversion for
         // GPU convolutions the default (`MPSGraphCompilationDescriptor.convertLayoutToNHWC`
         // is now a deprecated no-op; the opt-out is the new
@@ -935,7 +930,7 @@ final class ChessNetwork: @unchecked Sendable {
 
         let policy = try Self.policyHead(
             graph: g, arch: arch, input: policyHeadInput, inputChannels: arch.policyHeadInputChannels,
-            descriptor: conv1x1, bnMode: bnMode, taps: taps, tailPrecision: policyTailPrecision,
+            descriptor: conv1x1, bnMode: bnMode, taps: taps, tailPrecision: arch.policyTailPrecision,
             variableDataType: computeDType,
             initializer: initializer,
             trainables: &trainables,
@@ -3105,6 +3100,14 @@ final class ChessNetwork: @unchecked Sendable {
     ///
     /// `finalWeights` is the *final* logit-projection conv (128→76), not
     /// the intermediate one — that is what `policyHeadFinalWeights` feeds.
+    ///
+    /// `tailPrecision` is the architecture's (`PolicyTailPrecisionSetting`).
+    /// An fp32 model's `doesNotApply` takes the `mixedFinalProjection`
+    /// branch: on fp32 every widen is the identity and both branches build
+    /// the same arithmetic (pinned by `PolicyTailPrecisionTests` and the fp32
+    /// fixture of `StandardPathForwardPinTests`), and that branch is the
+    /// graph fp32 models were built as under the build default since
+    /// `de0f22be`, node names included.
     private static func policyHead(
         graph: MPSGraph,
         arch: NetworkArchitecture,
@@ -3113,7 +3116,7 @@ final class ChessNetwork: @unchecked Sendable {
         descriptor: MPSGraphConvolution2DOpDescriptor,
         bnMode: BNMode,
         taps: AnalysisTapRecorder?,
-        tailPrecision: PolicyTailPrecision,
+        tailPrecision: PolicyTailPrecisionSetting,
         variableDataType: MPSDataType,
         initializer: TensorInitializer,
         trainables: inout [MPSGraphTensor],
@@ -3159,7 +3162,7 @@ final class ChessNetwork: @unchecked Sendable {
                 x = graph.convolution2D(
                     tailInput, weights: widenToHeadTail(convW, graph: graph, name: nil),
                     descriptor: descriptor, name: "policy_conv")
-            case .mixedFinalProjection:
+            case .mixedFinalProjection, .doesNotApply:
                 x = graph.convolution2D(input, weights: convW, descriptor: descriptor, name: "policy_conv")
                 x = widenToHeadTail(x, graph: graph, name: "policy_conv_output_f32")
             }
@@ -3189,7 +3192,7 @@ final class ChessNetwork: @unchecked Sendable {
                     variableDataType: variableDataType,
                     trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                     runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
-            case .mixedFinalProjection:
+            case .mixedFinalProjection, .doesNotApply:
                 x = batchNorm(graph: graph, input: x, channels: pK, gammaInitValue: Self.standardBatchNormGamma, name: "policy_pre_bn", taps: taps, bnMode: bnMode,
                     dataType: Self.mpsDataType(for: arch),
                     variableDataType: variableDataType,
@@ -3215,7 +3218,7 @@ final class ChessNetwork: @unchecked Sendable {
                 x = graph.convolution2D(
                     x, weights: widenToHeadTail(convW, graph: graph, name: nil),
                     descriptor: descriptor, name: "policy_conv")
-            case .mixedFinalProjection:
+            case .mixedFinalProjection, .doesNotApply:
                 x = graph.convolution2D(x, weights: convW, descriptor: descriptor, name: "policy_conv")
                 x = widenToHeadTail(x, graph: graph, name: "policy_conv_output_f32")
             }
@@ -3241,7 +3244,7 @@ final class ChessNetwork: @unchecked Sendable {
                     variableDataType: variableDataType,
                     trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
                     runningStatsAssignOps: &runningStatsAssignOps, batchMeans: &batchMeans, batchVars: &batchVars)
-            case .mixedFinalProjection:
+            case .mixedFinalProjection, .doesNotApply:
                 x = batchNorm(graph: graph, input: x, channels: pK, gammaInitValue: Self.standardBatchNormGamma, name: "policy_pre_bn", taps: taps, bnMode: bnMode,
                     dataType: Self.mpsDataType(for: arch),
                     variableDataType: variableDataType,
@@ -3268,114 +3271,12 @@ final class ChessNetwork: @unchecked Sendable {
             case .float32FromPreBatchNorm:
                 x = graph.matrixMultiplication(
                     primary: x, secondary: widenToHeadTail(fcW, graph: graph, name: nil), name: "policy_fc")
-            case .mixedFinalProjection:
+            case .mixedFinalProjection, .doesNotApply:
                 x = graph.matrixMultiplication(primary: x, secondary: fcW, name: "policy_fc")
                 x = widenToHeadTail(x, graph: graph, name: "policy_fc_output_f32")
             }
             let logits = graph.addition(x, widenToHeadTail(fcBias, graph: graph, name: nil), name: "policy_fc_bias_add")
             return (output: logits, finalWeights: fcW)
-        }
-    }
-
-    /// Where the policy head leaves the compute dtype for fp32. Not an
-    /// architecture field and not saved with a model: the weights are
-    /// identical under both, only the graph's arithmetic differs.
-    ///
-    /// Why there are two: the head-numerics fix first started the fp32 tail
-    /// at the policy pre-BN. That cost training throughput, because the final
-    /// projection left the bf16-input conv kernels for generic fp32 ones and
-    /// BN / ReLU ran in fp32 over a twice-as-large tensor.
-    /// `mixedFinalProjection` keeps both in the compute dtype and widens only
-    /// the projection's output, which recovers most of that cost. What it
-    /// gives back: the policy features are rounded to the compute dtype before
-    /// the projection. On models trained with the fix that adds little to the
-    /// bf16-vs-fp32 policy divergence; on older weights whose projection
-    /// carries a large shared row it adds noticeably more (the numerics audit
-    /// measures it). `float32FromPreBatchNorm` stays selectable for that
-    /// comparison.
-    enum PolicyTailPrecision: String, CaseIterable, Sendable {
-        /// The precision every network is built with unless a caller asks
-        /// for another — the single source of the default.
-        static let `default`: PolicyTailPrecision = .mixedFinalProjection
-
-        /// fp32 from the pre-BN normalize on (from the final projection's
-        /// input for `simple_conv`, which has no pre-block).
-        case float32FromPreBatchNorm = "fp32_from_pre_bn"
-        /// Pre-block and final projection in the compute dtype; the
-        /// projection's output, its bias add and everything after are fp32.
-        case mixedFinalProjection = "mixed_final_projection"
-
-        /// The command-line flag that chooses the process's value.
-        static let flag = "--policy-tail-precision"
-
-        /// Where the process's value came from.
-        enum Source: String, Sendable {
-            case defaultValue = "default"
-            case flag
-        }
-
-        /// The process's value and its source.
-        struct Resolution: Sendable, Equatable {
-            let value: PolicyTailPrecision
-            let source: Source
-        }
-
-        enum ResolutionError: Error, Equatable, CustomStringConvertible {
-            case missingValue
-            case unknownValue(String)
-            case repeated(count: Int)
-
-            var description: String {
-                switch self {
-                case .missingValue:
-                    return "\(PolicyTailPrecision.flag) requires a value"
-                case .unknownValue(let raw):
-                    let allowed = PolicyTailPrecision.allCases.map(\.rawValue).joined(separator: ", ")
-                    return "\(PolicyTailPrecision.flag) expects one of \(allowed), got '\(raw)'"
-                case .repeated(let count):
-                    return "\(PolicyTailPrecision.flag) given \(count) times; give it at most once"
-                }
-            }
-        }
-
-        /// The one parser of `--policy-tail-precision`: the flag's value, or
-        /// `default` when the flag is absent. Every mode — the GUI, every
-        /// CLI, the numerics audit — resolves it here.
-        static func resolve(arguments: [String]) throws -> Resolution {
-            let positions = arguments.indices.filter { arguments[$0] == flag }
-            guard let position = positions.first else {
-                return Resolution(value: .default, source: .defaultValue)
-            }
-            guard positions.count == 1 else { throw ResolutionError.repeated(count: positions.count) }
-            let valueIndex = position + 1
-            guard valueIndex < arguments.count, !arguments[valueIndex].hasPrefix("--") else {
-                throw ResolutionError.missingValue
-            }
-            let raw = arguments[valueIndex]
-            guard let value = PolicyTailPrecision(rawValue: raw) else { throw ResolutionError.unknownValue(raw) }
-            return Resolution(value: value, source: .flag)
-        }
-
-        /// The value every network and trainer in this process is built
-        /// with unless a caller passes one explicitly — fixed for the life of
-        /// the process, because the app keeps its inference and arena
-        /// networks for the whole launch. `DrewsChessMachineApp.init` resolves
-        /// the same arguments first and exits on a bad flag, so the trap here
-        /// cannot be reached from a launch.
-        static let processResolution: Resolution = {
-            do {
-                return try resolve(arguments: CommandLine.arguments)
-            } catch {
-                preconditionFailure("\(error) — the launch-time check should have refused this")
-            }
-        }()
-
-        /// `processResolution.value`.
-        static var process: PolicyTailPrecision { processResolution.value }
-
-        /// One log line naming the process's value and where it came from.
-        static var processLogLine: String {
-            "[NUMERICS] policy_tail_precision=\(processResolution.value.rawValue) source=\(processResolution.source.rawValue) (affects bf16 / fp16 models only)"
         }
     }
 

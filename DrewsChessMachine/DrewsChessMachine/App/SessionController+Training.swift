@@ -1119,13 +1119,13 @@ extension SessionController {
             let fingerprintResult: Result<BehaviorFingerprint.Record, Error>
             do {
                 fingerprintResult = .success(try await BehaviorFingerprint.compute(
-                    for: .init(arch: trainer.arch, policyTailPrecision: trainer.policyTailPrecision)))
+                    for: .init(arch: trainer.arch)))
             } catch {
                 fingerprintResult = .failure(error)
             }
             let bufferRestoredIntoRun = replayBufferRestored
             let lineageStart: Result<LineageTracker, Error> = await MainActor.run {
-                SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
+                SessionLogger.shared.log(trainer.arch.policyTailLogLine)
                 // The lineage segment every save of this run takes its
                 // record from — begun (or continued) now that the trainer
                 // holds its starting state and the stats box exists.
@@ -2173,6 +2173,7 @@ extension SessionController {
                                 entry.recordGradientCap(gradientCapReading,
                                                         settings: policySmoothingConfig.relativeGradientCap)
                             }
+                            entry.policyTailPrecision = trainer.arch.policyTailPrecision.rawValue
                             recorder.appendStats(entry)
                         }
 
