@@ -9,6 +9,19 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Hyperparameter recording P4–P6: lineage schema 3, its documentation, the pre-lineage report
+
+Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (P4–P6; decisions under "Implementation notes ▸ P4").
+
+- **Lineage schema 3.** A record with training behind it states its segment's `configuration` (path kind, policy-tail precision, enforced budget, every settings edit during a GUI segment with the trainer step it applies from, every change of the data-generating champion, train-vs-UCI game generation with each opponent's executable hash and handshake `id` lines, self-play Dirichlet noise, value-head recentering of the start weights, the fed LR / momentum at the save, the replay-ratio controller's starts and state, the training-health summary), `run_seeds` (every seed it trained under, from its trainer step) and `ancestry` (each earlier run reached by branch or derive, with its totals at departure). Build gains `git_diff_sha256`, `xcode_build`, `sdk_build`, `configuration`; a corpus position names every corpus fed and where the segment's feed began. Schema-2 records (every file written before this) still load, read with all of it unrecorded, and are converted before any write.
+- **One schedule readout.** The trainer's feeds, its LR / momentum readouts and the record's `schedule_at_save` all come from `LRMomentumCycleReadout` (pinned bit for bit to the previous trainer readouts).
+- **Fixed: corpus replay ignored a parameters file's `training_time_limit`**; it now refuses the file (`[REPLAY] refused:`, exit 2). **Fixed: the replay-ratio controller's saved starting delay read 50 ms when nothing was saved**; it now starts from `training_step_delay_ms` and records which it used, and a stored non-integer stops the start with an error.
+- The `[RUN]` line gains `policy_tail=` and `git_diff=`.
+- `scripts/dcm_lineage.py` reads schemas 2 and 3 and adds `corpus_ids` and `weights_totals` (the totals behind the weights, adding runs left by a branch); `ckpt_inventory.py` reads both corpus shapes.
+- **P5:** CLAUDE.md "File lineage" documents schema 3, what schema 2 lacks, the schema-2 `git_dirty` meaning, the train-vs-UCI `session.json` τ note and which snapshot keys each path reads.
+- **P6:** `scripts/reconstruct_pre_lineage_params.py`, a read-only report pairing each pre-lineage model file with the session log that trained it and that log's hyperparameter lines.
+- Tests: `LineageSchema3Tests`, `LineageSchemaTwoFixtureTests` (two real schema-2 records, SHA-256 pinned), `LRMomentumCycleReadoutPinTests`, `RunBudgetAndSavedDelayTests`, `HealthAlarmsLineageTests`, `ParameterChangeJournalTests`, `UCIArbiterTests.testHandshakeReturnsTheEngineIdentity`; Python `test_lineage_schema3.py`, `test_reconstruct_pre_lineage_params.py`.
+
 ## 2026-10-06 — Training-health alarms on every training path (`d985a566`, `a6c8ccd5`)
 
 Plan: `documentation/plans-active/TRAINING_HEALTH_ALARMS_PLAN.md` (P2–P4; P1, the pure evaluator, landed earlier). Reference: `documentation/training-health-alarms.md`.

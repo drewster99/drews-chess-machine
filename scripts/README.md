@@ -111,6 +111,25 @@ log.
 python3 scripts/model_lineage_report.py 20260506-5-aoTz-2
 ```
 
+## reconstruct_pre_lineage_params.py
+
+Read-only report of which corpus-replay session log trained each model file
+written before lineage records (format ≤ 6), and that log's
+`[REPLAY-HPARAMS]` / `[REPLAY-CYCLE]` lines, labelled "reconstructed from
+logs" (HPARAM_RECORDING_PLAN gap 2, P6). A file is matched to a log only
+when file name, save time, step, parent model ID and the run's own model ID
+all agree; anything else is reported `unmatched` with the reason. It never
+writes into a model file, and its output is not measured data — never feed
+it to lineage tooling or the dashboards. `--log-timezone` is required (the
+logs carry local wall-clock times only); `--out` is refused if it exists.
+
+```sh
+python3 scripts/reconstruct_pre_lineage_params.py \
+    --models ~/Library/Application\ Support/DrewsChessMachine/Models \
+    --logs ~/Library/Logs/DrewsChessMachine --log-timezone America/Chicago \
+    --experiments experiments --out /tmp/pre-lineage-params.md
+```
+
 ## curate_lichess_probes.py
 
 One-time / occasional generator for the fixed Lichess puzzle probe sets. Reads

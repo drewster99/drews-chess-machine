@@ -57,6 +57,14 @@ actor UCIArbiter {
     /// The identity from the latest completed handshake; nil before one.
     private(set) var engineIdentity: EngineIdentity?
 
+    /// `engineIdentity`, read from outside the actor. (A bare `await` on the
+    /// property draws a spurious "no async operations" warning from this
+    /// compiler while omitting it is an error; a method call is an ordinary
+    /// actor hop.)
+    func completedHandshakeIdentity() -> EngineIdentity? {
+        engineIdentity
+    }
+
     /// A `setoption name <name> value <value>` pair applied during the
     /// handshake — e.g. `UCI_LimitStrength=true`, `UCI_Elo=1400`.
     struct Option: Sendable, Equatable {

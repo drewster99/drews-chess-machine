@@ -104,6 +104,27 @@ final class UCIArbiterTests: XCTestCase {
         XCTAssertEqual(best, .move("e2e4"))
     }
 
+    /// The handshake returns (and keeps) the engine's `id` lines, recorded in
+    /// a train-vs-UCI lineage record's opponent pool (plan B1); a line the
+    /// engine did not send is nil, never a placeholder.
+    func testHandshakeReturnsTheEngineIdentity() async throws {
+        let full = UCIArbiter(configuration: .init(
+            command: try writeFakeEngine(Self.normalEngine), goLimit: "nodes 1", label: "fake#identity"))
+        try await full.launch()
+        let identity = try await full.handshake()
+        let kept = await full.completedHandshakeIdentity()
+        await full.shutdown()
+        XCTAssertEqual(identity, UCIArbiter.EngineIdentity(idName: "Fake", idAuthor: "test"))
+        XCTAssertEqual(kept, identity)
+
+        let nameOnly = UCIArbiter(configuration: .init(
+            command: try writeFakeEngine(Self.nullEngine), goLimit: "nodes 1", label: "fake#name-only"))
+        try await nameOnly.launch()
+        let partial = try await nameOnly.handshake()
+        await nameOnly.shutdown()
+        XCTAssertEqual(partial, UCIArbiter.EngineIdentity(idName: "Fake", idAuthor: nil))
+    }
+
     func testNullBestMove() async throws {
         let engine = try writeFakeEngine(Self.nullEngine)
         let arbiter = UCIArbiter(configuration: .init(

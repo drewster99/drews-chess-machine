@@ -289,6 +289,55 @@ final class LineageSchema3Tests: XCTestCase {
         XCTAssertEqual(restored.runSeeds.value?.count, 1)
     }
 
+    /// A train-vs-UCI pool's engine identity is the pool's first completed
+    /// handshake; until then it is unrecorded.
+    func testAnOpponentPoolRecordsItsFirstHandshake() throws {
+        let vsuci = try tracker(.vsuci)
+        let opponent = LineageRecord.VsUciGeneration.Opponent(
+            command: "/usr/local/bin/stockfish", executableSHA256: String(repeating: "c", count: 64), count: 2,
+            goLimit: "nodes 1", options: [LineageRecord.VsUciGeneration.Option(name: "Threads", value: "1")],
+            identity: .unrecorded)
+        try vsuci.configureSegment(LineageTracker.SegmentConfiguration(
+            policyTailPrecision: .default, budget: .none,
+            vsuci: LineageRecord.VsUciGeneration(maxPliesPerGame: 400, evalSyncEverySteps: 10,
+                                                 trainerMoveSelection: LineageRecord.MoveSelection(.argmax),
+                                                 opponents: [opponent]),
+            selfPlayDirichlet: nil, startValueHeadRecentered: .recorded(false)))
+        vsuci.noteRunSeed(RunRandomSeed.resolve(mode: .seeded, configuredSeed: 7, commandLineSeed: nil, drawSeed: { 0 }),
+                          atTrainerStep: 0)
+        XCTAssertEqual(try record(vsuci, clock: 1).configuration.value?.vsuci?.opponents.first?.identity, .unrecorded)
+
+        let first = LineageRecord.VsUciGeneration.EngineIdentity(idName: "Stockfish 17", idAuthor: "the Stockfish developers")
+        vsuci.noteEngineIdentity(opponentIndex: 0, first)
+        vsuci.noteEngineIdentity(opponentIndex: 0, LineageRecord.VsUciGeneration.EngineIdentity(idName: "Other", idAuthor: nil))
+        vsuci.noteEngineIdentity(opponentIndex: 5, first)
+        let recorded = try record(vsuci, clock: 2)
+        XCTAssertEqual(recorded.configuration.value?.vsuci?.opponents.first?.identity, .recorded(first))
+        XCTAssertEqual(try LineageRecord.decode(jsonText: try recorded.jsonText()), recorded)
+    }
+
+    /// `results.json`'s lineage carries the configuration and the seeds,
+    /// including for a GUI-shaped record with no run streams, whose
+    /// `run_seeds` is then its only seed record.
+    func testResultsLineageCarriesConfigurationAndRunSeeds() throws {
+        let gui = try tracker(.gui)
+        try gui.noteSegmentStartForTests(trainerStep: 0)
+        let record = try record(gui, clock: 4)
+        XCTAssertNil(record.rng.streams)
+        let recorder = CliTrainingRecorder()
+        recorder.setFinalLineage(record, checkpointSHA256: nil)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: try recorder.encodedJSONData(totalTrainingSeconds: 1)) as? [String: Any])
+        let lineage = try XCTUnwrap(object["lineage"] as? [String: Any])
+        let configuration = try XCTUnwrap(lineage["configuration"] as? [String: Any])
+        XCTAssertEqual(configuration["recorded"] as? Bool, true)
+        XCTAssertEqual((configuration["value"] as? [String: Any])?["path_kind"] as? String, "gui")
+        let seeds = try XCTUnwrap(lineage["run_seeds"] as? [String: Any])
+        let entries = try XCTUnwrap(seeds["value"] as? [[String: Any]])
+        XCTAssertEqual(entries.first?["master_seed"] as? String, "7")
+        XCTAssertNil(lineage["ancestry"], "ancestry is left out of results.json")
+    }
+
     // MARK: - Ancestry
 
     /// A branch starts a new run and keeps the run it left, with that run's

@@ -613,7 +613,7 @@ enum TrainVsUciRunner {
             // Each pool's engine identity, from its first instance that has
             // completed a handshake (unrecorded until one has).
             for (instance, opponent) in opponents.enumerated() {
-                if let identity = await opponent.arbiter.engineIdentity {
+                if let identity = await opponent.arbiter.completedHandshakeIdentity() {
                     lineageTracker.noteEngineIdentity(
                         opponentIndex: opponentSpecIndices[instance],
                         LineageRecord.VsUciGeneration.EngineIdentity(idName: identity.idName, idAuthor: identity.idAuthor))
