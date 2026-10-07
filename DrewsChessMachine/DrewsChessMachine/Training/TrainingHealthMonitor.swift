@@ -177,11 +177,19 @@ final class TrainingHealthMonitor: @unchecked Sendable {
 
     // MARK: Init
 
-    init(valueFC1Applicability: TrainingHealthValueFC1Applicability) {
+    /// A monitor whose evaluator decides stops (`.byEvaluator`): the
+    /// command-line paths and the offline replay.
+    convenience init(valueFC1Applicability: TrainingHealthValueFC1Applicability) {
+        self.init(valueFC1Applicability: valueFC1Applicability, stopDecision: .byEvaluator)
+    }
+
+    /// `stopDecision` is `.byCaller` for the GUI, which decides stops on the
+    /// main actor from the actions in force when each evaluation arrives.
+    init(valueFC1Applicability: TrainingHealthValueFC1Applicability, stopDecision: TrainingHealthStopDecision) {
         self.runID = UUID()
         self.valueFC1Applicability = valueFC1Applicability
         self.evaluation = SyncBox(EvaluationState(
-            evaluator: TrainingHealthEvaluator(valueFC1Applicability: valueFC1Applicability)))
+            evaluator: TrainingHealthEvaluator(valueFC1Applicability: valueFC1Applicability, stopDecision: stopDecision)))
         self.beforeCommitForTesting = nil
     }
 

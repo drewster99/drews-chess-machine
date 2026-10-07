@@ -568,6 +568,31 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat; absent → the loader keeps the current
     /// value (`absentValue: .currentSetting`).
     var sessionSaveIncludeReplayBuffer: Bool?
+    // --- Training health alarms (TRAINING_HEALTH_ALARMS_PLAN.md, Part K) ---
+    //
+    // Operational settings in effect at save time. All Optional because
+    // sessions written before the alarms existed do not state them; absent →
+    // the resume keeps the current setting (`absentValue: .currentSetting`).
+    /// `training_health_alarms_enabled`.
+    var trainingHealthAlarmsEnabled: Bool?
+    /// `training_health_check_interval_steps`.
+    var trainingHealthCheckIntervalSteps: Int?
+    /// `training_health_learning_grace_steps`.
+    var trainingHealthLearningGraceSteps: Int?
+    /// `training_health_action_<rule>`, one per rule, stored as the action's
+    /// name (`log`, `stop_on_critical`, `stop_on_any`) rather than its raw
+    /// `Int`, so the file stays readable and survives a renumbering — the
+    /// same choice as `arenaPromotionCriterion`. An unknown name is a
+    /// finding of `invalidSavedSettings(current:)`.
+    var trainingHealthActionNonFinite: String?
+    var trainingHealthActionDeadChannels: String?
+    var trainingHealthActionValueFC1ZeroVelocity: String?
+    var trainingHealthActionIllegalMass: String?
+    var trainingHealthActionGradientCollapse: String?
+    var trainingHealthActionLossSpike: String?
+    var trainingHealthActionPolicyOffsetDrift: String?
+    var trainingHealthActionBatchNormRunningVarianceRunaway: String?
+    var trainingHealthActionGradientSpike: String?
     // --- Arena promotion criterion ---
     //
     // All Optional for back-compat; absent → the loader falls through to the
@@ -916,6 +941,55 @@ struct SessionCheckpointState: Codable, Equatable {
         return copy
     }
 
+    /// The training-health settings in effect at save time — the one writer
+    /// of those fields, shared by the GUI save and the train-vs-UCI save.
+    func withTrainingHealthSettings(
+        enabled: Bool,
+        checkIntervalSteps: Int,
+        learningGraceSteps: Int,
+        actions: TrainingHealthActions
+    ) -> SessionCheckpointState {
+        var copy = self
+        copy.trainingHealthAlarmsEnabled = enabled
+        copy.trainingHealthCheckIntervalSteps = checkIntervalSteps
+        copy.trainingHealthLearningGraceSteps = learningGraceSteps
+        for rule in TrainingHealthRule.allCases {
+            copy[savedTrainingHealthActionFor: rule] = actions[rule].name
+        }
+        return copy
+    }
+
+    /// The saved action name of one training-health rule: the one mapping
+    /// from a rule to its session field.
+    subscript(savedTrainingHealthActionFor rule: TrainingHealthRule) -> String? {
+        get {
+            switch rule {
+            case .nonFinite: return trainingHealthActionNonFinite
+            case .deadChannels: return trainingHealthActionDeadChannels
+            case .valueFC1ZeroVelocity: return trainingHealthActionValueFC1ZeroVelocity
+            case .illegalMass: return trainingHealthActionIllegalMass
+            case .gradientCollapse: return trainingHealthActionGradientCollapse
+            case .lossSpike: return trainingHealthActionLossSpike
+            case .policyOffsetDrift: return trainingHealthActionPolicyOffsetDrift
+            case .batchNormRunningVarianceRunaway: return trainingHealthActionBatchNormRunningVarianceRunaway
+            case .gradientSpike: return trainingHealthActionGradientSpike
+            }
+        }
+        set {
+            switch rule {
+            case .nonFinite: trainingHealthActionNonFinite = newValue
+            case .deadChannels: trainingHealthActionDeadChannels = newValue
+            case .valueFC1ZeroVelocity: trainingHealthActionValueFC1ZeroVelocity = newValue
+            case .illegalMass: trainingHealthActionIllegalMass = newValue
+            case .gradientCollapse: trainingHealthActionGradientCollapse = newValue
+            case .lossSpike: trainingHealthActionLossSpike = newValue
+            case .policyOffsetDrift: trainingHealthActionPolicyOffsetDrift = newValue
+            case .batchNormRunningVarianceRunaway: trainingHealthActionBatchNormRunningVarianceRunaway = newValue
+            case .gradientSpike: trainingHealthActionGradientSpike = newValue
+            }
+        }
+    }
+
     func withChartData(
         hasChartData: Bool?,
         trainingChartSampleCount: Int?,
@@ -1154,6 +1228,7 @@ extension SessionCheckpointState {
         static let policyLabelSmoothing = "policy_label_smoothing"
         static let arenaPromotionCriterion = "arena_promotion_criterion"
         static let periodicAutosaveInterval = "periodic_autosave_interval_sec"
+        static let trainingHealthActions = "training_health_actions"
     }
 
     /// The saved settings a resume cannot use as found — a hand-edited,
@@ -1227,6 +1302,31 @@ extension SessionCheckpointState {
                 found: "\(interval) s",
                 problem: "an interval must be greater than zero",
                 replacement: "\(current.periodicAutosaveIntervalSec) s"
+            ))
+        }
+
+        // Training-health actions: each saved name must be a known action.
+        // One finding for the whole set, so accepting it replaces every
+        // saved action with the current one (the actions are read together:
+        // a stop decision consults every active rule's action).
+        let unknownActions = TrainingHealthRule.allCases.compactMap { rule -> String? in
+            guard let name = self[savedTrainingHealthActionFor: rule] else { return nil }
+            do {
+                _ = try TrainingHealthAction(name: name)
+                return nil
+            } catch {
+                return "\(rule.rawValue)=\(name)"
+            }
+        }
+        if !unknownActions.isEmpty {
+            findings.append(InvalidStoredSetting(
+                id: SavedSettingID.trainingHealthActions,
+                name: "Training health actions",
+                found: unknownActions.joined(separator: ", "),
+                problem: "not a known action (\(TrainingHealthAction.allCases.map(\.name).joined(separator: ", ")))",
+                replacement: TrainingHealthRule.allCases
+                    .map { "\($0.rawValue)=\(current.trainingHealthAction(for: $0).name)" }
+                    .joined(separator: ", ")
             ))
         }
         return findings

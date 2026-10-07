@@ -5820,6 +5820,55 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
+    /// Read one trainable tensor's optimizer velocity, with the trainer's
+    /// completed-step clock read in the same queue turn — the training-health
+    /// monitor's dedicated value-FC1 read (`value.fc1.weight`, alarms plan
+    /// D6, every 1,000 trainer steps where no save's checkpoint pass covers
+    /// the interval).
+    ///
+    /// Same pattern as `readLayerHealthLiveState`: enqueued on
+    /// `executionQueue`, the queue every SGD step runs on, so it lands
+    /// between steps and never observes a half-applied update, and the
+    /// caller does not pause training. One `graph.run` whose only target is
+    /// that velocity variable, fed the dummy inference input: no operation
+    /// is targeted, so nothing is assigned, no dropout op is encoded (no
+    /// RNG advance) and the weights, velocity, BN statistics and replay
+    /// buffer are untouched (probe isolation; pinned by
+    /// `ValueFC1VelocityReadTests`). Velocity is fp32 on every path.
+    func readTrainableVelocity(named name: String) async throws -> (velocity: [Float], completedTrainSteps: Int) {
+        let trainableNames = arch.trainableTensorPlan().map(\.name)
+        guard let index = trainableNames.firstIndex(of: name) else {
+            throw ChessTrainerError.layerHealthTensorNotInPlan(name)
+        }
+        return try await enqueue { [self] in
+            try autoreleasepool {
+                // A trainer built for loaded weights holds zero velocity
+                // until its load, which would read as every unit dead.
+                try network.requireLoadedWeights("readTrainableVelocity")
+                // `velocityVariables` is one per trainable, in
+                // `trainableTensorPlan()` order (the order the saved
+                // velocity tensors are named in).
+                guard velocityVariables.count == trainableNames.count else {
+                    throw ChessTrainerError.trainerWeightCountMismatch(
+                        expected: "\(trainableNames.count) velocity variables (trainableTensorPlan)",
+                        got: velocityVariables.count)
+                }
+                let variable = velocityVariables[index]
+                let results = network.graph.run(
+                    with: network.commandQueue,
+                    feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                    targetTensors: [variable],
+                    targetOperations: nil
+                )
+                guard let data = results[variable] else {
+                    throw ChessTrainerError.velocityReadbackMissing(variable.operation.name)
+                }
+                let count = try ChessNetwork.elementCount(of: variable)
+                return (ChessNetwork.readFloatsFP32(from: data, count: count), _completedTrainSteps.value)
+            }
+        }
+    }
+
     /// Body of `readLayerHealthLiveState`; must run on `executionQueue`.
     /// Refuses a trainer still waiting for its weight load, whose zero-filled
     /// variables would read as every channel dead.

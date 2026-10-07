@@ -37,6 +37,10 @@ enum TrainVsUciSession {
         case final
         /// The run stopped on Ctrl-C.
         case abort
+        /// A training-health alarm whose action stops the run requested a
+        /// stop (the alarms plan, R3); the folder name says why the run
+        /// ended.
+        case healthStop = "health-stop"
 
         var diskTag: String { "vsuci-\(rawValue)" }
     }
@@ -218,6 +222,11 @@ enum TrainVsUciSession {
             trainerID: sessionID,
             arenaHistory: []
         )
+        .withTrainingHealthSettings(
+            enabled: p.trainingHealthAlarmsEnabled,
+            checkIntervalSteps: p.trainingHealthCheckIntervalSteps,
+            learningGraceSteps: p.trainingHealthLearningGraceSteps,
+            actions: TrainingHealthActions { p.trainingHealthAction(for: $0) })
         .withArchitecture(ArchitectureMetadata(describing: arch))
     }
 

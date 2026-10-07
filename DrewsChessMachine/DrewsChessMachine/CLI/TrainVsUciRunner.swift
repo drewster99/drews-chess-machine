@@ -102,6 +102,10 @@ enum TrainVsUciRunner {
     struct Result: Sendable {
         var steps: Int
         var gamesCompleted: Int
+        /// The training-health alarm whose stop ended the run (honoured by
+        /// the loop, final save succeeded), or nil; `runAndExit` then exits
+        /// with `CorpusReplayRunner.trainingHealthStopExitStatus`.
+        var healthStop: TrainingHealthEvent?
     }
 
     private static func emit(_ message: String) {
@@ -111,7 +115,8 @@ enum TrainVsUciRunner {
 
     /// Run to completion and exit the process. Never returns. Exit status 0
     /// on success, 2 when the run is refused before it starts
-    /// (`CLIRunRefusal`), 33 on any other failure.
+    /// (`CLIRunRefusal`), 33 on any other failure, 35 when a training-health
+    /// alarm stopped the run after a successful final save.
     static func runAndExit(config: TrainVsUciConfig, params: ReplayParams) -> Never {
         SessionLogger.shared.start()
         emit("[VS-UCI] starting train-vs-UCI over \(config.opponents.count) opponent kind(s)")
@@ -153,6 +158,13 @@ enum TrainVsUciRunner {
             Darwin.exit(33)
         }
         emit("[VS-UCI] done: steps=\(result.steps) gamesCompleted=\(result.gamesCompleted)")
+        if let healthStop = result.healthStop {
+            let status = CorpusReplayRunner.trainingHealthStopExitStatus
+            emit("[VS-UCI] stopped by training health alarm \(healthStop.rule.rawValue) (\(healthStop.severity.rawValue)) "
+                + "at trainerStep=\(healthStop.trainerStep); exit status \(status)")
+            SessionLogger.shared.shutdown()
+            Darwin.exit(status)
+        }
         SessionLogger.shared.shutdown()
         Darwin.exit(0)
     }
@@ -473,6 +485,12 @@ enum TrainVsUciRunner {
             record: try lineageTracker.startRecord(at: Date(), trainerCompletedSteps: trainer.completedTrainSteps,
                                                    parameters: p.lineageParameters),
             seed: runSeed))
+        // Training-health alarms: one monitor for the run, its settings read
+        // once from the run-start snapshot; logs `[HEALTH] config` beside
+        // the `[RUN]` line.
+        let trainingHealth = try CliTrainingHealth(
+            parameters: p.parameters, arch: arch, path: "vsuci", pathTag: "[VS-UCI]",
+            recorder: recorder, emit: { Self.emit($0) })
 
         // Build the opponent pool: one UCIArbiter per instance.
         var opponents: [TrainVsUciDriver.Opponent] = []
@@ -547,9 +565,13 @@ enum TrainVsUciRunner {
             let metadata: ModelCheckpointMetadata
             let lineage: LineageRecord
             let savedAt: Date
+            /// The training-health stamp of exactly this exported state
+            /// (D2), taken right after the export.
+            let healthStamp: TrainingHealthStamp
         }
         func trainerSave(step: Int, reason: String) async throws -> TrainerSave {
             let snapshot = try await trainer.exportResumeSnapshot()
+            let healthStamp = trainingHealth.observationStamp()
             let streams = runSeed.runStreams(
                 samplerState: buffer.samplerState(),
                 dropoutStreamState: try await trainer.dropoutStreamState(),
@@ -577,7 +599,8 @@ enum TrainVsUciRunner {
                     dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams,
                     behaviorFingerprint: try await BehaviorFingerprint.compute(
                         for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))))
-            return TrainerSave(snapshot: snapshot, metadata: metadata, lineage: lineage, savedAt: saveDate)
+            return TrainerSave(
+                snapshot: snapshot, metadata: metadata, lineage: lineage, savedAt: saveDate, healthStamp: healthStamp)
         }
 
         /// Full layer health of a state just written — see CorpusReplayRunner's
@@ -592,6 +615,10 @@ enum TrainVsUciRunner {
                     step: step, trainerStep: save.snapshot.schedule.completedTrainSteps,
                     context: context, summary: summary))
             }
+            // The checkpoint evaluation (rules 1, 2, 3, 8) of the same pass.
+            trainingHealth.evaluateCheckpoint(
+                stamp: save.healthStamp, summary: health.summary,
+                trainerStep: save.snapshot.schedule.completedTrainSteps)
         }
 
         // Consecutive-failure tracking per kind of save — see
@@ -761,6 +788,8 @@ enum TrainVsUciRunner {
         // reason. Inferring it from the configured limits is wrong when both a
         // step limit and a time limit are set.
         var timedOut = false
+        // The training-health stop the loop honoured (R3), or nil.
+        var healthStop: TrainingHealthEvent? = nil
         do {
             // Wait for the producer to prefill the buffer. Games are produced
             // by actually playing the engines, so this takes as long as it
@@ -785,6 +814,13 @@ enum TrainVsUciRunner {
             let lineClockStart = lineClock.now
             while true {
                 if abort.isRequested { aborted = true; emit("[VS-UCI] abort requested — stopping at step \(step)"); break }
+                // A training-health alarm whose action stops the run: stop
+                // before another step (see CorpusReplayRunner).
+                if let stopLine = trainingHealth.stopLine(segmentStep: step) {
+                    healthStop = trainingHealth.requestedStop
+                    emit(stopLine)
+                    break
+                }
                 if let sl = config.stepLimit, step >= sl { break }
                 if overTime() { timedOut = true; emit("[VS-UCI] time limit reached at step \(step)"); break }
 
@@ -806,6 +842,13 @@ enum TrainVsUciRunner {
                 // cadence, its LR / momentum / cycle values, and the save
                 // point all read it.
                 let observedSteps = trainer.completedTrainSteps
+                // Training health: record the step, and on a live-evaluation
+                // step (every 50 trainer steps) take its stamp before any read.
+                trainingHealth.record(timing, trainerStep: observedSteps)
+                let healthStamp = trainingHealth.liveEvaluationStamp(trainerStep: observedSteps)
+                // The step line's live read, when the line falls on this
+                // step: it also serves this step's live evaluation.
+                var lineLiveRead: LayerHealthLog.LiveOutcome? = nil
                 if stepLines.lineDue(trainerStep: observedSteps,
                                      elapsedSec: TrainingStepLineSchedule.seconds(lineClock.now - lineClockStart),
                                      carriesDiagnostics: timing.hasDiagnostics,
@@ -832,9 +875,11 @@ enum TrainVsUciRunner {
                     }
                     // Live layer health at the same cadence (BN state +
                     // ReZero α, read on the trainer's queue between steps).
-                    for healthLine in await LayerHealthLog.live(trainer: trainer).lines {
+                    let liveRead = await LayerHealthLog.live(trainer: trainer)
+                    for healthLine in liveRead.lines {
                         emit(healthLine)
                     }
+                    lineLiveRead = liveRead
                     // Same cadence as the log line, so results.json and the log
                     // describe the same ticks.
                     // One snapshot, reused: `statsSnapshot()` is a lock-guarded
@@ -896,6 +941,15 @@ enum TrainVsUciRunner {
                             segmentGames: slots.reduce(0) { $0 + $1.gamesCompleted })
                     ))
                 }
+                // The live training-health evaluation, every 50 trainer
+                // steps: after the step-line block, before the save block
+                // (R0).
+                if let healthStamp {
+                    await trainingHealth.evaluateLive(
+                        stamp: healthStamp, sharedRead: lineLiveRead, trainer: trainer, trainerStep: observedSteps,
+                        learningRate: trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: observedSteps),
+                        momentum: trainer.effectiveMomentum(completedSteps: observedSteps))
+                }
                 // At every trainer-step multiple of 1000, after the step line
                 // (so the line and its live readout precede the save).
                 if TrainingStepLineSchedule.isCheckpointStep(trainerStep: observedSteps) {
@@ -905,6 +959,10 @@ enum TrainVsUciRunner {
                                                        intervalSec: periodicSessionIntervalSec) {
                     try await saveSession(step: step, kind: .periodic)
                 }
+                // Rule 3's value-FC1 velocity at most 1,000 trainer steps
+                // apart (D6): covered by the enumerated checkpoints' passes
+                // with `--enumerate-checkpoints`, a dedicated read otherwise.
+                await trainingHealth.valueFC1ReadIfDue(trainer: trainer, trainerStep: observedSteps)
             }
         } catch {
             // Tear the producer down (shuts every engine down) before the
@@ -922,7 +980,17 @@ enum TrainVsUciRunner {
 
         // The final session (its save syncs the play network first), then the
         // final step's enumerated checkpoint.
-        let finalKind: TrainVsUciSession.SaveKind = aborted ? .abort : .final
+        let finalKind: TrainVsUciSession.SaveKind
+        if aborted {
+            finalKind = .abort
+        } else if healthStop != nil {
+            finalKind = .healthStop
+        } else {
+            finalKind = .final
+        }
+        // The last partial window is judged before the final save's pass
+        // (R0); a stop it or the final pass requests changes nothing now.
+        await trainingHealth.evaluateBeforeFinalSave(trainer: trainer, batchSize: batchSize)
         try await saveSession(step: step, kind: finalKind)
         // The final trainer step's enumerated copy, unless the autosave at a
         // checkpoint step already wrote it (a segment that trained no step
@@ -933,6 +1001,9 @@ enum TrainVsUciRunner {
         // The session folder is the end state: the run fails without it,
         // even when the step-enumerated copy above was written.
         try sessionSaveFailures.requireLastSaveSucceeded(step: step, reason: finalKind.diskTag)
+        // The final `[HEALTH] check` line, after the final saves' checkpoint
+        // evaluations.
+        trainingHealth.finish()
 
         // `results.json` last, after the final model save — a run that dies
         // saving weights should not also claim a clean results record.
@@ -941,9 +1012,17 @@ enum TrainVsUciRunner {
             // from which limits were configured: a run with BOTH a step limit
             // and a time limit can exit on either, and inferring would mislabel
             // a timeout as `stepLimitReached`.
-            recorder.setTerminationReason(
-                aborted ? .manualStop : (timedOut ? .timerExpired : .stepLimitReached)
-            )
+            let reason: CliTrainingRecorder.TerminationReason
+            if aborted {
+                reason = .manualStop
+            } else if healthStop != nil {
+                reason = .trainingHealthAlarm
+            } else if timedOut {
+                reason = .timerExpired
+            } else {
+                reason = .stepLimitReached
+            }
+            recorder.setTerminationReason(reason)
             let counts = recorder.countsSnapshot()
             // Logged, not thrown — see CorpusReplayRunner: the trainer model is
             // already saved, so a failed results write must not fail the run.
@@ -959,7 +1038,7 @@ enum TrainVsUciRunner {
         }
 
         let totalGames = driver.statsSnapshot().reduce(0) { $0 + $1.gamesCompleted }
-        return Result(steps: step, gamesCompleted: totalGames)
+        return Result(steps: step, gamesCompleted: totalGames, healthStop: healthStop)
     }
 
     // MARK: - async→sync bridge (mirrors CorpusReplayRunner.syncWait)

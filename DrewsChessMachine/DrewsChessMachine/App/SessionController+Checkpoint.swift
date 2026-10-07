@@ -1326,6 +1326,11 @@ extension SessionController {
             trainerID: trainerID,
             arenaHistory: history
         )
+        .withTrainingHealthSettings(
+            enabled: params.trainingHealthAlarmsEnabled,
+            checkIntervalSteps: params.trainingHealthCheckIntervalSteps,
+            learningGraceSteps: params.trainingHealthLearningGraceSteps,
+            actions: TrainingHealthActions { params[keyPath: TrainingParameters.trainingHealthActionKeyPath(for: $0)] })
         .withTrainingSegments(segments)
         .withArchitecture(ArchitectureMetadata(describing: resolvedArch))
         .withProbeHistories(

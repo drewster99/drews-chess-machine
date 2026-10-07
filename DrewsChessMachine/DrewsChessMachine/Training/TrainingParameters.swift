@@ -1332,6 +1332,158 @@ public enum AutomaticSavePruningEnabled: TrainingParameterKey {}
 )
 public enum SessionSaveIncludeReplayBuffer: TrainingParameterKey {}
 
+// MARK: Training health alarms (TRAINING_HEALTH_ALARMS_PLAN.md, Part K)
+//
+// Operational knobs: they decide what the training-health monitor logs and
+// whether an alarm stops the run, never the training math, so a resume
+// keeps the live setting when a checkpoint has none (`.currentSetting`).
+// The thresholds are declared constants (`TrainingHealthThresholds`, owner
+// decision OD-14), not parameters. The GUI reads these at every
+// evaluation; the command-line paths once at start.
+
+@TrainingParameter(
+    name: "Training Health Alarms Enabled",
+    description: "Run the training-health checks on every training path (GUI Play-and-Train, corpus replay, train-vs-UCI): nine rules over every SGD step and the layer-health reads, logged as [ALARM] health lines and a [HEALTH] check line every Training Health Check Interval steps. Off: no evaluation at all, and one [HEALTH] alarms disabled line at run start. The checks only observe: no random draws, no change to the trainer, optimizer or replay buffer.",
+    default: true,
+    category: "Health",
+    id: "training_health_alarms_enabled",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthAlarmsEnabled: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Training Health Check Interval (steps)",
+    description: "Trainer steps between [HEALTH] check lines (counters, cost, active alarms), the reminder line of every active alarm, and the rate limit of the worsen lines. The rules themselves are evaluated every 50 trainer steps whatever this is.",
+    default: 1000,
+    range: 50...100000,
+    category: "Health",
+    id: "training_health_check_interval_steps",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthCheckIntervalSteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Training Health Learning Grace (steps)",
+    description: "Trainer steps added to LR Warmup Steps before the illegal_mass rule's not-learned form applies (window median illegal mass still at or above 0.5). Its regression form and every damage rule apply from the first evaluation.",
+    default: 1000,
+    range: 0...100000,
+    category: "Health",
+    id: "training_health_learning_grace_steps",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthLearningGraceSteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Non-Finite",
+    description: "What the non_finite alarm (a NaN or infinite value in the batch-norm state, ReZero α, any checkpointed tensor, or a step's loss, illegal mass or gradient norm. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_non_finite",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionNonFinite: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Dead Channels",
+    description: "What the dead_channels alarm (parked batch-norm channels (dead for ReLU / leaky ReLU, the pass-through equivalent for SiLU / GELU). Warning on any; critical at 5% of all such channels or 20% of one site's) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_dead_channels",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionDeadChannels: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Value FC1 Zero Velocity",
+    description: "What the value_fc1_zero_velocity alarm (value-head FC1 units whose optimizer velocity is exactly zero (dead ReLU units). Warning at 5% of the units, critical at 50%; checked every 1000 trainer steps; applies only to a ReLU value hidden layer) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_value_fc1_zero_velocity",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionValueFC1ZeroVelocity: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Illegal Mass",
+    description: "What the illegal_mass alarm (the window median of the illegal-move probability mass regressing after it was learned, or not learned past warmup plus the learning grace. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_illegal_mass",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionIllegalMass: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Gradient Collapse",
+    description: "What the gradient_collapse alarm (the window median of the pre-clip gradient norm below 0.1. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_gradient_collapse",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionGradientCollapse: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Loss Spike",
+    description: "What the loss_spike alarm (the window's loss against the median loss of the 1000 trainer steps before it (median 1.5x or maximum 3x). Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_loss_spike",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionLossSpike: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Policy Offset Drift",
+    description: "What the policy_offset_drift alarm (the window median of |policy logit mean| at or above 3. Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_policy_offset_drift",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionPolicyOffsetDrift: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: BN Running Variance Runaway",
+    description: "What the bn_running_variance_runaway alarm (the largest batch-norm running-variance max/median ratio at or above 1000. Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_bn_running_variance_runaway",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionBatchNormRunningVarianceRunaway: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Gradient Spike",
+    description: "What the gradient_spike alarm (the window's largest pre-clip gradient norm at or above 5x the median of the 1000 trainer steps before it. Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_gradient_spike",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionGradientSpike: TrainingParameterKey {}
+
 // MARK: Reproducibility (determinism plan, Part A3.2)
 //
 // One master seed per run; every random stream (replay-buffer draws, each
@@ -1516,6 +1668,9 @@ public extension TrainingParametersSnapshot {
     var maxPeriodicAutosavesKept: Int { value(for: MaxPeriodicAutosavesKept.self) }
     var automaticSavePruningEnabled: Bool { value(for: AutomaticSavePruningEnabled.self) }
     var sessionSaveIncludeReplayBuffer: Bool { value(for: SessionSaveIncludeReplayBuffer.self) }
+    var trainingHealthAlarmsEnabled: Bool { value(for: TrainingHealthAlarmsEnabled.self) }
+    var trainingHealthCheckIntervalSteps: Int { value(for: TrainingHealthCheckIntervalSteps.self) }
+    var trainingHealthLearningGraceSteps: Int { value(for: TrainingHealthLearningGraceSteps.self) }
     var randomSeedMode: RandomSeedMode {
         RandomSeedMode(persistedRawValue: value(for: RandomSeedModeParameter.self))
     }
@@ -1526,6 +1681,29 @@ public extension TrainingParametersSnapshot {
 
 // `arenaSPRTConfig()` returns `ArenaSPRT.SPRTConfig`, which is internal, so it
 // cannot sit in the public accessor extension above.
+extension TrainingParametersSnapshot {
+
+    /// The action parameter of one training-health rule, as the typed enum.
+    /// The one mapping from a rule to its parameter key on the snapshot side
+    /// (`TrainingParameters.trainingHealthActionKeyPath(for:)` is the
+    /// singleton's).
+    func trainingHealthAction(for rule: TrainingHealthRule) -> TrainingHealthAction {
+        let raw: Int
+        switch rule {
+        case .nonFinite: raw = value(for: TrainingHealthActionNonFinite.self)
+        case .deadChannels: raw = value(for: TrainingHealthActionDeadChannels.self)
+        case .valueFC1ZeroVelocity: raw = value(for: TrainingHealthActionValueFC1ZeroVelocity.self)
+        case .illegalMass: raw = value(for: TrainingHealthActionIllegalMass.self)
+        case .gradientCollapse: raw = value(for: TrainingHealthActionGradientCollapse.self)
+        case .lossSpike: raw = value(for: TrainingHealthActionLossSpike.self)
+        case .policyOffsetDrift: raw = value(for: TrainingHealthActionPolicyOffsetDrift.self)
+        case .batchNormRunningVarianceRunaway: raw = value(for: TrainingHealthActionBatchNormRunningVarianceRunaway.self)
+        case .gradientSpike: raw = value(for: TrainingHealthActionGradientSpike.self)
+        }
+        return TrainingHealthAction(persistedRawValue: raw)
+    }
+}
+
 extension TrainingParametersSnapshot {
 
     /// Builds the validated SPRT configuration these parameters describe.
@@ -1661,6 +1839,20 @@ public final class TrainingParameters {
     public var maxPeriodicAutosavesKept: Int { didSet { if !Self.commitAssignment(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept) { maxPeriodicAutosavesKept = oldValue } } }
     public var automaticSavePruningEnabled: Bool { didSet { if !Self.commitAssignment(AutomaticSavePruningEnabled.self, value: automaticSavePruningEnabled) { automaticSavePruningEnabled = oldValue } } }
     public var sessionSaveIncludeReplayBuffer: Bool { didSet { if !Self.commitAssignment(SessionSaveIncludeReplayBuffer.self, value: sessionSaveIncludeReplayBuffer) { sessionSaveIncludeReplayBuffer = oldValue } } }
+    public var trainingHealthAlarmsEnabled: Bool { didSet { if !Self.commitAssignment(TrainingHealthAlarmsEnabled.self, value: trainingHealthAlarmsEnabled) { trainingHealthAlarmsEnabled = oldValue } } }
+    public var trainingHealthCheckIntervalSteps: Int { didSet { if !Self.commitAssignment(TrainingHealthCheckIntervalSteps.self, value: trainingHealthCheckIntervalSteps) { trainingHealthCheckIntervalSteps = oldValue } } }
+    public var trainingHealthLearningGraceSteps: Int { didSet { if !Self.commitAssignment(TrainingHealthLearningGraceSteps.self, value: trainingHealthLearningGraceSteps) { trainingHealthLearningGraceSteps = oldValue } } }
+    // One action per training-health rule, stored as the enum; the raw
+    // value appears only at the persistence boundary.
+    public var trainingHealthActionNonFinite: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionNonFinite.self, value: trainingHealthActionNonFinite.rawValue) { trainingHealthActionNonFinite = oldValue } } }
+    public var trainingHealthActionDeadChannels: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionDeadChannels.self, value: trainingHealthActionDeadChannels.rawValue) { trainingHealthActionDeadChannels = oldValue } } }
+    public var trainingHealthActionValueFC1ZeroVelocity: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionValueFC1ZeroVelocity.self, value: trainingHealthActionValueFC1ZeroVelocity.rawValue) { trainingHealthActionValueFC1ZeroVelocity = oldValue } } }
+    public var trainingHealthActionIllegalMass: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionIllegalMass.self, value: trainingHealthActionIllegalMass.rawValue) { trainingHealthActionIllegalMass = oldValue } } }
+    public var trainingHealthActionGradientCollapse: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionGradientCollapse.self, value: trainingHealthActionGradientCollapse.rawValue) { trainingHealthActionGradientCollapse = oldValue } } }
+    public var trainingHealthActionLossSpike: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionLossSpike.self, value: trainingHealthActionLossSpike.rawValue) { trainingHealthActionLossSpike = oldValue } } }
+    public var trainingHealthActionPolicyOffsetDrift: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionPolicyOffsetDrift.self, value: trainingHealthActionPolicyOffsetDrift.rawValue) { trainingHealthActionPolicyOffsetDrift = oldValue } } }
+    public var trainingHealthActionBatchNormRunningVarianceRunaway: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionBatchNormRunningVarianceRunaway.self, value: trainingHealthActionBatchNormRunningVarianceRunaway.rawValue) { trainingHealthActionBatchNormRunningVarianceRunaway = oldValue } } }
+    public var trainingHealthActionGradientSpike: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionGradientSpike.self, value: trainingHealthActionGradientSpike.rawValue) { trainingHealthActionGradientSpike = oldValue } } }
     /// Stored as the enum; the raw value appears only at the persistence
     /// boundary (see `RandomSeedMode`).
     public var randomSeedMode: RandomSeedMode {
@@ -1771,6 +1963,18 @@ public final class TrainingParameters {
         self.maxPeriodicAutosavesKept = Self.read(MaxPeriodicAutosavesKept.self)
         self.automaticSavePruningEnabled = Self.read(AutomaticSavePruningEnabled.self)
         self.sessionSaveIncludeReplayBuffer = Self.read(SessionSaveIncludeReplayBuffer.self)
+        self.trainingHealthAlarmsEnabled = Self.read(TrainingHealthAlarmsEnabled.self)
+        self.trainingHealthCheckIntervalSteps = Self.read(TrainingHealthCheckIntervalSteps.self)
+        self.trainingHealthLearningGraceSteps = Self.read(TrainingHealthLearningGraceSteps.self)
+        self.trainingHealthActionNonFinite = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionNonFinite.self))
+        self.trainingHealthActionDeadChannels = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionDeadChannels.self))
+        self.trainingHealthActionValueFC1ZeroVelocity = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionValueFC1ZeroVelocity.self))
+        self.trainingHealthActionIllegalMass = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionIllegalMass.self))
+        self.trainingHealthActionGradientCollapse = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionGradientCollapse.self))
+        self.trainingHealthActionLossSpike = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionLossSpike.self))
+        self.trainingHealthActionPolicyOffsetDrift = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionPolicyOffsetDrift.self))
+        self.trainingHealthActionBatchNormRunningVarianceRunaway = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionBatchNormRunningVarianceRunaway.self))
+        self.trainingHealthActionGradientSpike = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionGradientSpike.self))
         self.randomSeedMode = RandomSeedMode(persistedRawValue: Self.read(RandomSeedModeParameter.self))
         self.randomSeed = Self.read(RandomSeed.self)
         self.invalidStoredSettings = Self.invalidStoredValuesFound.value.values.sorted { $0.id < $1.id }
@@ -1868,6 +2072,18 @@ public final class TrainingParameters {
         v[MaxPeriodicAutosavesKept.id] = MaxPeriodicAutosavesKept.encode(maxPeriodicAutosavesKept)
         v[AutomaticSavePruningEnabled.id] = AutomaticSavePruningEnabled.encode(automaticSavePruningEnabled)
         v[SessionSaveIncludeReplayBuffer.id] = SessionSaveIncludeReplayBuffer.encode(sessionSaveIncludeReplayBuffer)
+        v[TrainingHealthAlarmsEnabled.id] = TrainingHealthAlarmsEnabled.encode(trainingHealthAlarmsEnabled)
+        v[TrainingHealthCheckIntervalSteps.id] = TrainingHealthCheckIntervalSteps.encode(trainingHealthCheckIntervalSteps)
+        v[TrainingHealthLearningGraceSteps.id] = TrainingHealthLearningGraceSteps.encode(trainingHealthLearningGraceSteps)
+        v[TrainingHealthActionNonFinite.id] = TrainingHealthActionNonFinite.encode(trainingHealthActionNonFinite.rawValue)
+        v[TrainingHealthActionDeadChannels.id] = TrainingHealthActionDeadChannels.encode(trainingHealthActionDeadChannels.rawValue)
+        v[TrainingHealthActionValueFC1ZeroVelocity.id] = TrainingHealthActionValueFC1ZeroVelocity.encode(trainingHealthActionValueFC1ZeroVelocity.rawValue)
+        v[TrainingHealthActionIllegalMass.id] = TrainingHealthActionIllegalMass.encode(trainingHealthActionIllegalMass.rawValue)
+        v[TrainingHealthActionGradientCollapse.id] = TrainingHealthActionGradientCollapse.encode(trainingHealthActionGradientCollapse.rawValue)
+        v[TrainingHealthActionLossSpike.id] = TrainingHealthActionLossSpike.encode(trainingHealthActionLossSpike.rawValue)
+        v[TrainingHealthActionPolicyOffsetDrift.id] = TrainingHealthActionPolicyOffsetDrift.encode(trainingHealthActionPolicyOffsetDrift.rawValue)
+        v[TrainingHealthActionBatchNormRunningVarianceRunaway.id] = TrainingHealthActionBatchNormRunningVarianceRunaway.encode(trainingHealthActionBatchNormRunningVarianceRunaway.rawValue)
+        v[TrainingHealthActionGradientSpike.id] = TrainingHealthActionGradientSpike.encode(trainingHealthActionGradientSpike.rawValue)
         v[RandomSeedModeParameter.id] = RandomSeedModeParameter.encode(randomSeedMode.rawValue)
         v[RandomSeed.id] = RandomSeed.encode(randomSeed)
         return v
@@ -2078,6 +2294,39 @@ public final class TrainingParameters {
             try AutomaticSavePruningEnabled.definition.validate(raw); automaticSavePruningEnabled = try AutomaticSavePruningEnabled.decode(raw)
         case SessionSaveIncludeReplayBuffer.id:
             try SessionSaveIncludeReplayBuffer.definition.validate(raw); sessionSaveIncludeReplayBuffer = try SessionSaveIncludeReplayBuffer.decode(raw)
+        case TrainingHealthAlarmsEnabled.id:
+            try TrainingHealthAlarmsEnabled.definition.validate(raw); trainingHealthAlarmsEnabled = try TrainingHealthAlarmsEnabled.decode(raw)
+        case TrainingHealthCheckIntervalSteps.id:
+            try TrainingHealthCheckIntervalSteps.definition.validate(raw); trainingHealthCheckIntervalSteps = try TrainingHealthCheckIntervalSteps.decode(raw)
+        case TrainingHealthLearningGraceSteps.id:
+            try TrainingHealthLearningGraceSteps.definition.validate(raw); trainingHealthLearningGraceSteps = try TrainingHealthLearningGraceSteps.decode(raw)
+        case TrainingHealthActionNonFinite.id:
+            try TrainingHealthActionNonFinite.definition.validate(raw)
+            trainingHealthActionNonFinite = TrainingHealthAction(persistedRawValue: try TrainingHealthActionNonFinite.decode(raw))
+        case TrainingHealthActionDeadChannels.id:
+            try TrainingHealthActionDeadChannels.definition.validate(raw)
+            trainingHealthActionDeadChannels = TrainingHealthAction(persistedRawValue: try TrainingHealthActionDeadChannels.decode(raw))
+        case TrainingHealthActionValueFC1ZeroVelocity.id:
+            try TrainingHealthActionValueFC1ZeroVelocity.definition.validate(raw)
+            trainingHealthActionValueFC1ZeroVelocity = TrainingHealthAction(persistedRawValue: try TrainingHealthActionValueFC1ZeroVelocity.decode(raw))
+        case TrainingHealthActionIllegalMass.id:
+            try TrainingHealthActionIllegalMass.definition.validate(raw)
+            trainingHealthActionIllegalMass = TrainingHealthAction(persistedRawValue: try TrainingHealthActionIllegalMass.decode(raw))
+        case TrainingHealthActionGradientCollapse.id:
+            try TrainingHealthActionGradientCollapse.definition.validate(raw)
+            trainingHealthActionGradientCollapse = TrainingHealthAction(persistedRawValue: try TrainingHealthActionGradientCollapse.decode(raw))
+        case TrainingHealthActionLossSpike.id:
+            try TrainingHealthActionLossSpike.definition.validate(raw)
+            trainingHealthActionLossSpike = TrainingHealthAction(persistedRawValue: try TrainingHealthActionLossSpike.decode(raw))
+        case TrainingHealthActionPolicyOffsetDrift.id:
+            try TrainingHealthActionPolicyOffsetDrift.definition.validate(raw)
+            trainingHealthActionPolicyOffsetDrift = TrainingHealthAction(persistedRawValue: try TrainingHealthActionPolicyOffsetDrift.decode(raw))
+        case TrainingHealthActionBatchNormRunningVarianceRunaway.id:
+            try TrainingHealthActionBatchNormRunningVarianceRunaway.definition.validate(raw)
+            trainingHealthActionBatchNormRunningVarianceRunaway = TrainingHealthAction(persistedRawValue: try TrainingHealthActionBatchNormRunningVarianceRunaway.decode(raw))
+        case TrainingHealthActionGradientSpike.id:
+            try TrainingHealthActionGradientSpike.definition.validate(raw)
+            trainingHealthActionGradientSpike = TrainingHealthAction(persistedRawValue: try TrainingHealthActionGradientSpike.decode(raw))
         case RandomSeedModeParameter.id:
             try RandomSeedModeParameter.definition.validate(raw)
             randomSeedMode = RandomSeedMode(persistedRawValue: try RandomSeedModeParameter.decode(raw))
@@ -2593,6 +2842,18 @@ public final class TrainingParameters {
         MaxPeriodicAutosavesKept.self,
         AutomaticSavePruningEnabled.self,
         SessionSaveIncludeReplayBuffer.self,
+        TrainingHealthAlarmsEnabled.self,
+        TrainingHealthCheckIntervalSteps.self,
+        TrainingHealthLearningGraceSteps.self,
+        TrainingHealthActionNonFinite.self,
+        TrainingHealthActionDeadChannels.self,
+        TrainingHealthActionValueFC1ZeroVelocity.self,
+        TrainingHealthActionIllegalMass.self,
+        TrainingHealthActionGradientCollapse.self,
+        TrainingHealthActionLossSpike.self,
+        TrainingHealthActionPolicyOffsetDrift.self,
+        TrainingHealthActionBatchNormRunningVarianceRunaway.self,
+        TrainingHealthActionGradientSpike.self,
         RandomSeedModeParameter.self,
         RandomSeed.self
     ]
@@ -2725,5 +2986,31 @@ public final class TrainingParameters {
             values[id] = try ParameterValue(jsonValue: anyValue, id: id)
         }
         try apply(values)
+    }
+}
+
+
+// MARK: - Training health actions on the singleton
+
+extension TrainingParameters {
+
+    /// The stored property holding one training-health rule's action: the
+    /// one mapping from a rule to its setting on the singleton (the Health
+    /// tab binds through it; `TrainingParametersSnapshot
+    /// .trainingHealthAction(for:)` is the snapshot's).
+    static func trainingHealthActionKeyPath(
+        for rule: TrainingHealthRule
+    ) -> ReferenceWritableKeyPath<TrainingParameters, TrainingHealthAction> {
+        switch rule {
+        case .nonFinite: return \.trainingHealthActionNonFinite
+        case .deadChannels: return \.trainingHealthActionDeadChannels
+        case .valueFC1ZeroVelocity: return \.trainingHealthActionValueFC1ZeroVelocity
+        case .illegalMass: return \.trainingHealthActionIllegalMass
+        case .gradientCollapse: return \.trainingHealthActionGradientCollapse
+        case .lossSpike: return \.trainingHealthActionLossSpike
+        case .policyOffsetDrift: return \.trainingHealthActionPolicyOffsetDrift
+        case .batchNormRunningVarianceRunaway: return \.trainingHealthActionBatchNormRunningVarianceRunaway
+        case .gradientSpike: return \.trainingHealthActionGradientSpike
+        }
     }
 }

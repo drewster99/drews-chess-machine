@@ -144,6 +144,10 @@ extension SessionParameterResume {
         restore(BatchStatsInterval.self, saved: rs.batchStatsInterval, into: \.batchStatsInterval)
         restore(KLProbeInterval.self, saved: rs.klProbeInterval, into: \.klProbeInterval)
         restore(StepLineIntervalSec.self, saved: rs.stepLineIntervalSec, into: \.stepLineIntervalSec)
+        restore(TrainingHealthAlarmsEnabled.self, saved: rs.trainingHealthAlarmsEnabled, into: \.trainingHealthAlarmsEnabled)
+        restore(TrainingHealthCheckIntervalSteps.self, saved: rs.trainingHealthCheckIntervalSteps, into: \.trainingHealthCheckIntervalSteps)
+        restore(TrainingHealthLearningGraceSteps.self, saved: rs.trainingHealthLearningGraceSteps, into: \.trainingHealthLearningGraceSteps)
+        restoreTrainingHealthActions(from: rs, acceptedReplacements: acceptedReplacements)
         restoreArenaPromotionCriterion(from: rs, acceptedReplacements: acceptedReplacements)
         // The session's own interval is restored even when it lies
         // outside today's declared range (`restoreFromSession` warns).
@@ -429,5 +433,83 @@ extension SessionParameterResume {
         case .invalid(let problem):
             preconditionFailure("session load reviews an unusable arena promotion set before resume; got: \(problem)")
         }
+    }
+
+    /// The nine training-health action settings. Saved as action names; a
+    /// name that is not a known action is a load-time finding
+    /// (`invalidSavedSettings`), so by the time this runs every saved name
+    /// is valid unless the user accepted replacing the set with the current
+    /// actions. Operational knobs: a session that predates them keeps the
+    /// live settings (`absentValue: .currentSetting`).
+    func restoreTrainingHealthActions(from rs: SessionCheckpointState, acceptedReplacements: Set<String>) {
+        let replacing = acceptedReplacements.contains(SessionCheckpointState.SavedSettingID.trainingHealthActions)
+        for rule in TrainingHealthRule.allCases {
+            // One concrete key per rule: the resolver is generic over the key.
+            switch rule {
+            case .nonFinite:
+                restoreTrainingHealthAction(TrainingHealthActionNonFinite.self, rule: rule, from: rs, replacing: replacing)
+            case .deadChannels:
+                restoreTrainingHealthAction(TrainingHealthActionDeadChannels.self, rule: rule, from: rs, replacing: replacing)
+            case .valueFC1ZeroVelocity:
+                restoreTrainingHealthAction(TrainingHealthActionValueFC1ZeroVelocity.self, rule: rule, from: rs, replacing: replacing)
+            case .illegalMass:
+                restoreTrainingHealthAction(TrainingHealthActionIllegalMass.self, rule: rule, from: rs, replacing: replacing)
+            case .gradientCollapse:
+                restoreTrainingHealthAction(TrainingHealthActionGradientCollapse.self, rule: rule, from: rs, replacing: replacing)
+            case .lossSpike:
+                restoreTrainingHealthAction(TrainingHealthActionLossSpike.self, rule: rule, from: rs, replacing: replacing)
+            case .policyOffsetDrift:
+                restoreTrainingHealthAction(TrainingHealthActionPolicyOffsetDrift.self, rule: rule, from: rs, replacing: replacing)
+            case .batchNormRunningVarianceRunaway:
+                restoreTrainingHealthAction(TrainingHealthActionBatchNormRunningVarianceRunaway.self, rule: rule, from: rs, replacing: replacing)
+            case .gradientSpike:
+                restoreTrainingHealthAction(TrainingHealthActionGradientSpike.self, rule: rule, from: rs, replacing: replacing)
+            }
+        }
+    }
+
+    private func restoreTrainingHealthAction<K: TrainingParameterKey>(
+        _ key: K.Type,
+        rule: TrainingHealthRule,
+        from rs: SessionCheckpointState,
+        replacing: Bool
+    ) where K.Value == Int {
+        let p = parameters
+        let keyPath = TrainingParameters.trainingHealthActionKeyPath(for: rule)
+        let savedName = rs[savedTrainingHealthActionFor: rule]
+        if replacing {
+            logReplacedAtLoad(
+                K.self,
+                savedDescription: savedName.map { "\"\($0)\"" } ?? "absent",
+                currentDescription: p[keyPath: keyPath].name,
+                why: "set (training-health actions) is unusable")
+            return
+        }
+        let savedRaw: Int?
+        if let savedName {
+            do {
+                savedRaw = try TrainingHealthAction(name: savedName).rawValue
+            } catch {
+                preconditionFailure("session load reviews unusable training-health actions before resume; got: \(error)")
+            }
+        } else {
+            savedRaw = nil
+        }
+        restore(
+            K.self,
+            saved: savedRaw,
+            current: p[keyPath: keyPath].rawValue,
+            describe: { TrainingHealthAction(persistedRawValue: $0).name },
+            write: { rawValue, source in
+                let action = TrainingHealthAction(persistedRawValue: rawValue)
+                switch source {
+                case .session:
+                    p[keyPath: keyPath] = action
+                case .preFeature:
+                    p.holdForThisRun(K.self) { p[keyPath: keyPath] = action }
+                case .currentSetting, .notExact:
+                    break
+                }
+            })
     }
 }
