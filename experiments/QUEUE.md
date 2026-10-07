@@ -8,6 +8,8 @@ conversation.
 
 | started | experiment | ends (est.) |
 |---|---|---|
+| 2026-10-07 03:50 | LR arm B-silu-clip2: exact resume of B-silu from 18k with grad_clip_max_norm 2.0, to 23k | ~2026-10-07 07:30 |
+| 2026-10-07 03:50 | LR arm B-silu-clip5: exact resume of B-silu from 18k with grad_clip_max_norm 5.0, to 23k | ~2026-10-07 07:30 |
 
 
 ## Next (in order)
