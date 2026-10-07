@@ -234,8 +234,9 @@ enum ArenaSPRT {
         /// parameters happened to be on the day.
         let config: SPRTConfig
 
-        /// Games completed when the test stopped. Less than the tournament's
-        /// final `gamesPlayed` whenever `concurrency > 1`.
+        /// Games in the test's sample — the first this many in start order —
+        /// when it stopped. Less than the tournament's final `gamesPlayed`
+        /// whenever `concurrency > 1`.
         var gamesAtDecision: Int { wins + draws + losses }
 
         /// Only an accepted test promotes.
@@ -253,9 +254,10 @@ enum ArenaSPRT {
     /// over. The stopping rule is the thing that carries the error-rate
     /// guarantee, so the answer is fixed at the moment it fires.
     ///
-    /// Holds no tally of its own — the driver already owns one, and a second
-    /// copy is a second source of truth. Callers pass the tally *including*
-    /// the game just completed.
+    /// Holds no tally of its own. Callers pass the tally of the games in
+    /// *start* order up to and including the one just released
+    /// (`ArenaSPRTStartOrderFeed`): fed in finishing order, the test decides
+    /// on the shortest games — mostly draws — before the decisive ones end.
     ///
     /// Value type, mutated only by the single task that owns the tournament
     /// loop, so it needs no lock.

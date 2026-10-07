@@ -203,8 +203,11 @@ final class TickTournamentDriver: @unchecked Sendable {
         var completed = 0
         var nextGameIndexToSpawn = 0
         // Owned by this task alone, like the tally accumulators above, so no
-        // lock. Holds no tally of its own — it is fed the driver's.
+        // lock. Fed through `sprtFeed`, in the order games started — never
+        // the driver's finishing-order tally (`ArenaSPRTStartOrderFeed`
+        // explains the bias that would cause).
         var sprtMonitor = sprtConfig.map { ArenaSPRT.Monitor(config: $0) }
+        var sprtFeed = ArenaSPRTStartOrderFeed()
         // Games completed after the verdict latched, i.e. the in-flight
         // remainder. Reported so the drain is visible rather than looking
         // like the test kept playing past its own stopping rule.
@@ -317,6 +320,7 @@ final class TickTournamentDriver: @unchecked Sendable {
                 )
 
                 completed += 1
+                let candidateOutcome: ArenaSPRTStartOrderFeed.Outcome
                 switch result {
                 case .checkmate(let winner):
                     let aWon = (winner == .white && aIsWhite)
@@ -324,9 +328,11 @@ final class TickTournamentDriver: @unchecked Sendable {
                     if aWon {
                         aWins += 1
                         if aIsWhite { aWinsAsWhite += 1 } else { aWinsAsBlack += 1 }
+                        candidateOutcome = .win
                     } else {
                         bWins += 1
                         if aIsWhite { aLossesAsWhite += 1 } else { aLossesAsBlack += 1 }
+                        candidateOutcome = .loss
                     }
                 case .stalemate,
                      .drawByFiftyMoveRule,
@@ -334,30 +340,30 @@ final class TickTournamentDriver: @unchecked Sendable {
                      .drawByThreefoldRepetition:
                     draws += 1
                     if aIsWhite { aDrawsAsWhite += 1 } else { aDrawsAsBlack += 1 }
+                    candidateOutcome = .draw
                 }
 
                 diversityTracker?.recordGame(moves: record.moveHistory)
                 onGameRecorded?(record)
                 onGameCompleted?(completed, aWins, bWins, draws)
 
-                // Feed the sequential test the tally that now includes this
-                // game. `bWins` is the champion's wins, which from the
-                // candidate's perspective — the perspective every tally here
-                // is kept in — is the candidate's losses.
-                //
+                // Feed the sequential test every game this one completes the
+                // start-order run of, oldest first (`ArenaSPRTStartOrderFeed`).
                 // The monitor ignores everything after the first final
                 // decision, so the drain below cannot overwrite the verdict.
                 if sprtMonitor != nil {
                     let alreadyDecided = sprtMonitor?.verdict != nil
-                    sprtMonitor?.observeCompletedGame(wins: aWins, draws: draws, losses: bWins)
+                    for tally in sprtFeed.record(candidateOutcome, gameIndex: gameIndex) {
+                        sprtMonitor?.observeCompletedGame(wins: tally.wins, draws: tally.draws, losses: tally.losses)
+                    }
                     if alreadyDecided {
                         gamesDrainedAfterVerdict += 1
                     } else if let verdict = sprtMonitor?.verdict {
                         SessionLogger.shared.log(
-                            "[ARENA-TICK] SPRT decided \(verdict.decision.rawValue) at game \(verdict.gamesAtDecision) "
+                            "[ARENA-TICK] SPRT decided \(verdict.decision.rawValue) on games 0..<\(verdict.gamesAtDecision) in start order "
                             + "W/D/L=\(verdict.wins)/\(verdict.draws)/\(verdict.losses) "
                             + (verdict.llr.map { String(format: "llr=%.4f", $0) } ?? "llr=undefined")
-                            + " — draining \(games.count - 1) in-flight games"
+                            + " — \(completed) finished, draining \(games.count - 1) in-flight games"
                         )
                     }
                 }

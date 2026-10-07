@@ -337,6 +337,24 @@ too close together rather than a normal outcome.
    Tests should pin this directly — a driver run at `concurrency > 1` whose
    latched decision disagrees with `decide(...)` applied to the final tally.
 
+   **The test is fed in start order, not finishing order (fix, 2026-10-07).**
+   As first built, the driver fed the monitor its running tally each time any
+   game finished. A game's length is correlated with its result — short
+   threefold draws end first — so with hundreds of games in flight the test's
+   first hundred observations were the hundred shortest games, and the
+   stopping rule decided on that sample. In one GUI run, arenas #2, #4 and #5
+   rejected at games 182, 125 and 56 on W/D/L 0/181/1, 0/124/1 and 0/55/1
+   with 400 games in flight; #4's full 524 games were W239/D223/L62, Elo +122
+   [+100, +145]. `ArenaSPRTStartOrderFeed` now holds each finished result
+   until every earlier-started game has finished, and releases the unbroken
+   run from game 0 to the monitor one game at a time. A start-order prefix is
+   an unbiased sample (when a game started does not depend on how long it
+   lasts) and alternates colors. The verdict waits for the slower games of
+   that prefix; more games are played meanwhile, and they count in the
+   description, not the evidence. `verdict.gamesAtDecision` is the size of
+   the start-order prefix the test decided on. Tests:
+   `ArenaSPRTStartOrderFeedTests`.
+
 4. **`App/SessionController+Arena.swift`** — snapshot all arena config into a
    value struct at run start (it already reads from `TrainingParameters.shared`
    there), then branch:
