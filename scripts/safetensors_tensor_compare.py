@@ -42,6 +42,11 @@ class UnreadableFile(Exception):
     pass
 
 
+def is_count(value):
+    """An integer >= 0 as JSON gives it: an int, never a bool or a float."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def read_tensors(path):
     """Map tensor name -> (dtype, shape, raw bytes)."""
     try:
@@ -71,6 +76,12 @@ def read_tensors(path):
             shape = entry["shape"]
         except (KeyError, TypeError, ValueError) as error:
             raise UnreadableFile(f"{path}: tensor {name} has a malformed entry: {error}") from error
+        if not (is_count(start) and is_count(end)):
+            raise UnreadableFile(f"{path}: tensor {name} has data_offsets {[start, end]!r}, not two integers >= 0")
+        if not isinstance(dtype, str):
+            raise UnreadableFile(f"{path}: tensor {name} has dtype {dtype!r}, not a string")
+        if not (isinstance(shape, list) and all(is_count(dimension) for dimension in shape)):
+            raise UnreadableFile(f"{path}: tensor {name} has shape {shape!r}, not a list of integers >= 0")
         if not (0 <= start <= end <= len(data)):
             raise UnreadableFile(f"{path}: tensor {name} lies outside the data section")
         if dtype in ELEMENT_SIZES and math.prod(shape) * ELEMENT_SIZES[dtype] != end - start:
