@@ -54,6 +54,11 @@ Work from 2026-10-06 ~09:00 to 2026-10-07 ~06:55 (the 06:00 target slipped ~55 m
   - **Early checks passed:** V-1's probe at trainer step 19,000 is 1571.9 pElo — exactly B-silu's, so log-only mode leaves training unchanged on a real run. V-3's probe at 1,000 is 1018.2 — exactly B's: its only clips were steps 1–3 (pre-clip norms 31.2 / 30.3 / 26.5 > the hard max 15, as in B), so the warm-up and the early relative cap changed nothing early on. V-1 logged a would-clip on 69% of its first 380 post-warm-up steps at k = 1 (not ~50%), consistent with norms rising with the learning rate toward its peak; the write-up will check this.
   - When both pass, P5 flips the default to clip with V-1's k (plan V-7). Both run the frozen build `FrozenBuilds/DCM-2390-b4845088-relcap.app` (main with the cap); launch scripts `scratchpad/relcapV1_launch.sh` / `relcapV3_launch.sh`, parameter files `parameters-B-relcap-v1.json` / `-v3.json`; probes and `[GRAD-CLIP]` lines recorded as for the other arms. I'll write them up when they finish.
 
+## Update 07:05 — V-1 found the hidden step
+
+- V-1 (log only, so B-silu's exact path: its 20k probe is 1390.2, identical) logs every step above the trailing median. Through trainer step 20,000 (1,900 steps after warm-up, 1,650 above the median): the median ratio of a logged step is 1.07×, the 99th percentile 1.35×, and only **two steps exceed 2×: step 19,785 (pre-clip norm 8.45 = 28.1× the median 0.301) and step 19,795 (5.58 = 18.5×)**. These are the hidden steps that made clip 1.0 / 2.0 / 5.0 part from B-silu between 19,751 and 19,799 (8.45 and 5.58 both exceed 5; the 15 cap clipped neither).
+- So a k = 3 relative cap would have clipped exactly those two steps up to 20k and nothing else: no false positives on this run. V-1 continues to 21,000 (through B-silu's 20,600 spike).
+
 ## Decisions I made (and why)
 
 Decision IDs are spelled out each time.
