@@ -370,6 +370,60 @@ extension ChessTrainer {
     }
 }
 
+/// The trainer state a GUI arena captures at its start, under the training
+/// pause, so a promotion can rewind the trainer to exactly it: the working
+/// weights the candidate was snapshotted from, the optimizer velocity that
+/// built them, the clock, the dropout Philox state and the relative cap's
+/// gradient-norm history — everything indexed by or accumulated along that
+/// trajectory.
+struct ArenaStartTrainerState: Sendable {
+    let weights: [[Float]]
+    let velocity: [[Float]]
+    let completedSteps: Int
+    let dropoutState: DropoutPhiloxState
+    let gradNormHistory: GradientNormHistory
+}
+
+extension ChessTrainer {
+    /// Capture the arena-start state. Caller MUST have paused training, which
+    /// is what keeps the clock read here consistent with the exports; the
+    /// history must end at that clock, or the capture is refused.
+    func captureArenaStartState() async throws -> ArenaStartTrainerState {
+        let weights = try await network.exportWeights()
+        let velocity = try await exportVelocitySnapshot()
+        let completedSteps = completedTrainSteps
+        let dropoutState = try await captureDropoutState()
+        let gradNormHistory = try await exportGradNormHistory()
+        try gradNormHistory.checkEnds(atTrainerClock: completedSteps)
+        return ArenaStartTrainerState(weights: weights, velocity: velocity, completedSteps: completedSteps,
+                                      dropoutState: dropoutState, gradNormHistory: gradNormHistory)
+    }
+
+    /// A promotion's rewind: the promoted candidate's `weights` (the
+    /// arena-start weights) with the fp32 masters re-seeded from them, and
+    /// the velocity, clock, dropout state and gradient-norm history captured
+    /// with them at the arena start. The clock is set before the history,
+    /// which must end at it. Caller MUST have paused training.
+    ///
+    /// Why the velocity is the snapshot's and not reset: it is the momentum
+    /// that built the validated candidate, so it belongs to the candidate's
+    /// weight surface, while the trainer's current velocity was built on the
+    /// post-arena surface just discarded. Why the clock rewinds: warmup, the
+    /// LR/momentum cycle and the decay envelope are functions of it, and a
+    /// clock ahead of the weights would drive them with the wrong LR.
+    func rewindToArenaStart(_ state: ArenaStartTrainerState, promotedWeights weights: [[Float]]) async throws {
+        // Open the replacement window; the trainer's new identity, stamped by
+        // the caller afterwards, closes it.
+        noteWeightsReplaced()
+        try await network.loadWeights(weights)
+        try await syncMastersFromWorking()
+        try await loadVelocitySnapshot(state.velocity)
+        completedTrainSteps = state.completedSteps
+        try await restoreDropoutState(state.dropoutState)
+        try await restoreGradNormHistory(state.gradNormHistory)
+    }
+}
+
 /// How a CLI runner's trainer came to hold its weights, for the startup
 /// schedule line.
 enum TrainerLaunchKind: Sendable, Equatable {

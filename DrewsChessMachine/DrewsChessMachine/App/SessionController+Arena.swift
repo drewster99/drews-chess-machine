@@ -204,24 +204,23 @@ extension SessionController {
         // contiguity check would (rightly) refuse a history that ends at the
         // post-arena step.
         let trainerSnapshotGradNormHistory: GradientNormHistory
+        // The whole capture, for a promotion's rewind
+        // (`ChessTrainer.rewindToArenaStart`).
+        let arenaStartTrainerState: ArenaStartTrainerState
         do {
-            let snapshot: ([[Float]], [[Float]], Int, DropoutPhiloxState, GradientNormHistory) = try await Task.detached(priority: .userInitiated) {
-                let weights = try await trainer.network.exportWeights()
-                let velocity = try await trainer.exportVelocitySnapshot()
-                let completedSteps = trainer.completedTrainSteps
-                let dropoutState = try await trainer.captureDropoutState()
-                let gradNormHistory = try await trainer.exportGradNormHistory()
-                // Training is paused, so the history ends at the clock just
-                // read; a mismatch is a bug, refused before the arena runs.
-                try gradNormHistory.checkEnds(atTrainerClock: completedSteps)
-                try await candidateInference.loadWeights(weights)
-                return (weights, velocity, completedSteps, dropoutState, gradNormHistory)
+            let snapshot: ArenaStartTrainerState = try await Task.detached(priority: .userInitiated) {
+                // Training is paused; the capture refuses a history that does
+                // not end at the clock it reads.
+                let state = try await trainer.captureArenaStartState()
+                try await candidateInference.loadWeights(state.weights)
+                return state
             }.value
-            trainerSnapshotWeights = snapshot.0
-            trainerSnapshotVelocity = snapshot.1
-            trainerSnapshotCompletedSteps = snapshot.2
-            trainerSnapshotDropoutState = snapshot.3
-            trainerSnapshotGradNormHistory = snapshot.4
+            arenaStartTrainerState = snapshot
+            trainerSnapshotWeights = snapshot.weights
+            trainerSnapshotVelocity = snapshot.velocity
+            trainerSnapshotCompletedSteps = snapshot.completedSteps
+            trainerSnapshotDropoutState = snapshot.dropoutState
+            trainerSnapshotGradNormHistory = snapshot.gradNormHistory
         } catch {
             trainingBox?.recordError("Arena candidate sync failed: \(error.localizedDescription)")
             trainingGate.resume()
@@ -473,48 +472,16 @@ extension SessionController {
             if !Task.isCancelled {
                 do {
                     promotedChampionWeights = try await Task.detached(priority: .userInitiated) {
-                        [candidateInference, champion, trainer, trainerSnapshotVelocity, trainerSnapshotCompletedSteps,
-                         trainerSnapshotDropoutState] in
+                        [candidateInference, champion, trainer, arenaStartTrainerState] in
                         let weights = try await candidateInference.exportWeights()
                         try await champion.loadWeights(weights)
-                        // Open the replacement window; the trainer's new
-                        // identity, stamped after this task, closes it.
-                        trainer.noteWeightsReplaced()
-                        try await trainer.network.loadWeights(weights)
-                        // The trainer's working weights were just replaced by
-                        // the promoted candidate's. Re-seed the fp32 masters
-                        // from them so the optimizer accumulates from the
-                        // validated weights, not stale master values. No-op
-                        // under `.float32`. Gates are paused — safe to drive
-                        // the trainer's graph directly here.
-                        try await trainer.syncMastersFromWorking()
-                        // The trainer's CURRENT velocity was built up
-                        // against the post-arena weight surface (which
-                        // we just discarded by overwriting with the
-                        // candidate weights). Restore the velocity we
-                        // snapshotted at arena-start instead — that
-                        // velocity is the EMA of gradients that built
-                        // the validated candidate, so it's the right
-                        // accumulator for the candidate's weight
-                        // surface. Both gates are paused at this point,
-                        // so the trainer's velocity I/O is safe to
-                        // drive directly on network.graph.
-                        try await trainer.loadVelocitySnapshot(trainerSnapshotVelocity)
-                        // CRITICAL: Rewind the trainer's completed step
-                        // count to match the snapshotted weights. Without
-                        // this, the trainer keeps its post-arena step
-                        // count but uses arena-start weights, causing
-                        // the LR warmup multiplier to jump ahead of
-                        // the weights and drive the immature network
-                        // into collapse with an oversized LR.
-                        trainer.completedTrainSteps = trainerSnapshotCompletedSteps
-                        // The masks rewind with the weights and the clock:
-                        // the rewound trainer draws the dropout sequence
-                        // from where the candidate's training left it.
-                        try await trainer.restoreDropoutState(trainerSnapshotDropoutState)
-                        // The gradient-norm history rewinds with the clock it
-                        // is indexed by (set just above).
-                        try await trainer.restoreGradNormHistory(trainerSnapshotGradNormHistory)
+                        // The trainer rewinds to the arena start: the
+                        // candidate's weights (fp32 masters re-seeded), and
+                        // the velocity, clock, dropout state and gradient-norm
+                        // history captured with them. Both gates are paused,
+                        // so driving the trainer's graph directly is safe.
+                        // The rewind's reasons are on `rewindToArenaStart`.
+                        try await trainer.rewindToArenaStart(arenaStartTrainerState, promotedWeights: weights)
                         return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
