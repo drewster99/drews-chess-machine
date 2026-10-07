@@ -34,6 +34,20 @@ import Foundation
 /// read. Every suffixed name still matches the `dcm_log_*.txt` glob, and
 /// the launch stamp keeps its position right after `dcm_log_`.
 ///
+/// A process xctest launched to host the test bundle never writes there.
+/// The test target is hosted by the app, so every test run goes through the
+/// app's launch and starts `shared`, and any code under test logs through it;
+/// with the real folder as the destination, each test run left a
+/// `dcm_log_*.txt` full of fake Lichess opponents and synthetic training lines
+/// among the real sessions that the experiment tooling, the dashboards and
+/// people read. `shared` therefore takes its folder from
+/// `Location.forProcess(runningUnderXCTest:)`, and a test host's lines go to
+/// a folder of the run's own in the temporary directory
+/// (`.xcTestRunTemporaryDirectory`). That folder is left in place, not removed
+/// at teardown: the logger writes until the process exits, the forensic suites
+/// log diagnostics there on purpose, and macOS clears unused temporary items
+/// itself. The app's `[APP] session log: …` stdout line names the file.
+///
 /// The file itself is created by the first line written, not by `start()`,
 /// still under the name `start()`'s time gives it. Every CLI tool calls
 /// `start()`, and some runs never log a line (a `--probe-model` of a
@@ -41,14 +55,30 @@ import Foundation
 /// log behind for each of them — dozens a day from a probe loop. Until the
 /// first line, `activeLogPath` is nil.
 final class SessionLogger: @unchecked Sendable {
-    static let shared = SessionLogger(location: .userLibraryLogs)
+    static let shared = SessionLogger(
+        location: .forProcess(runningUnderXCTest: XCTestHostDetection.isRunningUnderXCTest)
+    )
 
     /// Where the log file goes.
-    enum Location {
-        /// `~/Library/Logs/DrewsChessMachine/` — every real session.
+    enum Location: Equatable {
+        /// `~/Library/Logs/DrewsChessMachine/` — every real session: the app
+        /// and every command-line run.
         case userLibraryLogs
-        /// An explicit folder (tests).
+        /// `<temporary directory>/DrewsChessMachine-XCTest-SessionLogs/run-<stamp>-pid<pid>/`
+        /// — a test host's own folder, one per test run
+        /// (`SessionLogger.xcTestRunLogsDirectory`).
+        case xcTestRunTemporaryDirectory
+        /// An explicit folder (tests that read their own logger's file).
         case directory(URL)
+
+        /// The location `shared` logs to: the one place a process's kind picks
+        /// its log folder. Only a test host leaves the real folder; there is
+        /// no fallback between the two — if the test folder cannot be made,
+        /// `start()` reports it and the logger drops lines rather than write
+        /// into the user's logs.
+        static func forProcess(runningUnderXCTest: Bool) -> Location {
+            runningUnderXCTest ? .xcTestRunTemporaryDirectory : .userLibraryLogs
+        }
     }
 
     private let location: Location
@@ -108,6 +138,17 @@ final class SessionLogger: @unchecked Sendable {
     /// the failure on stderr like any other open failure.
     private static let maxSameSecondLogFileAttempts = 1000
 
+    /// The folder a test host's session logs go in. Fixed once per process so
+    /// a `start()` after `shutdown()` stays in the same run's folder; the
+    /// launch stamp and process ID tell one test run's folder from another's,
+    /// and the shared parent keeps every run's folder in one findable place.
+    static let xcTestRunLogsDirectory: URL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DrewsChessMachine-XCTest-SessionLogs", isDirectory: true)
+        .appendingPathComponent(
+            "run-\(filenameFormatter.string(from: Date()))-pid\(ProcessInfo.processInfo.processIdentifier)",
+            isDirectory: true
+        )
+
     init(location: Location) {
         self.location = location
     }
@@ -117,6 +158,14 @@ final class SessionLogger: @unchecked Sendable {
         switch location {
         case .directory(let url):
             return url
+        case .xcTestRunTemporaryDirectory:
+            // Adopting an existing folder is fine here, as for the real one:
+            // the log file inside is created exclusively.
+            try FileManager.default.createDirectory(
+                at: Self.xcTestRunLogsDirectory,
+                withIntermediateDirectories: true
+            )
+            return Self.xcTestRunLogsDirectory
         case .userLibraryLogs:
             let libraryURL = try FileManager.default.url(
                 for: .libraryDirectory,
