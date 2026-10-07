@@ -175,4 +175,26 @@ final class TrainingHealthIncidentReplayTests: XCTestCase {
         let events = try replay(["Bsilu"]).events
         XCTAssertEqual(steps(events, .gradientSpike, .raise).first, 20_600, describe(events))
     }
+
+    /// B-silu's log predates the parked counts, so its live lines count only
+    /// the two leaky_relu sites (144 channels). The overall arm's denominator
+    /// is still every channel an activation consumes — 1,040, from the run's
+    /// checkpoint table — so 20 parked is 1.9% overall; `policy.pre_bn`
+    /// (19/128 = 14.8%) and `value.bn` (1/16 = 6%) stay under the site arm.
+    /// The app, which sees every site, would raise a warning; dividing by the
+    /// 144 relu-family channels alone made it a false critical.
+    func testBSiluDeadChannelsIsAWarningNotACritical() throws {
+        let events = try replay(["Bsilu"]).events
+        let raise = try XCTUnwrap(events.first { $0.rule == .deadChannels && $0.kind == .raise }, describe(events))
+        XCTAssertEqual(raise.trainerStep, 20_650)
+        XCTAssertEqual(raise.severity, .warning)
+        XCTAssertEqual(raise.threshold, "dead>0")
+        XCTAssertEqual(raise.value, "dead=20/1040")
+        XCTAssertTrue(events.filter { $0.rule == .deadChannels && $0.severity == .critical }.isEmpty, describe(events))
+    }
+
+    func testBSiluIllegalMassClearsAt21400() throws {
+        let events = try replay(["Bsilu"]).events
+        XCTAssertEqual(steps(events, .illegalMass, .clear), [21_400], describe(events))
+    }
 }

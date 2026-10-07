@@ -150,8 +150,23 @@ final class BatchNormPassThroughTests: XCTestCase {
             let health = LayerHealth.batchNormSiteHealth(
                 site: .init(name: "s", channels: gamma.count, activation: function),
                 gamma: gamma, beta: beta, runningVariance: variance)
-            XCTAssertEqual(health.parkedChannelCount, health.deadChannelCount, function.rawValue)
-            XCTAssertEqual(health.parkedMostlyOffChannelCount, health.mostlyOffChannelCount, function.rawValue)
+            // Independent of `band` (which reuses the β/|γ| comparisons): the
+            // pass-through model's X = Φ(β/|γ|) against its own Φ(−3) / Φ(−2)
+            // lines must land every channel in the same band.
+            var parkedByExcessPassThrough = 0
+            var mostlyOffByExcessPassThrough = 0
+            for (g, b) in zip(gamma, beta) {
+                let x = BatchNormPassThrough.excessPassThrough(activation: function, gamma: Double(g), beta: Double(b))
+                if x < BatchNormPassThrough.parkedBelow {
+                    parkedByExcessPassThrough += 1
+                } else if x < BatchNormPassThrough.mostlyOffBelow {
+                    mostlyOffByExcessPassThrough += 1
+                }
+            }
+            XCTAssertEqual(health.deadChannelCount, parkedByExcessPassThrough, function.rawValue)
+            XCTAssertEqual(health.parkedChannelCount, parkedByExcessPassThrough, function.rawValue)
+            XCTAssertEqual(health.mostlyOffChannelCount, mostlyOffByExcessPassThrough, function.rawValue)
+            XCTAssertEqual(health.parkedMostlyOffChannelCount, mostlyOffByExcessPassThrough, function.rawValue)
             XCTAssertNotNil(health.parkedChannelCount)
         }
     }
@@ -236,9 +251,9 @@ final class BatchNormPassThroughTests: XCTestCase {
         XCTAssertTrue(line.contains("reluSites=2/9 ch=144 dead=21 "), line)
         XCTAssertTrue(line.contains(" parkedSites=9/9 parkedCh=1040 parked=21 parkedOff=11 parkedBy=policy.pre_bn:20/128,value.bn:1/16"), line)
         let digest = LayerHealthDigest(summary: summary)
-        XCTAssertEqual(digest.deadChannels?.classifiedChannelCount, 1040)
-        XCTAssertEqual(digest.deadChannels?.deadChannelCount, 21)
-        XCTAssertEqual(digest.deadChannels?.classifiedSiteCount, 9)
+        XCTAssertEqual(digest.deadChannels?.modeledChannelCount, 1040)
+        XCTAssertEqual(digest.deadChannels?.parkedChannelCount, 21)
+        XCTAssertEqual(digest.deadChannels?.modeledSiteCount, 9)
         // The table gains a parked section and keeps its batch-norm rows.
         let detail = summary.detailedLines()
         XCTAssertTrue(detail.contains { $0.hasPrefix("parked channels — every activation") })
