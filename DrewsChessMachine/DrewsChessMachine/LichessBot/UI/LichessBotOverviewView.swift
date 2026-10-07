@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// The bot's control room (plan §14.3): state and controls, account, the
-/// model generation in use, the request gate, the pending challenge, and
-/// alarms.
+/// The bot's control room (plan §14.3): alarms first while there are any,
+/// then state and controls, the record, account, the model generation in
+/// use, the request gate and the pending challenge.
 struct LichessBotOverviewView: View {
     let controller: LichessBotController
     @State private var showingChallengeSheet = false
@@ -10,7 +10,16 @@ struct LichessBotOverviewView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                LichessBotControlsCard(controller: controller, onChallenge: { showingChallengeSheet = true })
+                // Alarms need attention, so they come first — and only
+                // while there is something to report. Kept with the
+                // controls in a spacing-free stack so the hidden card
+                // leaves no gap.
+                VStack(alignment: .leading, spacing: 0) {
+                    LichessBotAlarmsCard(controller: controller)
+                        .shown(hasAlarms)
+                        .padding(.bottom, hasAlarms ? 16 : 0)
+                    LichessBotControlsCard(controller: controller, onChallenge: { showingChallengeSheet = true })
+                }
                 LichessBotRecordCard(controller: controller)
                 LichessBotChallengeOutcomesCard(controller: controller)
                 HStack(alignment: .top, spacing: 16) {
@@ -22,13 +31,16 @@ struct LichessBotOverviewView: View {
                         .frame(maxHeight: .infinity, alignment: .top)
                 }
                 .fixedSize(horizontal: false, vertical: true)
-                LichessBotAlarmsCard(controller: controller)
             }
             .padding(16)
         }
         .sheet(isPresented: $showingChallengeSheet) {
             LichessBotChallengeSheet(controller: controller, isPresented: $showingChallengeSheet)
         }
+    }
+
+    private var hasAlarms: Bool {
+        !controller.alarms.isEmpty || !controller.unreconciledGameIDs.isEmpty
     }
 }
 
@@ -165,58 +177,31 @@ struct LichessBotControlsCard: View {
 }
 
 /// The account's rating in each speed, its rated games there (from
-/// Lichess), and its unrated games there. Lichess reports unrated games only
-/// as an account-wide total, so the unrated column counts DCM's own game
-/// records — every game this BOT account plays goes through DCM.
+/// Lichess), and its unrated games, games today and games in the last 24
+/// hours there. Lichess reports unrated games only as an account-wide total,
+/// so those three columns count DCM's own game records — every game this
+/// BOT account plays goes through DCM.
 struct LichessBotAccountRatingsGrid: View {
     let controller: LichessBotController
 
     private static let speeds = ["ultraBullet", "bullet", "blitz", "rapid", "classical"]
 
     var body: some View {
-        let unrated = unratedGamesBySpeed
-        Grid(alignment: .trailing, horizontalSpacing: 16, verticalSpacing: 2) {
-            GridRow {
-                Text("")
-                Text("Rating")
-                Text("Rated")
-                Text("Unrated")
-                    .help("From DCM's game records; Lichess doesn't report unrated games per speed")
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            ForEach(ratedRows, id: \.speed) { row in
-                GridRow {
-                    Text(row.speed)
-                        .font(.callout)
-                        .gridColumnAlignment(.leading)
-                    Text(row.rating)
-                    Text(row.ratedGames)
-                    Text(unrated.map { "\($0[row.speed] ?? 0)" } ?? "…")
-                }
-                .font(.system(.callout, design: .monospaced))
-            }
+        // Today and the last 24 hours move with the clock, not with any
+        // state change, so the counts are re-read on a timer.
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            LichessBotAccountRatingsGridContent(rows: ratedRows, counts: LichessBotAccountGameCounts(rows: controller.index?.rows, now: context.date, calendar: .current))
         }
     }
 
     /// Speeds the account has a rating in, in speed order.
-    private var ratedRows: [(speed: String, rating: String, ratedGames: String)] {
+    private var ratedRows: [LichessBotAccountRatingRow] {
         guard let perfs = controller.account?.perfs else { return [] }
         return Self.speeds.compactMap { speed in
             guard let rating = perfs[speed], let value = rating.rating else { return nil }
             let ratingText = "\(value)" + (rating.prov == true ? "?" : " ")
-            return (speed, ratingText, rating.games.map { "\($0)" } ?? "–")
+            return LichessBotAccountRatingRow(speed: speed, rating: ratingText, ratedGames: rating.games.map { "\($0)" } ?? "–")
         }
-    }
-
-    /// Unrated games per speed in DCM's records; nil until the index loads.
-    private var unratedGamesBySpeed: [String: Int]? {
-        guard let rows = controller.index?.rows else { return nil }
-        var counts: [String: Int] = [:]
-        for row in rows where !row.rated {
-            counts[row.speed, default: 0] += 1
-        }
-        return counts
     }
 }
 
@@ -346,7 +331,9 @@ struct LichessBotGateCard: View {
     }
 }
 
-/// Alarms raised since launch, newest first.
+/// Alarms raised since launch, newest first, and games not yet reconciled
+/// with Lichess' export. The Overview shows it at the top, only while
+/// there is something in it.
 struct LichessBotAlarmsCard: View {
     let controller: LichessBotController
 

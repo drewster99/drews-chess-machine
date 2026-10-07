@@ -4,10 +4,11 @@ import SwiftUI
 /// scroll view, so the table never clips at the narrowest window.
 struct LichessBotRecordPeriodTable: View {
     let rows: LichessBotPeriodValues<LichessBotPeriodStatistics>
+    let widths: LichessBotRecordPeriodColumnWidths
 
     var body: some View {
         ScrollView(.horizontal) {
-            LichessBotRecordPeriodGrid(rows: rows)
+            LichessBotRecordPeriodGrid(rows: rows, widths: widths)
                 .padding(.bottom, 2)
         }
     }

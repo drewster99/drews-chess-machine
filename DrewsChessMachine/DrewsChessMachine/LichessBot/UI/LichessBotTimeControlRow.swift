@@ -18,7 +18,7 @@ struct LichessBotTimeControlRow: View {
         GridRow {
             LichessBotRowLabel(text: speed)
             Text(LichessBotStatsFormat.accountRating(perf))
-                .help(accountLoaded ? "Lichess's current rating in \(speed)\(perf?.prov == true ? " (provisional)" : "")" : "Account not loaded")
+                .help(accountLoaded ? "Lichess' current rating in \(speed)\(perf?.prov == true ? " (provisional)" : "")" : "Account not loaded")
             Text(LichessBotStatsFormat.ratingChange(today?.ratingChange ?? LichessBotRatingChange()))
                 .help(LichessBotStatsFormat.ratingChangeHelp(today?.ratingChange ?? LichessBotRatingChange()))
             Text(LichessBotStatsFormat.ratingChange(week?.ratingChange ?? LichessBotRatingChange()))
@@ -28,6 +28,8 @@ struct LichessBotTimeControlRow: View {
             Text(LichessBotStatsFormat.percent(tally.score))
             Text(LichessBotStatsFormat.estimate(selected?.performance ?? .none))
                 .help("Performance rating over \(selected?.ratedOpponentGames ?? 0) game(s) with a rated opponent, within this pool")
+            Text(LichessBotStatsFormat.ratingChange(selected?.ratingChange ?? LichessBotRatingChange()))
+                .help(LichessBotStatsFormat.ratingChangeHelp(selected?.ratingChange ?? LichessBotRatingChange()))
             LichessBotRatingSparkline(series: LichessBotRatingSparklineSeries(points: trend, currentRating: accountLoaded ? perf?.rating : nil))
         }
         .font(LichessBotStatsStyle.numberFont)

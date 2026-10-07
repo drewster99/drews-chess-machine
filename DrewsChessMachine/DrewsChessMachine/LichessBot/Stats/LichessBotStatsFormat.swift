@@ -42,7 +42,7 @@ enum LichessBotStatsFormat {
         if change.ratedGames == 0 {
             return "No rated game"
         }
-        return "\(change.gamesWithChange) of \(change.ratedGames) rated games have a rating change (Lichess's change at the time of the game)"
+        return "\(change.gamesWithChange) of \(change.ratedGames) rated games have a rating change (Lichess' change at the time of the game)"
     }
 
     /// "1734", "≥1890", "≤1100", "–".

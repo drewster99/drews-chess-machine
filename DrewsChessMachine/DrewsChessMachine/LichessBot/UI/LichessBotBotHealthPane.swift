@@ -14,7 +14,7 @@ struct LichessBotBotHealthPane: View {
                 LichessBotHealthRow(label: "Anomalies", value: health.anomalies, help: "Notes the record builder made (\(health.gamesWithAnomalies) game(s) have any)")
                 LichessBotHealthRow(label: "Rejected moves", value: health.rejectedMoves, help: "Moves Lichess refused")
                 LichessBotHealthRow(label: "Stream reconnects", value: health.streamReconnects, help: "Game-stream connections after the first")
-                LichessBotHealthRow(label: "Corrected by the export", value: health.reconciliationCorrected, help: "Games whose journal disagreed with Lichess's export; the export's values were used")
+                LichessBotHealthRow(label: "Corrected by the export", value: health.reconciliationCorrected, help: "Games whose journal disagreed with Lichess' export; the export's values were used")
                 LichessBotHealthRow(label: "Filed without an export", value: health.exportUnavailable, help: "Games Lichess kept no export for; the journal is the only source")
             }
             LichessBotPaneEmptyNote(text: "\(health.rowsWithoutFacts) game\(health.rowsWithoutFacts == 1 ? "" : "s") without facts: their rejected moves and reconnects are not counted")

@@ -216,7 +216,7 @@ enum LichessBotChallengeLogStyle {
             case .notCreated(.refused(let refusal)):
                 lines.append("Lichess refused the POST (HTTP \(refusal.httpStatus)): \(refusal.text ?? "no message")")
             case .notCreated(.noAnswer(let error)):
-                lines.append("Lichess's answer never arrived, so a challenge may exist: \(error)")
+                lines.append("Lichess' answer never arrived, so a challenge may exist: \(error)")
             case .incomingDecided(let decision):
                 lines.append(initiativeHelp(.decided(decision)) + "; nothing after was recorded")
             case .canceledOnLichessWithoutRecordedWithdrawal:
@@ -229,7 +229,7 @@ enum LichessBotChallengeLogStyle {
         case .reconstructedNotCreated(.refused(let refusal)):
             lines.append("Lichess refused the POST (HTTP \(refusal.httpStatus)): \(refusal.text ?? "no message")")
         case .reconstructedNotCreated(.botGameLimit(let gamesPlayed, let untilAsLogged)):
-            lines.append("The player was at its bot-game limit (\(gamesPlayed)) until \(untilAsLogged), as logged; Lichess's answer was not logged")
+            lines.append("The player was at its bot-game limit (\(gamesPlayed)) until \(untilAsLogged), as logged; Lichess' answer was not logged")
         }
         lines.append(contentsOf: row.notes.map(noteText))
         lines.append(contentsOf: row.anomalies.map(anomalyText))

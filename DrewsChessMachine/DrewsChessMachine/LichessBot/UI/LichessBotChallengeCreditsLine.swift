@@ -24,7 +24,7 @@ struct LichessBotChallengeCreditsLine: View {
             let lines = Self.lines(log: controller.challengeOutcomeLog, now: context.date)
             VStack(alignment: .leading, spacing: 2) {
                 Text(lines.credits)
-                    .help("Lichess's challenge budget: \(LichessBotChallengeCredits.perDay) credits per rolling 24 hours and \(LichessBotChallengeCredits.perMinute) per minute. A challenge to a bot costs \(LichessBotChallengeCredits.cost(for: .bot)) credit, to a human \(LichessBotChallengeCredits.cost(for: .human)), and nothing to a player who follows DCM, which no API reports, so these are the most DCM can have used. A refusal for the bot daily game limit or another 400 is charged too; a 429 is not.")
+                    .help("Lichess' challenge budget: \(LichessBotChallengeCredits.perDay) credits per rolling 24 hours and \(LichessBotChallengeCredits.perMinute) per minute. A challenge to a bot costs \(LichessBotChallengeCredits.cost(for: .bot)) credit, to a human \(LichessBotChallengeCredits.cost(for: .human)), and nothing to a player who follows DCM, which no API reports, so these are the most DCM can have used. A refusal for the bot daily game limit or another 400 is charged too; a 429 is not.")
                 Text(lines.outcomes)
                     .help("Outgoing challenges over the last 24 hours. Accepted / declined: the opponent's answer. Refused: Lichess rejected the challenge request itself (for example a daily limit). Acceptance: accepted over answered (accepted, declined or canceled).")
             }

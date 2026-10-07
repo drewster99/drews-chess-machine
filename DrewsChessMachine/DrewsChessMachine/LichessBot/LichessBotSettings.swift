@@ -38,6 +38,14 @@ struct LichessBotChallengeSettings: Sendable, Equatable, Codable {
     var maxSimultaneousGamesPerOpponent = 1
     var maxGamesPerDay = 2000
     var maxGamesPerOpponentPerDay = 5
+    /// Of Lichess' daily bot-vs-bot games (`LichessBotLimits.botGamesPerDay`),
+    /// how many DCM's own challenges leave for bots that challenge DCM:
+    /// matchmaking and the challenge queue stop this many short of the
+    /// limit (`LichessBotBotGameBudget`). Games against humans never count
+    /// toward that limit, so none are reserved for them.
+    var botGamesReservedForIncoming = 0
+    /// How many more matchmaking leaves for the operator's challenge queue.
+    var botGamesReservedForChallengeQueue = 0
     /// Withdraw an outgoing challenge nobody has answered after this long.
     /// Zero waits indefinitely. Busy bots often leave challenges unanswered
     /// rather than declining them.
@@ -240,6 +248,25 @@ struct LichessBotMatchmakingSettings: Sendable, Equatable, Codable {
     /// After a bot declines one of DCM's challenges, matchmaking leaves it
     /// alone this long. Zero records no cool-down.
     var declineCooldownHours = 2
+    /// After a bot declines with `noBot` (it plays no bots), matchmaking
+    /// leaves it alone this many days (`LichessBotDeclineBlock`). Its own
+    /// challenges to DCM are still answered by the acceptance settings.
+    var noBotDeclineBlockDays = 30
+    /// After a bot declines for a clock reason — too fast, too slow, that
+    /// time control — matchmaking sends it no challenge with such a clock
+    /// for this many days.
+    var specificDeclineBlockDays = 14
+    /// After a bot declines asking for casual (or for rated), matchmaking
+    /// sends it no rated (or casual) challenge for this many days. Longer
+    /// than the clock block by owner decision (2026-10-07): a casual-only
+    /// bot was the second most common refusal (32 in the rebuilt history,
+    /// after 39 noBot).
+    var ratedCasualDeclineBlockDays = 30
+    /// Pick among bots DCM has had no contact with (no challenge either way,
+    /// no game) for `recentContactHours` first; with none, the one contacted
+    /// longest ago.
+    var preferNotRecentlyContacted = true
+    var recentContactHours = 24
 }
 
 /// How the bot's window presents games (plan §14.3a).
@@ -291,6 +318,10 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(c.gamesReservedForHumans >= 0 && c.gamesReservedForHumans <= c.maxConcurrentGames, "Reserved human slots must be between zero and the concurrent-game limit")
         require(c.maxSimultaneousGamesPerOpponent >= 1, "Allow at least one game per opponent")
         require(c.maxGamesPerDay >= 1 && c.maxGamesPerOpponentPerDay >= 1, "Daily limits must be at least one")
+        require(c.botGamesReservedForIncoming >= 0 && c.botGamesReservedForChallengeQueue >= 0, "Reserved bot games cannot be negative")
+        require(matchmaking.noBotDeclineBlockDays >= 0 && matchmaking.specificDeclineBlockDays >= 0 && matchmaking.ratedCasualDeclineBlockDays >= 0, "Decline block days cannot be negative")
+        require(matchmaking.recentContactHours >= 0, "Recent-contact hours cannot be negative")
+        require(c.botGamesReservedForIncoming + c.botGamesReservedForChallengeQueue <= LichessBotLimits.botGamesPerDay, "Reserved bot games cannot exceed Lichess' \(LichessBotLimits.botGamesPerDay) per day")
         require(c.outgoingChallengeTimeoutSeconds >= 0, "The unanswered-challenge timeout cannot be negative")
         require(c.challengeResponseBudgetPerMinute >= 1, "The challenge-response budget must be at least one per minute")
 
@@ -328,7 +359,7 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         let n = connection
         require(!n.expectedAccountID.isEmpty, "Set the Lichess account the token must belong to")
         require(n.reconnectInitialSeconds >= 1 && n.reconnectInitialSeconds <= n.reconnectCapSeconds, "Reconnect delay must be at least one second and at most the cap")
-        require(n.eventStreamStallTimeoutSeconds > LichessBotLimits.eventStreamKeepAliveSeconds, "Event-stream stall timeout must exceed Lichess's keep-alive interval of \(LichessBotLimits.eventStreamKeepAliveSeconds) seconds")
+        require(n.eventStreamStallTimeoutSeconds > LichessBotLimits.eventStreamKeepAliveSeconds, "Event-stream stall timeout must exceed Lichess' keep-alive interval of \(LichessBotLimits.eventStreamKeepAliveSeconds) seconds")
         require(n.gameStreamResyncSeconds >= 10, "Game-stream resync must be at least ten seconds")
         // A second 429 cannot come before the first one's cooldown ends, so a
         // breaker window no longer than the cooldown could never trip.
@@ -376,7 +407,8 @@ enum LichessBotLimits {
     static let autocompleteMinimumCharacters = 3
     /// The most ids `GET /api/users/status` accepts in one request.
     static let userStatusMaximumIDs = 100
-    /// Lichess's limit on a BOT account's games against other bots in a
-    /// rolling day (observed in its refusal text, 2026-09-28).
+    /// Lichess' limit on a BOT account's games against other bots in one
+    /// 24-hour window (lila `BotLimit`; `LichessBotBotGameWindow` models
+    /// the window).
     static let botGamesPerDay = 100
 }

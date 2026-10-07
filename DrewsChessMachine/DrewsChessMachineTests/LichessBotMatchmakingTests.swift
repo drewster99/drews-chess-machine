@@ -46,6 +46,7 @@ final class LichessBotMatchmakingTests: XCTestCase {
             notes: notes,
             gamesTodayByOpponent: gamesToday,
             maxGamesPerOpponentPerDay: 3,
+            opponentHistory: .empty,
             now: now
         )
     }
@@ -53,7 +54,7 @@ final class LichessBotMatchmakingTests: XCTestCase {
     private let window = LichessBotMatchmaking.RatingBounds(minimum: 1200, maximum: 1800, basis: .relative(ourRating: 1500))
 
     private func exclusion(_ bot: LichessBotUserSummary, _ context: LichessBotMatchmaking.CandidateContext) -> LichessBotMatchmaking.Exclusion? {
-        LichessBotMatchmaking.exclusion(of: bot, speed: .blitz, bounds: window, context: context)
+        LichessBotMatchmaking.exclusion(of: bot, terms: LichessBotChallengeTerms(limitSeconds: 300, incrementSeconds: 3, rated: false), bounds: window, context: context)
     }
 
     // MARK: - Candidate rules, one per rule
@@ -262,7 +263,12 @@ final class LichessBotMatchmakingTests: XCTestCase {
     // MARK: - When a pass runs
 
     private func conditions() -> LichessBotMatchmaking.PassConditions {
-        LichessBotMatchmaking.PassConditions(isOnline: true, rateLimitHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, botGamesInLastDay: 10)
+        LichessBotMatchmaking.PassConditions(isOnline: true, rateLimitHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, botGameWindow: window(games: 10), challengeSettings: LichessBotChallengeSettings())
+    }
+
+    /// A bot-game window opened an hour before `now` holding `games` games.
+    private func window(games: Int) -> LichessBotBotGameWindow {
+        LichessBotBotGameWindow(botGameStarts: (0..<games).map { now.addingTimeInterval(-3600 + Double($0)) }, now: now)
     }
 
     func testAPassRunsOnlyWhileOnlineWithNoHoldAndAnEmptyQueue() {
@@ -289,14 +295,28 @@ final class LichessBotMatchmakingTests: XCTestCase {
 
     func testAPassStopsAtDCMsBotGameBudget() {
         var unloaded = conditions()
-        unloaded.botGamesInLastDay = nil
+        unloaded.botGameWindow = nil
         XCTAssertNotNil(LichessBotMatchmaking.passBlockedReason(unloaded))
         var spent = conditions()
-        spent.botGamesInLastDay = LichessBotLimits.botGamesPerDay
+        spent.botGameWindow = window(games: LichessBotLimits.botGamesPerDay)
         XCTAssertNotNil(LichessBotMatchmaking.passBlockedReason(spent))
         var almost = conditions()
-        almost.botGamesInLastDay = LichessBotLimits.botGamesPerDay - 1
+        almost.botGameWindow = window(games: LichessBotLimits.botGamesPerDay - 1)
         XCTAssertNil(LichessBotMatchmaking.passBlockedReason(almost))
+    }
+
+    /// Matchmaking stops short of the limit by both reserves, and says when
+    /// the window clears.
+    func testAPassLeavesTheReservedBotGames() throws {
+        var reserving = conditions()
+        reserving.challengeSettings.botGamesReservedForIncoming = 10
+        reserving.challengeSettings.botGamesReservedForChallengeQueue = 5
+        reserving.botGameWindow = window(games: LichessBotLimits.botGamesPerDay - 16)
+        XCTAssertNil(LichessBotMatchmaking.passBlockedReason(reserving))
+        reserving.botGameWindow = window(games: LichessBotLimits.botGamesPerDay - 15)
+        let reason = try XCTUnwrap(LichessBotMatchmaking.passBlockedReason(reserving))
+        XCTAssertTrue(reason.contains("85 of Lichess' 100 daily bot games (10 held for incoming challenges, 5 for the challenge queue)"), reason)
+        XCTAssertTrue(reason.contains("; resumes about "), reason)
     }
 
     func testTheNextAutomaticPassWaitsAfterAnUnproductiveOne() {

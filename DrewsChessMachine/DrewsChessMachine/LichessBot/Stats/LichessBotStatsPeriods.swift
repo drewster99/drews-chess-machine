@@ -9,44 +9,83 @@ import Foundation
 enum LichessBotStatsPeriod: String, CaseIterable, Sendable, Codable, Hashable {
     case lastHour
     case today
+    case yesterday
     case thisWeek
+    case lastWeek
     case thisMonth
+    case lastMonth
     case thisYear
+    case lastYear
     case allTime
 
     var label: String {
         switch self {
         case .lastHour: return "Last hour"
         case .today: return "Today"
+        case .yesterday: return "Yesterday"
         case .thisWeek: return "This week"
+        case .lastWeek: return "Last week"
         case .thisMonth: return "This month"
+        case .lastMonth: return "Last month"
         case .thisYear: return "This year"
+        case .lastYear: return "Last year"
         case .allTime: return "All time"
+        }
+    }
+
+    /// The period table row's tooltip.
+    var help: String {
+        switch self {
+        case .lastHour:
+            return "The 60 minutes before now (not the clock hour), so just after midnight it can hold games Today does not"
+        case .yesterday, .lastWeek, .lastMonth, .lastYear:
+            return "Games started in the whole previous \(unitName), in this Mac's calendar and time zone"
+        case .today, .thisWeek, .thisMonth, .thisYear, .allTime:
+            return "Games started since the start of this period, in this Mac's calendar and time zone"
+        }
+    }
+
+    private var unitName: String {
+        switch self {
+        case .yesterday: return "day"
+        case .lastWeek: return "week"
+        case .lastMonth: return "month"
+        default: return "year"
         }
     }
 }
 
 /// Where each period begins, for one `now` and one calendar. Every period
-/// is anchored on a game's start (`createdAt`) and has no upper bound: a
-/// `createdAt` slightly in the future (clock skew between Lichess and this
-/// Mac) counts in every current period rather than in none.
+/// is anchored on a game's start (`createdAt`). A current period (today,
+/// this week, …) has no upper bound: a `createdAt` slightly in the future
+/// (clock skew between Lichess and this Mac) counts in every current period
+/// rather than in none. A previous period (yesterday, last week, …) ends
+/// where the current one of the same unit begins.
 struct LichessBotStatsPeriodStarts: Sendable, Equatable {
     /// `now − 3,600 s`: a rolling hour, not the clock hour, so just after
     /// midnight it can hold games Today does not.
     let lastHour: Date
     let today: Date
+    let yesterday: Date
     let thisWeek: Date
+    let lastWeek: Date
     let thisMonth: Date
+    let lastMonth: Date
     let thisYear: Date
+    let lastYear: Date
 
     /// Whether a game started at `createdAt` counts in `period`.
     func contains(_ createdAt: Date, in period: LichessBotStatsPeriod) -> Bool {
         switch period {
         case .lastHour: return createdAt >= lastHour
         case .today: return createdAt >= today
+        case .yesterday: return createdAt >= yesterday && createdAt < today
         case .thisWeek: return createdAt >= thisWeek
+        case .lastWeek: return createdAt >= lastWeek && createdAt < thisWeek
         case .thisMonth: return createdAt >= thisMonth
+        case .lastMonth: return createdAt >= lastMonth && createdAt < thisMonth
         case .thisYear: return createdAt >= thisYear
+        case .lastYear: return createdAt >= lastYear && createdAt < thisYear
         case .allTime: return true
         }
     }
@@ -85,19 +124,31 @@ enum LichessBotStatsPeriods {
 
     /// Each period's start at `now`. The week starts on the calendar's
     /// `firstWeekday` (the system locale's, as the Record card always did).
+    /// Each previous period is the calendar's interval of its unit holding
+    /// the instant just before the current one begins, so a DST day, a short
+    /// month or a leap year has its true length.
     static func starts(now: Date, calendar: Calendar) throws -> LichessBotStatsPeriodStarts {
-        LichessBotStatsPeriodStarts(
+        let today = try interval(.day, now: now, calendar: calendar).start
+        let thisWeek = try interval(.weekOfYear, now: now, calendar: calendar).start
+        let thisMonth = try interval(.month, now: now, calendar: calendar).start
+        let thisYear = try interval(.year, now: now, calendar: calendar).start
+        return LichessBotStatsPeriodStarts(
             lastHour: now.addingTimeInterval(-lastHourSeconds),
-            today: calendar.startOfDay(for: now),
-            thisWeek: try interval(.weekOfYear, now: now, calendar: calendar).start,
-            thisMonth: try interval(.month, now: now, calendar: calendar).start,
-            thisYear: try interval(.year, now: now, calendar: calendar).start
+            today: today,
+            yesterday: try interval(.day, now: today.addingTimeInterval(-1), calendar: calendar).start,
+            thisWeek: thisWeek,
+            lastWeek: try interval(.weekOfYear, now: thisWeek.addingTimeInterval(-1), calendar: calendar).start,
+            thisMonth: thisMonth,
+            lastMonth: try interval(.month, now: thisMonth.addingTimeInterval(-1), calendar: calendar).start,
+            thisYear: thisYear,
+            lastYear: try interval(.year, now: thisYear.addingTimeInterval(-1), calendar: calendar).start
         )
     }
 
     /// The earliest moment after `now` at which some period's numbers change
     /// without a new game: the oldest last-hour game leaving the rolling
-    /// hour, or the next start of a day, week, month or year. The Record
+    /// hour, or the next start of a day, week, month or year (which also
+    /// moves yesterday, last week, last month or last year). The Record
     /// card recomputes when it passes (plan §4.3).
     static func nextChange(after now: Date, rows: [LichessBotGameSummary], calendar: Calendar) throws -> Date {
         var earliest = min(

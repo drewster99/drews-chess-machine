@@ -19,9 +19,15 @@ struct LichessBotRecordCard: View {
         GroupBox("Record") {
             VStack(spacing: 4) {
                 // Applied here rather than passed in, so dragging the handle
-                // doesn't recompute anything on every frame.
+                // doesn't recompute anything on every frame. The dragged
+                // height is the content's ideal and minimum, not a fixed
+                // height: when the period table, the pickers and the
+                // pane's minimum (`LichessBotStatsStyle.paneMinimumHeight`)
+                // need more, the card grows rather than squeezing the
+                // selected pane out of sight.
+                let height = min(max(contentHeight, Self.contentHeightRange.lowerBound), Self.contentHeightRange.upperBound)
                 LichessBotRecordCardContent(controller: controller)
-                    .frame(height: min(max(contentHeight, Self.contentHeightRange.lowerBound), Self.contentHeightRange.upperBound), alignment: .top)
+                    .frame(minHeight: height, idealHeight: height, alignment: .top)
                 LichessBotHeightResizeHandle(height: $contentHeight, range: Self.contentHeightRange)
             }
         }

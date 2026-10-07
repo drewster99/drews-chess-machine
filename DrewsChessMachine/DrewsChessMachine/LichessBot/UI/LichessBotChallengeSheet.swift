@@ -361,7 +361,7 @@ struct LichessBotBotListHeader: View {
                     .lineLimit(1)
                 Text(ageText(now: context.date))
                 Text(ownLimitText(now: context.date))
-                    .help("Lichess allows a BOT account \(LichessBotLimits.botGamesPerDay) games against other bots per rolling day")
+                    .help("Lichess allows a BOT account \(LichessBotLimits.botGamesPerDay) games against other bots in a 24-hour window that opens with the first such game and then clears all at once; counted from DCM's records")
                 Spacer()
                 Button("Refresh") {
                     Task {
@@ -398,8 +398,9 @@ struct LichessBotBotListHeader: View {
     }
 
     private func ownLimitText(now: Date) -> String {
-        guard let games = controller.botGamesInLastDay(now: now) else { return "DCM bot games: loading" }
-        return "DCM: \(games)/\(LichessBotLimits.botGamesPerDay) bot games in 24 h"
+        guard let window = controller.botGameWindow(now: now) else { return "DCM bot games: loading" }
+        let clears = window.closesAt.map { " · clears \($0.formatted(date: .omitted, time: .shortened))" } ?? ""
+        return "DCM: \(window.gamesCounted)/\(LichessBotLimits.botGamesPerDay) bot games\(clears)"
     }
 }
 

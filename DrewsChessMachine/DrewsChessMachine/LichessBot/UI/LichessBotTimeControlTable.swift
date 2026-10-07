@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Item 2 (`LICHESS_BOT_RECORD_STATS_PLAN.md` §3.5): one row per time
 /// control — the account's current rating there, the rating change today
-/// and this week, the selected period's games, W–D–L, score and performance
-/// rating, and a sparkline of the recorded ratings. Each speed is its own
+/// and this week, the selected period's games, W–D–L, score, performance
+/// rating and rating change, and a sparkline of the recorded ratings. Each speed is its own
 /// Lichess rating pool, so these are the per-pool numbers the all-speed
 /// period table mixes.
 struct LichessBotTimeControlTable: View {
@@ -14,7 +14,7 @@ struct LichessBotTimeControlTable: View {
     /// fetch).
     let account: LichessBotAccount?
 
-    static let titles = ["", "Rating", "Today ±", "Week ±", "Games", "W–D–L", "Score", "Perf", "Trend"]
+    static let titles = ["", "Rating", "Today Δ", "Week Δ", "Games", "W–D–L", "Score", "Perf", "Period Δ", "Trend"]
 
     var body: some View {
         let filtered = statistics[filter]

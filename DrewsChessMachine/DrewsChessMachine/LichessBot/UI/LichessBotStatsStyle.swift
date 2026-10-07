@@ -64,6 +64,10 @@ enum LichessBotStatsStyle {
     static let recentGamesMaximumWidth: CGFloat = 532
     /// The recent games' height when stacked below the statistics.
     static let narrowRecentGamesHeight: CGFloat = 200
+    /// The selected pane's least height under the panel's pickers. Without
+    /// it a short card left the pane no room, so changing Show or Period
+    /// seemed to do nothing.
+    static let paneMinimumHeight: CGFloat = 220
     static let columnSpacing: CGFloat = 18
     static let rowSpacing: CGFloat = 5
     static let sectionSpacing: CGFloat = 10

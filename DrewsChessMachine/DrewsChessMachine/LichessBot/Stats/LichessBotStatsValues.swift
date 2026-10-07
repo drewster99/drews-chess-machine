@@ -31,17 +31,25 @@ enum LichessBotStatsFilter: String, CaseIterable, Sendable, Codable, Hashable {
 struct LichessBotPeriodValues<Value> {
     var lastHour: Value
     var today: Value
+    var yesterday: Value
     var thisWeek: Value
+    var lastWeek: Value
     var thisMonth: Value
+    var lastMonth: Value
     var thisYear: Value
+    var lastYear: Value
     var allTime: Value
 
     init(_ make: (LichessBotStatsPeriod) throws -> Value) rethrows {
         lastHour = try make(.lastHour)
         today = try make(.today)
+        yesterday = try make(.yesterday)
         thisWeek = try make(.thisWeek)
+        lastWeek = try make(.lastWeek)
         thisMonth = try make(.thisMonth)
+        lastMonth = try make(.lastMonth)
         thisYear = try make(.thisYear)
+        lastYear = try make(.lastYear)
         allTime = try make(.allTime)
     }
 
@@ -49,9 +57,13 @@ struct LichessBotPeriodValues<Value> {
         switch period {
         case .lastHour: return lastHour
         case .today: return today
+        case .yesterday: return yesterday
         case .thisWeek: return thisWeek
+        case .lastWeek: return lastWeek
         case .thisMonth: return thisMonth
+        case .lastMonth: return lastMonth
         case .thisYear: return thisYear
+        case .lastYear: return lastYear
         case .allTime: return allTime
         }
     }
@@ -65,9 +77,13 @@ struct LichessBotPeriodValues<Value> {
         switch period {
         case .lastHour: body(&lastHour)
         case .today: body(&today)
+        case .yesterday: body(&yesterday)
         case .thisWeek: body(&thisWeek)
+        case .lastWeek: body(&lastWeek)
         case .thisMonth: body(&thisMonth)
+        case .lastMonth: body(&lastMonth)
         case .thisYear: body(&thisYear)
+        case .lastYear: body(&lastYear)
         case .allTime: body(&allTime)
         }
     }

@@ -30,6 +30,9 @@ struct LichessBotRecordStatistics: Sendable, Equatable {
     let ratingTrends: [String: [LichessBotRatingPoint]]
     /// Every speed any game was played at, for the Time controls rows.
     let recordSpeeds: Set<String>
+    /// The period table's column widths over all three filters, so the
+    /// table keeps its shape when the filter changes.
+    let periodColumnWidths: LichessBotRecordPeriodColumnWidths
     let computedAt: Date
     /// When some period's numbers next change without a new game
     /// (`LichessBotStatsPeriods.nextChange`).
@@ -76,6 +79,7 @@ struct LichessBotRecordStatistics: Sendable, Equatable {
             byFilter: byFilter,
             ratingTrends: ratingTrends(rows),
             recordSpeeds: Set(rows.map(\.speed)),
+            periodColumnWidths: LichessBotRecordPeriodColumnWidths(tables: LichessBotStatsFilter.allCases.map { byFilter[$0].periodRows }),
             computedAt: now,
             validUntil: validUntil,
             timeZoneIdentifier: calendar.timeZone.identifier

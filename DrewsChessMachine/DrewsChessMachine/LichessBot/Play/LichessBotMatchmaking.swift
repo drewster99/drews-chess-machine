@@ -44,9 +44,11 @@ enum LichessBotMatchmaking {
         /// The operator's challenge queue still has entries to send; its
         /// picks go first.
         var queueHasEntriesToSend: Bool
-        /// DCM's own games against bots in the last day; nil until DCM's
-        /// records have loaded.
-        var botGamesInLastDay: Int?
+        /// Lichess' bot-game window as DCM's records show it; nil until
+        /// those records have loaded.
+        var botGameWindow: LichessBotBotGameWindow?
+        /// The reserves matchmaking leaves short of Lichess' bot-game limit.
+        var challengeSettings: LichessBotChallengeSettings
     }
 
     /// Why no pass may run now, or nil if one may.
@@ -69,13 +71,10 @@ enum LichessBotMatchmaking {
         if conditions.queueHasEntriesToSend {
             return "the challenge queue goes first"
         }
-        guard let games = conditions.botGamesInLastDay else {
+        guard let window = conditions.botGameWindow else {
             return "DCM's game records have not loaded"
         }
-        if games >= LichessBotLimits.botGamesPerDay {
-            return "DCM has played \(games) bot games in the last 24 h, Lichess's limit"
-        }
-        return nil
+        return LichessBotBotGameBudget.blockedReason(window: window, sender: .matchmaking, settings: conditions.challengeSettings)
     }
 
     // MARK: - Slots
@@ -147,6 +146,8 @@ enum LichessBotMatchmaking {
         case alreadyEngaged = "already playing, challenged or queued"
         case atBotLimit = "at its bot-game limit"
         case declineCooldown = "declined DCM recently"
+        case refusesBots = "refuses bot games"
+        case declinedThisKind = "declined this kind of challenge"
         case dailyOpponentLimit = "played DCM enough today"
 
         /// Rule order, the order `exclusion(of:)` checks them in.
@@ -164,7 +165,9 @@ enum LichessBotMatchmaking {
             case .alreadyEngaged: return 5
             case .atBotLimit: return 6
             case .declineCooldown: return 7
-            case .dailyOpponentLimit: return 8
+            case .refusesBots: return 8
+            case .declinedThisKind: return 9
+            case .dailyOpponentLimit: return 10
             }
         }
     }
@@ -182,12 +185,15 @@ enum LichessBotMatchmaking {
         /// Games started today, by lowercased opponent id.
         var gamesTodayByOpponent: [String: Int]
         var maxGamesPerOpponentPerDay: Int
+        /// Declines still in force and each bot's latest contact.
+        var opponentHistory: LichessBotOpponentHistory
         var now: Date
     }
 
-    /// The first rule that excludes `bot` at `speed`, or nil if it is a
-    /// candidate.
-    static func exclusion(of bot: LichessBotUserSummary, speed: LichessBotSpeed, bounds: RatingBounds, context: CandidateContext) -> Exclusion? {
+    /// The first rule that excludes a challenge to `bot` on `terms`, or nil
+    /// if it is a candidate.
+    static func exclusion(of bot: LichessBotUserSummary, terms: LichessBotChallengeTerms, bounds: RatingBounds, context: CandidateContext) -> Exclusion? {
+        let speed = terms.speed
         let id = bot.id.lowercased()
         if id == context.ourAccountID {
             return .ourselves
@@ -213,6 +219,9 @@ enum LichessBotMatchmaking {
         if context.notes?.declineCooldownEnds(id, now: context.now) != nil {
             return .declineCooldown
         }
+        if let block = context.opponentHistory.blockingDecline(of: id, terms: terms) {
+            return block.scope == .everyChallenge ? .refusesBots : .declinedThisKind
+        }
         if context.gamesTodayByOpponent[id, default: 0] >= context.maxGamesPerOpponentPerDay {
             return .dailyOpponentLimit
         }
@@ -229,6 +238,9 @@ enum LichessBotMatchmaking {
         let fromFavorites: Bool
         /// Bots that fitted every rule.
         let candidateCount: Int
+        /// How "prefer bots not contacted recently" chose, or nil when it
+        /// is off.
+        let recency: RecencyChoice?
         let exclusions: [Exclusion: Int]
     }
 
@@ -239,9 +251,40 @@ enum LichessBotMatchmaking {
         case noTimeControl
     }
 
+    /// How the recency preference narrowed the pool.
+    enum RecencyChoice: Sendable, Equatable {
+        /// Among `count` bots with no contact in the window.
+        case notContactedRecently(count: Int)
+        /// Every candidate was contacted in the window: the one contacted
+        /// longest ago, at `lastContact`.
+        case contactedLongestAgo(lastContact: Date)
+    }
+
+    /// The bots `pool` narrows to under "prefer bots not contacted
+    /// recently": those with no challenge either way and no game within
+    /// `recentContactHours` (never contacted counts as not recent); with
+    /// none, those whose latest contact is the oldest.
+    static func preferNotRecentlyContacted<Candidate>(_ pool: [Candidate], id: (Candidate) -> String,
+                                                     settings: LichessBotMatchmakingSettings, context: CandidateContext) -> (pool: [Candidate], choice: RecencyChoice?) {
+        guard settings.preferNotRecentlyContacted, !pool.isEmpty else { return (pool, nil) }
+        let cutoff = context.now.addingTimeInterval(-TimeInterval(settings.recentContactHours) * 3600)
+        let latest = pool.map { context.opponentHistory.contact(id($0))?.latest }
+        let fresh = zip(pool, latest).filter { $0.1.map { $0 < cutoff } ?? true }.map(\.0)
+        if !fresh.isEmpty {
+            return (fresh, .notContactedRecently(count: fresh.count))
+        }
+        // None is fresh, so every one has a contact inside the window and
+        // `pool` is not empty: there is an oldest.
+        guard let oldest = latest.compactMap({ $0 }).min() else {
+            preconditionFailure("a non-empty pool with no fresh candidate has a contact for each")
+        }
+        return (zip(pool, latest).filter { $0.1 == oldest }.map(\.0), .contactedLongestAgo(lastContact: oldest))
+    }
+
     /// Choose a time control uniformly from the configured ones, then a bot
     /// uniformly among those that fit every rule — among fitting favorites
-    /// first when "prefer favorites" is on.
+    /// first when "prefer favorites" is on, then among those not contacted
+    /// recently when that preference is on.
     static func pick<Generator: RandomNumberGenerator>(
         from bots: [LichessBotUserSummary],
         settings: LichessBotMatchmakingSettings,
@@ -253,12 +296,13 @@ enum LichessBotMatchmaking {
         let clocks = LichessBotClockChoice.allCases.filter { settings.timeControls.contains($0) }
         guard let clock = clocks.randomElement(using: &generator) else { return .noTimeControl }
         let speed = clock.speed
+        let terms = LichessBotChallengeTerms(limitSeconds: clock.seconds.limit, incrementSeconds: clock.seconds.increment, rated: settings.rated)
         let bounds = ratingBounds(settings: settings, ourPerfs: ourPerfs, speed: speed)
         var seen: Set<String> = []
         var candidates: [(bot: LichessBotUserSummary, rating: Int)] = []
         var exclusions: [Exclusion: Int] = [:]
         for bot in bots where seen.insert(bot.id.lowercased()).inserted {
-            if let reason = exclusion(of: bot, speed: speed, bounds: bounds, context: context) {
+            if let reason = exclusion(of: bot, terms: terms, bounds: bounds, context: context) {
                 exclusions[reason, default: 0] += 1
             } else if let rating = bot.rating(speed.rawValue)?.rating {
                 candidates.append((bot, rating))
@@ -270,11 +314,11 @@ enum LichessBotMatchmaking {
         let favorites = settings.preferFavorites
             ? candidates.filter { context.notes?.isFavorite($0.bot.id) == true }
             : []
-        let pool = favorites.isEmpty ? candidates : favorites
+        let (pool, recency) = preferNotRecentlyContacted(favorites.isEmpty ? candidates : favorites, id: { $0.bot.id }, settings: settings, context: context)
         guard let chosen = pool.randomElement(using: &generator) else {
             return .noCandidate(clock: clock, bounds: bounds, listed: seen.count, exclusions: exclusions)
         }
-        return .picked(Pick(bot: chosen.bot, rating: chosen.rating, clock: clock, bounds: bounds, fromFavorites: !favorites.isEmpty, candidateCount: candidates.count, exclusions: exclusions))
+        return .picked(Pick(bot: chosen.bot, rating: chosen.rating, clock: clock, bounds: bounds, fromFavorites: !favorites.isEmpty, candidateCount: candidates.count, recency: recency, exclusions: exclusions))
     }
 
     /// Exclusion counts for a log line, in rule order.

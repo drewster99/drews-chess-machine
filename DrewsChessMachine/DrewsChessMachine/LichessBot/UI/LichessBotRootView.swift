@@ -26,6 +26,15 @@ struct LichessBotRootView: View {
         }
     }
 
+    /// "DrewsChessMachine — Online — 2 games in progress": which account,
+    /// what it is doing, and how busy it is, readable from the window list
+    /// and the Dock.
+    private var windowTitle: String {
+        let account = controller.account?.username ?? controller.settings.connection.expectedAccountID
+        let games = controller.activeGameIDs.count
+        return "\(account) — \(controller.connection.label) — \(games) game\(games == 1 ? "" : "s") in progress"
+    }
+
     var body: some View {
         NavigationSplitView(
             sidebar: {
@@ -55,6 +64,7 @@ struct LichessBotRootView: View {
                 await controller.refreshTokenState()
             }
         }
+        .navigationTitle(windowTitle)
         .modifier(LichessBotRecordStatisticsClock(pipeline: controller.recordStatistics))
         // `initial`: the window may open with the sheet already due — a quit
         // or Go Offline opens it after setting `finishing`.

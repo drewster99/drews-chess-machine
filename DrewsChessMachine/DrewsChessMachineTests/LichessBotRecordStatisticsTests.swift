@@ -52,7 +52,7 @@ final class LichessBotRecordStatisticsTests: XCTestCase {
         let week = stats.periodRows.thisWeek
         XCTAssertEqual(week.ratingChange, LichessBotRatingChange(ratedGames: 3, gamesWithChange: 2, total: -1))
         XCTAssertEqual(LichessBotStatsFormat.ratingChange(week.ratingChange), "\u{2212}1*")
-        XCTAssertEqual(LichessBotStatsFormat.ratingChangeHelp(week.ratingChange), "2 of 3 rated games have a rating change (Lichess's change at the time of the game)")
+        XCTAssertEqual(LichessBotStatsFormat.ratingChangeHelp(week.ratingChange), "2 of 3 rated games have a rating change (Lichess' change at the time of the game)")
         XCTAssertEqual(stats.notCounted, 1)
         XCTAssertEqual(stats.ratedWithoutRatingChange, 1)
         XCTAssertEqual(stats.rowsWithoutMoveData, 4, "hand-built rows without facts")

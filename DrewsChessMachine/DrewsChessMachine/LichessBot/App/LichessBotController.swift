@@ -145,6 +145,16 @@ final class LichessBotController {
             case .matchmakingCasualResend: return .matchmakingCasualResend
             }
         }
+
+        /// Whose share of Lichess' bot-game limit a challenge to a bot from
+        /// here may use (`LichessBotBotGameBudget`).
+        var botGameBudgetSender: LichessBotBotGameBudget.Sender {
+            switch self {
+            case .manual, .casualResendOffer: return .operatorChallenge
+            case .challengeQueue: return .challengeQueue
+            case .matchmaking, .matchmakingCasualResend: return .matchmaking
+            }
+        }
     }
 
     /// Where rebuilding the challenge history from the protocol log stands.
@@ -1882,17 +1892,17 @@ final class LichessBotController {
         }
     }
 
-    /// DCM's games against bots started in the 24 hours before `now`:
-    /// filed games plus live ones not yet filed; nil until the games index
-    /// is loaded. Lichess limits this to `LichessBotLimits.botGamesPerDay`.
-    func botGamesInLastDay(now: Date) -> Int? {
+    /// Lichess' bot-game window open at `now` (`LichessBotBotGameWindow`),
+    /// from every game against a bot: filed games plus live ones not yet
+    /// filed; nil until the games index is loaded.
+    func botGameWindow(now: Date) -> LichessBotBotGameWindow? {
         guard let rows = index?.rows else { return nil }
-        let since = now.addingTimeInterval(-24 * 3600)
         let filedIDs = Set(rows.map(\.gameID))
-        let live = games.filter { game in
-            !filedIDs.contains(game.id) && game.opponent?.title == "BOT" && game.startedAt >= since
-        }.count
-        return LichessBotRecordSummary.botGames(rows: rows, since: since) + live
+        let filedStarts = rows.filter { $0.opponentKind == .bot }.map(\.createdAt)
+        let liveStarts = games.filter { game in
+            !filedIDs.contains(game.id) && game.opponent?.title == "BOT"
+        }.map(\.startedAt)
+        return LichessBotBotGameWindow(botGameStarts: filedStarts + liveStarts, now: now)
     }
 
     /// A speed's leaderboard, fetched when asked for and kept for
@@ -2033,6 +2043,17 @@ final class LichessBotController {
                 throw LichessBotControllerError.notOnline
             }
             let opponentKind = Self.challengeOpponentKind(title: status.title)
+            // Only here is the opponent known to be a bot. The operator's
+            // own challenge may use the whole limit, which Lichess enforces
+            // itself; matchmaking and the queue stop short of the reserves.
+            if opponentKind == .bot, origin.botGameBudgetSender != .operatorChallenge {
+                guard let window = botGameWindow(now: Date()) else {
+                    throw LichessBotControllerError.botGameBudget("DCM's game records have not loaded")
+                }
+                if let reason = LichessBotBotGameBudget.blockedReason(window: window, sender: origin.botGameBudgetSender, settings: settings.challenge) {
+                    throw LichessBotControllerError.botGameBudget(reason)
+                }
+            }
             do {
                 created = try await client.challenge(username: username, request: request)
             } catch {
@@ -2384,6 +2405,10 @@ final class LichessBotController {
                 return .skipped(reason: "offline")
             case .notOnline, .concurrentGameLimit, .missingChallengeScope, .noToken, .tokenInvalid, .tokenForWrongAccount, .notABot, .goingOnlineCancelled, .shutDownWhileGoingOnline:
                 return .stopped(reason: text)
+            case .botGameBudget(let reason):
+                // Tied to this player being a bot: a human further down the
+                // queue can still be challenged.
+                return .skipped(reason: reason)
             case .noSuchPlayer, .chatNotSendable:
                 return .dropped(reason: text)
             }
@@ -2595,7 +2620,7 @@ final class LichessBotController {
         }
         let speed = pick.clock.speed
         let rating = pick.rating
-        protocolLog.record(.challenge, "matchmaking pick: \(pick.bot.username) (\(speed.rawValue) \(rating)) at \(pick.clock.rawValue), uniformly from \(pick.candidateCount) candidate(s)\(pick.fromFavorites ? ", favorites first" : ""); rating window \(pick.bounds.description(speed: speed)); excluded: \(LichessBotMatchmaking.describe(pick.exclusions))")
+        protocolLog.record(.challenge, "matchmaking pick: \(pick.bot.username) (\(speed.rawValue) \(rating)) at \(pick.clock.rawValue), uniformly from \(pick.candidateCount) candidate(s)\(pick.fromFavorites ? ", favorites first" : ""); rating window \(pick.bounds.description(speed: speed)); excluded: \(LichessBotMatchmaking.describe(pick.exclusions))\(Self.describe(pick.recency))")
         let request = pick.clock.challenge(rated: matchmaking.rated, color: .random)
         let outcome = await sendMatchmakingChallenge(
             to: pick.bot.username, request: request, origin: .matchmaking(trigger: trigger, fillMode: fillMode, opponent: pick.bot))
@@ -2630,7 +2655,7 @@ final class LichessBotController {
                 outcome = .stopped(text)
             } else if case LichessBotAPIError.http(_, let message?) = error, let refusal = LichessBotBotLimitRefusal.parse(message) {
                 // `sendChallenge` recorded the limit; say plainly what it is.
-                outcome = .failed("\(username) is at Lichess's bot-vs-bot daily limit until \(refusal.until.formatted(date: .omitted, time: .shortened))")
+                outcome = .failed("\(username) is at Lichess' bot-vs-bot daily limit until \(refusal.until.formatted(date: .omitted, time: .shortened))")
             } else {
                 outcome = .failed("\(username): \(text)")
             }
@@ -2664,7 +2689,8 @@ final class LichessBotController {
             hasChallengeScope: hasChallengeScope,
             playOneGameActive: oneGameRequested,
             queueHasEntriesToSend: challengeQueue.hasEntriesToSend,
-            botGamesInLastDay: botGamesInLastDay(now: Date())
+            botGameWindow: botGameWindow(now: Date()),
+            challengeSettings: settings.challenge
         )
         if let reason = LichessBotMatchmaking.passBlockedReason(conditions) {
             return .blocked(reason: reason)
@@ -2697,8 +2723,41 @@ final class LichessBotController {
             notes: playerNotesWithLiveBotLimits,
             gamesTodayByOpponent: gamesTodayByOpponent,
             maxGamesPerOpponentPerDay: settings.challenge.maxGamesPerOpponentPerDay,
+            opponentHistory: opponentHistory(now: now),
             now: now
         )
+    }
+
+    /// Declines in force and each opponent's latest contact
+    /// (`LichessBotOpponentHistory`), from the challenge log's rows — live
+    /// and rebuilt — and every game: filed, and live ones not yet filed.
+    /// Built per pass: passes are minutes apart, and a fresh build can't
+    /// drift from the records it reads.
+    private func opponentHistory(now: Date) -> LichessBotOpponentHistory {
+        let challengeRows = LichessBotChallengeLogRow.rows(ledger: challengeLedger, reconstruction: challengeHistory, pendingChallengeIDs: [])
+        let filedRows = index?.rows ?? []
+        let filedIDs = Set(filedRows.map(\.gameID))
+        var gameStarts = filedRows.compactMap { row in
+            row.opponentID.map { LichessBotOpponentHistory.GameStart(opponentID: $0, at: row.createdAt) }
+        }
+        for game in games where !filedIDs.contains(game.id) {
+            if let opponentID = game.opponent?.id {
+                gameStarts.append(LichessBotOpponentHistory.GameStart(opponentID: opponentID, at: game.startedAt))
+            }
+        }
+        return LichessBotOpponentHistory(challengeRows: challengeRows, gameStarts: gameStarts, now: now, settings: settings.matchmaking)
+    }
+
+    /// The pick line's account of the recency preference.
+    nonisolated static func describe(_ recency: LichessBotMatchmaking.RecencyChoice?) -> String {
+        switch recency {
+        case nil:
+            return ""
+        case .notContactedRecently(let count)?:
+            return "; among \(count) not contacted recently"
+        case .contactedLongestAgo(let lastContact)?:
+            return "; every candidate contacted recently, so the one contacted longest ago (\(lastContact.formatted(date: .abbreviated, time: .standard)))"
+        }
     }
 
     /// No fetch is under way, the online-bots list is older than
@@ -2870,9 +2929,9 @@ final class LichessBotController {
         case .spacing, .allowed:
             break
         }
-        let speed = LichessBotSpeed.forClock(limitSeconds: resend.request.clockLimitSeconds, incrementSeconds: resend.request.clockIncrementSeconds)
-        let bounds = LichessBotMatchmaking.ratingBounds(settings: settings.matchmaking, ourPerfs: account?.perfs, speed: speed)
-        if let exclusion = LichessBotMatchmaking.exclusion(of: resend.opponent, speed: speed, bounds: bounds, context: matchmakingContext(now: now)) {
+        let terms = LichessBotChallengeTerms(limitSeconds: resend.request.clockLimitSeconds, incrementSeconds: resend.request.clockIncrementSeconds, rated: resend.request.rated)
+        let bounds = LichessBotMatchmaking.ratingBounds(settings: settings.matchmaking, ourPerfs: account?.perfs, speed: terms.speed)
+        if let exclusion = LichessBotMatchmaking.exclusion(of: resend.opponent, terms: terms, bounds: bounds, context: matchmakingContext(now: now)) {
             return "\(resend.username) is no longer a candidate: \(exclusion.rawValue)"
         }
         return nil
@@ -4087,6 +4146,10 @@ enum LichessBotControllerError: LocalizedError, Equatable {
     case goingOnlineCancelled(step: LichessBotGoingOnlineStep)
     /// The bot shut down (the app is quitting) while going online.
     case shutDownWhileGoingOnline
+    /// Matchmaking's or the queue's share of Lichess' daily bot-game limit
+    /// is used up (`LichessBotBotGameBudget`); the reason says how far and
+    /// when it clears.
+    case botGameBudget(String)
 
     var errorDescription: String? {
         switch self {
@@ -4116,6 +4179,8 @@ enum LichessBotControllerError: LocalizedError, Equatable {
             return "Going online was cancelled by the operator (\(step.logText))"
         case .shutDownWhileGoingOnline:
             return "The bot has shut down"
+        case .botGameBudget(let reason):
+            return reason
         }
     }
 }

@@ -95,6 +95,6 @@ final class LichessBotBotLimitTests: XCTestCase {
         await controller.fillOpenSlots()
         XCTAssertEqual(lichess.challengedNames.value, ["maia1"])
         let status = try XCTUnwrap(controller.matchmakingStatus)
-        XCTAssertTrue(status.contains("maia1 is at Lichess's bot-vs-bot daily limit until"), status)
+        XCTAssertTrue(status.contains("maia1 is at Lichess' bot-vs-bot daily limit until"), status)
     }
 }

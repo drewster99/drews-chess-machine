@@ -263,6 +263,10 @@ struct LichessBotChallengeSettingsSection: View {
             LichessBotIntegerField(label: "Games at once per opponent", value: $settings.maxSimultaneousGamesPerOpponent)
             LichessBotIntegerField(label: "Games per day", value: $settings.maxGamesPerDay)
             LichessBotIntegerField(label: "Games per opponent per day", value: $settings.maxGamesPerOpponentPerDay)
+            LichessBotIntegerField(label: "Of Lichess' \(LichessBotLimits.botGamesPerDay) daily bot games, keep for incoming", value: $settings.botGamesReservedForIncoming)
+                .help("Matchmaking and the challenge queue stop this many short of Lichess' daily limit on games between bots, leaving them for bots that challenge DCM. Games against humans don't count toward that limit.")
+            LichessBotIntegerField(label: "  … and for the challenge queue", value: $settings.botGamesReservedForChallengeQueue)
+                .help("Matchmaking stops this many more short of the limit, leaving them for challenges you queue. A challenge you send by hand may use the whole limit.")
             LichessBotIntegerField(label: "Withdraw unanswered challenges after", value: $settings.outgoingChallengeTimeoutSeconds, unit: "s (0 = never)")
             LichessBotIntegerField(label: "Challenge responses at most", value: $settings.challengeResponseBudgetPerMinute, unit: "/min")
             LabeledContent("Blocked players") {
@@ -330,6 +334,16 @@ struct LichessBotMatchmakingSettingsSection: View {
             Toggle("Prefer favorites", isOn: $settings.preferFavorites)
             LichessBotIntegerField(label: "Challenges at most", value: $settings.maxChallengesPerHour, unit: "/h")
             LichessBotIntegerField(label: "Leave a bot that declined alone for", value: $settings.declineCooldownHours, unit: "h")
+            LichessBotIntegerField(label: "Leave a bot that refuses bots alone for", value: $settings.noBotDeclineBlockDays, unit: "days")
+                .help("After a bot declines with \"no bots\". Its own challenges to DCM are still answered by the acceptance settings.")
+            LichessBotIntegerField(label: "Don't repeat a declined clock for", value: $settings.specificDeclineBlockDays, unit: "days")
+                .help("After a bot declines as too fast (that clock and faster), too slow (that clock and slower), or that time control, matchmaking sends it no such clock for this long. Other bots and other clocks are unaffected.")
+            LichessBotIntegerField(label: "Don't send rated to a bot that asked for casual for", value: $settings.ratedCasualDeclineBlockDays, unit: "days")
+                .help("After a bot declines asking for a casual game, matchmaking sends it no rated challenge for this long (and no casual one to a bot that asked for rated). Its casual games, and other bots, are unaffected.")
+            Toggle("Prefer bots not contacted recently", isOn: $settings.preferNotRecentlyContacted)
+                .help("Pick among bots with no challenge either way and no game in the window first; with none, the bot contacted longest ago.")
+            LichessBotIntegerField(label: "  … recently means within", value: $settings.recentContactHours, unit: "h")
+                .disabled(!settings.preferNotRecentlyContacted)
         }
     }
 }

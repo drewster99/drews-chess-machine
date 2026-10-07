@@ -2,8 +2,9 @@ import SwiftUI
 
 /// The line under the period table (§5.1): games not counted, rated games
 /// without a rating change, and games without move data — each part only
-/// when non-zero. With nothing to say the line stays, empty, so the panel
-/// below does not jump as games arrive.
+/// when non-zero. It always takes two lines' height, said or not, so the
+/// panel below does not jump as games arrive or the filter changes (Casual
+/// has no rated games, so no rating-change note).
 struct LichessBotRecordFootnote: View {
     let statistics: LichessBotRecordStatistics.FilterStatistics
 
@@ -11,7 +12,7 @@ struct LichessBotRecordFootnote: View {
         Text(Self.text(statistics))
             .font(LichessBotStatsStyle.noteFont)
             .foregroundStyle(LichessBotStatsStyle.neutral)
-            .lineLimit(2)
+            .lineLimit(2, reservesSpace: true)
     }
 
     static func text(_ statistics: LichessBotRecordStatistics.FilterStatistics) -> String {

@@ -7,6 +7,9 @@ import SwiftUI
 final class LichessBotWindowController: NSWindowController, NSWindowDelegate {
     init(controller: LichessBotController) {
         let hosting = NSHostingController(rootView: LichessBotRootView(controller: controller))
+        // The root view's `navigationTitle` (the account, its state and the
+        // games in progress) becomes the window's title.
+        hosting.sceneBridgingOptions.insert(.title)
         let window = NSWindow(contentViewController: hosting)
         window.setContentSize(NSSize(width: 1180, height: 820))
         window.minSize = NSSize(width: 900, height: 600)

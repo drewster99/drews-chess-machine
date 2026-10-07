@@ -67,18 +67,26 @@ enum LichessBotRecordSummary {
     struct Records: Sendable, Equatable {
         var lastHour = LichessBotPeriodRecord()
         var today = LichessBotPeriodRecord()
+        var yesterday = LichessBotPeriodRecord()
         var thisWeek = LichessBotPeriodRecord()
+        var lastWeek = LichessBotPeriodRecord()
         var thisMonth = LichessBotPeriodRecord()
+        var lastMonth = LichessBotPeriodRecord()
         var thisYear = LichessBotPeriodRecord()
+        var lastYear = LichessBotPeriodRecord()
         var allTime = LichessBotPeriodRecord()
 
         subscript(period: Period) -> LichessBotPeriodRecord {
             switch period {
             case .lastHour: return lastHour
             case .today: return today
+            case .yesterday: return yesterday
             case .thisWeek: return thisWeek
+            case .lastWeek: return lastWeek
             case .thisMonth: return thisMonth
+            case .lastMonth: return lastMonth
             case .thisYear: return thisYear
+            case .lastYear: return lastYear
             case .allTime: return allTime
             }
         }
@@ -86,9 +94,13 @@ enum LichessBotRecordSummary {
         fileprivate mutating func add(_ row: LichessBotGameSummary, starts: LichessBotStatsPeriodStarts) {
             allTime.add(row)
             if starts.contains(row.createdAt, in: .thisYear) { thisYear.add(row) }
+            if starts.contains(row.createdAt, in: .lastYear) { lastYear.add(row) }
             if starts.contains(row.createdAt, in: .thisMonth) { thisMonth.add(row) }
+            if starts.contains(row.createdAt, in: .lastMonth) { lastMonth.add(row) }
             if starts.contains(row.createdAt, in: .thisWeek) { thisWeek.add(row) }
+            if starts.contains(row.createdAt, in: .lastWeek) { lastWeek.add(row) }
             if starts.contains(row.createdAt, in: .today) { today.add(row) }
+            if starts.contains(row.createdAt, in: .yesterday) { yesterday.add(row) }
             if starts.contains(row.createdAt, in: .lastHour) { lastHour.add(row) }
         }
     }
