@@ -154,6 +154,22 @@ extension SessionController {
             cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
             return
         }
+        // The arena-start configuration cut (review N2), in this main-actor
+        // turn under the training pause, before the detached export below:
+        // its clock is the one that export reads. A promotion's record and
+        // its post-promotion trainer file describe the trainer as of this
+        // cut — the state a promotion rewinds to — not a settings edit made
+        // during the tournament, which reaches the next save's journal.
+        let arenaStartCut: GuiConfigurationCut
+        do {
+            arenaStartCut = try takeConfigurationCut(trainer: trainer)
+        } catch {
+            trainingBox?.recordError("Arena aborted: \(error.localizedDescription)")
+            SessionLogger.shared.log("[ARENA] aborted — \(error.localizedDescription)")
+            trainingGate.resume()
+            cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+            return
+        }
         // Capture trainer weights here and hold them through the
         // rest of the arena. At arena end we use them to autosave
         // the session without needing another training pause
@@ -375,6 +391,10 @@ extension SessionController {
         }
         var promoted = false
         var promotedID: ModelID?
+        // The promotion save's training-health stamp and config, taken right
+        // after the trainer-clock rewind under both pauses (D2), so the
+        // save's checkpoint pass is judged against the rewound generation.
+        var promotionCheckpointHealth: GuiTrainingHealthCheckpoint?
 
         // The two criteria ask different questions and therefore have
         // different failure shapes.
@@ -505,7 +525,18 @@ extension SessionController {
                         }
                     }
                     trainingBox?.resetRollingWindows()
+                    // The training-health monitor's own rolling state goes
+                    // with it (R0): the trainer's weights and clock went back
+                    // to the arena-start snapshot, so the pending window, the
+                    // spike references and every pending sustain describe
+                    // weights that no longer exist. Active alarms stay; they
+                    // clear only by recovery.
+                    trainingHealthMonitor?.noteTrainerClockRewind(
+                        to: trainerSnapshotCompletedSteps, log: GuiTrainingHealthWorker.logSink)
+                    promotionCheckpointHealth = makeTrainingHealthCheckpoint()
                     trainingAlarm?.resetStreaks()
+                    // Clears the banner only; the health list mirrors the
+                    // monitor, whose alarms survive the rewind.
                     trainingAlarm?.clear()
                     // The promotion's lineage bookkeeping, under both
                     // pauses so it is one cut with the rewound trainer: the
@@ -513,10 +544,14 @@ extension SessionController {
                     // and the run's record reads the sampler, the game
                     // serial and the fed counts as they stand here.
                     resetSelfPlayGameStatsForNewChampion()
+                    // The rewound trainer uses every setting committed during
+                    // the tournament from the arena-start step on: those
+                    // journal entries are re-stamped to it (P4-1).
+                    lineageTracker?.restampParameterChanges(after: trainerSnapshotCompletedSteps)
                     let record: Result<LineageRecord, Error>
                     do {
                         record = .success(try lineageRecordForSave(
-                            at: Date(), trainerCompletedSteps: trainerSnapshotCompletedSteps,
+                            at: Date(), cut: arenaStartCut, trainerCompletedSteps: trainerSnapshotCompletedSteps,
                             dropoutPhiloxState: trainerSnapshotDropoutState,
                             dropoutStreamState: try await trainer.dropoutStreamState()))
                     } catch {
@@ -526,6 +561,15 @@ extension SessionController {
                     recordPromotedChampionOrigin(championID: champion.identifier,
                                                  trainerCompletedSteps: trainerSnapshotCompletedSteps,
                                                  record: record)
+                    // After the promotion's own record (review NB7): the
+                    // champion's origin never lists itself, and the trainer's
+                    // next save is the first record with the entry.
+                    do {
+                        try noteChampionChange(trainerStep: trainerSnapshotCompletedSteps, trigger: .arena)
+                    } catch {
+                        SessionLogger.shared.log("[LINEAGE] the promotion could not be journalled: \(error.localizedDescription)")
+                        trainingBox?.recordError("Promotion journal failed: \(error.localizedDescription)")
+                    }
                 } catch {
                     trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
                 }
@@ -725,6 +769,7 @@ extension SessionController {
             let includeReplayBuffer = promotionSaveIncludesReplayBuffer
             // Captured as a `let` so the detached save task below can read it.
             let promotionSaveTrainerStep = trainerSnapshotCompletedSteps
+            let promotionSaveHealth = promotionCheckpointHealth
             // The trainer was rewound to exactly this state on promotion:
             // arena-start weights and velocity, the clock captured with them,
             // and the schedule it is running.
@@ -735,11 +780,10 @@ extension SessionController {
                 trainingStep: promotionSaveTrainerStep,
                 parentModelID: championID,
                 notes: "Trainer lineage at arena-start pause with optimizer velocity",
-                schedule: TrainerScheduleState(
-                    completedTrainSteps: promotionSaveTrainerStep,
-                    lrWarmupSteps: trainer.lrWarmupSteps,
-                    lrMomentumCycle: trainer.lrMomentumCycle
-                ),
+                // The arena-start cut's schedule (review P3-1), the one the
+                // promotion record composes its schedule keys from; its clock
+                // is `promotionSaveTrainerStep` (training was paused).
+                schedule: arenaStartCut.schedule,
                 policyTailPrecision: trainer.policyTailPrecision
             )
             let saveDate = Date()
@@ -844,7 +888,8 @@ extension SessionController {
                             context: "session-\(SessionSaveTrigger.promotionDiskTag)",
                             step: promotionSaveStep,
                             trainerStep: promotionSaveTrainerStep,
-                            recorder: self.cliRecorder)
+                            recorder: self.cliRecorder,
+                            trainingHealth: promotionSaveHealth)
                         // Promotion saves share the automatic-save
                         // retention pool with periodic autosaves.
                         self.scheduleAutomaticSaveRetentionSweep(

@@ -142,7 +142,7 @@ DrewsChessMachine \
 | scope | where | fields |
 |---|---|---|
 | **per opponent pool** | inside each `--train-vs-uci "…"` (`;`-delimited) | `cmd=` engine path · `n=` instance count · `go=` per-move limit · any other `KEY=VALUE` → `setoption name KEY value VALUE` (`UCI_Elo`, `Skill Level`, `Threads`, `Hash`, …) |
-| **global (whole run)** | top-level flags | `--start-model` (+ `--resume-exact`) / `--preset`, `--out-session-dir`, `--save-replay-buffer`, `--parameters`, `--training-step-limit`, `--training-time-limit`, `--max-plies` (400), `--eval-sync-steps` (10), `--enumerate-checkpoints` (+ `--checkpoint-stem`) |
+| **global (whole run)** | top-level flags | `--start-model` (+ `--resume-exact`) / `--preset`, `--out-session-dir`, `--save-replay-buffer`, `--parameters`, `--training-step-limit`, `--training-time-limit`, `--max-plies` (400; at least 1), `--eval-sync-steps` (10), `--enumerate-checkpoints` (+ `--checkpoint-stem`) |
 | **hardcoded global** | `UCIArbiter.Configuration` (no flag) | `handshakeTimeout` 10 s, `moveTimeout` 30 s |
 
 `--start-model` alone starts a **new branch**: the file's weights, with a fresh
@@ -174,7 +174,7 @@ A run saves `.dcmsession` folders, written by the same
 verification, a forward-pass round trip, a `session.json` round trip, a
 replay-buffer round trip, `F_FULLFSYNC`, and a publish that never replaces an
 existing folder. Every save is a new folder,
-`<YYYYMMDD-HHMMSS>-<runModelID>-vsuci-<periodic|final|abort>.dcmsession`, in
+`<YYYYMMDD-HHMMSS>-<runModelID>-vsuci-<periodic|final|abort|health-stop>.dcmsession`, in
 `--out-session-dir` (default: the app's `Sessions/` folder):
 
 - `vsuci-periodic` — on the GUI's cadence, the `periodic_autosave_interval_sec`
@@ -182,6 +182,10 @@ existing folder. Every save is a new folder,
   window); the clock starts at run start and restarts at each successful save.
 - `vsuci-final` — the step or time limit was reached.
 - `vsuci-abort` — Ctrl-C.
+- `vsuci-health-stop` — a training-health alarm whose
+  `training_health_action_<rule>` stops the run requested a stop; the process
+  exits with status 35 after this save (see
+  `documentation/training-health-alarms.md`).
 
 Each folder holds `trainer.safetensors` (the complete trainer state — what the
 rolling `--out-model` file held before session folders replaced it),

@@ -27,6 +27,20 @@
 //  as an explicit `null`, so a record missing a key is a writer bug that
 //  fails loudly rather than reading as "unrecorded".
 //
+//  Schema 3 (hyperparameter recording plan, Part S) makes one file state how
+//  its weights were trained across every segment and run behind them, not
+//  only the segment that wrote it: each earlier segment's summary carries its
+//  parameters, configuration, corpus, argv and seeds; `ancestry` carries the
+//  runs a branch or derive left; `configuration` holds what no parameter
+//  states (policy-tail precision, budget, game generation, live edits, the
+//  champions that generated the data); `run_seeds` keeps the actual seeds
+//  where `rng.streams` is dropped. Schema-2 records still decode (owner
+//  decision O-23): the facts they never stored read back as explicitly
+//  unrecorded (`Recorded.unrecorded`), never filled in, and every write —
+//  including a champion file or derive of a schema-2 model — is schema 3.
+//  The in-memory record always has the schema-3 shape; only decoding knows
+//  the schema a file was written at.
+//
 //  The JSON value is the single source of truth. The flat `__metadata__`
 //  mirror keys (`lineage_run_id`, `cum_trainer_step`, …) are derived from it
 //  at write time for grep and header-scanning tools and are never read back.
@@ -40,8 +54,14 @@ struct LineageRecord: Codable, Equatable, Sendable {
     /// Schema of the record itself, independent of the architecture format.
     /// Schema 2 records the run's random streams (`rng.streams`) and the
     /// corpus feed phase and shard identities (`fed.corpus`) an exact resume
-    /// continues from.
-    static let currentSchema = 2
+    /// continues from. Schema 3 adds the segment configuration, run seeds,
+    /// ancestry, per-segment summaries of every earlier segment's
+    /// configuration, the corpus identity of mixed corpora and the build's
+    /// diff hash and toolchain (see the file comment).
+    static let currentSchema = 3
+    /// The oldest schema this build reads (owner decision O-23). Schema 1
+    /// stays refused.
+    static let oldestDecodableSchema = 2
 
     let schema: Int
     let run: Run
@@ -69,6 +89,15 @@ struct LineageRecord: Codable, Equatable, Sendable {
     /// history earlier files did not record says so with
     /// `run.continuesUnrecordedHistory`.
     let derivationHistory: [ModelDerivation.DerivationRecord]
+    /// How the segment that last trained these weights trained beyond its
+    /// parameter snapshot; `.notTrained` exactly when `parameters` is nil,
+    /// unrecorded when carried from a schema-2 record.
+    let configuration: RecordedIfTrained<TrainingConfiguration>
+    /// The seeds the run trained under, oldest first (gap 9b); `.notTrained`
+    /// exactly when `parameters` is nil.
+    let runSeeds: RecordedIfTrained<[RunSeedEntry]>
+    /// The earlier runs these weights descend from (gaps 1b, 1c, B3).
+    let ancestry: Ancestry
 
     // MARK: Run
 
@@ -174,9 +203,13 @@ struct LineageRecord: Codable, Equatable, Sendable {
     // MARK: Steps
 
     struct Steps: Codable, Equatable, Sendable {
-        /// Total trainer steps behind these weights. On a trainer-state file
-        /// it equals `trainer_completed_steps` (the writer refuses
-        /// otherwise). Null only when no predecessor recorded it.
+        /// This run's total trainer steps (B4, owner decision O-15): a
+        /// branch restarts the totals with its fresh trainer clock, a derive
+        /// or graft continues its source's. The steps behind the weights
+        /// across runs add the `totals_at_departure` of each ancestor left by
+        /// a branch (`scripts/dcm_lineage.py` `weights_totals`). On a
+        /// trainer-state file it equals `trainer_completed_steps` (the writer
+        /// refuses otherwise). Null only when no predecessor recorded it.
         let cumTrainerStep: Int?
         /// The trainer clock when this segment began — what the dashboards
         /// used to enter by hand as `cumstep_base`.
@@ -245,12 +278,20 @@ struct LineageRecord: Codable, Equatable, Sendable {
         }
 
         init(from decoder: Decoder) throws {
+            try self.init(from: decoder, schema: LineageRecord.currentSchema)
+        }
+
+        init(from decoder: Decoder, schema: Int) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             cumGames = try c.decode(Int?.self, forKey: .cumGames)
             cumPositions = try c.decode(Int?.self, forKey: .cumPositions)
             segmentGames = try c.decode(Int.self, forKey: .segmentGames)
             segmentPositions = try c.decode(Int.self, forKey: .segmentPositions)
-            corpus = try c.decode(CorpusPosition?.self, forKey: .corpus)
+            if try c.decodeNil(forKey: .corpus) {
+                corpus = nil
+            } else {
+                corpus = try CorpusPosition(from: try c.superDecoder(forKey: .corpus), schema: schema)
+            }
         }
 
         func encode(to encoder: Encoder) throws {
@@ -263,10 +304,106 @@ struct LineageRecord: Codable, Equatable, Sendable {
         }
     }
 
+    /// Which corpora a replay fed, in feed order (gap 7).
+    enum CorpusIdentity: Codable, Equatable, Sendable {
+        /// Every corpus, with its sealed-shard count: their counts sum to
+        /// `shard_sha256`'s length.
+        case listed([CorpusEntry])
+        /// Only the first corpus is known: a position carried from a schema-2
+        /// record, which named no other.
+        case firstOnly(id: String, path: String)
+
+        struct CorpusEntry: Codable, Equatable, Sendable {
+            let corpusID: String
+            let corpusPath: String
+            let shardCount: Int
+
+            enum CodingKeys: String, CodingKey {
+                case corpusID = "corpus_id"
+                case corpusPath = "corpus_path"
+                case shardCount = "shard_count"
+            }
+        }
+
+        private struct FirstOnly: Codable, Equatable {
+            let corpusID: String
+            let corpusPath: String
+
+            enum CodingKeys: String, CodingKey {
+                case corpusID = "corpus_id"
+                case corpusPath = "corpus_path"
+            }
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case listed
+            case firstOnly = "first_only"
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            switch (c.contains(.listed), c.contains(.firstOnly)) {
+            case (true, false):
+                let entries = try c.decode([CorpusEntry].self, forKey: .listed)
+                guard !entries.isEmpty else {
+                    throw DecodingError.dataCorruptedError(forKey: .listed, in: c, debugDescription: "an empty corpus list")
+                }
+                self = .listed(entries)
+            case (false, true):
+                let first = try c.decode(FirstOnly.self, forKey: .firstOnly)
+                self = .firstOnly(id: first.corpusID, path: first.corpusPath)
+            default:
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: c.codingPath, debugDescription: "corpus_identity holds exactly one of listed / first_only"))
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            switch self {
+            case .listed(let entries):
+                try c.encode(entries, forKey: .listed)
+            case .firstOnly(let id, let path):
+                try c.encode(FirstOnly(corpusID: id, corpusPath: path), forKey: .firstOnly)
+            }
+        }
+
+        /// The first corpus fed, which a resume checks against.
+        var firstCorpusID: String {
+            switch self {
+            case .listed(let entries): return entries[0].corpusID
+            case .firstOnly(let id, _): return id
+            }
+        }
+
+        var firstCorpusPath: String {
+            switch self {
+            case .listed(let entries): return entries[0].corpusPath
+            case .firstOnly(_, let path): return path
+            }
+        }
+    }
+
+    /// A point in a corpus feed: the epoch and the within-epoch index of the
+    /// next game.
+    struct FeedPoint: Codable, Equatable, Sendable {
+        let epoch: Int
+        let nextGameIndex: Int
+
+        enum CodingKeys: String, CodingKey {
+            case epoch
+            case nextGameIndex = "next_game_index"
+        }
+    }
+
     /// Where a corpus-replay run stood in its corpus at the save.
     struct CorpusPosition: Codable, Equatable, Sendable {
-        let corpusID: String
-        let corpusPath: String
+        /// The corpora fed, in feed order.
+        let corpusIdentity: CorpusIdentity
+        /// Where this segment's feed began (after `--start-shard` /
+        /// `--start-game-index` / a resume); unrecorded only on a position
+        /// carried from a schema-2 record.
+        let segmentStart: Recorded<FeedPoint>
         let epoch: Int
         /// Within-epoch index of the next game the run would have fed.
         let nextGameIndex: Int
@@ -289,6 +426,8 @@ struct LineageRecord: Codable, Equatable, Sendable {
         enum CodingKeys: String, CodingKey {
             case corpusID = "corpus_id"
             case corpusPath = "corpus_path"
+            case corpusIdentity = "corpus_identity"
+            case segmentStart = "segment_start"
             case epoch
             case nextGameIndex = "next_game_index"
             case shard
@@ -297,6 +436,79 @@ struct LineageRecord: Codable, Equatable, Sendable {
             case feedAheadPositions = "feed_ahead_positions"
             case feedPerStep = "feed_per_step"
             case shardSHA256 = "shard_sha256"
+        }
+
+        init(corpusIdentity: CorpusIdentity, segmentStart: Recorded<FeedPoint>, epoch: Int, nextGameIndex: Int,
+             shard: Int, populatedPlies: Int, bufferCapacity: Int, feedAheadPositions: Int, feedPerStep: Int,
+             shardSHA256: [String]) throws {
+            self.corpusIdentity = corpusIdentity
+            self.segmentStart = segmentStart
+            self.epoch = epoch
+            self.nextGameIndex = nextGameIndex
+            self.shard = shard
+            self.populatedPlies = populatedPlies
+            self.bufferCapacity = bufferCapacity
+            self.feedAheadPositions = feedAheadPositions
+            self.feedPerStep = feedPerStep
+            self.shardSHA256 = shardSHA256
+            try checkShardCounts()
+        }
+
+        init(from decoder: Decoder) throws {
+            try self.init(from: decoder, schema: LineageRecord.currentSchema)
+        }
+
+        init(from decoder: Decoder, schema: Int) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            if schema >= 3 {
+                try LineageRecord.refuseKeys([.corpusID, .corpusPath], in: c,
+                                             reason: "a schema-\(schema) corpus position names its corpora in corpus_identity")
+                corpusIdentity = try c.decode(CorpusIdentity.self, forKey: .corpusIdentity)
+                segmentStart = try c.decode(Recorded<FeedPoint>.self, forKey: .segmentStart)
+            } else {
+                try LineageRecord.refuseSchemaThreeKeys([.corpusIdentity, .segmentStart], in: c, schema: schema)
+                corpusIdentity = .firstOnly(id: try c.decode(String.self, forKey: .corpusID),
+                                            path: try c.decode(String.self, forKey: .corpusPath))
+                segmentStart = .unrecorded
+            }
+            epoch = try c.decode(Int.self, forKey: .epoch)
+            nextGameIndex = try c.decode(Int.self, forKey: .nextGameIndex)
+            shard = try c.decode(Int.self, forKey: .shard)
+            populatedPlies = try c.decode(Int.self, forKey: .populatedPlies)
+            bufferCapacity = try c.decode(Int.self, forKey: .bufferCapacity)
+            feedAheadPositions = try c.decode(Int.self, forKey: .feedAheadPositions)
+            feedPerStep = try c.decode(Int.self, forKey: .feedPerStep)
+            shardSHA256 = try c.decode([String].self, forKey: .shardSHA256)
+            do {
+                try checkShardCounts()
+            } catch {
+                throw DecodingError.dataCorruptedError(forKey: .corpusIdentity, in: c, debugDescription: "\(error)")
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            try checkShardCounts()
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(corpusIdentity, forKey: .corpusIdentity)
+            try c.encode(segmentStart, forKey: .segmentStart)
+            try c.encode(epoch, forKey: .epoch)
+            try c.encode(nextGameIndex, forKey: .nextGameIndex)
+            try c.encode(shard, forKey: .shard)
+            try c.encode(populatedPlies, forKey: .populatedPlies)
+            try c.encode(bufferCapacity, forKey: .bufferCapacity)
+            try c.encode(feedAheadPositions, forKey: .feedAheadPositions)
+            try c.encode(feedPerStep, forKey: .feedPerStep)
+            try c.encode(shardSHA256, forKey: .shardSHA256)
+        }
+
+        /// A listed identity's shard counts sum to the shard hashes.
+        private func checkShardCounts() throws {
+            guard case .listed(let entries) = corpusIdentity else { return }
+            let total = entries.reduce(0) { $0 + $1.shardCount }
+            guard total == shardSHA256.count else {
+                throw SchemaError.invariant(
+                    "corpus_identity lists \(total) shards but shard_sha256 holds \(shardSHA256.count)")
+            }
         }
     }
 
@@ -358,6 +570,14 @@ struct LineageRecord: Codable, Equatable, Sendable {
             case sha256
         }
 
+        /// The seed *settings* (gap 9). A snapshot this build composes omits
+        /// them (`TrainingParametersSnapshot.lineageValues()`; the tracker
+        /// refuses one that holds them): the run's actual seed is in
+        /// `rng.streams` and `run_seeds`, and a setting `--seed` or a resume
+        /// overrode only contradicted it. A carried (schema-2) snapshot keeps
+        /// them, exactly as written.
+        static let excludedParameterIDs = [RandomSeedModeParameter.id, RandomSeed.id]
+
         /// Snapshot of `values` (parameter id → value).
         init(values: [String: ParameterValue]) throws {
             var dictionary: [String: Any] = [:]
@@ -400,19 +620,107 @@ struct LineageRecord: Codable, Equatable, Sendable {
         let buildNumber: Int
         let gitHash: String
         let gitBranch: String
+        /// Whether the compiled project differed from `gitHash`. From build
+        /// generation P1 on, its scope is `DrewsChessMachine/` without the
+        /// generated files; a schema-2 record written before then says true
+        /// for every build.
         let gitDirty: Bool
+        /// SHA-256 of the built `DrewsChessMachine/` tree's git id
+        /// (`BuildInfo.gitDiffSHA256`): recorded `null` exactly when the
+        /// build was clean; unrecorded on a schema-2 build.
+        let gitDiffSHA256: Recorded<String?>
+        /// Xcode's, the SDK's build versions and the build configuration
+        /// (`BuildInfo`); unrecorded on a schema-2 build.
+        let xcodeBuild: Recorded<String>
+        let sdkBuild: Recorded<String>
+        let configuration: Recorded<String>
 
-        enum CodingKeys: String, CodingKey {
+        enum CodingKeys: String, CodingKey, CaseIterable {
             case buildNumber = "build_number"
             case gitHash = "git_hash"
             case gitBranch = "git_branch"
             case gitDirty = "git_dirty"
+            case gitDiffSHA256 = "git_diff_sha256"
+            case xcodeBuild = "xcode_build"
+            case sdkBuild = "sdk_build"
+            case configuration
+        }
+
+        /// The keys schema 3 added.
+        static let schemaThreeKeys: [CodingKeys] = [.gitDiffSHA256, .xcodeBuild, .sdkBuild, .configuration]
+
+        init(buildNumber: Int, gitHash: String, gitBranch: String, gitDirty: Bool, gitDiffSHA256: Recorded<String?>,
+             xcodeBuild: Recorded<String>, sdkBuild: Recorded<String>, configuration: Recorded<String>) throws {
+            self.buildNumber = buildNumber
+            self.gitHash = gitHash
+            self.gitBranch = gitBranch
+            self.gitDirty = gitDirty
+            self.gitDiffSHA256 = gitDiffSHA256
+            self.xcodeBuild = xcodeBuild
+            self.sdkBuild = sdkBuild
+            self.configuration = configuration
+            try checkDiffHash()
+        }
+
+        init(from decoder: Decoder) throws {
+            try self.init(from: decoder, schema: LineageRecord.currentSchema)
+        }
+
+        init(from decoder: Decoder, schema: Int) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            buildNumber = try c.decode(Int.self, forKey: .buildNumber)
+            gitHash = try c.decode(String.self, forKey: .gitHash)
+            gitBranch = try c.decode(String.self, forKey: .gitBranch)
+            gitDirty = try c.decode(Bool.self, forKey: .gitDirty)
+            if schema >= 3 {
+                gitDiffSHA256 = try c.decode(Recorded<String?>.self, forKey: .gitDiffSHA256)
+                xcodeBuild = try c.decode(Recorded<String>.self, forKey: .xcodeBuild)
+                sdkBuild = try c.decode(Recorded<String>.self, forKey: .sdkBuild)
+                configuration = try c.decode(Recorded<String>.self, forKey: .configuration)
+            } else {
+                try LineageRecord.refuseSchemaThreeKeys(Self.schemaThreeKeys, in: c, schema: schema)
+                gitDiffSHA256 = .unrecorded
+                xcodeBuild = .unrecorded
+                sdkBuild = .unrecorded
+                configuration = .unrecorded
+            }
+            do {
+                try checkDiffHash()
+            } catch {
+                throw DecodingError.dataCorruptedError(forKey: .gitDiffSHA256, in: c, debugDescription: "\(error)")
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            try checkDiffHash()
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(buildNumber, forKey: .buildNumber)
+            try c.encode(gitHash, forKey: .gitHash)
+            try c.encode(gitBranch, forKey: .gitBranch)
+            try c.encode(gitDirty, forKey: .gitDirty)
+            try c.encode(gitDiffSHA256, forKey: .gitDiffSHA256)
+            try c.encode(xcodeBuild, forKey: .xcodeBuild)
+            try c.encode(sdkBuild, forKey: .sdkBuild)
+            try c.encode(configuration, forKey: .configuration)
+        }
+
+        /// A recorded diff hash is null exactly when the build was clean.
+        private func checkDiffHash() throws {
+            guard case .recorded(let hash) = gitDiffSHA256 else { return }
+            guard (hash == nil) == !gitDirty else {
+                throw SchemaError.invariant("build git_diff_sha256 is null exactly when git_dirty is false")
+            }
         }
 
         /// The running build.
         static var current: Build {
-            Build(buildNumber: BuildInfo.buildNumber, gitHash: BuildInfo.gitHash,
-                  gitBranch: BuildInfo.gitBranch, gitDirty: BuildInfo.gitDirty)
+            get throws {
+                try Build(buildNumber: BuildInfo.buildNumber, gitHash: BuildInfo.gitHash,
+                          gitBranch: BuildInfo.gitBranch, gitDirty: BuildInfo.gitDirty,
+                          gitDiffSHA256: .recorded(BuildInfo.gitDiffSHA256),
+                          xcodeBuild: .recorded(BuildInfo.xcodeBuild), sdkBuild: .recorded(BuildInfo.sdkBuild),
+                          configuration: .recorded(BuildInfo.configuration))
+            }
         }
     }
 
@@ -609,6 +917,9 @@ struct LineageRecord: Codable, Equatable, Sendable {
         /// run's seed; a drawn seed replays the run when passed to `--seed`.
         enum SeedOrigin: String, Codable, Sendable {
             case configured
+            /// `--seed` named it (schema 3; a schema-2 record folded it into
+            /// `configured`).
+            case commandLine = "command_line"
             case drawn
         }
 
@@ -731,8 +1042,28 @@ struct LineageRecord: Codable, Equatable, Sendable {
         let exactResume: Bool
         let build: Build
         let device: Device
+        /// That segment's configuration: `recorded(nil)` for a segment with
+        /// no training behind it; unrecorded for a summary of, or carried
+        /// inside, a record that predates schema 3.
+        let configuration: Recorded<TrainingConfiguration?>
+        /// That segment's parameter snapshot (its own record's).
+        let parameters: Recorded<Parameters?>
+        /// The corpora it fed (`recorded(nil)` when it was not a replay).
+        let corpusIdentity: Recorded<CorpusIdentity?>
+        /// Where its corpus feed began (`recorded(nil)` when not a replay).
+        let segmentStartCorpus: Recorded<FeedPoint?>
+        let pathKind: Recorded<PathKind>
+        let argv: Recorded<[String]>
+        let runSeeds: Recorded<[RunSeedEntry]?>
 
         enum CodingKeys: String, CodingKey {
+            case configuration
+            case parameters
+            case corpusIdentity = "corpus_identity"
+            case segmentStartCorpus = "segment_start_corpus"
+            case pathKind = "path_kind"
+            case argv
+            case runSeeds = "run_seeds"
             case segmentIndex = "segment_index"
             case segmentID = "segment_id"
             case start
@@ -750,6 +1081,9 @@ struct LineageRecord: Codable, Equatable, Sendable {
             case device
         }
 
+        /// The summary of `record`'s own segment. Every value comes from the
+        /// record; a fact it does not hold (a schema-2 record's configuration
+        /// or the start of a carried corpus feed) stays unrecorded.
         init(of record: LineageRecord) {
             segmentIndex = record.run.segmentIndex
             segmentID = record.run.segmentID
@@ -766,9 +1100,43 @@ struct LineageRecord: Codable, Equatable, Sendable {
             exactResume = record.run.exactResume
             build = record.build
             device = record.device
+            switch record.configuration {
+            case .notTrained: configuration = .recorded(nil)
+            case .unrecorded: configuration = .unrecorded
+            case .recorded(let value): configuration = .recorded(value)
+            }
+            parameters = .recorded(record.parameters)
+            if let corpus = record.fed.corpus {
+                corpusIdentity = .recorded(corpus.corpusIdentity)
+                switch corpus.segmentStart {
+                case .recorded(let point): segmentStartCorpus = .recorded(point)
+                case .unrecorded: segmentStartCorpus = .unrecorded
+                }
+            } else {
+                corpusIdentity = .recorded(nil)
+                segmentStartCorpus = .recorded(nil)
+            }
+            pathKind = .recorded(record.invocation.pathKind)
+            argv = .recorded(record.invocation.argv)
+            switch record.runSeeds {
+            case .notTrained: runSeeds = .recorded(nil)
+            case .unrecorded: runSeeds = .unrecorded
+            case .recorded(let seeds): runSeeds = .recorded(seeds)
+            }
         }
 
+        /// The keys schema 3 added.
+        static let schemaThreeKeys: [CodingKeys] = [
+            .configuration, .parameters, .corpusIdentity, .segmentStartCorpus, .pathKind, .argv, .runSeeds,
+        ]
+
         init(from decoder: Decoder) throws {
+            try self.init(from: decoder, schema: LineageRecord.currentSchema)
+        }
+
+        /// A summary inside a record written at `schema`: at schema 2 the
+        /// schema-3 keys are absent and read back as unrecorded.
+        init(from decoder: Decoder, schema: Int) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             segmentIndex = try c.decode(Int.self, forKey: .segmentIndex)
             segmentID = try c.decode(String.self, forKey: .segmentID)
@@ -783,8 +1151,26 @@ struct LineageRecord: Codable, Equatable, Sendable {
             segmentTrainStepSec = try c.decode(Double.self, forKey: .segmentTrainStepSec)
             segmentWallSec = try c.decode(Double.self, forKey: .segmentWallSec)
             exactResume = try c.decode(Bool.self, forKey: .exactResume)
-            build = try c.decode(Build.self, forKey: .build)
+            build = try Build(from: try c.superDecoder(forKey: .build), schema: schema)
             device = try c.decode(Device.self, forKey: .device)
+            if schema >= 3 {
+                configuration = try c.decode(Recorded<TrainingConfiguration?>.self, forKey: .configuration)
+                parameters = try c.decode(Recorded<Parameters?>.self, forKey: .parameters)
+                corpusIdentity = try c.decode(Recorded<CorpusIdentity?>.self, forKey: .corpusIdentity)
+                segmentStartCorpus = try c.decode(Recorded<FeedPoint?>.self, forKey: .segmentStartCorpus)
+                pathKind = try c.decode(Recorded<PathKind>.self, forKey: .pathKind)
+                argv = try c.decode(Recorded<[String]>.self, forKey: .argv)
+                runSeeds = try c.decode(Recorded<[RunSeedEntry]?>.self, forKey: .runSeeds)
+            } else {
+                try LineageRecord.refuseSchemaThreeKeys(Self.schemaThreeKeys, in: c, schema: schema)
+                configuration = .unrecorded
+                parameters = .unrecorded
+                corpusIdentity = .unrecorded
+                segmentStartCorpus = .unrecorded
+                pathKind = .unrecorded
+                argv = .unrecorded
+                runSeeds = .unrecorded
+            }
         }
 
         func encode(to encoder: Encoder) throws {
@@ -804,6 +1190,13 @@ struct LineageRecord: Codable, Equatable, Sendable {
             try c.encode(exactResume, forKey: .exactResume)
             try c.encode(build, forKey: .build)
             try c.encode(device, forKey: .device)
+            try c.encode(configuration, forKey: .configuration)
+            try c.encode(parameters, forKey: .parameters)
+            try c.encode(corpusIdentity, forKey: .corpusIdentity)
+            try c.encode(segmentStartCorpus, forKey: .segmentStartCorpus)
+            try c.encode(pathKind, forKey: .pathKind)
+            try c.encode(argv, forKey: .argv)
+            try c.encode(runSeeds, forKey: .runSeeds)
         }
     }
 
@@ -812,49 +1205,106 @@ struct LineageRecord: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case schema, run, parent, steps, fed, time, parameters, build, invocation, device, rng, segments
         case derivationHistory = "derivation_history"
+        case configuration
+        case runSeeds = "run_seeds"
+        case ancestry
     }
 
-    init(schema: Int, run: Run, parent: Parent?, steps: Steps, fed: Fed, time: Time,
-         parameters: Parameters?, build: Build, invocation: Invocation, device: Device,
-         rng: RNG, segments: [SegmentSummary], derivationHistory: [ModelDerivation.DerivationRecord]) {
-        self.schema = schema
+    /// A record this build composes: always at the current schema, with
+    /// every invariant checked.
+    init(run: Run, parent: Parent?, steps: Steps, fed: Fed, time: Time,
+         parameters: Parameters?, configuration: RecordedIfTrained<TrainingConfiguration>,
+         runSeeds: RecordedIfTrained<[RunSeedEntry]>, build: Build, invocation: Invocation, device: Device,
+         rng: RNG, segments: [SegmentSummary], ancestry: Ancestry,
+         derivationHistory: [ModelDerivation.DerivationRecord]) throws {
+        self.schema = Self.currentSchema
         self.run = run
         self.parent = parent
         self.steps = steps
         self.fed = fed
         self.time = time
         self.parameters = parameters
+        self.configuration = configuration
+        self.runSeeds = runSeeds
         self.build = build
         self.invocation = invocation
         self.device = device
         self.rng = rng
         self.segments = segments
+        self.ancestry = ancestry
         self.derivationHistory = derivationHistory
+        try checkInvariants()
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         schema = try c.decode(Int.self, forKey: .schema)
-        guard schema == Self.currentSchema else {
+        guard (Self.oldestDecodableSchema...Self.currentSchema).contains(schema) else {
             throw DecodingError.dataCorruptedError(
                 forKey: .schema, in: c,
-                debugDescription: "lineage schema \(schema) is not the supported schema \(Self.currentSchema)")
+                debugDescription: "lineage schema \(schema) is not a supported schema "
+                    + "(\(Self.oldestDecodableSchema)...\(Self.currentSchema))")
         }
         run = try c.decode(Run.self, forKey: .run)
         parent = try c.decode(Parent?.self, forKey: .parent)
         steps = try c.decode(Steps.self, forKey: .steps)
-        fed = try c.decode(Fed.self, forKey: .fed)
+        fed = try Fed(from: try c.superDecoder(forKey: .fed), schema: schema)
         time = try c.decode(Time.self, forKey: .time)
         parameters = try c.decode(Parameters?.self, forKey: .parameters)
-        build = try c.decode(Build.self, forKey: .build)
+        build = try Build(from: try c.superDecoder(forKey: .build), schema: schema)
         invocation = try c.decode(Invocation.self, forKey: .invocation)
         device = try c.decode(Device.self, forKey: .device)
         rng = try c.decode(RNG.self, forKey: .rng)
-        segments = try c.decode([SegmentSummary].self, forKey: .segments)
+        var list = try c.nestedUnkeyedContainer(forKey: .segments)
+        var summaries: [SegmentSummary] = []
+        while !list.isAtEnd {
+            summaries.append(try SegmentSummary(from: try list.superDecoder(), schema: schema))
+        }
+        segments = summaries
         derivationHistory = try c.decode([ModelDerivation.DerivationRecord].self, forKey: .derivationHistory)
+        if schema >= 3 {
+            configuration = try c.decode(RecordedIfTrained<TrainingConfiguration>.self, forKey: .configuration)
+            runSeeds = try c.decode(RecordedIfTrained<[RunSeedEntry]>.self, forKey: .runSeeds)
+            ancestry = try c.decode(Ancestry.self, forKey: .ancestry)
+        } else {
+            try Self.refuseSchemaThreeKeys([.configuration, .runSeeds, .ancestry], in: c, schema: schema)
+            if rng.streams?.seedOrigin == .commandLine {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .rng, in: c, debugDescription: "seed_origin command_line is a schema-3 value")
+            }
+            // What a schema-2 record states, in the schema-3 shape: a record
+            // with training behind it has a configuration schema 2 never
+            // stored (unrecorded) and the seed its streams name, from no
+            // known step; one without has neither. Schema 2 kept no
+            // ancestry, so the chain before this run is unrecorded unless
+            // the run began fresh.
+            configuration = parameters == nil ? .notTrained : .unrecorded
+            if parameters == nil {
+                runSeeds = .notTrained
+            } else if let streams = rng.streams {
+                runSeeds = .recorded([RunSeedEntry(convertedFrom: streams)])
+            } else {
+                runSeeds = .unrecorded
+            }
+            ancestry = Ancestry(historyBeforeOldestRun: AncestorRun.historyBefore(
+                                    runFirstStartedAs: summaries.first?.start ?? run.start),
+                                runs: [])
+        }
+        do {
+            try checkInvariants()
+        } catch {
+            throw DecodingError.dataCorruptedError(forKey: .schema, in: c, debugDescription: "\(error)")
+        }
     }
 
     func encode(to encoder: Encoder) throws {
+        // A record is only ever written at the current schema: a decoded
+        // older record is converted (`withoutTrainerState`, a tracker, a
+        // copy) before it is written, never re-emitted as it was.
+        guard schema == Self.currentSchema else {
+            throw SchemaError.invariant("a schema-\(schema) record is written only after conversion to schema \(Self.currentSchema)")
+        }
+        try checkInvariants()
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(schema, forKey: .schema)
         try c.encode(run, forKey: .run)
@@ -869,6 +1319,65 @@ struct LineageRecord: Codable, Equatable, Sendable {
         try c.encode(rng, forKey: .rng)
         try c.encode(segments, forKey: .segments)
         try c.encode(derivationHistory, forKey: .derivationHistory)
+        try c.encode(configuration, forKey: .configuration)
+        try c.encode(runSeeds, forKey: .runSeeds)
+        try c.encode(ancestry, forKey: .ancestry)
+    }
+
+    /// The record-level invariants (plan S2), checked on encode and decode.
+    func checkInvariants() throws {
+        guard (parameters == nil) == configuration.isNotTrained, (parameters == nil) == runSeeds.isNotTrained else {
+            throw SchemaError.invariant("parameters, configuration and run_seeds are null together or not at all")
+        }
+        if let seeds = runSeeds.value {
+            guard !seeds.isEmpty else {
+                throw SchemaError.invariant("a recorded run_seeds lists at least one seed")
+            }
+            if seeds.contains(where: { $0.fromTrainerStep == nil }) {
+                guard seeds.count == 1 else {
+                    throw SchemaError.invariant("a run_seeds entry without a step is the only entry (converted from schema 2)")
+                }
+            }
+            let steps = seeds.compactMap(\.fromTrainerStep)
+            guard steps == steps.sorted() else {
+                throw SchemaError.invariant("run_seeds entries are in trainer-step order")
+            }
+            if seeds.count > 1 {
+                guard configuration.value?.pathKind == .gui else {
+                    throw SchemaError.invariant("only a gui segment changes its seed within the segment")
+                }
+            }
+            if let streams = rng.streams, let last = seeds.last {
+                guard last.masterSeed == streams.masterSeed, last.seedOrigin == streams.seedOrigin,
+                      last.streamDerivation == streams.streamDerivation else {
+                    throw SchemaError.invariant("the last run_seeds entry is the seed rng.streams names")
+                }
+            }
+        }
+        if let configuration = configuration.value, let clock = steps.cumTrainerStep {
+            if let late = configuration.parameterChanges.first(where: { $0.committedAtTrainerStep > clock }) {
+                throw SchemaError.invariant(
+                    "parameter change \(late.id) at trainer step \(late.committedAtTrainerStep) is after the record's clock \(clock)")
+            }
+        }
+        for summary in segments {
+            guard let configuration = summary.configuration.value ?? nil, let end = summary.endTrainerStep else { continue }
+            if let late = configuration.parameterChanges.first(where: { $0.committedAtTrainerStep > end }) {
+                throw SchemaError.invariant(
+                    "segment \(summary.segmentIndex)'s parameter change \(late.id) is after its end step \(end)")
+            }
+        }
+    }
+
+    /// Refuse any of `keys` in a container decoded at a schema before 3.
+    static func refuseSchemaThreeKeys<K: CodingKey>(_ keys: [K], in c: KeyedDecodingContainer<K>, schema: Int) throws {
+        try refuseKeys(keys, in: c, reason: "a schema-\(schema) record does not carry this schema-3 key")
+    }
+
+    static func refuseKeys<K: CodingKey>(_ keys: [K], in c: KeyedDecodingContainer<K>, reason: String) throws {
+        if let present = keys.first(where: { c.contains($0) }) {
+            throw DecodingError.dataCorruptedError(forKey: present, in: c, debugDescription: reason)
+        }
     }
 
     // MARK: Safetensors carriage
@@ -904,20 +1413,27 @@ struct LineageRecord: Codable, Equatable, Sendable {
     /// init seed and scheme describe the weights and stay. A run started
     /// from such a file branches with fresh random state, never resumes
     /// this one's.
-    func withoutTrainerState() -> LineageRecord {
-        LineageRecord(
-            schema: schema,
+    ///
+    /// The result is always at the current schema: a champion file of a
+    /// loaded schema-2 model carries that record's facts, with what schema 2
+    /// never stored unrecorded (see the file comment). The configuration,
+    /// run seeds, segments and ancestry stay: they describe the weights.
+    func withoutTrainerState() throws -> LineageRecord {
+        try LineageRecord(
             run: run,
             parent: parent,
             steps: steps,
             fed: fed,
             time: time,
             parameters: parameters,
+            configuration: configuration,
+            runSeeds: runSeeds,
             build: build,
             invocation: invocation,
             device: device,
             rng: RNG.withoutRunStreams(dropoutPhiloxState: nil).withInitialization(rng.initialization),
             segments: segments,
+            ancestry: ancestry,
             derivationHistory: derivationHistory)
     }
 
@@ -1001,8 +1517,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
                 name = argument[...]
                 inlineValue = false
             }
-            let lowered = name.lowercased()
-            guard secretOptionMarkers.contains(where: { lowered.contains($0) }) else {
+            guard isSecretOptionName(String(name)) else {
                 out.append(argument)
                 continue
             }
@@ -1017,5 +1532,12 @@ struct LineageRecord: Codable, Equatable, Sendable {
     }
 
     static let secretOptionMarkers = ["token", "secret", "password", "apikey", "api-key"]
+
+    /// Whether an option named `name` carries a secret value (argv options
+    /// and train-vs-UCI engine options alike).
+    static func isSecretOptionName(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        return secretOptionMarkers.contains { lowered.contains($0) }
+    }
     static let redactedValue = "<redacted>"
 }

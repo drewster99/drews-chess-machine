@@ -11,7 +11,7 @@ Two things differ from replay.py and are handled here:
     step — the registered run kept only a rolling `-latest` checkpoint (no
     per-1000-step frozen files to re-probe), so the JSONL is the trajectory's
     source of truth. Current builds save `.dcmsession` folders instead of the
-    rolling file (`…-vsuci-periodic/-final/-abort`, trainer state in
+    rolling file (`…-vsuci-periodic/-final/-abort/-health-stop`, trainer state in
     `trainer.safetensors`) and, with --enumerate-checkpoints, `-vsuci-step<N>`
     files; --derive-registry reads both.
   * training-side metrics (loss/pLoss/vLoss/gNorm/ms) are parsed from the

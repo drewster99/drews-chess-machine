@@ -140,6 +140,12 @@ struct DrewsChessMachineApp: App {
         // variant) followed by `_exit(0)`.
         Self.handleDefaultsFlagsIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: offline training-health replay (--replay-health-log).
+        // Parses saved session logs and runs the real training-health
+        // evaluator over them, synchronously on the launching thread; no
+        // GUI, no GPU, no writes. Exits.
+        Self.handleReplayHealthLogIfPresent(rawArgs: rawArgs)
+
         // Pre-flight: handle the offline replay-buffer analyzer flag.
         // Same pattern as the defaults-emitter flags — exits the process
         // before any SwiftUI / Metal init. Reads the saved
@@ -680,7 +686,7 @@ struct DrewsChessMachineApp: App {
                     .disabled(!commandHub.realTraining || !commandHub.isArenaRunning)
                 Divider()
                 Button("Promote Trainee Now") { commandHub.promoteTrainerNow() }
-                    .disabled(!commandHub.realTraining || commandHub.isArenaRunning)
+                    .disabled(!commandHub.realTraining || commandHub.isArenaRunning || commandHub.trainingSuspended)
             }
 
             // Chess menu — human-vs-network play. The user picks the
@@ -1110,6 +1116,14 @@ struct DrewsChessMachineApp: App {
             if let pp = parametersPath {
                 do {
                     let cfg = try CliTrainingConfig.loadAndApplyTransiently(path: pp)
+                    // Corpus replay enforces no wall-clock limit (owner
+                    // decision O-21): a file that sets one is refused rather
+                    // than silently ignored.
+                    if let refusal = cfg.corpusReplayRefusal(parametersPath: pp) {
+                        SessionLogger.shared.log("[REPLAY] refused: \(refusal.message)")
+                        FileHandle.standardError.write(Data("error: \(refusal.message)\n".utf8))
+                        Darwin.exit(2)
+                    }
                     if stepLimit == nil { stepLimit = cfg.trainingStepLimit }
                 } catch {
                     FileHandle.standardError.write(Data("error: --parameters load/apply failed: \(error.localizedDescription)\n".utf8))
@@ -1188,6 +1202,30 @@ struct DrewsChessMachineApp: App {
     static func requireResumeExactForAcceptInexactOrExit(acceptInexact: Set<ResumeGap>?, resumeExact: Bool) {
         if acceptInexact != nil && !resumeExact {
             FileHandle.standardError.write(Data("error: --accept-inexact qualifies --resume-exact and needs it\n".utf8))
+            Darwin.exit(2)
+        }
+    }
+
+    /// Parse `--train-vs-uci --max-plies <n>`: the ply cap every game against
+    /// the engines is played to, which the run's session.json records. A cap
+    /// below one ply plays no game, so it is refused here rather than raised
+    /// to 1 out of sight while the record states the value given.
+    static func parseMaxPliesPerGame(_ text: String) throws -> Int {
+        guard let plies = Int(text) else {
+            throw CLIRunRefusal(message: "--max-plies expects an integer value, got '\(text)'")
+        }
+        guard plies >= 1 else {
+            throw CLIRunRefusal(message: "--max-plies must be at least 1, got \(plies)")
+        }
+        return plies
+    }
+
+    /// `parseMaxPliesPerGame`, or exit with a usage error.
+    static func parseMaxPliesPerGameOrExit(_ text: String) -> Int {
+        do {
+            return try parseMaxPliesPerGame(text)
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
             Darwin.exit(2)
         }
     }
@@ -1314,7 +1352,7 @@ struct DrewsChessMachineApp: App {
                 }
                 timeLimitSec = t; i += 2
             case "--max-plies":
-                maxPliesPerGame = requireInt(arg, nextValue); i += 2
+                maxPliesPerGame = parseMaxPliesPerGameOrExit(requireValue(arg, nextValue)); i += 2
             case "--eval-sync-steps":
                 evalSyncEverySteps = requireInt(arg, nextValue); i += 2
             case "--enumerate-checkpoints":
@@ -1899,6 +1937,14 @@ struct DrewsChessMachineApp: App {
     /// optional companions (`--numerics-corpus <shard>`, `--numerics-out
     /// <dir>`, `--numerics-static-only`) and hands control to
     /// `NumericsAuditCLI.runAndExit`, which never returns.
+    /// `--replay-health-log <log> [<log> …] [--learning-grace-steps N]
+    /// [--lr-warmup-steps N] [--segment-step-as-trainer-step]`: see
+    /// `TrainingHealthReplayCLI`. Never returns when the flag is present.
+    private static func handleReplayHealthLogIfPresent(rawArgs: [String]) {
+        guard rawArgs.contains(TrainingHealthReplayCLI.flag) else { return }
+        TrainingHealthReplayCLI.runAndExit(arguments: rawArgs)
+    }
+
     private static func handleAnalyzeNumericsIfPresent(rawArgs: [String]) {
         let flag = "--analyze-numerics"
         guard rawArgs.contains(flag) else { return }

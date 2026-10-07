@@ -109,6 +109,16 @@ final class TrainingAlarmController {
     private(set) var active: TrainingAlarm?
     private(set) var silenced = false
 
+    /// The training-health monitor's active alarms, mirrored for the alarm
+    /// list (`TrainingHealthAlarmList`). The monitor is the source; this is
+    /// replaced wholesale on every evaluation's main-actor hop
+    /// (`refreshHealth(from:)`), never edited.
+    private(set) var healthAlarms: [TrainingHealthActiveAlarm] = []
+
+    /// The rule whose health stop suspended training, for the list's header
+    /// row; nil when training is not suspended by a health alarm.
+    private(set) var healthSuspendedRule: TrainingHealthRule?
+
     // MARK: - Private detector / sound state
 
     private var divergenceWarningStreak = 0
@@ -320,6 +330,7 @@ final class TrainingAlarmController {
     /// Raise (or update) the banner. Used by `evaluate(from:)` and by other
     /// detectors (e.g. the legal-mass-collapse probe) directly.
     func raise(severity: TrainingAlarm.Severity, title: String, detail: String) {
+        defer { reconcileSound() }
         let next = TrainingAlarm(
             id: UUID(),
             severity: severity,
@@ -339,13 +350,13 @@ final class TrainingAlarmController {
         if isNewAlarm || titleOrSeverityChanged {
             SessionLogger.shared.log("[ALARM] \(title): \(detail)")
         }
-        startAlarmSoundLoopIfNeeded()
     }
 
     /// Auto-clear / lifecycle-reset path: clears the banner, unmutes, and
     /// cancels the beep loop. Does NOT touch the divergence streak counters
     /// (the recovery-streak auto-clear in `evaluate(from:)` deliberately leaves
-    /// them alone).
+    /// them alone), nor the health alarms, which clear only by recovery: the
+    /// loop restarts at once if a critical one remains.
     func clear() {
         if let prior = active {
             SessionLogger.shared.log("[ALARM] cleared: \(prior.title)")
@@ -354,15 +365,47 @@ final class TrainingAlarmController {
         silenced = false
         alarmSoundTask?.cancel()
         alarmSoundTask = nil
+        reconcileSound()
     }
 
+    /// Mute the beep for whatever is sounding (the banner, a critical health
+    /// alarm, or both). Reachable from the banner and from the health list.
     func silence() {
         if let active {
             SessionLogger.shared.log("[ALARM] silenced: \(active.title)")
         }
+        if healthAlarms.contains(where: { $0.severity == .critical }) {
+            SessionLogger.shared.log("[ALARM] silenced: training health alarms "
+                + healthAlarms.map { "\($0.rule.rawValue):\($0.severity.rawValue)" }.joined(separator: ","))
+        }
         silenced = true
-        alarmSoundTask?.cancel()
-        alarmSoundTask = nil
+        reconcileSound()
+    }
+
+    // MARK: - Training-health alarms
+
+    /// Mirror `monitor`'s current active set (D2: re-read on every hop, so
+    /// hops arriving out of order never show an older state).
+    func refreshHealth(from monitor: TrainingHealthMonitor) {
+        refreshHealth(monitor.activeAlarmsSnapshot())
+    }
+
+    /// Core of `refreshHealth(from:)`, for tests.
+    func refreshHealth(_ alarms: [TrainingHealthActiveAlarm]) {
+        healthAlarms = alarms
+        reconcileSound()
+    }
+
+    func setHealthSuspension(_ rule: TrainingHealthRule?) {
+        healthSuspendedRule = rule
+    }
+
+    /// Whether the beep loop should run: the banner shows an alarm or a
+    /// critical health alarm is active, and the user has not silenced it.
+    /// Warnings alone never beep (OD-8).
+    var shouldSound: Bool {
+        guard !silenced else { return false }
+        return active != nil || healthAlarms.contains { $0.severity == .critical }
     }
 
     /// Clear the banner AND reset the divergence streak counters so the alarm
@@ -377,6 +420,7 @@ final class TrainingAlarmController {
         alarmSoundTask?.cancel()
         alarmSoundTask = nil
         resetStreaks()
+        reconcileSound()
     }
 
     /// The consecutive-sample counters behind the divergence, value-saturation
@@ -439,8 +483,17 @@ final class TrainingAlarmController {
 
     // MARK: - Beep loop
 
-    private func startAlarmSoundLoopIfNeeded() {
-        guard active != nil, !silenced, alarmSoundTask == nil else { return }
+    /// The one place the beep loop starts or stops, called after every
+    /// change to the banner, the health alarms or `silenced`: one loop for
+    /// both sources, so a health-only critical alarm beeps although the
+    /// banner shows nothing.
+    private func reconcileSound() {
+        guard shouldSound else {
+            alarmSoundTask?.cancel()
+            alarmSoundTask = nil
+            return
+        }
+        guard alarmSoundTask == nil else { return }
         alarmSoundTask = Task {
             while !Task.isCancelled {
                 await playAlarmBuzzBurst()
@@ -456,7 +509,7 @@ final class TrainingAlarmController {
     @MainActor
     private func playAlarmBuzzBurst() async {
         for _ in 0..<3 {
-            if Task.isCancelled || active == nil || silenced { return }
+            if Task.isCancelled || !shouldSound { return }
             NSSound.beep()
             do {
                 try await Task.sleep(for: .seconds(1.2))

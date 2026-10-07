@@ -68,7 +68,8 @@ final class LineageFedCountsTests: XCTestCase {
         for _ in 0..<3 { harness.box.recordEmittedGame(result: .stalemate, flushed: Self.flushed) }
 
         let record = try harness.controller.lineageRecordForSave(
-            at: Date(), trainerCompletedSteps: harness.trainer.completedTrainSteps,
+            at: Date(), cut: try harness.controller.takeConfigurationCut(trainer: harness.trainer),
+            trainerCompletedSteps: harness.trainer.completedTrainSteps,
             dropoutPhiloxState: nil, dropoutStreamState: nil)
         XCTAssertEqual(record.fed.segmentGames, 13)
         XCTAssertEqual(record.fed.segmentPositions, 13 * GuiSaveHarness.positionsPerGame)
@@ -95,7 +96,8 @@ final class LineageFedCountsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(fed.segmentGames, 20)
         XCTAssertEqual(fed.cumGames, fed.segmentGames, "the parent record fed nothing, so the totals are the segment's")
         XCTAssertNoThrow(try harness.controller.lineageRecordForSave(
-            at: Date(), trainerCompletedSteps: harness.trainer.completedTrainSteps,
+            at: Date(), cut: try harness.controller.takeConfigurationCut(trainer: harness.trainer),
+            trainerCompletedSteps: harness.trainer.completedTrainSteps,
             dropoutPhiloxState: nil, dropoutStreamState: nil))
     }
 }

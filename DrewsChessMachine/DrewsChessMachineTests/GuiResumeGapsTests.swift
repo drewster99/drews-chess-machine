@@ -32,16 +32,19 @@ final class GuiResumeGapsTests: XCTestCase {
         let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .gui, argv: ["DrewsChessMachine"],
                                          startedAt: start, segmentStartTrainerStep: 0)
         let seed = RunRandomSeed.resolve(mode: .seeded, configuredSeed: 7, commandLineSeed: nil, drawSeed: { 0 })
+        try tracker.noteSegmentStartForTests(trainerStep: 0, policyTailPrecision: savedPrecision, seed: seed)
         let streams = seed.runStreams(samplerState: seed.streams.generator(.sampler),
                                       dropoutStreamState: seed.streams.generator(.dropout),
                                       nextGameSerial: 12, arenasStarted: 3, opponentGameIndices: nil)
         let record = try tracker.record(
             at: start.addingTimeInterval(60), trainerCompletedSteps: 4, segmentLocalStep: 4,
             segmentGames: 2, segmentPositions: 120, corpus: nil,
-            parameters: try LineageRecord.Parameters(values: ["learning_rate": .double(0.0005)]),
+            parameters: try .forTests(adopting: TrainerScheduleState(completedTrainSteps: 4, lrWarmupSteps: 3, lrMomentumCycle: .disabled),
+                                      overriding: ["learning_rate": .double(0.0005)]),
             rng: LineageRecord.RNG(dropoutPhiloxState: try DropoutPhiloxState(words: [1, 2, 3, 4, 5, 6, 7]),
                                    streams: withStreams ? streams : nil,
-                                   behaviorFingerprint: Self.fingerprint))
+                                   behaviorFingerprint: Self.fingerprint),
+            inputs: tracker.testInputs)
         let data = try SafetensorsModelIO.encode(
             modelID: "20261002-1-GUIR", createdAtUnix: 1_790_000_060,
             metadata: ModelCheckpointMetadata.trainerFile(
@@ -77,29 +80,29 @@ final class GuiResumeGapsTests: XCTestCase {
     }
 
     private func gaps(_ resumed: LoadedSession,
-                      running: ChessNetwork.PolicyTailPrecision? = nil) -> [String] {
+                      running: ChessNetwork.PolicyTailPrecision? = nil) throws -> [String] {
         let gaps = SessionController.guiResumeGaps(
             resumed: resumed, continuedRunStreams: SessionController.resumableRunStreams(of: resumed),
             replayBufferRestored: resumed.replayBufferURL != nil,
             runningPolicyTailPrecision: running ?? savedPrecision,
-            runningBuild: .current, runningDevice: .current, runningFingerprint: Self.fingerprint)
+            runningBuild: try .current, runningDevice: .current, runningFingerprint: Self.fingerprint)
         return ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps).tokens
     }
 
     func testAFullSessionFromThisBuildResumesExactly() throws {
         let file = try trainerFile(withStreams: true)
-        XCTAssertEqual(gaps(session(file: file, buffer: true, arenaClock: 30)), [])
+        XCTAssertEqual(try gaps(session(file: file, buffer: true, arenaClock: 30)), [])
     }
 
     func testEachMissingPieceIsNamed() throws {
         let file = try trainerFile(withStreams: true)
-        XCTAssertEqual(gaps(session(file: file, buffer: false, arenaClock: 30)), ["buffer"])
-        XCTAssertEqual(gaps(session(file: file, buffer: true, arenaClock: nil)), ["clocks"])
+        XCTAssertEqual(try gaps(session(file: file, buffer: false, arenaClock: 30)), ["buffer"])
+        XCTAssertEqual(try gaps(session(file: file, buffer: true, arenaClock: nil)), ["clocks"])
         let otherPrecision = ChessNetwork.PolicyTailPrecision.allCases.first { $0 != savedPrecision }
-        XCTAssertEqual(gaps(session(file: file, buffer: true, arenaClock: 30),
+        XCTAssertEqual(try gaps(session(file: file, buffer: true, arenaClock: 30),
                             running: try XCTUnwrap(otherPrecision)), ["policy_tail"])
         let withoutStreams = try trainerFile(withStreams: false)
-        XCTAssertEqual(gaps(session(file: withoutStreams, buffer: false, arenaClock: nil)),
+        XCTAssertEqual(try gaps(session(file: withoutStreams, buffer: false, arenaClock: nil)),
                        ["rng_sampler", "buffer", "serials", "clocks"])
     }
 }

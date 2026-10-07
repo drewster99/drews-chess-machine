@@ -177,11 +177,19 @@ final class TrainingHealthMonitor: @unchecked Sendable {
 
     // MARK: Init
 
-    init(valueFC1Applicability: TrainingHealthValueFC1Applicability) {
+    /// A monitor whose evaluator decides stops (`.byEvaluator`): the
+    /// command-line paths and the offline replay.
+    convenience init(valueFC1Applicability: TrainingHealthValueFC1Applicability) {
+        self.init(valueFC1Applicability: valueFC1Applicability, stopDecision: .byEvaluator)
+    }
+
+    /// `stopDecision` is `.byCaller` for the GUI, which decides stops on the
+    /// main actor from the actions in force when each evaluation arrives.
+    init(valueFC1Applicability: TrainingHealthValueFC1Applicability, stopDecision: TrainingHealthStopDecision) {
         self.runID = UUID()
         self.valueFC1Applicability = valueFC1Applicability
         self.evaluation = SyncBox(EvaluationState(
-            evaluator: TrainingHealthEvaluator(valueFC1Applicability: valueFC1Applicability)))
+            evaluator: TrainingHealthEvaluator(valueFC1Applicability: valueFC1Applicability, stopDecision: stopDecision)))
         self.beforeCommitForTesting = nil
     }
 
@@ -671,6 +679,22 @@ final class TrainingHealthMonitor: @unchecked Sendable {
             self.writeCheckLine(&state, trainerStep: trainerStep, marker: .final, log: log)
             state.finalCheckWritten = true
         }
+    }
+
+    // MARK: Parking (GUI)
+
+    /// Set by the GUI's main actor when a health stop suspends training
+    /// (R3); the trainer worker of this monitor's run polls it at its loop
+    /// top and parks. Per monitor, so a later run's worker never sees an
+    /// earlier run's request.
+    private let parkRequest = SyncBox(false)
+
+    func requestPark() {
+        parkRequest.value = true
+    }
+
+    var parkRequested: Bool {
+        parkRequest.value
     }
 
     // MARK: Reads

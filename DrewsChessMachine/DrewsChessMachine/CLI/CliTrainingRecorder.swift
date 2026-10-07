@@ -22,6 +22,12 @@ final class CliTrainingRecorder: @unchecked Sendable {
         var stats: [StatsLine] = []
         var probes: [CandidateTest] = []
         var layerHealth: [LayerHealthRecord] = []
+        /// Every training-health event the run's monitor committed, in
+        /// order (`appendAlarmEvents`).
+        var alarms: [TrainingHealthEvent] = []
+        /// The training-health settings the run evaluated under
+        /// (`setAlarmConfig`).
+        var alarmConfig: TrainingHealthConfig?
         /// Session ID captured at first append for inclusion in the
         /// top-level JSON. Written through `setSessionID(_:)` so the
         /// recorder doesn't have to read the main-actor-isolated
@@ -124,6 +130,21 @@ final class CliTrainingRecorder: @unchecked Sendable {
         lock.withLock { $0.layerHealth.append(record) }
     }
 
+    /// Append the events of one committed training-health evaluation, in
+    /// the order the monitor logged them, so `alarms` matches the log's
+    /// `[ALARM] health` lines one for one.
+    func appendAlarmEvents(_ events: [TrainingHealthEvent]) {
+        guard !events.isEmpty else { return }
+        lock.withLock { $0.alarms.append(contentsOf: events) }
+    }
+
+    /// Record the training-health settings the run evaluates under. The
+    /// command-line paths set it once at start; the GUI at every evaluation
+    /// (its settings are live), so the record is the last config in force.
+    func setAlarmConfig(_ config: TrainingHealthConfig) {
+        lock.withLock { $0.alarmConfig = config }
+    }
+
     /// Cheap lock-protected counts used by the post-write log line
     /// so the caller doesn't have to inspect the JSON file after
     /// writing it to confirm how many events were captured.
@@ -151,6 +172,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
                 stats: state.stats,
                 candidateTests: state.probes,
                 layerHealth: state.layerHealth,
+                alarms: state.alarms,
+                alarmConfig: state.alarmConfig,
                 recordingCorpusID: state.recordingCorpusID,
                 randomSeed: state.runRandomSeed.map { String($0.masterSeed) },
                 randomSeedMode: state.runRandomSeed.map { $0.effectiveMode.logToken },
@@ -282,6 +305,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// AppDelegate's applicationShouldTerminate/applicationWillTerminate
         /// flush hooks. Same truncated-window semantics.
         case appWillTerminate = "app-will-terminate"
+        /// A training-health alarm whose rule's action stops the run
+        /// requested a stop (`TrainingHealthStopPolicy`); the command-line
+        /// paths wrote their final save first and exit with status 35.
+        case trainingHealthAlarm = "training_health_alarm"
     }
 
     /// Which driver produced this run. Emitted once at top level so a consumer
@@ -311,6 +338,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
 
         enum CodingKeys: String, CodingKey {
             case schema, run, parent, steps, fed, time, parameters, build, invocation, device, rng
+            case configuration
+            case runSeeds = "run_seeds"
             case checkpointSHA256 = "checkpoint_sha256"
         }
 
@@ -327,6 +356,12 @@ final class CliTrainingRecorder: @unchecked Sendable {
             try c.encode(record.invocation, forKey: .invocation)
             try c.encode(record.device, forKey: .device)
             try c.encode(record.rng, forKey: .rng)
+            // The segment's configuration and seeds (review A10). The seeds
+            // are listed on their own: a GUI `--train` row's record has no
+            // trainer snapshot, so no `rng.streams`, and `run_seeds` is its
+            // only seed record.
+            try c.encode(record.configuration, forKey: .configuration)
+            try c.encode(record.runSeeds, forKey: .runSeeds)
             try c.encode(checkpointSHA256, forKey: .checkpointSHA256)
         }
     }
@@ -364,6 +399,12 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// One full layer-health summary per trainer checkpoint save, in
         /// save order. The live `[LAYER-HEALTH]` lines are log-only.
         let layerHealth: [LayerHealthRecord]
+        /// Every training-health event (`[ALARM] health` line) of the run,
+        /// in order. Always present, empty when none (like `arena_results`).
+        let alarms: [TrainingHealthEvent]
+        /// The resolved training-health settings; nil, and left out, for a
+        /// path that set none.
+        let alarmConfig: TrainingHealthConfig?
         let recordingCorpusID: String?
         /// The run's master seed as a decimal string (a JSON number would lose
         /// the low bits of a seed above 2^53 in most readers), the mode it ran
@@ -394,6 +435,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case stats
             case candidateTests = "candidate_tests"
             case layerHealth = "layer_health"
+            case alarms
+            case alarmConfig = "alarm_config"
             case recordingCorpusID = "recording_corpus_id"
             case randomSeed = "random_seed"
             case randomSeedMode = "random_seed_mode"

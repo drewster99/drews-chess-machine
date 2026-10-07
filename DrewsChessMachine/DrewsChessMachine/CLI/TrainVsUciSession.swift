@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// How `--train-vs-uci` saves and resumes: as `.dcmsession` folders written by
 /// the same `CheckpointManager.saveSession` the GUI uses (exclusive staging,
@@ -37,6 +38,10 @@ enum TrainVsUciSession {
         case final
         /// The run stopped on Ctrl-C.
         case abort
+        /// A training-health alarm whose action stops the run requested a
+        /// stop (the alarms plan, R3); the folder name says why the run
+        /// ended.
+        case healthStop = "health-stop"
 
         var diskTag: String { "vsuci-\(rawValue)" }
     }
@@ -116,11 +121,17 @@ enum TrainVsUciSession {
     /// `TrainVsUciConfig.maxPliesPerGame`), which every game against the
     /// engines was played to. The self-play cap in the parameter snapshot is
     /// a setting this path never reads.
+    ///
+    /// `trainedPositions` is the run's `trainingPositionsSeen` over
+    /// `trainerCompletedSteps` (the lifetime trainer clock): its positions
+    /// count (`trainedPositionsCount(startTrainerSteps:startSession:batchSize:)`)
+    /// at that clock, nil when steps before the run are unrecorded.
     static func sessionState(
         sessionID: String,
         savedAt: Date,
         runStart: Date,
         trainerCompletedSteps: Int,
+        trainedPositions: Int?,
         parameters p: TrainingParametersSnapshot,
         hyperparameters hp: TrainerHyperparameters,
         arch: NetworkArchitecture,
@@ -136,7 +147,7 @@ enum TrainVsUciSession {
             trainingSteps: trainerCompletedSteps,
             selfPlayGames: 0,
             selfPlayMoves: 0,
-            trainingPositionsSeen: trainerCompletedSteps * p.trainingBatchSize,
+            trainingPositionsSeen: trainedPositions,
             batchSize: p.trainingBatchSize,
             learningRate: hp.learningRate,
             entropyRegularizationCoeff: hp.entropyRegularizationCoeff,
@@ -218,7 +229,65 @@ enum TrainVsUciSession {
             trainerID: sessionID,
             arenaHistory: []
         )
+        .withTrainingHealthSettings(
+            enabled: p.trainingHealthAlarmsEnabled,
+            checkIntervalSteps: p.trainingHealthCheckIntervalSteps,
+            learningGraceSteps: p.trainingHealthLearningGraceSteps,
+            actions: TrainingHealthActions { p.trainingHealthAction(for: $0) })
         .withArchitecture(ArchitectureMetadata(describing: arch))
+    }
+
+    /// The positions count of a run whose trainer starts at clock
+    /// `startTrainerSteps` and trains at `batchSize` (`TrainedPositionsCount`,
+    /// on the trainer-clock axis session.json's `trainingSteps` uses here).
+    /// The steps before the run are counted from what records them:
+    /// - none (a fresh trainer, or a new branch, whose clock starts at 0): 0;
+    /// - a session folder whose session.json covers exactly those steps
+    ///   (its step count is the clock the run starts from): the positions it
+    ///   recorded, nil if it recorded none;
+    /// - anything else (a model file, or a GUI session counted from a "New
+    ///   Session, keep trainer" start): unrecorded — never this run's batch
+    ///   size times the earlier steps, which may have trained at another.
+    static func trainedPositionsCount(startTrainerSteps: Int, startSession: SessionCheckpointState?,
+                                      batchSize: Int) -> TrainedPositionsCount {
+        let before: Int?
+        if startTrainerSteps == 0 {
+            before = 0
+        } else if let startSession, startSession.trainingSteps == startTrainerSteps {
+            before = startSession.trainingPositionsSeen
+        } else {
+            before = nil
+        }
+        return TrainedPositionsCount(stepsAtStart: startTrainerSteps, positionsBeforeStart: before, batchSize: batchSize)
+    }
+
+    /// The run's game generation as its lineage configuration records it
+    /// (plan B1, gap 11): the ply cap, the eval-sync cadence, the trainer's
+    /// move selection, and each opponent pool with the SHA-256 of the
+    /// executable its command names (read once, here) and its options
+    /// (values redacted like argv). Engine identities start unrecorded and
+    /// are noted after a handshake (`LineageTracker.noteEngineIdentity`).
+    static func lineageGeneration(config: TrainVsUciConfig,
+                                  trainerMoveSelection: SamplingSchedule) throws -> LineageRecord.VsUciGeneration {
+        let opponents = try config.opponents.map { spec -> LineageRecord.VsUciGeneration.Opponent in
+            let executable = URL(fileURLWithPath: (spec.command as NSString).expandingTildeInPath)
+            let bytes = try Data(contentsOf: executable)
+            let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            return LineageRecord.VsUciGeneration.Opponent(
+                command: spec.command,
+                executableSHA256: digest,
+                count: spec.count,
+                goLimit: spec.goLimit,
+                options: spec.options.map { option in
+                    LineageRecord.VsUciGeneration.Option(
+                        name: option.name,
+                        value: LineageRecord.isSecretOptionName(option.name) ? LineageRecord.redactedValue : option.value)
+                },
+                identity: .unrecorded)
+        }
+        return LineageRecord.VsUciGeneration(
+            maxPliesPerGame: config.maxPliesPerGame, evalSyncEverySteps: config.evalSyncEverySteps,
+            trainerMoveSelection: LineageRecord.MoveSelection(trainerMoveSelection), opponents: opponents)
     }
 
     /// Lower-cased extensions that make a `--checkpoint-stem` name a model

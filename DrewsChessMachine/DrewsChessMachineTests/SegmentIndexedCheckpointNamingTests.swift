@@ -64,7 +64,7 @@ final class SegmentIndexedCheckpointNamingTests: XCTestCase {
         let secondRecord = try resumed.record(
             at: start.addingTimeInterval(60), trainerCompletedSteps: 20, segmentLocalStep: 10,
             segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: nil,
-            rng: .withoutRunStreams(dropoutPhiloxState: nil))
+            rng: .withoutRunStreams(dropoutPhiloxState: nil), inputs: resumed.testInputs)
         XCTAssertEqual(secondRecord.run.segmentIndex, LineageTracker.segmentIndex(exactResumeOf: firstParent))
     }
 }

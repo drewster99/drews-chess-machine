@@ -238,10 +238,21 @@ extension SessionController {
 
         let training: AnalysisExportMetadata.Training?
         if let snap = trainingBox?.snapshot() {
+            let batchSize: Int?
+            let batchSizeSetting: Int?
+            switch trainingBatchSizeDisplay() {
+            case .activeRun(let runBatchSize):
+                batchSize = runBatchSize
+                batchSizeSetting = nil
+            case .setting(let setting):
+                batchSize = nil
+                batchSizeSetting = setting
+            }
             training = AnalysisExportMetadata.Training(
                 trainingSteps: snap.stats.steps,
                 cumulativeTrainingSeconds: checkpoint?.cumulativeActiveTrainingSec,
-                batchSize: TrainingParameters.shared.trainingBatchSize,
+                batchSize: batchSize,
+                batchSizeSetting: batchSizeSetting,
                 promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
                 replayBufferPlies: replayBuffer?.count
             )

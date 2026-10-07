@@ -13,8 +13,9 @@ The trigger comes from the folder name `<YYYYMMDD-HHMMSS>-<sessionID>-<trigger>`
 (CheckpointPaths.makeSessionDirectoryName), matched against the session ID
 session.json states; a folder renamed away from that shape shows `(renamed)`.
 GUI saves are `manual` / `promote` / `periodic` / `sigusr2`; `--train-vs-uci`
-saves are `vsuci-periodic` / `vsuci-final` / `vsuci-abort` (lineage path kind
-`vsuci`).
+saves are `vsuci-periodic` / `vsuci-final` / `vsuci-abort` /
+`vsuci-health-stop` (a training-health alarm stopped the run; lineage path
+kind `vsuci`).
 
 A folder whose session.json is missing or unreadable, or whose lineage record
 the app would refuse, is listed with the reason and makes the exit status 1.

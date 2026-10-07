@@ -280,9 +280,12 @@ enum LichessProbeExporter {
         /// Trainer step count at the moment the exported tick was
         /// recorded. nil when the tick ran before a trainer existed.
         let trainingStep: Int?
-        /// Total positions consumed by the trainer at tick time —
-        /// `training_step × trainingBatchSize`. Added in schema v4.
-        /// nil if `training_step` is nil.
+        /// Total positions consumed by the trainer at tick time, each step
+        /// at the batch size it trained at
+        /// (`SessionController.trainedPositions(atTrainerStep:)`). Added in
+        /// schema v4. nil if `training_step` is nil, or when no record covers
+        /// the trainer's clock (unrecorded — never `training_step` times one
+        /// batch size).
         let positionsTrained: Int?
         /// Cumulative active training wall-time in seconds at tick
         /// time. Added in schema v4. nil if no checkpoint controller

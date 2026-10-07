@@ -273,9 +273,9 @@ final class LichessProbeWatcher {
         // probed weights even if minutes of training pass before export.
         let modelLabel = net.identifier?.description ?? "<no-id>"
         let trainingStep = session.trainer?.completedTrainSteps
-        let positionsTrained = trainingStep.map {
-            $0 * TrainingParameters.shared.trainingBatchSize
-        }
+        // Each step at the batch it trained at, nil where no record covers
+        // the trainer's clock — never the clock times today's setting.
+        let positionsTrained = trainingStep.flatMap { session.trainedPositions(atTrainerStep: $0) }
         let activeTrainingSec = session.checkpoint?.cumulativeActiveTrainingSec
         let arenaCount = session.tournamentHistory.count
         let promotionCount = session.tournamentHistory.lazy.filter { $0.promoted }.count

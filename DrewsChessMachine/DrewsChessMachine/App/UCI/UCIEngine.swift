@@ -59,8 +59,18 @@ enum UCIEngine {
         if let path = SessionLogger.shared.activeLogPath {
             SessionLogger.shared.log("[UCI] session log: \(path)")
         }
-        SessionLogger.shared.log(RunProvenanceLine.line(pathLabel: "uci", build: .current, device: .current,
-                                                        argv: CommandLine.arguments))
+        do {
+            SessionLogger.shared.log(RunProvenanceLine.line(pathLabel: "uci", build: try .current, device: .current,
+                                                            argv: CommandLine.arguments))
+        } catch {
+            // The generated build identity contradicts itself (a diff hash
+            // on a clean build, or none on a dirty one): a build bug.
+            let message = "[UCI] error: build identity: \(error.localizedDescription)"
+            SessionLogger.shared.log(message)
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            SessionLogger.shared.shutdown()
+            Darwin.exit(1)
+        }
         SessionLogger.shared.log(ChessNetwork.PolicyTailPrecision.processLogLine)
 
         var session = Session()

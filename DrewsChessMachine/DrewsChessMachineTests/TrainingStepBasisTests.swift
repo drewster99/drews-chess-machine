@@ -50,7 +50,7 @@ final class TrainingStepBasisTests: XCTestCase {
         return try tracker.record(
             at: start.addingTimeInterval(60), trainerCompletedSteps: startTrainerStep + segmentStep,
             segmentLocalStep: segmentStep, segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: nil,
-            rng: .withoutRunStreams(dropoutPhiloxState: nil))
+            rng: .withoutRunStreams(dropoutPhiloxState: nil), inputs: tracker.testInputs)
     }
 
     private func schedule(_ steps: Int) -> TrainerScheduleState {
@@ -245,7 +245,7 @@ final class TrainingStepBasisTests: XCTestCase {
             md[SafetensorsModelIO.Key.formatVersion] = "3"
         }
         let sourceFile = try SafetensorsModelIO.decode(source).file
-        let championStep = try SessionController.championFileTrainingStep(origin: .file(sourceFile.lineageParent))
+        let championStep = try SessionController.championFileTrainingStep(origin: .file(sourceFile.lineageParent, startWeights: .notLoaded))
         XCTAssertEqual(championStep, 41_000)
         // The GUI's champion file of those weights states that step, so a
         // tensor-rewriting derive of it refuses it as trained.

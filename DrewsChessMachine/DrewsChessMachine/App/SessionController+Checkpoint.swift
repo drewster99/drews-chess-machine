@@ -436,6 +436,20 @@ extension SessionController {
                 SessionLogger.shared.log("[CHECKPOINT] Save session aborted at training pause timeout")
                 return
             }
+            // The save's configuration cut, in this main-actor turn under the
+            // training pause (gap 5, review X4): the record's parameters and
+            // journals, and the trainer file's schedule, all describe this
+            // instant, whatever the popover commits during the awaits below.
+            let configurationCut: GuiConfigurationCut
+            do {
+                configurationCut = try takeConfigurationCut(trainer: trainer)
+            } catch {
+                trainingGate.resume()
+                clearInFlight()
+                checkpoint?.setCheckpointStatus("Save failed (configuration cut): \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session failed at the configuration cut: \(error.localizedDescription)")
+                return
+            }
             // The complete resumable trainer state: trainables + BN (fp32
             // masters under mixed precision), momentum velocity, and the
             // completed-step clock + schedule read under the same pause.
@@ -449,8 +463,23 @@ extension SessionController {
             }
             let trainerSnapshot: TrainerResumeSnapshot
             switch trainerExport {
+            case .success(let snapshot) where snapshot.schedule.completedTrainSteps != configurationCut.schedule.completedTrainSteps:
+                // Training is paused, so the clock cannot move between the
+                // cut and the export; a difference is a bug, never written.
+                let error = LineageSegmentError.configurationCutClockMoved(
+                    cut: configurationCut.schedule.completedTrainSteps, exported: snapshot.schedule.completedTrainSteps)
+                trainingGate.resume()
+                clearInFlight()
+                checkpoint?.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session failed: \(error.localizedDescription)")
+                return
             case .success(let snapshot):
-                trainerSnapshot = snapshot
+                // The exported weights, velocity and dropout state, with the
+                // schedule the cut read: the file's flat `trainer_*` keys
+                // then come from the same value as the record's.
+                trainerSnapshot = TrainerResumeSnapshot(trainerWeights: snapshot.trainerWeights,
+                                                        schedule: configurationCut.schedule,
+                                                        dropoutRNG: snapshot.dropoutRNG)
             case .failure(let trainerError):
                 trainingGate.resume()
                 clearInFlight()
@@ -459,6 +488,9 @@ extension SessionController {
                 return
             }
             let trainerWeights = trainerSnapshot.trainerWeights
+            // The training-health stamp of exactly the exported state, under
+            // the same training pause (D2).
+            let checkpointHealth = makeTrainingHealthCheckpoint()
             // The run's lineage at this save, for the session's trainer
             // file and session.json, read under both pauses; the champion
             // file's own record and training step come from where its
@@ -467,7 +499,8 @@ extension SessionController {
             let lineageResult: Result<(run: LineageRecord, champion: LineageRecord, championMetadata: ModelCheckpointMetadata), Error>
             do {
                 let run = try lineageRecordForSave(
-                    at: saveDate, trainerCompletedSteps: trainerSnapshot.schedule.completedTrainSteps,
+                    at: saveDate, cut: configurationCut,
+                    trainerCompletedSteps: trainerSnapshot.schedule.completedTrainSteps,
                     dropoutPhiloxState: trainerSnapshot.dropoutRNG.philoxState,
                     dropoutStreamState: try await trainer.dropoutStreamState())
                 let champion = try Self.championFileLineageRecord(origin: exportedChampionOrigin, at: saveDate)
@@ -606,7 +639,8 @@ extension SessionController {
                     context: "session-\(diskTag)",
                     step: trainingStep,
                     trainerStep: trainerSnapshot.schedule.completedTrainSteps,
-                    recorder: cliRecorder)
+                    recorder: cliRecorder,
+                    trainingHealth: checkpointHealth)
                 // Periodic and Promote Trainee Now saves are in the
                 // automatic-save retention pool; manual and SIGUSR2 saves
                 // are not, and the helper decides that from the disk tag.
@@ -629,8 +663,9 @@ extension SessionController {
         trainerWeights: [[Float]],
         context: String,
         step: Int,
-        trainerStep: Int?,
-        recorder: CliTrainingRecorder?
+        trainerStep: Int,
+        recorder: CliTrainingRecorder?,
+        trainingHealth: GuiTrainingHealthCheckpoint?
     ) {
         Task.detached(priority: .utility) {
             let health = await LayerHealthLog.checkpoint(
@@ -642,6 +677,20 @@ extension SessionController {
             if let recorder, let summary = health.summary {
                 recorder.appendLayerHealth(CliTrainingRecorder.LayerHealthRecord(
                     step: step, trainerStep: trainerStep, context: context, summary: summary))
+            }
+            // The training-health checkpoint evaluation of the same pass
+            // (rules 1, 2, 3, 8), judged under the settings in force when
+            // the state was exported; the stop decision is made on the main
+            // actor when it arrives (R2). A failed pass is no observation.
+            if let trainingHealth, let summary = health.summary {
+                let evaluation = trainingHealth.monitor.evaluateCheckpoint(
+                    stamp: trainingHealth.stamp, layerHealth: LayerHealthDigest(summary: summary),
+                    digestTrainerStep: trainerStep, config: trainingHealth.config,
+                    log: GuiTrainingHealthWorker.logSink)
+                if let recorder, let evaluation {
+                    recorder.appendAlarmEvents(evaluation.events)
+                }
+                trainingHealth.deliver(trainingHealth.monitor)
             }
         }
     }
@@ -813,7 +862,7 @@ extension SessionController {
             case .success:
                 champion.identifier = ModelID(value: file.modelID)
                 // A branch from this champion records the file as its parent.
-                championOrigin = .file(file.lineageParent)
+                adoptLoadedChampionOrigin(file)
                 networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
                 checkpoint?.setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
                 SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
@@ -1004,7 +1053,7 @@ extension SessionController {
             case .success:
                 champion.identifier = ModelID(value: loaded.championFile.modelID)
                 // A branch from this champion records its file as the parent.
-                championOrigin = .file(loaded.championFile.lineageParent)
+                adoptLoadedChampionOrigin(loaded.championFile)
                 pendingLoadedSession = loaded
                 pendingLoadedSessionAcceptedReplacements = Set(findings.map(\.id))
                 networkStatus = """
@@ -1149,11 +1198,14 @@ extension SessionController {
     /// `includeReplayBuffer` whether the save writes the replay buffer, which
     /// `hasReplayBuffer` and the buffer counters then describe.
     ///
-    /// `batchSize` and `trainingPositionsSeen` come from the run's
-    /// start-time capture (`RunStartParameterCapture`), the batch size the
-    /// trainer steps at; a save describes a run, so a missing capture
-    /// throws. The other settings are recorded from `TrainingParameters` as
-    /// before: a GUI resume restores its settings from them.
+    /// `batchSize` and `replayBufferMinPositionsBeforeTraining` come from the
+    /// run's start-time capture (`RunStartParameterCapture`), the values the
+    /// run trains under; `trainingPositionsSeen` from its positions count
+    /// (`RunTrainedPositions`), each step at the batch it trained at, nil
+    /// when steps before the run are unrecorded. A save describes a run, so
+    /// a missing capture or count throws, before any side effect. The other
+    /// settings are recorded from `TrainingParameters` as before: a GUI
+    /// resume restores its settings from them.
     @MainActor
     func buildCurrentSessionState(
         championID: String,
@@ -1163,6 +1215,7 @@ extension SessionController {
     ) throws -> SessionCheckpointState {
         let params = TrainingParameters.shared
         let runCapture = try requiredRunStartCapture(for: "the session state of this save")
+        let trainedPositions = try trainedPositionsForSessionState(atSessionSteps: trainingStats?.steps ?? 0)
         let wasTraining = realTraining
         checkpoint?.closeActiveTrainingSegment(reason: "save")
         if wasTraining && checkpoint?.activeSegmentStart == nil {
@@ -1228,7 +1281,7 @@ extension SessionController {
             trainingSteps: trainingSnap?.steps ?? 0,
             selfPlayGames: snap?.selfPlayGames ?? 0,
             selfPlayMoves: snap?.selfPlayPositions ?? 0,
-            trainingPositionsSeen: (trainingSnap?.steps ?? 0) * runCapture.trainingBatchSize,
+            trainingPositionsSeen: trainedPositions,
             batchSize: runCapture.trainingBatchSize,
             learningRate: lr,
             entropyRegularizationCoeff: entropyCoeff,
@@ -1255,7 +1308,7 @@ extension SessionController {
             replayRatioAutoAdjust: params.replayRatioAutoAdjust,
             stepDelayMs: params.trainingStepDelayMs,
             selfPlayDelayMs: params.selfPlayDelayMs,
-            lastAutoComputedDelayMs: lastAutoComputedDelayMs,
+            lastAutoComputedDelayMs: try savedAutoComputedDelayMs(),
             // Schema-expansion fields (close the autotrain reproducibility gap
             // — these previously lived only in @AppStorage / @State and so
             // silently picked up the user's current preference on resume rather
@@ -1263,7 +1316,7 @@ extension SessionController {
             lrWarmupSteps: params.lrWarmupSteps,
             sqrtBatchScalingForLR: params.sqrtBatchScalingLR,
             signedAdvantageComplementCE: params.signedAdvantageComplementCE,
-            replayBufferMinPositionsBeforeTraining: params.replayBufferMinPositionsBeforeTraining,
+            replayBufferMinPositionsBeforeTraining: runCapture.replayBufferMinPositionsBeforeTraining,
             arenaAutoIntervalSec: params.arenaAutoIntervalSec,
             candidateProbeIntervalSec: params.candidateProbeIntervalSec,
             legalMassCollapseThreshold: params.legalMassCollapseThreshold,
@@ -1326,6 +1379,11 @@ extension SessionController {
             trainerID: trainerID,
             arenaHistory: history
         )
+        .withTrainingHealthSettings(
+            enabled: params.trainingHealthAlarmsEnabled,
+            checkIntervalSteps: params.trainingHealthCheckIntervalSteps,
+            learningGraceSteps: params.trainingHealthLearningGraceSteps,
+            actions: TrainingHealthActions { params[keyPath: TrainingParameters.trainingHealthActionKeyPath(for: $0)] })
         .withTrainingSegments(segments)
         .withArchitecture(ArchitectureMetadata(describing: resolvedArch))
         .withProbeHistories(

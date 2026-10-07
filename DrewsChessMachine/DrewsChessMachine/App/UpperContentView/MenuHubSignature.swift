@@ -15,6 +15,7 @@ struct MenuHubSignature: Equatable {
     var sweepRunning: Bool
     var realTraining: Bool
     var isArenaRunning: Bool
+    var trainingSuspended: Bool
     var checkpointSaveInFlight: Bool
     var isTrainingOnce: Bool
     var isEvaluating: Bool

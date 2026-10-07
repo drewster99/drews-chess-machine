@@ -98,8 +98,10 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
 }
 
 /// What a rule does besides logging when it is active. The raw value is
-/// the persisted parameter value; JSON writes the name.
-enum TrainingHealthAction: Int, CaseIterable, Codable, Sendable {
+/// the persisted parameter value (`training_health_action_<rule>`); JSON
+/// writes the name. Public because the `TrainingParameters` singleton (a
+/// public class) stores one per rule as this enum.
+public enum TrainingHealthAction: Int, CaseIterable, Codable, Sendable {
     /// Log, record and show only — the default for every rule.
     case log = 0
     /// Additionally stop the run while the rule is active at critical.
@@ -123,12 +125,35 @@ enum TrainingHealthAction: Int, CaseIterable, Codable, Sendable {
         self = action
     }
 
-    init(from decoder: Decoder) throws {
+    /// Closed range of raw values this enum covers, for pinning against the
+    /// action parameters' declared range.
+    static var parameterRawValueRange: ClosedRange<Int> {
+        let raws = allCases.map(\.rawValue)
+        guard let low = raws.min(), let high = raws.max() else {
+            preconditionFailure("TrainingHealthAction must have at least one case")
+        }
+        return low...high
+    }
+
+    /// Converts a persisted raw value. Every path that reaches this has
+    /// checked the value against the parameter's declared range (pinned to
+    /// `parameterRawValueRange` by test), so an unrepresentable value is a
+    /// programmer error and traps rather than silently picking an action.
+    init(persistedRawValue raw: Int) {
+        guard let action = TrainingHealthAction(rawValue: raw) else {
+            preconditionFailure(
+                "training_health_action raw value \(raw) has no TrainingHealthAction case; "
+                + "the parameters' declared range and \(TrainingHealthAction.self) have drifted apart")
+        }
+        self = action
+    }
+
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         self = try TrainingHealthAction(name: try container.decode(String.self))
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(name)
     }
@@ -267,6 +292,23 @@ struct TrainingHealthConfig: Sendable, Equatable, Encodable {
         self.lrWarmupSteps = lrWarmupSteps
         self.momentumCoefficient = momentumCoefficient
         self.actions = actions
+    }
+
+    /// The one resolution from the parameters, shared by every path: the
+    /// command-line runners resolve it once from their run-start snapshot,
+    /// the GUI at every evaluation from `TrainingParameters.shared
+    /// .snapshot()`, so a live edit applies at the next evaluation. The
+    /// declared ranges already exclude every value the memberwise
+    /// initializer refuses, so a throw here means a snapshot bypassed
+    /// validation — surfaced, never defaulted.
+    init(_ snapshot: TrainingParametersSnapshot) throws {
+        try self.init(
+            enabled: snapshot.trainingHealthAlarmsEnabled,
+            checkIntervalSteps: snapshot.trainingHealthCheckIntervalSteps,
+            learningGraceSteps: snapshot.trainingHealthLearningGraceSteps,
+            lrWarmupSteps: snapshot.lrWarmupSteps,
+            momentumCoefficient: snapshot.momentumCoeff,
+            actions: TrainingHealthActions { snapshot.trainingHealthAction(for: $0) })
     }
 
     /// Trainer step from which rule 4's not-learned form applies.
@@ -866,6 +908,22 @@ struct TrainingHealthEvaluation: Sendable {
     let window: TrainingHealthWindowStatistics?
 }
 
+/// Who turns an active alarm into a stop (R2). The decision itself is always
+/// `TrainingHealthStopPolicy.firstQualifying`; this says where it runs.
+enum TrainingHealthStopDecision: Sendable, Equatable {
+    /// At the end of every evaluation, with that evaluation's config: the
+    /// command-line paths and the offline replay, whose actions never
+    /// change during a run. The evaluation's `stopRequest` (and its `stop`
+    /// event line) is the stop.
+    case byEvaluator
+    /// By the caller after each evaluation is delivered, with the actions in
+    /// force at that moment: the GUI, whose actions are live-tunable and
+    /// whose detached checkpoint passes can finish after an action changed
+    /// (R2, R3). The evaluator then never requests a stop nor writes a
+    /// `stop` line; the caller writes it when it acts.
+    case byCaller
+}
+
 /// R2: one pure decision, shared by every path.
 enum TrainingHealthStopPolicy {
     /// The first active alarm, in rule order, whose severity qualifies under
@@ -935,10 +993,19 @@ struct TrainingHealthEvaluator: Sendable {
     }
 
     let valueFC1Applicability: TrainingHealthValueFC1Applicability
+    let stopDecision: TrainingHealthStopDecision
     private(set) var state: State
 
+    /// An evaluator that decides stops itself (`.byEvaluator`): the
+    /// command-line paths and the offline replay, whose actions never change
+    /// during a run.
     init(valueFC1Applicability: TrainingHealthValueFC1Applicability) {
+        self.init(valueFC1Applicability: valueFC1Applicability, stopDecision: .byEvaluator)
+    }
+
+    init(valueFC1Applicability: TrainingHealthValueFC1Applicability, stopDecision: TrainingHealthStopDecision) {
         self.valueFC1Applicability = valueFC1Applicability
+        self.stopDecision = stopDecision
         state = State(
             rules: Array(repeating: RuleState(), count: TrainingHealthRule.allCases.count),
             illegalMassRunningMinimum: nil, lastCheckBucket: nil)
@@ -1046,7 +1113,8 @@ struct TrainingHealthEvaluator: Sendable {
         }
 
         var stopRequest: TrainingHealthEvent?
-        if !state.stopRequested,
+        if stopDecision == .byEvaluator,
+           !state.stopRequested,
            let qualifying = TrainingHealthStopPolicy.firstQualifying(active: activeAlarms, actions: config.actions) {
             let event = TrainingHealthEvent(
                 kind: .stop, rule: qualifying.rule, severity: qualifying.severity, trainerStep: step,
@@ -1539,6 +1607,38 @@ struct TrainingHealthSegmentSummary: Codable, Sendable, Equatable {
     let evaluations: Int
     /// One entry per rule that raised, in rule order.
     let raised: [Raised]
+
+    /// The summary of no evaluation: what a segment records before its
+    /// first monitor has evaluated anything.
+    static let empty = TrainingHealthSegmentSummary(evaluations: 0, raised: [])
+
+    /// This summary and `other` as one segment's: evaluations and raise
+    /// counts summed, the earliest first trainer step, the highest
+    /// severity. A GUI segment spans several monitors (one per start —
+    /// Continue and keep-trainer starts stay in the segment), so the
+    /// lineage record's `configuration.health_alarms` (HPARAM_RECORDING_PLAN
+    /// P4) is the merge of every monitor's summary in the segment. Pure and
+    /// order-independent, so merging the stored summary of the ended
+    /// monitors with the live one never counts anything twice as long as
+    /// each monitor is merged once.
+    func merging(_ other: TrainingHealthSegmentSummary) -> TrainingHealthSegmentSummary {
+        var byRule: [TrainingHealthRule: Raised] = [:]
+        for entry in raised + other.raised {
+            if let existing = byRule[entry.rule] {
+                byRule[entry.rule] = Raised(
+                    rule: entry.rule,
+                    firstTrainerStep: min(existing.firstTrainerStep, entry.firstTrainerStep),
+                    highestSeverity: existing.highestSeverity.healthRank >= entry.highestSeverity.healthRank
+                        ? existing.highestSeverity : entry.highestSeverity,
+                    raiseCount: existing.raiseCount + entry.raiseCount)
+            } else {
+                byRule[entry.rule] = entry
+            }
+        }
+        return TrainingHealthSegmentSummary(
+            evaluations: evaluations + other.evaluations,
+            raised: TrainingHealthRule.allCases.compactMap { byRule[$0] })
+    }
 }
 
 enum TrainingHealthError: LocalizedError, Equatable {

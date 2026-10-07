@@ -58,7 +58,7 @@ struct ReplayParams: Sendable {
     init(_ parameters: TrainingParametersSnapshot) throws {
         self.parameters = parameters
         trainer = TrainerHyperparameters(parameters)
-        lineageParameters = try LineageRecord.Parameters(values: parameters.rawValueMap())
+        lineageParameters = try LineageRecord.Parameters(values: parameters.lineageValues())
         trainingBatchSize = parameters.trainingBatchSize
         replayBufferCapacity = parameters.replayBufferCapacity
         replayRatioTarget = parameters.replayRatioTarget
@@ -880,7 +880,18 @@ enum CorpusReplayRunner {
         /// Consumed games skipped as empty or FEN-setup.
         var gamesSkipped: Int
         var epochs: Int
+        /// The training-health alarm whose stop ended the run (the loop
+        /// honoured it and the final save succeeded), or nil. `runAndExit`
+        /// exits with `trainingHealthStopExitStatus` when it is set.
+        var healthStop: TrainingHealthEvent?
     }
+
+    /// Exit status of a run stopped by a training-health alarm after a
+    /// successful final save (owner decision OD-4): distinct from 0, so a
+    /// chain script never mistakes an alarm stop for a completed run, and
+    /// unused anywhere else (2 = refused, 33 = failed). Shared with
+    /// train-vs-UCI.
+    static let trainingHealthStopExitStatus: Int32 = 35
 
     /// Check a GPU capture request against everything that can be known
     /// before training: its step is within the run's step limit (when there is
@@ -1019,7 +1030,8 @@ enum CorpusReplayRunner {
 
     /// Run the replay to completion and exit the process. Never returns.
     /// Exit status 0 on success, 2 when the run is refused before training
-    /// (`CLIRunRefusal`), 33 on any other failure.
+    /// (`CLIRunRefusal`), 33 on any other failure, 35 when a training-health
+    /// alarm stopped the run after a successful final save.
     static func runAndExit(config: CorpusReplayConfig, params: ReplayParams) -> Never {
         SessionLogger.shared.start()
         emit("[REPLAY] starting offline corpus replay over \(config.corpusDirectories.count) corpus path(s)")
@@ -1075,6 +1087,12 @@ enum CorpusReplayRunner {
         }
         let summary = "[REPLAY] done: steps=\(result.steps) positionsFed=\(result.positionsFed) gamesFed=\(result.gamesFed) rejected=\(result.gamesRejected) skipped=\(result.gamesSkipped) epochs=\(result.epochs)"
         emit(summary)
+        if let healthStop = result.healthStop {
+            emit("[REPLAY] stopped by training health alarm \(healthStop.rule.rawValue) (\(healthStop.severity.rawValue)) "
+                + "at trainerStep=\(healthStop.trainerStep); exit status \(trainingHealthStopExitStatus)")
+            SessionLogger.shared.shutdown()
+            Darwin.exit(trainingHealthStopExitStatus)
+        }
         SessionLogger.shared.shutdown()
         Darwin.exit(0)
     }
@@ -1262,7 +1280,9 @@ enum CorpusReplayRunner {
         // single-corpus case; resume matches on corpus id, treats path as hint).
         var shardURLs: [URL] = []
         var resumeCorpusID = ""
-        var resumeCorpusPath = ""
+        // Every corpus fed, in feed order, with its sealed-shard count: the
+        // records name them all (gap 7), not only the first.
+        var corpusEntries: [LineageRecord.CorpusIdentity.CorpusEntry] = []
         // Read-only: replay never modifies a corpus. `GameCorpus.open` would
         // run crash recovery on any `.open` shard — truncating, sealing,
         // renaming or deleting it — which corrupts the live shard of a
@@ -1274,7 +1294,9 @@ enum CorpusReplayRunner {
             let corpus = try GameCorpus.openReadOnly(directory: dir)
             let urls = corpus.sealedShardURLs
             shardURLs.append(contentsOf: urls)
-            if di == 0 { resumeCorpusID = corpus.corpusID; resumeCorpusPath = dir.path }
+            if di == 0 { resumeCorpusID = corpus.corpusID }
+            corpusEntries.append(LineageRecord.CorpusIdentity.CorpusEntry(
+                corpusID: corpus.corpusID, corpusPath: dir.path, shardCount: urls.count))
             emit("[REPLAY] corpus \(corpus.corpusID): \(urls.count) sealed shard(s)")
             if !corpus.ignoredOpenShardURLs.isEmpty {
                 let names = corpus.ignoredOpenShardURLs.map(\.lastPathComponent).joined(separator: ", ")
@@ -1334,8 +1356,9 @@ enum CorpusReplayRunner {
         // from the start of the run's lineage, not of this segment: an exact
         // resume continues the saved run's epoch count, so it needs `--epochs`
         // above the epoch it was saved in (checked below).
-        let stepLimit = config.stepLimit
-        let epochLimit: Int? = config.epochs ?? (stepLimit == nil ? 1 : nil)
+        let budget = config.resolvedBudget
+        let stepLimit = budget.trainingStepLimit
+        let epochLimit = budget.epochLimit
         // An exact resume's buffer fill as saved, which the rebuilt buffer
         // must match; nil when it cannot be checked (logged where decided).
         var expectedRebuiltBufferPositions: Int? = nil
@@ -1410,7 +1433,7 @@ enum CorpusReplayRunner {
                     resumeGaps.append(.params)
                 }
                 let environment = ResumeGap.environmentGaps(
-                    writtenBy: parentRecord, runningBuild: .current, runningDevice: .current,
+                    writtenBy: parentRecord, runningBuild: try .current, runningDevice: .current,
                     runningFingerprint: try await BehaviorFingerprint.compute(
                         for: .init(arch: arch, policyTailPrecision: config.policyTailPrecision)))
                 for line in environment.logLines { emit(line) }
@@ -1513,6 +1536,11 @@ enum CorpusReplayRunner {
         // --resume-exact this is the refeed start; the run continues from
         // `reconstructUntil` once the buffer is rebuilt.
         let startGlobalIndex = cumGames[startShardCursor] + startWithinShardSkip
+        // Where this segment's training feed begins (gap 7, D7): an exact
+        // resume continues at its saved position after the refeed; any other
+        // start at the resolved start game.
+        let segmentFeedStart = LineageRecord.FeedPoint(epoch: startEpoch,
+                                                       nextGameIndex: reconstructUntil ?? startGlobalIndex)
 
         // One exactness decision for the resume (plan C3): logged once,
         // recorded in the segment's lineage, and refused unless
@@ -1644,10 +1672,24 @@ enum CorpusReplayRunner {
         let lineageTracker = try LineageTracker(
             start: lineageStart, pathKind: .replay, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
+        try lineageTracker.configureSegment(LineageTracker.SegmentConfiguration(
+            policyTailPrecision: trainer.policyTailPrecision, budget: budget, vsuci: nil, selfPlayDirichlet: nil,
+            startValueHeadRecentered: .recorded(try LineageTracker.startValueHeadRecentered(of: startModelFile))))
+        lineageTracker.noteRunSeed(runSeed, atTrainerStep: trainer.completedTrainSteps)
         emit(RunProvenanceLine.line(
-            record: try lineageTracker.startRecord(at: Date(), trainerCompletedSteps: trainer.completedTrainSteps,
-                                                   parameters: p.lineageParameters),
+            record: try lineageTracker.startRecord(
+                at: Date(), trainerCompletedSteps: trainer.completedTrainSteps, parameters: p.lineageParameters,
+                inputs: lineageTracker.saveInputs(
+                    scheduleAtSave: LRMomentumCycleReadout.scheduleAtSave(
+                        inForce: p.parameters, completedTrainSteps: trainer.completedTrainSteps),
+                    replayRatioAtSave: nil, healthAlarms: nil)),
             seed: runSeed))
+        // Training-health alarms: one monitor for the run, its settings read
+        // once from the run-start snapshot; logs `[HEALTH] config` beside
+        // the `[RUN]` line.
+        let trainingHealth = try CliTrainingHealth(
+            parameters: p.parameters, arch: arch, path: "replay", pathTag: "[REPLAY]",
+            recorder: recorder, emit: { Self.emit($0) })
 
         // Export the trainer's complete state and overwrite the rolling
         // output file. Failure handling splits on cause (see reportSaveFailure):
@@ -1667,7 +1709,6 @@ enum CorpusReplayRunner {
         var enumeratedSaveFailures = TrainerSaveFailureStreak(what: "enumerated checkpoint save")
         func saveTrainerModel(step: Int, reason: String,
                               nextGameIndex: Int, shard: Int, epoch: Int, populatedPlies: Int,
-                              corpusID: String, corpusPath: String,
                               segmentGames: Int, segmentPositions: Int,
                               feedAheadPositions: Int) async throws {
             // Rolling save (overwrites the output file). `encoded` is reused by the
@@ -1687,6 +1728,9 @@ enum CorpusReplayRunner {
                 // lineage record's `segment_local_step`. The loop is
                 // sequential, so no SGD step is in flight during the export.
                 let snapshot = try await trainer.exportResumeSnapshot()
+                // The training-health stamp of exactly the exported state
+                // (D2): taken before its checkpoint pass reads it.
+                let healthStamp = trainingHealth.observationStamp()
                 // The run's stream positions, in the same cut as the trainer
                 // state: the loop is sequential, so no batch is drawn and no
                 // step runs between these reads.
@@ -1712,9 +1756,9 @@ enum CorpusReplayRunner {
                     segmentLocalStep: step,
                     segmentGames: segmentGames,
                     segmentPositions: segmentPositions,
-                    corpus: LineageRecord.CorpusPosition(
-                        corpusID: corpusID, corpusPath: corpusPath, epoch: epoch,
-                        nextGameIndex: nextGameIndex, shard: shard,
+                    corpus: try LineageRecord.CorpusPosition(
+                        corpusIdentity: .listed(corpusEntries), segmentStart: .recorded(segmentFeedStart),
+                        epoch: epoch, nextGameIndex: nextGameIndex, shard: shard,
                         populatedPlies: populatedPlies, bufferCapacity: p.replayBufferCapacity,
                         feedAheadPositions: feedAheadPositions, feedPerStep: perStepFeed,
                         shardSHA256: shardSHA256),
@@ -1722,7 +1766,15 @@ enum CorpusReplayRunner {
                     rng: LineageRecord.RNG(
                         dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams,
                         behaviorFingerprint: try await BehaviorFingerprint.compute(
-                            for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))))
+                            for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))),
+                    inputs: lineageTracker.saveInputs(
+                        scheduleAtSave: LRMomentumCycleReadout.scheduleAtSave(
+                            inForce: p.parameters, completedTrainSteps: snapshot.schedule.completedTrainSteps),
+                        replayRatioAtSave: nil,
+                        // The run's one monitor is the segment's (a CLI
+                        // segment is one process), so its summary is the
+                        // segment's.
+                        healthAlarms: trainingHealth.monitor.segmentSummary()))
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(saveDate.timeIntervalSince1970),
@@ -1754,6 +1806,11 @@ enum CorpusReplayRunner {
                         step: step, trainerStep: snapshot.schedule.completedTrainSteps,
                         context: "replay-\(reason)", summary: summary))
                 }
+                // The checkpoint evaluation (rules 1, 2, 3, 8) of the same
+                // pass. A failed pass is no observation.
+                trainingHealth.evaluateCheckpoint(
+                    stamp: healthStamp, summary: health.summary,
+                    trainerStep: snapshot.schedule.completedTrainSteps)
             } catch let ownershipRefusal as FileSafetyError where ownershipRefusal.isOwnershipRefusal {
                 // The rolling path no longer holds the file this run owns
                 // (another file or a folder is there now). Halt: writing on
@@ -1984,6 +2041,8 @@ enum CorpusReplayRunner {
         let lineClock = ContinuousClock()
         let lineClockStart = lineClock.now
         var aborted = false
+        // The training-health stop the loop honoured (R3), or nil.
+        var healthStop: TrainingHealthEvent? = nil
         // `--gpu-capture-step` bookkeeping: whether the capture started, and
         // the error if it could not.
         var gpuCaptureStarted = false
@@ -1994,6 +2053,15 @@ enum CorpusReplayRunner {
             if abort.isRequested {
                 aborted = true
                 emit("[REPLAY] abort requested — stopping at step \(step)")
+                break
+            }
+            // A training-health alarm whose action stops the run: stop before
+            // another step, so the final save holds the state the stopping
+            // evaluation judged. Its own value, never the SIGINT flag (a
+            // second Ctrl-C would then force-kill the process).
+            if let stopLine = trainingHealth.stopLine(segmentStep: step) {
+                healthStop = trainingHealth.requestedStop
+                emit(stopLine)
                 break
             }
             if let sl = stepLimit, step >= sl { break }
@@ -2049,6 +2117,13 @@ enum CorpusReplayRunner {
             // One trainer-step observation for this step: the line's cadence,
             // its LR / momentum / cycle values, and the save point all read it.
             let observedSteps = trainer.completedTrainSteps
+            // Training health: record the step, and on a live-evaluation step
+            // (every 50 trainer steps) take its stamp before any read.
+            trainingHealth.record(timing, trainerStep: observedSteps)
+            let healthStamp = trainingHealth.liveEvaluationStamp(trainerStep: observedSteps)
+            // The step line's live read, when the line falls on this step:
+            // it also serves this step's live evaluation (one read).
+            var lineLiveRead: LayerHealthLog.LiveOutcome? = nil
             if stepLines.lineDue(trainerStep: observedSteps,
                                  elapsedSec: TrainingStepLineSchedule.seconds(lineClock.now - lineClockStart),
                                  carriesDiagnostics: timing.hasDiagnostics,
@@ -2079,9 +2154,11 @@ enum CorpusReplayRunner {
                 }
                 // Live layer health at the same cadence: BN state + ReZero α,
                 // read on the trainer's queue between steps.
-                for healthLine in await LayerHealthLog.live(trainer: trainer).lines {
+                let liveRead = await LayerHealthLog.live(trainer: trainer)
+                for healthLine in liveRead.lines {
                     emit(healthLine)
                 }
+                lineLiveRead = liveRead
                 // Same cadence as the log line, so results.json and the log
                 // describe the same ticks.
                 recorder?.appendStats(CliTrainingRecorder.StatsLine(
@@ -2128,6 +2205,15 @@ enum CorpusReplayRunner {
                         segmentGames: feedTally.games - reconstructionFed.games)
                 ))
             }
+            // The live training-health evaluation, every 50 trainer steps:
+            // after the step-line block and before the save block, so at a
+            // save step it precedes the save's checkpoint pass (R0).
+            if let healthStamp {
+                await trainingHealth.evaluateLive(
+                    stamp: healthStamp, sharedRead: lineLiveRead, trainer: trainer, trainerStep: observedSteps,
+                    learningRate: trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: observedSteps),
+                    momentum: trainer.effectiveMomentum(completedSteps: observedSteps))
+            }
             // Periodic autosave (overwrites the rolling output file) at every
             // trainer-step multiple of 1000, so a resumed run and the
             // uninterrupted run save at the same trainer steps. Always after
@@ -2140,11 +2226,14 @@ enum CorpusReplayRunner {
                 try await saveTrainerModel(step: step, reason: "autosave",
                     nextGameIndex: rp.nextGame, shard: rp.shard,
                     epoch: rp.epoch, populatedPlies: buffer.count,
-                    corpusID: resumeCorpusID, corpusPath: resumeCorpusPath,
                     segmentGames: feedTally.games - reconstructionFed.games,
                     segmentPositions: feedTally.positions - reconstructionFed.positions,
                     feedAheadPositions: feedAheadPositions(atStep: step))
             }
+            // Rule 3's value-FC1 velocity at most 1,000 trainer steps apart
+            // (D6): the autosave's pass above normally covers it, so this
+            // reads only when a save or its pass produced no observation.
+            await trainingHealth.valueFC1ReadIfDue(trainer: trainer, trainerStep: observedSteps)
         }
 
         // A requested capture that the run ended before reaching (an abort,
@@ -2164,17 +2253,32 @@ enum CorpusReplayRunner {
         // network state after a hard failure isn't worth persisting over the
         // last good autosave.
         let finalResume = resumePoint()
-        let finalReason = gpuCaptureFailure != nil ? "capture-failed" : (aborted ? "abort" : "final")
+        let finalReason: String
+        if gpuCaptureFailure != nil {
+            finalReason = "capture-failed"
+        } else if aborted {
+            finalReason = "abort"
+        } else if healthStop != nil {
+            finalReason = "health-stop"
+        } else {
+            finalReason = "final"
+        }
+        // The last partial window is judged before the final save's pass
+        // (R0). A stop it or the final pass requests is recorded, but the run
+        // was already ending: neither changes the termination reason.
+        await trainingHealth.evaluateBeforeFinalSave(trainer: trainer, batchSize: batchSize)
         try await saveTrainerModel(step: step, reason: finalReason,
             nextGameIndex: finalResume.nextGame, shard: finalResume.shard,
             epoch: finalResume.epoch, populatedPlies: buffer.count,
-            corpusID: resumeCorpusID, corpusPath: resumeCorpusPath,
             segmentGames: feedTally.games - reconstructionFed.games,
             segmentPositions: feedTally.positions - reconstructionFed.positions,
             feedAheadPositions: feedAheadPositions(atStep: step))
         // The rolling file is the end state; a step-enumerated copy is not
         // required for it.
         try rollingSaveFailures.requireLastSaveSucceeded(step: step, reason: finalReason)
+        // The final `[HEALTH] check` line, after the final save's checkpoint
+        // evaluation, so the last partial interval is never lost.
+        trainingHealth.finish()
         // The run asked for a capture it did not get: fail it, after the save.
         // No results.json — a failed run does not claim a clean record.
         if let gpuCaptureFailure {
@@ -2188,7 +2292,8 @@ enum CorpusReplayRunner {
             // epoch limit, corpus exhaustion) reports `stepLimitReached` — the
             // enum has no case distinguishing the latter two, and inventing one
             // would change the results.json schema for the self-play path too.
-            recorder.setTerminationReason(aborted ? .manualStop : .stepLimitReached)
+            recorder.setTerminationReason(
+                aborted ? .manualStop : (healthStop != nil ? .trainingHealthAlarm : .stepLimitReached))
             let counts = recorder.countsSnapshot()
             // Logged, not thrown — matching the self-play path. The trainer
             // model is already safely on disk by this point, so a failed
@@ -2207,7 +2312,7 @@ enum CorpusReplayRunner {
 
         return Result(steps: step, positionsFed: feedTally.positions, gamesFed: feedTally.games,
                       gamesRejected: feedTally.rejected, gamesSkipped: feedTally.skipped,
-                      epochs: epochsCompleted)
+                      epochs: epochsCompleted, healthStop: healthStop)
     }
 
     // MARK: - async→sync bridge (mirrors SweepCLI.syncWait)

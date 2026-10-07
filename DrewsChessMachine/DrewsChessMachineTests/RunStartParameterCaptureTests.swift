@@ -82,7 +82,8 @@ final class RunStartParameterCaptureTests: XCTestCase {
         TrainingParameters.shared.replayBufferCapacity = harness.buffer.capacity * 2
 
         let record = try harness.controller.lineageRecordForSave(
-            at: Date(), trainerCompletedSteps: harness.trainer.completedTrainSteps,
+            at: Date(), cut: try harness.controller.takeConfigurationCut(trainer: harness.trainer),
+            trainerCompletedSteps: harness.trainer.completedTrainSteps,
             dropoutPhiloxState: nil, dropoutStreamState: nil)
         XCTAssertEqual(try recordedValue(record, TrainingBatchSize.id), 64, "the batch size the run steps at")
         XCTAssertEqual(try recordedValue(record, ReplayBufferMinPositionsBeforeTraining.id), 300,

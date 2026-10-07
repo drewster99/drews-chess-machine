@@ -20,18 +20,26 @@
 #   `App/BuildInfo.swift`) are tracked and change on every build, so they
 #   are excluded; otherwise every build would be dirty, which is what the
 #   flag said for every build before this scope existed. Staged and
-#   unstaged changes both count (`git diff HEAD`), and so does any
-#   untracked, non-ignored file under the scope: the project uses
-#   synchronized root groups, so an untracked `.swift` file there is
-#   compiled.
-# - `gitDiffSHA256` identifies the uncommitted code itself, so two dirty
-#   builds of the same commit can be told apart. It is the SHA-256 of
-#   `git diff --binary HEAD` over the same scope, followed by every
-#   untracked file in byte-sorted path order, each framed as
-#   `<path byte length>\n<path>\n<content byte length>\n<content>` so no
-#   two different sets of files hash the same stream. A symbolic link's
-#   content is its target text, as git would store it. `nil` exactly when
-#   the build is clean.
+#   unstaged changes both count, and so does any untracked, non-ignored
+#   file under the scope: the project uses synchronized root groups, so an
+#   untracked `.swift` file there is compiled.
+# - `gitDiffSHA256` identifies the code that was built, so two dirty builds
+#   of the same commit can be told apart, and the same code built on two
+#   Macs reads as the same code. It is the SHA-256 of the git tree id of
+#   the scope as built: the working tree's `DrewsChessMachine/` (tracked
+#   and untracked, non-ignored files, without the two generated files)
+#   staged into a temporary index started from HEAD, then `write-tree`. A
+#   tree id is content-addressed — every file's path, mode and bytes, and
+#   nothing else — so it does not depend on what the real index holds
+#   (a staged new file and the same file untracked are one identity), on
+#   diff options (context, hunk joining, file order, path quoting,
+#   algorithm, prefixes), or on line-ending and file-mode settings, which
+#   are pinned for the staging. Dirty is that tree differing from HEAD's
+#   scope tree built the same way. It equals the hash of the scope's tree
+#   once that code is committed. `nil` exactly when the build is clean.
+#   Staging writes the blobs and trees into the repository's object store,
+#   as `git add` does; they are unreferenced until committed, and git's own
+#   garbage collection removes them. The real index is never touched.
 # - `xcodeBuild`, `sdkBuild` and `configuration` come from Xcode's build
 #   settings. An empty or missing value fails the build instead of
 #   writing a blank field, so a renamed build setting can never silently
@@ -58,58 +66,59 @@ GENERATED_COUNTER="DrewsChessMachine/build_counter.txt"
 GENERATED_BUILD_INFO="DrewsChessMachine/DrewsChessMachine/App/BuildInfo.swift"
 PATHSPEC=("$SCOPE" ":(exclude)$GENERATED_COUNTER" ":(exclude)$GENERATED_BUILD_INFO")
 
-# Output options pinned so a user's git configuration (color, external
-# diff drivers, text conversion, rename detection, prefixes) cannot
-# change the bytes that are hashed.
-diff_against_head() {
-    git -C "$REPO_ROOT" diff --binary --no-ext-diff --no-textconv --no-color --no-renames \
-        --src-prefix=a/ --dst-prefix=b/ HEAD -- "${PATHSPEC[@]}"
+# The settings that decide which bytes and mode a working-tree file is
+# staged as, pinned so neither a user's nor the repository's configuration
+# changes the tree: no line-ending conversion, the executable bit read from
+# the file system, symbolic links staged as links.
+git_pinned() {
+    git -C "$REPO_ROOT" -c core.autocrlf=false -c core.safecrlf=false -c core.eol=lf \
+        -c core.fileMode=true -c core.symlinks=true "$@"
 }
 
-untracked_files() {
-    git -C "$REPO_ROOT" ls-files -z --others --exclude-standard -- "${PATHSPEC[@]}" | LC_ALL=C sort -z
+# Two temporary indexes, never the repository's own: one holds HEAD, the
+# other HEAD with the working tree's scope staged over it.
+STAGING_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dcm-build-info.XXXXXX")
+HEAD_INDEX="$STAGING_DIR/head.index"
+BUILT_INDEX="$STAGING_DIR/built.index"
+remove_staging() {
+    rm -f "$HEAD_INDEX" "$HEAD_INDEX.lock" "$BUILT_INDEX" "$BUILT_INDEX.lock"
+    rmdir "$STAGING_DIR"
+}
+trap remove_staging EXIT
+
+# Set SCOPE_TREE to the tree id of `DrewsChessMachine/` in the index file
+# $1, built from HEAD and — when $2 is "built" — the working tree staged
+# over it, without the two generated files. Each step is checked here:
+# `set -e` does not reach into a function called as an `if` condition.
+SCOPE_TREE=""
+build_scope_tree() {
+    local INDEX="$1" SOURCE="$2" TREE
+    GIT_INDEX_FILE="$INDEX" git_pinned read-tree HEAD || return 1
+    if [ "$SOURCE" = "built" ]; then
+        GIT_INDEX_FILE="$INDEX" git_pinned add -A -- "${PATHSPEC[@]}" || return 1
+    fi
+    GIT_INDEX_FILE="$INDEX" git_pinned update-index --force-remove -- \
+        "$GENERATED_COUNTER" "$GENERATED_BUILD_INFO" || return 1
+    TREE=$(GIT_INDEX_FILE="$INDEX" git_pinned write-tree) || return 1
+    SCOPE_TREE=$(git_pinned rev-parse --verify "$TREE:$SCOPE") || return 1
 }
 
-# Exit status 0 = no difference, 1 = difference; anything else is a git
-# failure, which fails the build rather than guessing either way.
-set +e
-git -C "$REPO_ROOT" diff --quiet HEAD -- "${PATHSPEC[@]}"
-DIFF_STATUS=$?
-set -e
-case "$DIFF_STATUS" in
-    0) TRACKED_DIRTY="false" ;;
-    1) TRACKED_DIRTY="true" ;;
-    *) echo "error: generate-build-info.sh: git diff failed with status $DIFF_STATUS" >&2; exit 1 ;;
-esac
+if ! build_scope_tree "$HEAD_INDEX" head; then
+    echo "error: generate-build-info.sh: could not read HEAD's $SCOPE/ tree" >&2
+    exit 1
+fi
+HEAD_SCOPE_TREE="$SCOPE_TREE"
+if ! build_scope_tree "$BUILT_INDEX" built; then
+    echo "error: generate-build-info.sh: could not stage the working tree's $SCOPE/ into a temporary index" >&2
+    exit 1
+fi
+BUILT_SCOPE_TREE="$SCOPE_TREE"
 
-UNTRACKED_COUNT=$(untracked_files | tr -cd '\0' | wc -c | tr -d ' ')
-
-if [ "$TRACKED_DIRTY" = "true" ] || [ "$UNTRACKED_COUNT" -gt 0 ]; then
+if [ "$BUILT_SCOPE_TREE" != "$HEAD_SCOPE_TREE" ]; then
     GIT_DIRTY="true"
-    GIT_DIFF_SHA256=$(
-        set -e
-        {
-            diff_against_head
-            untracked_files | while IFS= read -r -d '' FILE_PATH; do
-                FULL_PATH="$REPO_ROOT/$FILE_PATH"
-                PATH_BYTES=$(printf '%s' "$FILE_PATH" | wc -c | tr -d ' ')
-                if [ -L "$FULL_PATH" ]; then
-                    LINK_TARGET=$(readlink "$FULL_PATH")
-                    CONTENT_BYTES=$(printf '%s' "$LINK_TARGET" | wc -c | tr -d ' ')
-                    printf '%s\n%s\n%s\n%s' "$PATH_BYTES" "$FILE_PATH" "$CONTENT_BYTES" "$LINK_TARGET"
-                elif [ -f "$FULL_PATH" ]; then
-                    CONTENT_BYTES=$(wc -c < "$FULL_PATH" | tr -d ' ')
-                    printf '%s\n%s\n%s\n' "$PATH_BYTES" "$FILE_PATH" "$CONTENT_BYTES"
-                    cat "$FULL_PATH"
-                else
-                    echo "error: generate-build-info.sh: untracked path $FILE_PATH is neither a regular file nor a symbolic link" >&2
-                    exit 1
-                fi
-            done
-        } | shasum -a 256 | cut -d ' ' -f 1
-    )
+    GIT_DIFF_SHA256=$(printf '%s' "$BUILT_SCOPE_TREE" | shasum -a 256 | cut -d ' ' -f 1)
     if ! [[ "$GIT_DIFF_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-        echo "error: generate-build-info.sh: could not hash the uncommitted changes (got '$GIT_DIFF_SHA256')" >&2
+        echo "error: generate-build-info.sh: could not hash the built tree $BUILT_SCOPE_TREE (got '$GIT_DIFF_SHA256')" >&2
         exit 1
     fi
     GIT_DIFF_SWIFT="\"$GIT_DIFF_SHA256\""
@@ -147,8 +156,9 @@ enum BuildInfo {
     /// Whether the compiled project (\`DrewsChessMachine/\`, without this
     /// file and the build counter) differed from \`gitHash\` at build time.
     static let gitDirty = $GIT_DIRTY
-    /// SHA-256 of the uncommitted changes under that scope (tracked diff
-    /// plus framed untracked files); nil exactly when \`gitDirty\` is false.
+    /// SHA-256 of the git tree id of that scope as built (the working
+    /// tree's files, tracked and untracked, staged over \`gitHash\`); nil
+    /// exactly when \`gitDirty\` is false.
     static let gitDiffSHA256: String? = $GIT_DIFF_SWIFT
     /// Xcode's build version (\`XCODE_PRODUCT_BUILD_VERSION\`).
     static let xcodeBuild = "$XCODE_PRODUCT_BUILD_VERSION"
@@ -158,7 +168,8 @@ enum BuildInfo {
     static let configuration = "$CONFIGURATION"
 
     /// One-line human-readable summary, e.g. "build 237 (abc1234*) 2026-04-17".
-    /// Asterisk suffix on gitHash indicates a dirty working tree at build time.
+    /// Asterisk suffix on gitHash: the compiled project (\`gitDirty\`'s
+    /// scope) differed from \`gitHash\` at build time.
     static var summary: String {
         let dirtyMarker = gitDirty ? "*" : ""
         return "build \(buildNumber) (\(gitHash)\(dirtyMarker)) \(buildDate)"

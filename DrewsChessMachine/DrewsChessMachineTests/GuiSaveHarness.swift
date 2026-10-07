@@ -111,8 +111,8 @@ final class GuiSaveHarness {
         controller.activeTrainingGate = trainingGate
         controller.replayBuffer = buffer
         controller.selfPlayGameSerials = serials
-        controller.runRandomSeed = RunRandomSeed.resolve(
-            mode: .seeded, configuredSeed: 24, commandLineSeed: nil, drawSeed: { 0 })
+        let seed = RunRandomSeed.resolve(mode: .seeded, configuredSeed: 24, commandLineSeed: nil, drawSeed: { 0 })
+        controller.runRandomSeed = seed
         controller.runBehaviorFingerprint = BehaviorFingerprint.Record(recipe: BehaviorFingerprint.recipe, sha256: "ab")
         controller.parallelWorkerStatsBox = box
         controller.trainingBox = trainingStatsBox
@@ -125,6 +125,15 @@ final class GuiSaveHarness {
         controller.lineageFedCarry.baselinePositions = counts.emittedPositions
         controller.championOrigin = .built(initialization: .forTests)
         controller.trainingStats = TrainingRunStats()
+        // What `startRealTraining` notes on a new segment before its first
+        // save: the configuration, seed, segment_start champion and
+        // replay-ratio start.
+        controller.runSeedStartKind = .resolvedOrInherited
+        controller.replayRatioStart = ReplayRatioInitialDelay.resolve(
+            autoAdjust: false, savedAutoDelayMs: nil, trainingStepDelayMs: 0)
+        try controller.noteSegmentStart(on: tracker, isNewSegment: true, trainer: trainer,
+                                        championIdentifier: champion.identifier,
+                                        startValueHeadRecentered: .recorded(false), seed: seed)
     }
 
     /// Start both fake workers.

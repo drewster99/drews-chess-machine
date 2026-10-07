@@ -4480,31 +4480,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// reading the SyncBox twice would otherwise let the count and LR
     /// disagree by one training step.
     func effectiveLearningRate(forBatchSize batchSize: Int, completedSteps: Int? = nil) -> Float {
-        let steps = completedSteps ?? _completedTrainSteps.value
-        let warmupMul: Float
-        if lrWarmupSteps > 0 {
-            warmupMul = Float(min(1.0, Double(steps) / Double(lrWarmupSteps)))
-        } else {
-            warmupMul = 1.0
-        }
-        // Base LR: the cycle's geometric value when LR cycling is active,
-        // otherwise the static `learningRate`. Identical resolution to
-        // `buildFeeds` so this readout matches the LR the SGD step actually
-        // applies — sqrt-batch scaling and warmup compose on top.
-        let baseLR: Float = _lrMomentumCycle.value.learningRate(
-            completedTrainSteps: steps,
-            lrWarmupSteps: lrWarmupSteps
-        ).map { Float($0) } ?? learningRate
-        var lr: Float
-        if sqrtBatchScalingForLR {
-            let sqrtBatchScale: Float = Float(
-                sqrt(Double(batchSize) / Double(Self.sqrtScaleBaseBatchSize))
-            )
-            lr = baseLR * sqrtBatchScale
-        } else {
-            lr = baseLR
-        }
-        return lr * warmupMul
+        fedSchedule(forBatchSize: batchSize, completedSteps: completedSteps ?? _completedTrainSteps.value).learningRate
     }
 
     /// Effective Polyak momentum the optimizer is currently being fed:
@@ -4516,11 +4492,23 @@ final class ChessTrainer: @unchecked Sendable {
     /// in-flight step; pass `completedSteps` to pin it to the same
     /// observation as a co-published LR.
     func effectiveMomentum(completedSteps: Int? = nil) -> Float {
-        let steps = completedSteps ?? _completedTrainSteps.value
-        return _lrMomentumCycle.value.momentum(
-            completedTrainSteps: steps,
-            lrWarmupSteps: lrWarmupSteps
-        ).map { Float($0) } ?? momentumCoeff
+        // The batch size scales only the learning rate; momentum ignores it.
+        fedSchedule(forBatchSize: Self.sqrtScaleBaseBatchSize,
+                    completedSteps: completedSteps ?? _completedTrainSteps.value).momentum
+    }
+
+    /// The learning rate and momentum fed at trainer clock `completedSteps`
+    /// for a batch of `batchSize`: `LRMomentumCycleReadout`, the one
+    /// function the readouts above, `buildFeeds` and the lineage record's
+    /// `schedule_at_save` all use (plan O-18), so a status readout, the SGD
+    /// step and the record cannot compute different values. The cycle
+    /// configuration is read once, so both channels come from one untorn
+    /// copy of it.
+    private func fedSchedule(forBatchSize batchSize: Int, completedSteps: Int) -> LRMomentumCycleReadout.Fed {
+        LRMomentumCycleReadout.values(
+            completedTrainSteps: completedSteps, lrWarmupSteps: lrWarmupSteps, cycle: _lrMomentumCycle.value,
+            staticLearningRate: learningRate, staticMomentum: momentumCoeff, batchSize: batchSize,
+            sqrtBatchScaling: sqrtBatchScalingForLR, sqrtScaleBaseBatchSize: Self.sqrtScaleBaseBatchSize)
     }
 
     private func internalTrainStep(batchSize: Int, queueWaitMs: Double = 0) throws -> TrainStepTiming {
@@ -5820,6 +5808,55 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
+    /// Read one trainable tensor's optimizer velocity, with the trainer's
+    /// completed-step clock read in the same queue turn — the training-health
+    /// monitor's dedicated value-FC1 read (`value.fc1.weight`, alarms plan
+    /// D6, every 1,000 trainer steps where no save's checkpoint pass covers
+    /// the interval).
+    ///
+    /// Same pattern as `readLayerHealthLiveState`: enqueued on
+    /// `executionQueue`, the queue every SGD step runs on, so it lands
+    /// between steps and never observes a half-applied update, and the
+    /// caller does not pause training. One `graph.run` whose only target is
+    /// that velocity variable, fed the dummy inference input: no operation
+    /// is targeted, so nothing is assigned, no dropout op is encoded (no
+    /// RNG advance) and the weights, velocity, BN statistics and replay
+    /// buffer are untouched (probe isolation; pinned by
+    /// `ValueFC1VelocityReadTests`). Velocity is fp32 on every path.
+    func readTrainableVelocity(named name: String) async throws -> (velocity: [Float], completedTrainSteps: Int) {
+        let trainableNames = arch.trainableTensorPlan().map(\.name)
+        guard let index = trainableNames.firstIndex(of: name) else {
+            throw ChessTrainerError.layerHealthTensorNotInPlan(name)
+        }
+        return try await enqueue { [self] in
+            try autoreleasepool {
+                // A trainer built for loaded weights holds zero velocity
+                // until its load, which would read as every unit dead.
+                try network.requireLoadedWeights("readTrainableVelocity")
+                // `velocityVariables` is one per trainable, in
+                // `trainableTensorPlan()` order (the order the saved
+                // velocity tensors are named in).
+                guard velocityVariables.count == trainableNames.count else {
+                    throw ChessTrainerError.trainerWeightCountMismatch(
+                        expected: "\(trainableNames.count) velocity variables (trainableTensorPlan)",
+                        got: velocityVariables.count)
+                }
+                let variable = velocityVariables[index]
+                let results = network.graph.run(
+                    with: network.commandQueue,
+                    feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                    targetTensors: [variable],
+                    targetOperations: nil
+                )
+                guard let data = results[variable] else {
+                    throw ChessTrainerError.velocityReadbackMissing(variable.operation.name)
+                }
+                let count = try ChessNetwork.elementCount(of: variable)
+                return (ChessNetwork.readFloatsFP32(from: data, count: count), _completedTrainSteps.value)
+            }
+        }
+    }
+
     /// Body of `readLayerHealthLiveState`; must run on `executionQueue`.
     /// Refuses a trainer still waiting for its weight load, whose zero-filled
     /// variables would read as every channel dead.
@@ -6190,39 +6227,18 @@ final class ChessTrainer: @unchecked Sendable {
         // Snapshot the step count and the cycling config once, so warmup,
         // the LR cycle, and the momentum cycle all key off the same step and
         // a single consistent (untorn) config read.
-        let currentStep = _completedTrainSteps.value
-        let cycle = _lrMomentumCycle.value
-
-        let warmupMul: Float
-        if lrWarmupSteps > 0 {
-            warmupMul = Float(min(1.0, Double(currentStep) / Double(lrWarmupSteps)))
-        } else {
-            warmupMul = 1.0
-        }
+        //
         // Base LR: the cycle's geometric value when LR cycling is active,
-        // otherwise the static configured learning rate. sqrt-batch scaling
-        // and warmup then compose multiplicatively on top, exactly as before —
-        // enabling LR cycling overrides the static base, not the multipliers.
-        // The cycle starts after warmup (see `LRMomentumCycle.cycleStep`), so
-        // during warmup this is the cycle's starting value and the ramp below
-        // lands exactly on it.
-        // One schedule evaluation feeds both channels, so LR and momentum
-        // can never be computed from different envelope positions.
-        let cycleValues = cycle.values(
-            completedTrainSteps: currentStep,
-            lrWarmupSteps: lrWarmupSteps
-        )
-        let baseLR: Float = cycleValues.learningRate.map { Float($0) } ?? learningRate
-        var lr: Float
-        if sqrtBatchScalingForLR {
-            let sqrtBatchScale: Float = Float(
-                sqrt(Double(input.batchSize) / Double(Self.sqrtScaleBaseBatchSize))
-            )
-            lr = baseLR * sqrtBatchScale
-        } else {
-            lr = baseLR
-        }
-        lr *= warmupMul
+        // otherwise the static configured learning rate; sqrt-batch scaling
+        // and warmup compose multiplicatively on top — enabling LR cycling
+        // overrides the static base, not the multipliers. The cycle starts
+        // after warmup (see `LRMomentumCycle.cycleStep`), so during warmup
+        // the ramp lands exactly on the cycle's starting value. One schedule
+        // evaluation feeds both channels, so LR and momentum can never come
+        // from different envelope positions. `fedSchedule` computes it, the
+        // same function the readouts and the lineage record use.
+        let fed = fedSchedule(forBatchSize: input.batchSize, completedSteps: _completedTrainSteps.value)
+        let lr = fed.learningRate
         // Every scalar hyperparameter ND array is fp32 (its graph
         // placeholder is fp32), so `writeScalarFeed` writes the raw `Float`.
         // It still branches on the array's own dtype, so a narrow array could
@@ -6240,10 +6256,9 @@ final class ChessTrainer: @unchecked Sendable {
         writeScalarFeed(policyLabelSmoothingPerMoveCapNDArray, value: policyLabelSmoothingPerMoveCap)
         writeScalarFeed(valueLabelSmoothingEpsilonNDArray, value: valueLabelSmoothingEpsilon)
         // Momentum: the cycle's linear value when momentum cycling is active,
-        // otherwise the static configured coefficient.
-        // Offset by warmup exactly like the LR channel so the two stay in phase.
-        let momentumToFeed: Float = cycleValues.momentum.map { Float($0) } ?? momentumCoeff
-        writeScalarFeed(momentumNDArray, value: momentumToFeed)
+        // otherwise the static configured coefficient, offset by warmup
+        // exactly like the LR channel so the two stay in phase.
+        writeScalarFeed(momentumNDArray, value: fed.momentum)
         writeScalarFeed(complementCEEnableNDArray, value: useSignedAdvantageComplementCE ? 1.0 : 0.0)
 
         return cached.feedsDict

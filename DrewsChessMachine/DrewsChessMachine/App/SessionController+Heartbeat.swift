@@ -140,11 +140,12 @@ extension SessionController {
         // trainer yields nil so the Idle chip path doesn't accidentally
         // surface stale warmup numbers from a prior run. The effective LR
         // is the one fed at the run's own batch size (its run-start
-        // capture), so the snapshot is published only while a run's
-        // capture exists: a trainer used outside Play-and-Train (a sweep)
-        // steps at no run's batch size, and a value computed from the
+        // capture), so the snapshot is published only while a run is
+        // active (`optimizerReadoutBatchSize`): a stopped run's capture is
+        // kept for its saves, but a sweep or demo training on the same
+        // trainer steps at another batch, and a value computed from the
         // settings would be one nothing is fed.
-        if let trainer, let runCapture = runStartCapture {
+        if let trainer, let runBatchSize = optimizerReadoutBatchSize() {
             // Sync SyncBox read — NOT `asyncCompletedTrainSteps()`, which
             // hops onto the trainer's serial `executionQueue` (the GPU work
             // queue) and waits behind the in-flight ~0.8s training step,
@@ -164,7 +165,7 @@ extension SessionController {
             // only the SyncBox step count + immutable LR config, so a direct
             // call on the main actor is instant.
             let effectiveLR = trainer.effectiveLearningRate(
-                forBatchSize: runCapture.trainingBatchSize,
+                forBatchSize: runBatchSize,
                 completedSteps: completedTrainSteps
             )
             // Same step observation as the LR so the published pair is
@@ -285,7 +286,7 @@ extension SessionController {
             let snap = await rc.asyncSnapshot()
             replayRatioSnapshot = snap
             if snap.autoAdjust {
-                lastAutoComputedDelayMs = snap.computedDelayMs
+                setSavedAutoComputedDelayMs(snap.computedDelayMs)
             }
             // Outer integral compensator. See the doc comment on
             // `effectiveReplayRatioTarget` for full rationale; in
@@ -378,7 +379,9 @@ extension SessionController {
         // junk and could overwrite the user's last-session pointer. The banner
         // stays up; the user can still save manually if they want it for
         // debugging.
-        if trainingSuspendedByDivergence {
+        // A health-alarm suspension does not gate it: its weights are
+        // finite, and a save is useful for forensics (`TrainingSuspension`).
+        if trainingSuspension?.skipsPeriodicAutosave == true {
             return
         }
         let now = Date()
@@ -583,9 +586,8 @@ extension SessionController {
             // The run's own batch size (its run-start capture), the one the
             // optimizer is stepping at, so the sqrt-batch scaling inside
             // `effectiveLearningRate` matches what the SGD step applied.
-            // Without a run there is no fed LR to chart.
-            guard let trainer, let runCapture = runStartCapture else { return nil }
-            let batchSize = runCapture.trainingBatchSize
+            // Without an active run there is no fed LR to chart.
+            guard let trainer, let batchSize = optimizerReadoutBatchSize() else { return nil }
             let lr = Double(trainer.effectiveLearningRate(forBatchSize: batchSize))
             let mu = Double(trainer.effectiveMomentum())
             // `lr / (1 − μ)`. Guarded because μ = 1 is a legal parameter value
@@ -648,12 +650,15 @@ extension SessionController {
         // sample would only churn the banner (and its recovery path could
         // eventually clear a divergence-titled banner). The chart keeps
         // appending so live self-play data still plots.
-        if !trainingSuspendedByDivergence {
+        if trainingSuspension?.skipsHeartbeatAlarmEvaluation != true {
             trainingAlarm?.evaluate(from: sample)
         }
     }
 
-    private func refreshProgressRateIfNeeded() async {
+    /// Append a progress-rate sample and a training chart sample, at most
+    /// once per `progressRateRefreshSec`. Internal rather than private so a
+    /// test can drive one sampling tick.
+    func refreshProgressRateIfNeeded() async {
         guard realTraining else { return }
         let now = Date()
         if now.timeIntervalSince(chartCoordinator?.progressRateLastFetch ?? Date()) < Self.progressRateRefreshSec {
@@ -671,11 +676,25 @@ extension SessionController {
         // window timestamps, not elapsedSec).
         let elapsed = max(0, now.timeIntervalSince(chartCoordinator?.chartElapsedAnchor ?? Date()))
         let curSp = pStats.selfPlayPositions
-        // Positions trained = steps × the run's own batch size (its
-        // run-start capture). `realTraining` implies a capture; without one
-        // there is no training rate to report.
-        guard let runCapture = runStartCapture else { return }
-        let curTr = (trainingStats?.steps ?? 0) * runCapture.trainingBatchSize
+        // Positions trained, each step at the batch it trained at (the run's
+        // positions count; only differences between samples matter). A run
+        // always has its count, so failing to read one is a bug: it is
+        // surfaced, and only this progress-rate sample is skipped — the
+        // training chart, and the divergence alarm it feeds, still run.
+        let curTr: Int
+        do {
+            curTr = try observedTrainedPositionsForRate()
+        } catch {
+            if trainingError == nil {
+                let message = "Training rate unavailable: \(error.localizedDescription)"
+                SessionLogger.shared.log("[STATS] error: \(message)")
+                trainingError = message
+            }
+            // Keep the sampling cadence as a recorded sample would.
+            chartCoordinator?.progressRateLastFetch = now
+            await refreshTrainingChartIfNeeded()
+            return
+        }
 
         // Walk newest → oldest through the coordinator's ring,
         // recording the last sample we see that still falls inside

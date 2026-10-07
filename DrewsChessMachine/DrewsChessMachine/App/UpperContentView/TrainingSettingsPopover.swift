@@ -39,6 +39,7 @@ fileprivate enum Tab: String, CaseIterable, Identifiable {
     case selfPlay = "Self Play"
     case replay = "Replay"
     case sessions = "Sessions"
+    case health = "Health"
     var id: String { rawValue }
 }
 
@@ -177,8 +178,13 @@ struct TrainingSettingsPopover: View {
             || model.randomSeedError
     }
 
+    private var healthHasError: Bool {
+        model.trainingHealthCheckIntervalError || model.trainingHealthLearningGraceError
+    }
+
     private var anyTabHasError: Bool {
         optimizerHasError || cyclingHasError || selfPlayHasError || replayHasError || sessionsHasError
+            || healthHasError
     }
 
     var body: some View {
@@ -217,7 +223,8 @@ struct TrainingSettingsPopover: View {
                 cyclingHasError: cyclingHasError,
                 selfPlayHasError: selfPlayHasError,
                 replayHasError: replayHasError,
-                sessionsHasError: sessionsHasError
+                sessionsHasError: sessionsHasError,
+                healthHasError: healthHasError
             )
 
             Divider()
@@ -398,6 +405,15 @@ struct TrainingSettingsPopover: View {
                     currentRunSeed: currentRunSeed,
                     onUseRunSeed: { model.useRunSeed($0) }
                 )
+            case .health:
+                TrainingHealthTab(
+                    alarmsEnabled: $model.trainingHealthAlarmsEnabledValue,
+                    checkIntervalText: $model.trainingHealthCheckIntervalText,
+                    learningGraceText: $model.trainingHealthLearningGraceText,
+                    actions: $model.trainingHealthActionsValue,
+                    checkIntervalError: model.trainingHealthCheckIntervalError,
+                    learningGraceError: model.trainingHealthLearningGraceError
+                )
             }
             }
 
@@ -451,12 +467,12 @@ struct TrainingSettingsPopover: View {
 /// light accent-color tint; unselected tabs render with a
 /// secondary foreground for the label.
 ///
-/// The five tabs are unrolled (rather than `ForEach(Tab.allCases)`)
+/// The six tabs are unrolled (rather than `ForEach(Tab.allCases)`)
 /// so there is no per-render `Array(Tab.allCases.enumerated())`
 /// allocation and no `if idx > 0 { Divider() }` conditional that
 /// would change the view tree shape across re-evals. SwiftUI sees a
-/// stable nine-child HStack: button, divider, button, divider,
-/// button, divider, button, divider, button.
+/// stable eleven-child HStack: six buttons with a divider between
+/// each pair.
 fileprivate struct TrainingSettingsTabBar: View {
     @Binding var selectedTab: Tab
     let optimizerHasError: Bool
@@ -464,6 +480,7 @@ fileprivate struct TrainingSettingsTabBar: View {
     let selfPlayHasError: Bool
     let replayHasError: Bool
     let sessionsHasError: Bool
+    let healthHasError: Bool
 
     var body: some View {
         HStack(spacing: 0) {
@@ -495,6 +512,12 @@ fileprivate struct TrainingSettingsTabBar: View {
                 tab: .sessions,
                 selectedTab: $selectedTab,
                 hasError: sessionsHasError
+            )
+            Divider().frame(height: 18)
+            TrainingSettingsTabButton(
+                tab: .health,
+                selectedTab: $selectedTab,
+                hasError: healthHasError
             )
         }
         .overlay(
@@ -2223,7 +2246,7 @@ private struct ReplayTab: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Replay buffer")
                     .font(.subheadline.weight(.semibold))
-                Text("Capacity and pre-train fill apply at the next Play-and-Train start")
+                Text(RunStartParameterCapture.replayBufferCaption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 PopoverRow(

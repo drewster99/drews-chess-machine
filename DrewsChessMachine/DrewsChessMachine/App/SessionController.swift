@@ -186,11 +186,16 @@ final class SessionController {
     /// the steps just trained; cleared only when the trainer is dropped
     /// (`dropTrainerEndingLineageSegment`). Not displayed.
     @ObservationIgnored var runStartCapture: RunStartParameterCapture?
-    /// The capture the latest start replaced, so a start that fails before
-    /// its lineage segment begins (or whose segment cannot begin) puts back
-    /// the capture of the segment it leaves in place
-    /// (`restoreRunStartCaptureAfterFailedStart`).
-    @ObservationIgnored var runStartCaptureReplacedByLatestStart: RunStartParameterCapture?
+    /// The positions the current (or last stopped) run has trained, counted
+    /// at the batch each step trained at (`RunTrainedPositions`). Begun with
+    /// the capture at every start, and kept and cleared with it. Not
+    /// displayed itself.
+    @ObservationIgnored var runTrainedPositions: RunTrainedPositions?
+    /// The capture, positions count and replay buffer the latest start
+    /// replaced, so a start that fails before its lineage segment begins (or
+    /// whose segment cannot begin) puts all three back together for the
+    /// segment it leaves in place (`restoreRunStartCaptureAfterFailedStart`).
+    @ObservationIgnored var runStartStateReplacedByLatestStart: ReplacedRunStartState?
     /// Fed counts the lineage segment carried across stats boxes.
     @ObservationIgnored var lineageFedCarry = LineageFedCarry()
     /// This process's behavior fingerprint for the running trainer's
@@ -200,6 +205,15 @@ final class SessionController {
     /// Where the champion's current weights came from; nil when there is no
     /// champion, or its weights are still awaiting a load.
     @ObservationIgnored var championOrigin: ChampionOrigin?
+    /// How the latest Play-and-Train start got its run seed — set where the
+    /// seed is resolved, read when the segment's start is noted
+    /// (`noteSegmentStart`), so a "New Session, keep trainer" start records
+    /// its new seed and a Continue records none. Not displayed.
+    @ObservationIgnored var runSeedStartKind: RunSeedStartKind?
+    /// The replay-ratio controller inputs of the latest start (B6), set
+    /// where the controller is built and recorded when the segment's start
+    /// is noted, at the trainer's restored clock. Not displayed.
+    @ObservationIgnored var replayRatioStart: ReplayRatioInitialDelay.Resolved?
 
     /// Rolling-window game-diversity tracker for self-play. Fed by every
     /// self-play worker at game end; snapshot polled by the heartbeat for
@@ -290,17 +304,27 @@ final class SessionController {
     /// `true` while a Play-and-Train (self-play) session is active.
     var realTraining: Bool = false
 
-    /// `true` once a training divergence (non-finite loss / GPU command
-    /// failure / gradient blow-up) has suspended the trainer. The session is
-    /// deliberately NOT torn down on divergence — the alarm banner stays up so
-    /// the user can see why training stopped, and the rest of the run
-    /// (heartbeat, self-play, stats) keeps living. Instead, this flag is the
-    /// single gate that prevents the suspended state from doing further harm:
-    /// it blocks arenas from running (which would otherwise snapshot the
-    /// poisoned trainer weights into a candidate) and blocks the 4-hour
-    /// periodic autosave from persisting the diverged session. Reset on a fresh
-    /// `startRealTraining` and on `stopRealTraining`.
-    var trainingSuspendedByDivergence: Bool = false
+    /// Why training is suspended, or nil while it runs: a divergence
+    /// (non-finite loss / GPU command failure / gradient blow-up) or a
+    /// training-health alarm whose action stops the run. The session is
+    /// deliberately NOT torn down — the banner or the health list says why,
+    /// and the rest of the run (heartbeat, self-play, stats) keeps living.
+    /// This is the single gate that keeps the suspended trainer from doing
+    /// further harm; each gate reads the case (`TrainingSuspension`'s table:
+    /// arenas and Promote Trainee Now are refused for both, the periodic
+    /// autosave only for a divergence). Reset on a fresh `startRealTraining`
+    /// and on `stopRealTraining`.
+    var trainingSuspension: TrainingSuspension?
+
+    /// The training-health monitor of the current Play-and-Train start (a new
+    /// one at every start, a continue after Stop included). Every evaluation
+    /// hop to the main actor carries the monitor it used; a hop whose monitor
+    /// is not this one is from an earlier start and is ignored.
+    var trainingHealthMonitor: TrainingHealthMonitor?
+
+    /// The `--train` run's termination claim, for a health stop (nil in an
+    /// interactive session, where a stop suspends training instead).
+    @ObservationIgnored var trainingHealthAutoTrainStop: TrainingHealthAutoTrainStop?
 
     /// Handle to the Play-and-Train driver `Task`. Cancelled on Stop.
     var realTrainingTask: Task<Void, Never>?
@@ -423,10 +447,30 @@ final class SessionController {
     /// `UserDefaults`-backed. Not a training parameter — intentionally NOT in
     /// `TrainingParameters`. Not read during `body`, so a plain computed
     /// (non-observable) UserDefaults accessor is fine.
-    var lastAutoComputedDelayMs: Int {
-        get { UserDefaults.standard.object(forKey: "lastAutoComputedDelayMs") as? Int ?? 50 }
-        set { UserDefaults.standard.set(newValue, forKey: "lastAutoComputedDelayMs") }
+    ///
+    /// nil when no auto delay was ever computed (owner decision O-20: no
+    /// silent first-launch value — the controller then starts from
+    /// `training_step_delay_ms`, `ReplayRatioInitialDelay`). A stored value
+    /// of another type is an error, never coerced or treated as absent.
+    func savedAutoComputedDelayMs() throws -> Int? {
+        try Self.savedAutoComputedDelayMs(in: .standard)
     }
+
+    /// `savedAutoComputedDelayMs()` read from `defaults` — the one reader,
+    /// taking its store so a test can use a private suite.
+    nonisolated static func savedAutoComputedDelayMs(in defaults: UserDefaults) throws -> Int? {
+        guard let stored = defaults.object(forKey: lastAutoComputedDelayMsKey) else { return nil }
+        guard let delay = stored as? Int else {
+            throw ReplayRatioInitialDelay.StoredDelayError.notAnInteger(storedType: String(describing: type(of: stored)))
+        }
+        return delay
+    }
+
+    func setSavedAutoComputedDelayMs(_ delay: Int) {
+        UserDefaults.standard.set(delay, forKey: Self.lastAutoComputedDelayMsKey)
+    }
+
+    nonisolated static let lastAutoComputedDelayMsKey = "lastAutoComputedDelayMs"
 
     // MARK: - Session-runtime boxes + replay-ratio compensator (Stage 4f)
 
@@ -1207,17 +1251,20 @@ final class SessionController {
     /// invalidates. The trainer's lineage segment ends with the trainer: a
     /// later save must not attribute another trainer's (or the champion's)
     /// weights to it. So the segment's tracker and fed counts go too, and
-    /// the run's resume verdict and run-start parameter capture, which
-    /// described that segment. The one
+    /// the run's resume verdict, run-start parameter capture and positions
+    /// count, which described that segment. The one
     /// place a trainer is dropped, so the two rebuild paths (Build Network
     /// and the auto-build before a load) cannot disagree.
     func dropTrainerEndingLineageSegment() {
         trainer = nil
         lineageTracker = nil
         runStartCapture = nil
-        runStartCaptureReplacedByLatestStart = nil
+        runTrainedPositions = nil
+        runStartStateReplacedByLatestStart = nil
         lineageFedCarry = LineageFedCarry()
         checkpoint?.runResumeExactness = nil
+        // The segment's settings journal ends with it.
+        TrainingParameters.runChangeObserver.value = nil
     }
 
     /// The actual network construction. Runs on a detached `.userInitiated`
