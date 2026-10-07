@@ -387,7 +387,7 @@ struct LichessBotGameEventInfo: Sendable, Hashable, Codable {
     let fen: String?
     let color: LichessBotOpenValue<LichessBotColorName>?
     let lastMove: String?
-    let source: String?
+    let source: LichessBotOpenValue<LichessBotGameSourceName>?
     let status: LichessBotGameEventStatus?
     let variant: LichessBotVariant?
     let speed: LichessBotOpenValue<LichessBotSpeed>?

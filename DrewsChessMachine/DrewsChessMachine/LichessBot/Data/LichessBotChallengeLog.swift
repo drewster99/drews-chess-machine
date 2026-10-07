@@ -247,6 +247,9 @@ struct LichessBotChallengeLogContents: Sendable, Equatable {
         /// An unterminated final line (an interrupted append), dropped. The
         /// next append cuts it and records it as `unterminatedLineCut`.
         let droppedTrailingByteCount: Int
+        /// The time of the file's first entry this build could read; nil
+        /// when it has none.
+        let firstEntryAt: Date?
     }
 
     /// A day file left out of the contents, and why.
@@ -260,6 +263,28 @@ struct LichessBotChallengeLogContents: Sendable, Equatable {
     var entries: [LichessBotChallengeLogEntry] = []
     var filesRead: [DayFile] = []
     var filesLeftOut: [LeftOutFile] = []
+
+    /// When the live log begins: the reconstruction's cutoff (§3.7). The
+    /// first entry of the oldest day file with one; nil when no day file
+    /// holds an entry (no live log yet). When a day file older than that
+    /// was left out (corrupt), its first entry can't be read, so the start
+    /// of its UTC day stands in: the cutoff is then never later than the
+    /// real first entry, so a fact the live log may hold is never also
+    /// rebuilt from the protocol log (at worst a few rebuilt facts of that
+    /// day are missing until the file is repaired).
+    var liveLogFirstEntryAt: Date? {
+        let firstRead = filesRead.first { $0.firstEntryAt != nil }
+        let olderLeftOut = filesLeftOut
+            .filter { leftOut in firstRead.map { leftOut.name < $0.name } ?? true }
+            .compactMap { LichessBotChallengeLog.utcDayStart(ofDayFileName: $0.name) }
+            .min()
+        switch (firstRead?.firstEntryAt, olderLeftOut) {
+        case (let read?, let leftOut?): return min(read, leftOut)
+        case (let read?, nil): return read
+        case (nil, let leftOut?): return leftOut
+        case (nil, nil): return nil
+        }
+    }
 
     var lineCount: Int { filesRead.reduce(0) { $0 + $1.lineCount } }
     var byteCount: Int { filesRead.reduce(0) { $0 + $1.byteCount } }
@@ -474,13 +499,27 @@ final class LichessBotChallengeLog: Sendable {
                 contents.entries.append(contentsOf: decoded.entries)
                 contents.filesRead.append(.init(
                     name: name, byteCount: data.count, lineCount: decoded.lineCount,
-                    skippedNewerLines: decoded.skippedNewerLines, droppedTrailingByteCount: decoded.droppedTrailingByteCount
+                    skippedNewerLines: decoded.skippedNewerLines, droppedTrailingByteCount: decoded.droppedTrailingByteCount,
+                    firstEntryAt: decoded.entries.first?.at
                 ))
             } catch {
                 contents.filesLeftOut.append(.init(name: name, reason: error.localizedDescription))
             }
         }
         return contents
+    }
+
+    /// 00:00 UTC of the day a `challenges-YYYYMMDD.jsonl` name stands for,
+    /// or nil for any other name.
+    static func utcDayStart(ofDayFileName name: String) -> Date? {
+        guard isDayFileName(name) else { return nil }
+        let stamp = String(name.dropFirst("challenges-".count).prefix(8))
+        guard let year = Int(stamp.prefix(4)), let month = Int(stamp.dropFirst(4).prefix(2)), let day = Int(stamp.suffix(2)) else {
+            return nil
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        return calendar.date(from: DateComponents(year: year, month: month, day: day))
     }
 
     /// The part of a line decoded first, so a newer build's line is told

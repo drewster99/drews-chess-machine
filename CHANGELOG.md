@@ -9,6 +9,26 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Lichess bot challenge log P4: back-fill from the protocol log
+
+- Algorithm v1 rebuilds past challenges from `Protocol/events-*.jsonl` into `Challenges/reconstructed-from-protocol.json` (derived, regenerable, written only when its bytes change). On this Mac it reproduces the plan's numbers exactly: 206 games = incoming 12, matchmaking 132, operator (inferred) 62, unknown 0; today's files give 222 = 12 / 148 / 62 / 0.
+- The controller rebuilds it once after the challenge log loads (not on the go-online path) and on demand; `LichessBotGameOriginDisplay` resolves what each game shows (record, live log, rebuilt challenge, the record's gap, unknown with a reason) into `originsByGameID`; disagreements are logged once per game.
+- The challenge log reader reports when the live log begins (the rebuild's cutoff).
+- New tests: `LichessBotChallengeReconstructionTests`, `LichessBotChallengeReconstructionRealDataTests` (read-only), `LichessBotGameOriginDisplayTests`, `LichessBotChallengeHistoryControllerTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §15.
+
+## 2026-10-06 — Lichess bot challenge log P3: how each game started
+
+- `LichessBotGameOrigin` (incoming, DCM's challenge with its sender, sender not recorded, tournament, undetermined with its gap) and `LichessBotGameOriginResolver`: decided at session start from the challenge ledger and the `gameStart`, later when the challenge's facts arrive (the POST race), or written as undetermined at session end. Once per game per run.
+- The journal gains `.gameOrigin`; the record builder, the resumed journal and the live view keep the first determined origin. `LichessBotGameRecord`, `LichessBotGameSummary` and `LichessBotLiveGame` gain an optional `origin`; `LichessBotIndex.schemaVersion` 2 → 3 (the cache rebuilds once); new PGNs carry `DCMOrigin`. `gameStart.source` is an open value from lila's `Source` list.
+- New tests: `LichessBotGameOriginResolverTests`, `LichessBotGameOriginJournalTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §14.
+
+## 2026-10-06 — Lichess bot challenge log P2: every challenge fact recorded
+
+- New `LichessBotChallengeLogRecorder` (owned by the controller): the ledger, its one funnel, loading (go-online and the bot window, once), held echoes of our own challenges (written only when unmatched, attributed to a single unanswered send), game starts, and replays that write nothing.
+- The controller records `outgoingCreated` / `outgoingNotCreated` (offline, refused, no answer) with who sent it, every withdrawal and Lichess's answer, incoming challenges and DCM's decisions, stream declines and cancels, and game starts. `ChallengeOrigin` gains `.casualResendOffer`, `.challengeQueue` and a matchmaking `trigger` (automatic pass or Fill Open Slots).
+- Manager events: `.challengeArrived` carries the challenge; new `.challengeAnsweredOnStream` and `.gameStartReceived`.
+- New tests: `LichessBotUnmatchedEchoTests`, `LichessBotChallengeLogControllerTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §13.
+
 ## 2026-10-06 — Lichess bot challenge log P1: entry schema, writer, reader, ledger
 
 - `Data/LichessBotChallengeLog.swift`: `LichessBotChallengeLogEntry` (`schemaVersion` 1, time, build, event) and its 12 event cases with their supporting types; the writer `LichessBotChallengeLog` (`F_FULLFSYNC` per append, the folder of a new day file too, timed syncs, torn tails recorded as `unterminatedLineCut`); the reader (newer-build lines skipped and counted, a corrupt day file left out with file and line, an unterminated tail dropped).
