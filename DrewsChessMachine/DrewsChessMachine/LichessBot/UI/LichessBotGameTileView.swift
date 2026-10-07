@@ -42,6 +42,8 @@ struct LichessBotGameTileContent: View {
                 Text(game.opponent?.name ?? game.id)
                     .font(.callout.weight(.semibold))
                     .lineLimit(1)
+                LichessBotGameOriginGlyph(display: game.originDisplay)
+                    .font(.caption)
                 Text(game.opponent?.rating.map { String(format: "%4d", $0) } ?? "")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)

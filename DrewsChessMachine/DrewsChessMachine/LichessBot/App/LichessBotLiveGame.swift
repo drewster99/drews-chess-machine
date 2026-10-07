@@ -71,6 +71,13 @@ final class LichessBotLiveGame: Identifiable {
     /// when it decides, and by `replay` from a resumed journal.
     private(set) var origin: LichessBotGameOrigin?
 
+    /// What the game shows for how it began; nil while not yet known. A
+    /// live game's origin is decided by this run or read from its own
+    /// journal, so it is always shown as recorded.
+    var originDisplay: LichessBotGameOriginDisplay? {
+        origin.map { LichessBotGameOriginDisplay.display($0, basis: .recorded) }
+    }
+
     private(set) var ourColor: PieceColor?
     private(set) var white: Player?
     private(set) var black: Player?

@@ -23,8 +23,8 @@ final class LichessBotAllGamesWindowController: NSWindowController, NSWindowDele
     private init(controller: LichessBotController) {
         let hosting = NSHostingController(rootView: LichessBotAllGamesView(controller: controller))
         let window = NSWindow(contentViewController: hosting)
-        window.setContentSize(NSSize(width: 980, height: 640))
-        window.minSize = NSSize(width: 720, height: 360)
+        window.setContentSize(NSSize(width: 1080, height: 640))
+        window.minSize = NSSize(width: 820, height: 360)
         window.title = "Lichess Bot Games"
         window.isReleasedWhenClosed = false
         window.center()
@@ -44,17 +44,28 @@ final class LichessBotAllGamesWindowController: NSWindowController, NSWindowDele
     }
 }
 
-/// Every filed game in a sortable table.
+/// Every filed game in a sortable table, with how each began (challenge-log
+/// plan §3.9) and a filter by origin. The shown rows are filtered and sorted
+/// into `shownRows` when the index, the origins, the filter or the sort
+/// change, never in `body`.
 struct LichessBotAllGamesView: View {
     let controller: LichessBotController
     @State private var sortOrder = [KeyPathComparator(\LichessBotAllGamesRow.createdAt, order: .reverse)]
+    @State private var originFilter: LichessBotAllGamesOriginFilter = .all
+    @State private var shownRows: [LichessBotAllGamesRow] = []
+    @State private var summary = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(summary)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Table(rows.sorted(using: sortOrder), sortOrder: $sortOrder) {
+            HStack(spacing: 12) {
+                Text(summary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Spacer()
+                LichessBotAllGamesOriginFilterPicker(filter: $originFilter)
+            }
+            Table(shownRows, sortOrder: $sortOrder) {
                 TableColumn("") { row in
                     LichessBotResultChip(ourScore: row.summary.ourScore)
                 }
@@ -68,6 +79,10 @@ struct LichessBotAllGamesView: View {
                     PieceColorDisc(color: row.summary.ourColor == .white ? .white : .black, diameter: 10)
                 }
                 .width(40)
+                TableColumn("Origin", value: \.originSortKey) { row in
+                    LichessBotGameOriginLabel(display: row.origin)
+                }
+                .width(min: 90, ideal: 120)
                 TableColumn("Opponent", value: \.opponentSortKey) { row in
                     HStack(spacing: 4) {
                         LichessBotFavoriteStar(controller: controller, userID: row.summary.opponentID)
@@ -107,26 +122,121 @@ struct LichessBotAllGamesView: View {
             }
         }
         .padding(12)
+        .onChange(of: controller.index?.rows, initial: true) {
+            Task { @MainActor in
+                refreshShownRows()
+            }
+        }
+        .onChange(of: controller.originsByGameID) {
+            Task { @MainActor in
+                refreshShownRows()
+            }
+        }
+        .onChange(of: originFilter) {
+            Task { @MainActor in
+                refreshShownRows()
+            }
+        }
+        .onChange(of: sortOrder) {
+            Task { @MainActor in
+                refreshShownRows()
+            }
+        }
     }
 
-    private var rows: [LichessBotAllGamesRow] {
-        (controller.index?.rows ?? []).map(LichessBotAllGamesRow.init)
-    }
-
-    private var summary: String {
-        guard let index = controller.index else { return "Loading the games index…" }
-        return "\(index.rows.count) filed games"
+    private func refreshShownRows() {
+        guard let index = controller.index else {
+            shownRows = []
+            summary = "Loading the games index…"
+            return
+        }
+        let filtered = LichessBotAllGamesRow.rows(index.rows, origins: controller.originsByGameID, filter: originFilter)
+        shownRows = filtered.sorted(using: sortOrder)
+        summary = LichessBotAllGamesRow.summary(filedCount: index.rows.count, shown: filtered, filter: originFilter)
     }
 }
 
-/// A filed game with sort keys for the table.
+/// Which games the All Games window shows, by how they began.
+enum LichessBotAllGamesOriginFilter: Hashable {
+    case all
+    case only(LichessBotGameOriginCategory)
+}
+
+/// A filed game with its shown origin and sort keys for the table.
 struct LichessBotAllGamesRow: Identifiable {
     let summary: LichessBotGameSummary
+    /// From `LichessBotController.originsByGameID`, which holds every
+    /// indexed game; nil would be a game the map doesn't hold yet, shown as
+    /// not yet known.
+    let origin: LichessBotGameOriginDisplay?
     var id: String { summary.gameID }
     var createdAt: Date { summary.createdAt }
+    /// The category's place in `LichessBotGameOriginCategory.allCases`; an
+    /// origin not yet known sorts after every category.
+    var originSortKey: Int { origin.map { $0.category.displayOrder } ?? Int.max }
     var opponentSortKey: String { (summary.opponentName ?? "").lowercased() }
     var opponentRatingSortKey: Int { summary.opponentRating ?? Int.min }
     var speed: String { summary.speed }
     var status: String { summary.status }
     var plies: Int { summary.plies }
+
+    /// The index rows `filter` shows, in index order. An origin not yet
+    /// known matches only "All".
+    static func rows(_ summaries: [LichessBotGameSummary], origins: [String: LichessBotGameOriginDisplay],
+                     filter: LichessBotAllGamesOriginFilter) -> [LichessBotAllGamesRow] {
+        summaries.compactMap { summary in
+            let row = LichessBotAllGamesRow(summary: summary, origin: origins[summary.gameID])
+            switch filter {
+            case .all:
+                return row
+            case .only(let category):
+                return row.origin?.category == category ? row : nil
+            }
+        }
+    }
+
+    /// The summary line: how many games are filed, how many are shown, and
+    /// the shown games per origin category in category order (categories
+    /// with none left out).
+    static func summary(filedCount: Int, shown: [LichessBotAllGamesRow], filter: LichessBotAllGamesOriginFilter) -> String {
+        var counts: [LichessBotGameOriginCategory: Int] = [:]
+        var notYetKnown = 0
+        for row in shown {
+            if let category = row.origin?.category {
+                counts[category, default: 0] += 1
+            } else {
+                notYetKnown += 1
+            }
+        }
+        var parts = LichessBotGameOriginCategory.allCases.compactMap { category -> String? in
+            guard let count = counts[category] else { return nil }
+            return "\(LichessBotGameOriginStyle.shortLabel(for: category)) \(count)"
+        }
+        if notYetKnown > 0 {
+            parts.append("\(LichessBotGameOriginStyle.notYetKnownLabel) \(notYetKnown)")
+        }
+        let head: String
+        switch filter {
+        case .all: head = "\(filedCount) filed games"
+        case .only: head = "\(shown.count) of \(filedCount) filed games"
+        }
+        return parts.isEmpty ? head : "\(head): \(parts.joined(separator: " · "))"
+    }
+}
+
+extension LichessBotGameOriginCategory {
+    /// Where the category sorts: its place in `allCases` (pinned by a test).
+    var displayOrder: Int {
+        switch self {
+        case .incoming: return 0
+        case .challengeSheet: return 1
+        case .casualResendOffer: return 2
+        case .challengeQueue: return 3
+        case .matchmaking: return 4
+        case .matchmakingCasualResend: return 5
+        case .outgoingSenderNotRecorded: return 6
+        case .tournament: return 7
+        case .unknown: return 8
+        }
+    }
 }
