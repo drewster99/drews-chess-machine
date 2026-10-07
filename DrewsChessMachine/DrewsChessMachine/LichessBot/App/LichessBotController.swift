@@ -368,7 +368,7 @@ final class LichessBotController {
     /// identifies this hold, so a stale hold's timer never moves the view.
     private var autoFollowHold: (gameID: String, token: UUID, task: Task<Void, Never>)?
     /// How long the single view stays on a followed game after it ends.
-    static let finishedGameHold: Duration = .seconds(8)
+    nonisolated static let finishedGameHold: Duration = .seconds(8)
     private let finishedGameHoldDuration: Duration
     /// The longest shutdown waits for challenge sends in flight and for the
     /// withdrawals of our unanswered challenges: one urgent request's idle
@@ -982,7 +982,7 @@ final class LichessBotController {
     /// When to fetch a finished game's chat. Lichess closes the game stream
     /// right after the final state, so chat after that (an opponent's "gg")
     /// arrives only through `GET /api/bot/game/{id}/chat`.
-    static let postGameChatFetchDelays: [Duration] = [.seconds(60), .seconds(300)]
+    nonisolated static let postGameChatFetchDelays: [Duration] = [.seconds(60), .seconds(300)]
     /// This controller's fetch delays: `postGameChatFetchDelays`, or a
     /// shorter schedule a test passes in.
     private let postGameChatFetchSchedule: [Duration]

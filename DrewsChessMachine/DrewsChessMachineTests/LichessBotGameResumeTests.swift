@@ -6,7 +6,7 @@ import XCTest
 @MainActor
 final class LichessBotGameResumeTests: XCTestCase {
 
-    private static let botID = "drewschessmachine"
+    private nonisolated static let botID = "drewschessmachine"
     private static let start = Date(timeIntervalSince1970: 1_759_000_000)
 
     private static let generation = LichessBotGenerationInfo(
