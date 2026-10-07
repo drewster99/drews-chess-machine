@@ -48,8 +48,17 @@ def system_zone_name():
     return target.split(marker, 1)[1]
 
 
-def parse_date(text):
-    return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+def parse_date(text, what):
+    """`text` (ISO 8601) as an aware datetime. A time without a zone or offset
+    is refused rather than guessed: the periods compare instants, and a naive
+    time names none. `what` names the value in the error."""
+    try:
+        value = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("%s %r is not an ISO 8601 time: %s" % (what, text, error)) from None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("%s %r has no time zone; give an offset or Z (e.g. %sZ)" % (what, text, text))
+    return value
 
 
 def load_records(directory):
@@ -114,7 +123,7 @@ def period_starts(now, zone, sunday_weeks):
 
 
 def in_period(record, start):
-    return start is None or parse_date(record["createdAt"]) >= start
+    return start is None or parse_date(record["createdAt"], "a game record's createdAt") >= start
 
 
 def brier_at(records, move_number):
@@ -179,7 +188,13 @@ def main():
     args = parser.parse_args()
 
     zone = ZoneInfo(args.tz or system_zone_name())
-    now = parse_date(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
+    if args.now:
+        try:
+            now = parse_date(args.now, "--now")
+        except ValueError as error:
+            parser.error(str(error))
+    else:
+        now = dt.datetime.now(dt.timezone.utc)
     records = load_records(args.games)
     if args.filter == "rated":
         records = [r for r in records if r["setup"]["rated"]]
@@ -188,7 +203,11 @@ def main():
     starts = period_starts(now, zone, args.sunday_weeks)
     print("records: %d (filter %s, now %s, zone %s)" % (len(records), args.filter, now.isoformat(), zone))
     for period, start in starts.items():
-        subset = [r for r in records if in_period(r, start)]
+        try:
+            subset = [r for r in records if in_period(r, start)]
+        except ValueError as error:
+            print("error: %s" % error, file=sys.stderr)
+            return 2
         s = summarize(subset)
         print("%-9s games=%d W-D-L=%s score=%s perf=%s rating=%s brier@20=%s (n=%d) not-counted=%d rated-without-diff=%d"
               % (period, s["games"], s["wdl"], s["score"], s["perf"], s["rating"], s["brier20"], s["brier20_games"],

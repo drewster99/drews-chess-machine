@@ -137,6 +137,27 @@ class TensorCompareTests(unittest.TestCase):
         write(reference, {"w": ("F32", [3], f32([1.0, 2.0]))})
         self.assertEqual(self.run_main(reference, reference), 2)
 
+    def write_entry(self, entry):
+        """A file holding one 2-element F32 tensor `w` whose header entry is `entry`."""
+        path = os.path.join(self.folder, "malformed.safetensors")
+        encoded = json.dumps({"__metadata__": {}, "w": entry}).encode()
+        with open(path, "wb") as handle:
+            handle.write(struct.pack("<Q", len(encoded)) + encoded + f32([1.0, 2.0]))
+        return path
+
+    def test_a_malformed_shape_dtype_or_offsets_is_unreadable_not_a_difference(self):
+        good = {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]}
+        malformed = [("shape", 2), ("shape", "2"), ("shape", [2.0]), ("shape", ["2"]), ("shape", [-2]),
+                     ("shape", [True, 2]), ("shape", None), ("data_offsets", [0.0, 8]), ("data_offsets", ["0", "8"]),
+                     ("data_offsets", [False, 8]), ("data_offsets", [-1, 8]), ("dtype", ["F32"]), ("dtype", 4)]
+        for key, value in malformed:
+            with self.subTest(key=key, value=value):
+                path = self.write_entry(dict(good, **{key: value}))
+                with self.assertRaises(compare_module.UnreadableFile):
+                    compare_module.read_tensors(path)
+                self.assertEqual(self.run_main(path, path), 2)
+        self.assertEqual(self.run_main(self.write_entry(good), self.write_entry(good)), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

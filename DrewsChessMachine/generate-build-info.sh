@@ -64,15 +64,23 @@ done
 SCOPE="DrewsChessMachine"
 GENERATED_COUNTER="DrewsChessMachine/build_counter.txt"
 GENERATED_BUILD_INFO="DrewsChessMachine/DrewsChessMachine/App/BuildInfo.swift"
-PATHSPEC=("$SCOPE" ":(exclude)$GENERATED_COUNTER" ":(exclude)$GENERATED_BUILD_INFO")
+# `DrewsChessMachine/.claude` holds per-user tool settings, never compiled;
+# the repository's .gitignore anchors `.claude/*` at the root only, so it is
+# left out here instead.
+LOCAL_TOOL_SETTINGS="DrewsChessMachine/.claude"
+PATHSPEC=("$SCOPE" ":(exclude)$GENERATED_COUNTER" ":(exclude)$GENERATED_BUILD_INFO" ":(exclude)$LOCAL_TOOL_SETTINGS")
 
-# The settings that decide which bytes and mode a working-tree file is
-# staged as, pinned so neither a user's nor the repository's configuration
-# changes the tree: no line-ending conversion, the executable bit read from
-# the file system, symbolic links staged as links.
+# The settings that decide which files and which bytes and mode a
+# working-tree file is staged as, pinned so neither a user's nor the
+# repository's configuration changes the tree: no line-ending conversion,
+# the executable bit read from the file system, symbolic links staged as
+# links, and no user-wide excludes file (`core.excludesFile`, which `git
+# add -A` would otherwise honor, so an untracked file one Mac ignores
+# globally would make the same code dirty on another). The repository's
+# own .gitignore files still apply.
 git_pinned() {
     git -C "$REPO_ROOT" -c core.autocrlf=false -c core.safecrlf=false -c core.eol=lf \
-        -c core.fileMode=true -c core.symlinks=true "$@"
+        -c core.fileMode=true -c core.symlinks=true -c core.excludesFile=/dev/null "$@"
 }
 
 # Two temporary indexes, never the repository's own: one holds HEAD, the
