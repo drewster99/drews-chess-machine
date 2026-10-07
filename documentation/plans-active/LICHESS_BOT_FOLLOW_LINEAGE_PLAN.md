@@ -1,6 +1,6 @@
 # Lichess bot: follow the newest checkpoint of one lineage on disk
 
-Status (2026-10-06): **PLAN ONLY.** Nothing here is implemented. OD-19 and the §5.1 test edits were decided by the owner on 2026-10-06 (§10); implementation follows the phase order of §7.
+Status (2026-10-06): **IN PROGRESS.** Implemented: P-ready, P0. OD-19 and the §5.1 test edits were decided by the owner on 2026-10-06 (§10); implementation follows the phase order of §7.
 - **Owner decisions recorded 2026-10-06** (§10). They amend OD-6, OD-8, OD-9 and OD-17 (keep playing + alarm instead of declining) and add a rule for every source: **the bot builds its model generation before it goes online** (§3.10, OD-18, OD-19). The design, tests, validation and phasing below follow them.
 - Every `file:line` was checked against `main` at `f5be524b`.
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`) or `documentation/`.
@@ -724,3 +724,9 @@ Decisions taken while implementing, where the plan left a choice open or the cod
 - **The switch status view also shows the last failed refresh** (with its retry time) when no switch is pending: a vanished champion or a failing live-trainer snapshot is then visible on the model card, not only in the alarms.
 - **A failed build uses up no generation number** (as before): the builder returns the built network and the slots number it when they publish it.
 - **`goingOnlineCancelled` / `shutDownWhileGoingOnline` count as "stopped"** in the challenge queue's error classification; no send can throw them, but the switch must be exhaustive and "stopped" keeps the entry.
+
+**P0**
+- **The byte-source seam is `LichessBotModelFileLoader`**, a value holding the one `readBytes` closure (`.live` reads through `CheckpointManager.readModelFileBytes(at:)`, which names a failed read `readFailed` exactly as `loadModelFile(at:)` always did). The seam went in first with today's two reads; `testRecordedHashIsOfTheBytesThatWereDecoded` failed against it; the single read then made it pass.
+- **`refreshIfDue` adopts a same-source settings value** (`currentSettings = settings`) before its refresh test, so the interval and toggle in force are the newest; a finished build sets `currentSettings` to the settings it was built for (a caller that joined it with a newer non-weight value is brought up to date by the next poll).
+- **Builds and tests run through `xcodebuild` with a private derived-data folder** (owner instruction, 2026-10-06): with several open workspaces named `DrewsChessMachine.xcodeproj` (agent worktrees), the Xcode tool resolved build and test commands to whichever window was frontmost. No Xcode window is opened or focused.
+- **Fail-first evidence, re-taken with `xcodebuild`.** With the two reads and the whole-settings comparison temporarily restored, `testRecordedHashIsOfTheBytesThatWereDecoded` failed (hash of the second read; two reads) and all three `LichessBotModelSlotsSettingsChangeTests` failed (generation 2, a second snapshot); with the fix, all four pass unmodified.
