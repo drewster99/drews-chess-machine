@@ -375,6 +375,10 @@ extension SessionController {
         }
         var promoted = false
         var promotedID: ModelID?
+        // The promotion save's training-health stamp and config, taken right
+        // after the trainer-clock rewind under both pauses (D2), so the
+        // save's checkpoint pass is judged against the rewound generation.
+        var promotionCheckpointHealth: GuiTrainingHealthCheckpoint?
 
         // The two criteria ask different questions and therefore have
         // different failure shapes.
@@ -505,7 +509,18 @@ extension SessionController {
                         }
                     }
                     trainingBox?.resetRollingWindows()
+                    // The training-health monitor's own rolling state goes
+                    // with it (R0): the trainer's weights and clock went back
+                    // to the arena-start snapshot, so the pending window, the
+                    // spike references and every pending sustain describe
+                    // weights that no longer exist. Active alarms stay; they
+                    // clear only by recovery.
+                    trainingHealthMonitor?.noteTrainerClockRewind(
+                        to: trainerSnapshotCompletedSteps, log: GuiTrainingHealthWorker.logSink)
+                    promotionCheckpointHealth = makeTrainingHealthCheckpoint()
                     trainingAlarm?.resetStreaks()
+                    // Clears the banner only; the health list mirrors the
+                    // monitor, whose alarms survive the rewind.
                     trainingAlarm?.clear()
                     // The promotion's lineage bookkeeping, under both
                     // pauses so it is one cut with the rewound trainer: the
@@ -725,6 +740,7 @@ extension SessionController {
             let includeReplayBuffer = promotionSaveIncludesReplayBuffer
             // Captured as a `let` so the detached save task below can read it.
             let promotionSaveTrainerStep = trainerSnapshotCompletedSteps
+            let promotionSaveHealth = promotionCheckpointHealth
             // The trainer was rewound to exactly this state on promotion:
             // arena-start weights and velocity, the clock captured with them,
             // and the schedule it is running.
@@ -844,7 +860,8 @@ extension SessionController {
                             context: "session-\(SessionSaveTrigger.promotionDiskTag)",
                             step: promotionSaveStep,
                             trainerStep: promotionSaveTrainerStep,
-                            recorder: self.cliRecorder)
+                            recorder: self.cliRecorder,
+                            trainingHealth: promotionSaveHealth)
                         // Promotion saves share the automatic-save
                         // retention pool with periodic autosaves.
                         self.scheduleAutomaticSaveRetentionSweep(

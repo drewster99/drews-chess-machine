@@ -681,6 +681,22 @@ final class TrainingHealthMonitor: @unchecked Sendable {
         }
     }
 
+    // MARK: Parking (GUI)
+
+    /// Set by the GUI's main actor when a health stop suspends training
+    /// (R3); the trainer worker of this monitor's run polls it at its loop
+    /// top and parks. Per monitor, so a later run's worker never sees an
+    /// earlier run's request.
+    private let parkRequest = SyncBox(false)
+
+    func requestPark() {
+        parkRequest.value = true
+    }
+
+    var parkRequested: Bool {
+        parkRequest.value
+    }
+
     // MARK: Reads
 
     /// The current active set, in rule order (the GUI list mirrors it).

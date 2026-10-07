@@ -218,6 +218,22 @@ final class TrainingSettingsPopoverModel {
     /// Save leaves `random_seed` untouched, like the inactive policy-smoothing
     /// fields, so an edit there is discarded rather than committed unseen.
     var randomSeedModeValue: RandomSeedMode = .unseeded
+
+    // --- Health tab (training-health alarms, Part K) ---
+    // Commit-on-Save like the rest of the popover. The GUI re-reads these at
+    // every evaluation (the stop decision at every delivered one), so a
+    // committed edit applies to the running session at its next evaluation.
+    /// `training_health_alarms_enabled`.
+    var trainingHealthAlarmsEnabledValue = true
+    /// `training_health_check_interval_steps`.
+    var trainingHealthCheckIntervalText = "" { didSet { trainingHealthCheckIntervalError = false } }
+    /// `training_health_learning_grace_steps`.
+    var trainingHealthLearningGraceText = "" { didSet { trainingHealthLearningGraceError = false } }
+    /// One pending action per rule (`training_health_action_<rule>`); a
+    /// picker cannot hold an invalid value, so these have no error flag.
+    var trainingHealthActionsValue = TrainingHealthActions { _ in .log }
+    private(set) var trainingHealthCheckIntervalError = false
+    private(set) var trainingHealthLearningGraceError = false
     var randomSeedText = "" { didSet { randomSeedError = false } }
     private(set) var randomSeedError = false
 
@@ -387,6 +403,7 @@ final class TrainingSettingsPopoverModel {
         \.maxPliesFromAnyOneGameText, \.targetSampledGameLengthPliesText, \.maxDrawPercentPerBatchText,
         \.periodicAutosaveIntervalMinutesText, \.maxPeriodicAutosavesKeptText, \.klProbeIntervalText,
         \.stepLineIntervalText,
+        \.trainingHealthCheckIntervalText, \.trainingHealthLearningGraceText,
     ]
 
     /// Each `seededTextFields` entry's text as `seedFromParams` (or a resync
@@ -520,6 +537,13 @@ final class TrainingSettingsPopoverModel {
         stepLineIntervalText = String(format: Self.stepLineIntervalFormat, p.stepLineIntervalSec)
         randomSeedModeValue = p.randomSeedMode
         randomSeedText = String(p.randomSeed)
+        // --- Health tab ---
+        trainingHealthAlarmsEnabledValue = p.trainingHealthAlarmsEnabled
+        trainingHealthCheckIntervalText = String(p.trainingHealthCheckIntervalSteps)
+        trainingHealthLearningGraceText = String(p.trainingHealthLearningGraceSteps)
+        trainingHealthActionsValue = TrainingHealthActions {
+            p[keyPath: TrainingParameters.trainingHealthActionKeyPath(for: $0)]
+        }
         // Stash pre-edit values for the four replay-ratio control fields. The
         // Replay tab live-propagates changes to those fields; if the user hits
         // Cancel we restore from this stash, matching the standard
@@ -598,6 +622,8 @@ final class TrainingSettingsPopoverModel {
         klProbeIntervalError = false
         stepLineIntervalError = false
         randomSeedError = false
+        trainingHealthCheckIntervalError = false
+        trainingHealthLearningGraceError = false
     }
 
     /// Restore the seven live-propagated Replay-tab fields (four replay-ratio
@@ -1585,6 +1611,46 @@ final class TrainingSettingsPopoverModel {
         } else {
             stepLineIntervalError = true
             anyError = true
+        }
+        // Training-health settings — `liveTunable`; the GUI resolves its
+        // config from the singleton at every evaluation and decides stops
+        // from the live actions, so plain singleton writes are all that is
+        // required.
+        if trainingHealthAlarmsEnabledValue != p.trainingHealthAlarmsEnabled {
+            SessionLogger.shared.log(
+                "[PARAM] trainingHealthAlarmsEnabled: \(p.trainingHealthAlarmsEnabled) -> \(trainingHealthAlarmsEnabledValue)")
+            p.trainingHealthAlarmsEnabled = trainingHealthAlarmsEnabledValue
+        }
+        if let n = editedValue(TrainingHealthCheckIntervalSteps.self, \.trainingHealthCheckIntervalText,
+                               current: p.trainingHealthCheckIntervalSteps) {
+            trainingHealthCheckIntervalError = false
+            if n != p.trainingHealthCheckIntervalSteps {
+                SessionLogger.shared.log("[PARAM] trainingHealthCheckIntervalSteps: \(p.trainingHealthCheckIntervalSteps) -> \(n)")
+                p.trainingHealthCheckIntervalSteps = n
+            }
+        } else {
+            trainingHealthCheckIntervalError = true
+            anyError = true
+        }
+        if let n = editedValue(TrainingHealthLearningGraceSteps.self, \.trainingHealthLearningGraceText,
+                               current: p.trainingHealthLearningGraceSteps) {
+            trainingHealthLearningGraceError = false
+            if n != p.trainingHealthLearningGraceSteps {
+                SessionLogger.shared.log("[PARAM] trainingHealthLearningGraceSteps: \(p.trainingHealthLearningGraceSteps) -> \(n)")
+                p.trainingHealthLearningGraceSteps = n
+            }
+        } else {
+            trainingHealthLearningGraceError = true
+            anyError = true
+        }
+        for rule in TrainingHealthRule.allCases {
+            let keyPath = TrainingParameters.trainingHealthActionKeyPath(for: rule)
+            let pending = trainingHealthActionsValue[rule]
+            if pending != p[keyPath: keyPath] {
+                SessionLogger.shared.log(
+                    "[PARAM] training_health_action_\(rule.rawValue): \(p[keyPath: keyPath].name) -> \(pending.name)")
+                p[keyPath: keyPath] = pending
+            }
         }
         // Run seed — the mode, then (in seeded mode only) a UInt64 seed.
         // Read when a run starts, so a plain singleton write is all that's

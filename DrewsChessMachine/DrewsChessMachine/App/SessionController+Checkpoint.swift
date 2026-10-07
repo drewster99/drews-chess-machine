@@ -459,6 +459,9 @@ extension SessionController {
                 return
             }
             let trainerWeights = trainerSnapshot.trainerWeights
+            // The training-health stamp of exactly the exported state, under
+            // the same training pause (D2).
+            let checkpointHealth = makeTrainingHealthCheckpoint()
             // The run's lineage at this save, for the session's trainer
             // file and session.json, read under both pauses; the champion
             // file's own record and training step come from where its
@@ -606,7 +609,8 @@ extension SessionController {
                     context: "session-\(diskTag)",
                     step: trainingStep,
                     trainerStep: trainerSnapshot.schedule.completedTrainSteps,
-                    recorder: cliRecorder)
+                    recorder: cliRecorder,
+                    trainingHealth: checkpointHealth)
                 // Periodic and Promote Trainee Now saves are in the
                 // automatic-save retention pool; manual and SIGUSR2 saves
                 // are not, and the helper decides that from the disk tag.
@@ -629,8 +633,9 @@ extension SessionController {
         trainerWeights: [[Float]],
         context: String,
         step: Int,
-        trainerStep: Int?,
-        recorder: CliTrainingRecorder?
+        trainerStep: Int,
+        recorder: CliTrainingRecorder?,
+        trainingHealth: GuiTrainingHealthCheckpoint?
     ) {
         Task.detached(priority: .utility) {
             let health = await LayerHealthLog.checkpoint(
@@ -642,6 +647,20 @@ extension SessionController {
             if let recorder, let summary = health.summary {
                 recorder.appendLayerHealth(CliTrainingRecorder.LayerHealthRecord(
                     step: step, trainerStep: trainerStep, context: context, summary: summary))
+            }
+            // The training-health checkpoint evaluation of the same pass
+            // (rules 1, 2, 3, 8), judged under the settings in force when
+            // the state was exported; the stop decision is made on the main
+            // actor when it arrives (R2). A failed pass is no observation.
+            if let trainingHealth, let summary = health.summary {
+                let evaluation = trainingHealth.monitor.evaluateCheckpoint(
+                    stamp: trainingHealth.stamp, layerHealth: LayerHealthDigest(summary: summary),
+                    digestTrainerStep: trainerStep, config: trainingHealth.config,
+                    log: GuiTrainingHealthWorker.logSink)
+                if let recorder, let evaluation {
+                    recorder.appendAlarmEvents(evaluation.events)
+                }
+                trainingHealth.deliver(trainingHealth.monitor)
             }
         }
     }

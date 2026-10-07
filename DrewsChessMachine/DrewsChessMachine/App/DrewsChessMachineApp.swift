@@ -687,7 +687,7 @@ struct DrewsChessMachineApp: App {
                     .disabled(!commandHub.realTraining || !commandHub.isArenaRunning)
                 Divider()
                 Button("Promote Trainee Now") { commandHub.promoteTrainerNow() }
-                    .disabled(!commandHub.realTraining || commandHub.isArenaRunning)
+                    .disabled(!commandHub.realTraining || commandHub.isArenaRunning || commandHub.trainingSuspended)
             }
 
             // Chess menu — human-vs-network play. The user picks the

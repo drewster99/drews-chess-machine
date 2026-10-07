@@ -974,6 +974,7 @@ struct UpperContentView: View {
             sweepRunning: sweepRunning,
             realTraining: realTraining,
             isArenaRunning: session.isArenaRunning,
+            trainingSuspended: session.trainingSuspension != nil,
             checkpointSaveInFlight: checkpoint.checkpointSaveInFlight,
             isTrainingOnce: isTrainingOnce,
             isEvaluating: isEvaluating,
@@ -1137,6 +1138,8 @@ struct UpperContentView: View {
                     onDismiss: { trainingAlarm.dismiss() }
                 )
             }
+            // Always mounted; hidden (opacity 0, zero frame) while empty.
+            TrainingHealthAlarmList(alarmController: trainingAlarm)
             cumulativeStatusBar
             busyRowWithDialogs
             boardAndTextRow
@@ -2440,6 +2443,7 @@ struct UpperContentView: View {
         commandHub.sweepRunning = sweepRunning
         commandHub.realTraining = realTraining
         commandHub.isArenaRunning = session.isArenaRunning
+        commandHub.trainingSuspended = session.trainingSuspension != nil
         commandHub.checkpointSaveInFlight = checkpoint.checkpointSaveInFlight
         commandHub.pendingLoadedSessionExists = pendingLoadedSession != nil
         commandHub.canResumeFromAutosave = canResumeFromAutosave

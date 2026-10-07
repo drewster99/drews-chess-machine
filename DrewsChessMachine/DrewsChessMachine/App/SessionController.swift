@@ -290,17 +290,27 @@ final class SessionController {
     /// `true` while a Play-and-Train (self-play) session is active.
     var realTraining: Bool = false
 
-    /// `true` once a training divergence (non-finite loss / GPU command
-    /// failure / gradient blow-up) has suspended the trainer. The session is
-    /// deliberately NOT torn down on divergence — the alarm banner stays up so
-    /// the user can see why training stopped, and the rest of the run
-    /// (heartbeat, self-play, stats) keeps living. Instead, this flag is the
-    /// single gate that prevents the suspended state from doing further harm:
-    /// it blocks arenas from running (which would otherwise snapshot the
-    /// poisoned trainer weights into a candidate) and blocks the 4-hour
-    /// periodic autosave from persisting the diverged session. Reset on a fresh
-    /// `startRealTraining` and on `stopRealTraining`.
-    var trainingSuspendedByDivergence: Bool = false
+    /// Why training is suspended, or nil while it runs: a divergence
+    /// (non-finite loss / GPU command failure / gradient blow-up) or a
+    /// training-health alarm whose action stops the run. The session is
+    /// deliberately NOT torn down — the banner or the health list says why,
+    /// and the rest of the run (heartbeat, self-play, stats) keeps living.
+    /// This is the single gate that keeps the suspended trainer from doing
+    /// further harm; each gate reads the case (`TrainingSuspension`'s table:
+    /// arenas and Promote Trainee Now are refused for both, the periodic
+    /// autosave only for a divergence). Reset on a fresh `startRealTraining`
+    /// and on `stopRealTraining`.
+    var trainingSuspension: TrainingSuspension?
+
+    /// The training-health monitor of the current Play-and-Train start (a new
+    /// one at every start, a continue after Stop included). Every evaluation
+    /// hop to the main actor carries the monitor it used; a hop whose monitor
+    /// is not this one is from an earlier start and is ignored.
+    var trainingHealthMonitor: TrainingHealthMonitor?
+
+    /// The `--train` run's termination claim, for a health stop (nil in an
+    /// interactive session, where a stop suspends training instead).
+    @ObservationIgnored var trainingHealthAutoTrainStop: TrainingHealthAutoTrainStop?
 
     /// Handle to the Play-and-Train driver `Task`. Cancelled on Stop.
     var realTrainingTask: Task<Void, Never>?

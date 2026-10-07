@@ -524,9 +524,9 @@ extension SessionController {
         arenaOverrideBox = overrideBox
         isArenaRunning = false
         realTraining = true
-        // Clear any divergence suspension from a prior run so this start begins
-        // with arenas and the periodic autosave un-gated.
-        trainingSuspendedByDivergence = false
+        // Clear any suspension from a prior run so this start begins with
+        // arenas and the periodic autosave un-gated.
+        trainingSuspension = nil
         // Arm the periodic-save scheduler. Always construct a fresh
         // controller on each start — a previous stop will have nil'd it
         // out, and `.continueAfterStop` intentionally resets the
@@ -614,6 +614,20 @@ extension SessionController {
             AutoTrainTermination(recorder: $0, resultsOutput: resultsOutput)
         }
 
+        // Training-health monitoring for this start (a new monitor every
+        // start, a continue after Stop included). A `--train` run's health
+        // stop takes the same termination claim as its other endings; an
+        // interactive run suspends training instead.
+        let healthMonitor = beginTrainingHealthRun(
+            arch: trainer.arch, recorder: recorder,
+            autoTrainStop: isAutoTrainRun
+                ? autoTrainTermination.map { TrainingHealthAutoTrainStop(termination: $0, runStart: runStart) }
+                : nil)
+        let healthResolveConfig: @Sendable () async -> TrainingHealthConfig? = { [weak self] in
+            await MainActor.run { self?.resolveTrainingHealthConfig() }
+        }
+        let healthDeliver = makeTrainingHealthDelivery()
+
         // Self-play corpus recording. Read once at run start (not
         // live-tunable). When enabled, every kept (post-draw-filter) self-play
         // game is tee'd into a standalone game corpus under Corpora/, referenced
@@ -700,7 +714,8 @@ extension SessionController {
              gameWatcher, ratioController, recorder, cliTrainingTimeLimitSec,
              cliTrainingStepLimit, autoTrainTermination,
              isAutoTrainRun,
-             sessionTrainingBatchSize, sessionMinBufferBeforeTraining] in
+             sessionTrainingBatchSize, sessionMinBufferBeforeTraining,
+             healthMonitor, healthResolveConfig, healthDeliver] in
 
             // --- Setup: build any missing networks, reset the trainer ---
 
@@ -1193,9 +1208,15 @@ extension SessionController {
                 let trainingTaskCreatedAt = Date()
                 group.addTask(priority: .high) {
                     [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, ratioController,
-                     sessionTrainingBatchSize, sessionMinBufferBeforeTraining, trainingTaskCreatedAt] in
+                     sessionTrainingBatchSize, sessionMinBufferBeforeTraining, trainingTaskCreatedAt,
+                     healthMonitor, healthResolveConfig, healthDeliver, recorder] in
                     let creatingMs = Int(Date().timeIntervalSince(trainingTaskCreatedAt) * 1000)
                     SessionLogger.shared.log("[TASK] training worker: created→exec=\(creatingMs)ms")
+                    // This worker's training-health hooks (record, the
+                    // 50-step live evaluation, the value-FC1 read, parking).
+                    let healthWorker = GuiTrainingHealthWorker(
+                        monitor: healthMonitor, trainer: trainer, batchSize: sessionTrainingBatchSize,
+                        recorder: recorder, resolveConfig: healthResolveConfig, deliver: healthDeliver)
                     // Track the previous step's applied delay so the
                     // next `recordTrainingBatchAndGetDelay` can report
                     // it as the current per-batch training-side delay
@@ -1217,6 +1238,17 @@ extension SessionController {
                             trainingGate.markRunning()
                         }
                         if Task.isCancelled { break }
+
+                        // A training-health stop suspended training: park
+                        // instead of returning, so the session saves this
+                        // suspension allows (they wait for this worker to
+                        // acknowledge their training pause) still complete
+                        // (R3). Only Stop (cancellation) ends the parked loop.
+                        if healthWorker.parkRequested {
+                            SessionLogger.shared.log("[HEALTH] trainer worker parked at trainerStep=\(trainer.completedTrainSteps)")
+                            await GuiTrainingHealthWorker.park(at: trainingGate)
+                            break
+                        }
 
                         // Wait for the replay buffer to warm up before
                         // starting to train — the first few games
@@ -1264,7 +1296,7 @@ extension SessionController {
                             // vanish before the user ever saw it. Instead we
                             // SUSPEND: keep the alarm banner up, leave the rest
                             // of the run (heartbeat, self-play, stats) alive,
-                            // and flip `trainingSuspendedByDivergence` so the
+                            // and set `trainingSuspension` so the
                             // suspended state gates the two things that would
                             // otherwise act on the poisoned net — arenas and the
                             // 4-hour periodic autosave. The trainer worker exits
@@ -1278,6 +1310,11 @@ extension SessionController {
                         box.recordStep(timing)
                         pStatsBox.recordTrainingStep()
                         segmentLineage.recordTrainingStep(totalMs: timing.totalMs)
+                        // Training health: record the step; every 50 trainer
+                        // steps the live evaluation; the value-FC1 read when
+                        // due. Awaited inline, so the next SGD step waits for
+                        // it (the observer never overlaps a step it judges).
+                        await healthWorker.afterStep(timing, trainerStep: trainer.completedTrainSteps)
 
                         // Candidate-test probe firing check. Method
                         // guards internally on all preconditions
@@ -1374,8 +1411,8 @@ extension SessionController {
                             // a still-pending auto-trigger and a manual Run
                             // Arena click). The trigger was already consumed by
                             // `waitForTrigger`, so we just loop back and wait.
-                            if await MainActor.run(body: { self.trainingSuspendedByDivergence }) {
-                                SessionLogger.shared.log("[ARENA] skipped — training suspended (divergence)")
+                            if let suspension = await MainActor.run(body: { self.trainingSuspension }) {
+                                SessionLogger.shared.log("[ARENA] skipped — training suspended (\(suspension.arenaSkipLabel))")
                                 continue arenaLoop
                             }
                             await self.runArenaParallel(
@@ -2342,7 +2379,7 @@ extension SessionController {
                                 // "Training Diverged (Suspended)" banner (which
                                 // explains *why* training stopped) with a
                                 // secondary alarm. Mirrors the heartbeat gate.
-                                guard !self.trainingSuspendedByDivergence else { return }
+                                guard self.trainingSuspension == nil else { return }
                                 self.trainingAlarm?.raise(
                                     severity: .critical,
                                     title: "Policy Collapse (legal mass)",
@@ -2429,7 +2466,7 @@ extension SessionController {
     /// does NOT clear the alarm. The trainer worker that called this returns
     /// immediately afterward (a NaN net can't keep stepping), but the session
     /// stays loaded with the banner up so the user can see what happened and
-    /// reload an earlier checkpoint. `trainingSuspendedByDivergence` is the gate
+    /// reload an earlier checkpoint. `trainingSuspension` is the gate
     /// that stops the now-poisoned trainer weights from doing further harm:
     /// arenas won't run (no candidate snapshot of the NaN weights) and the
     /// 4-hour periodic autosave won't persist the diverged session.
@@ -2438,8 +2475,11 @@ extension SessionController {
     /// worker fully unwinds) re-enters here and no-ops past the guard so the
     /// banner detail isn't churned.
     func suspendTrainingOnDivergence(reason: String) {
-        guard !trainingSuspendedByDivergence else { return }
-        trainingSuspendedByDivergence = true
+        // Idempotent for a divergence. A health suspension in force is
+        // replaced: the worker it parked cannot diverge, so a divergence here
+        // means the worker was already past its park check.
+        if case .divergence? = trainingSuspension { return }
+        trainingSuspension = .divergence(reason: reason)
         // Raise the banner explicitly rather than relying on the heartbeat's
         // gNorm/entropy streak detector having already tripped — an instant
         // step-1 NaN can diverge before any streak threshold is met. A distinct
@@ -2467,9 +2507,10 @@ extension SessionController {
     /// `suspendTrainingOnDivergence` instead, which keeps the banner and the
     /// session alive.)
     func stopRealTraining() {
+        finishTrainingHealthRun()
         realTrainingTask?.cancel()
         realTrainingTask = nil
-        trainingSuspendedByDivergence = false
+        trainingSuspension = nil
         trainingAlarm?.clear()
         // Close the in-progress training segment so cumulative wall-time
         // totals exclude post-Stop idle. If saving immediately after,

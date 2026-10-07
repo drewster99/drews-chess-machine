@@ -41,6 +41,10 @@ final class AppCommandHub {
     var realTraining: Bool = false
     /// Arena tournament in flight.
     var isArenaRunning: Bool = false
+    /// Play-and-Train's training is suspended (a divergence or a
+    /// training-health stop): Promote Trainee Now is disabled, the arena's
+    /// reason applied to a suspended trainer.
+    var trainingSuspended: Bool = false
     /// A checkpoint save is in flight (guards against overlapping
     /// saves — same semantics as the inline button's disabled gate).
     var checkpointSaveInFlight: Bool = false

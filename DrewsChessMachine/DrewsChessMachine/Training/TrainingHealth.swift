@@ -1607,6 +1607,38 @@ struct TrainingHealthSegmentSummary: Codable, Sendable, Equatable {
     let evaluations: Int
     /// One entry per rule that raised, in rule order.
     let raised: [Raised]
+
+    /// The summary of no evaluation: what a segment records before its
+    /// first monitor has evaluated anything.
+    static let empty = TrainingHealthSegmentSummary(evaluations: 0, raised: [])
+
+    /// This summary and `other` as one segment's: evaluations and raise
+    /// counts summed, the earliest first trainer step, the highest
+    /// severity. A GUI segment spans several monitors (one per start —
+    /// Continue and keep-trainer starts stay in the segment), so the
+    /// lineage record's `configuration.health_alarms` (HPARAM_RECORDING_PLAN
+    /// P4) is the merge of every monitor's summary in the segment. Pure and
+    /// order-independent, so merging the stored summary of the ended
+    /// monitors with the live one never counts anything twice as long as
+    /// each monitor is merged once.
+    func merging(_ other: TrainingHealthSegmentSummary) -> TrainingHealthSegmentSummary {
+        var byRule: [TrainingHealthRule: Raised] = [:]
+        for entry in raised + other.raised {
+            if let existing = byRule[entry.rule] {
+                byRule[entry.rule] = Raised(
+                    rule: entry.rule,
+                    firstTrainerStep: min(existing.firstTrainerStep, entry.firstTrainerStep),
+                    highestSeverity: existing.highestSeverity.healthRank >= entry.highestSeverity.healthRank
+                        ? existing.highestSeverity : entry.highestSeverity,
+                    raiseCount: existing.raiseCount + entry.raiseCount)
+            } else {
+                byRule[entry.rule] = entry
+            }
+        }
+        return TrainingHealthSegmentSummary(
+            evaluations: evaluations + other.evaluations,
+            raised: TrainingHealthRule.allCases.compactMap { byRule[$0] })
+    }
 }
 
 enum TrainingHealthError: LocalizedError, Equatable {
