@@ -34,8 +34,10 @@ final class TrainVsUciRefusalTests: XCTestCase {
 
     func testUnknownPresetThrows() async throws {
         let sessions = tempDir.appendingPathComponent("Sessions", isDirectory: true)
+        let neverStarted = tempDir.appendingPathComponent("never-started")
+        try Data("not an engine".utf8).write(to: neverStarted)
         let config = TrainVsUciConfig(
-            opponents: [TrainVsUciOpponentSpec(command: tempDir.appendingPathComponent("never-started").path,
+            opponents: [TrainVsUciOpponentSpec(command: neverStarted.path,
                                                count: 1, goLimit: "nodes 1", options: [], kind: "never-started")],
             stepLimit: 1,
             timeLimitSec: nil,
@@ -56,7 +58,10 @@ final class TrainVsUciRefusalTests: XCTestCase {
                 drawSeed: { preconditionFailure("a seeded run never draws its seed") }))
         let params = try ReplayParams(TrainingParametersSnapshot.declaredDefaults(overriding: [:]))
         do {
-            _ = try await TrainVsUciRunner.runTraining(config: config, params: params, abort: TrainVsUciAbortFlag())
+            _ = try await TrainVsUciRunner.runTraining(
+                config: config, params: params,
+                executableDigests: try TrainVsUciOpponentExecutableDigests(hashingExecutablesOf: config),
+                abort: TrainVsUciAbortFlag())
             XCTFail("a run with an unknown preset trained")
         } catch let refusal as CLIRunRefusal {
             XCTAssertTrue(refusal.message.contains("unknown --preset 'no_such_preset'"), refusal.message)

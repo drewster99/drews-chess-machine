@@ -488,9 +488,9 @@ final class MacOS27NaNIsolationTests: XCTestCase {
         var boards = [Float](repeating: 0, count: positions * fpb)
         var moves = [Int32](repeating: 0, count: positions)
         var plies = [UInt16](repeating: 0, count: positions)
-        var taus = [Float](repeating: 1.0, count: positions)
+        let taus = [Float](repeating: 1.0, count: positions)
         var hashes = [UInt64](repeating: 0, count: positions)
-        var materials = [UInt8](repeating: 32, count: positions)
+        let materials = [UInt8](repeating: 32, count: positions)
         var outcomes = [Float](repeating: 0, count: positions)
         var s: UInt64 = 0x00ABCDEF12345678
         for i in boards.indices {

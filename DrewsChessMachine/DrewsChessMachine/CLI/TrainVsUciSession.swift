@@ -264,18 +264,17 @@ enum TrainVsUciSession {
     /// The run's game generation as its lineage configuration records it
     /// (plan B1, gap 11): the ply cap, the eval-sync cadence, the trainer's
     /// move selection, and each opponent pool with the SHA-256 of the
-    /// executable its command names (read once, here) and its options
-    /// (values redacted like argv). Engine identities start unrecorded and
-    /// are noted after a handshake (`LineageTracker.noteEngineIdentity`).
+    /// executable its command names (from `executableDigests`, hashed in the
+    /// pre-flight) and its options (values redacted like argv). Engine
+    /// identities start unrecorded and are noted after a handshake
+    /// (`LineageTracker.noteEngineIdentity`).
     static func lineageGeneration(config: TrainVsUciConfig,
+                                  executableDigests: TrainVsUciOpponentExecutableDigests,
                                   trainerMoveSelection: SamplingSchedule) throws -> LineageRecord.VsUciGeneration {
         let opponents = try config.opponents.map { spec -> LineageRecord.VsUciGeneration.Opponent in
-            let executable = URL(fileURLWithPath: (spec.command as NSString).expandingTildeInPath)
-            let bytes = try Data(contentsOf: executable)
-            let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
-            return LineageRecord.VsUciGeneration.Opponent(
+            LineageRecord.VsUciGeneration.Opponent(
                 command: spec.command,
-                executableSHA256: digest,
+                executableSHA256: try executableDigests.sha256(ofExecutableNamedBy: spec.command),
                 count: spec.count,
                 goLimit: spec.goLimit,
                 options: spec.options.map { option in
@@ -371,5 +370,48 @@ extension SessionCheckpointState {
         guard lineage?.invocation.pathKind == .vsuci else { return nil }
         return "this session was written by --train-vs-uci; resume it with "
             + "--train-vs-uci … --start-model <this folder> --resume-exact"
+    }
+}
+
+/// The SHA-256 of each opponent pool's executable, by the command that names
+/// it. Built once, in train-vs-UCI's synchronous pre-flight
+/// (`TrainVsUciRunner.runAndExit`, before the run's async task starts):
+/// engine binaries run to tens of MB, and reading and hashing them in full
+/// inside the async run would block a cooperative-pool thread.
+struct TrainVsUciOpponentExecutableDigests: Sendable, Equatable {
+
+    enum DigestError: LocalizedError, Equatable {
+        case notHashed(command: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .notHashed(let command):
+                return "train-vs-UCI: the executable of opponent command '\(command)' was not hashed in the pre-flight"
+            }
+        }
+    }
+
+    private let sha256ByCommand: [String: String]
+
+    /// Read and hash the executable each of `config`'s opponent commands
+    /// names (a command repeated across pools is read once). Synchronous
+    /// file I/O: call it off the cooperative pool.
+    init(hashingExecutablesOf config: TrainVsUciConfig) throws {
+        var digests: [String: String] = [:]
+        for spec in config.opponents where digests[spec.command] == nil {
+            let executable = URL(fileURLWithPath: (spec.command as NSString).expandingTildeInPath)
+            let bytes = try Data(contentsOf: executable)
+            digests[spec.command] = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        }
+        sha256ByCommand = digests
+    }
+
+    /// The hex SHA-256 of the executable `command` names. Throws for a
+    /// command the pre-flight did not hash — a code bug, never a default.
+    func sha256(ofExecutableNamedBy command: String) throws -> String {
+        guard let digest = sha256ByCommand[command] else {
+            throw DigestError.notHashed(command: command)
+        }
+        return digest
     }
 }

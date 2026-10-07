@@ -178,7 +178,7 @@ extension TrainingParametersSnapshot {
         } catch {
             throw ParameterDifferenceError.unreadableParentSnapshot(detail: String(describing: error))
         }
-        let keysByID = Dictionary(uniqueKeysWithValues: TrainingParameters.allKeys.map { ($0.id, $0) })
+        let keysByID = TrainingParameters.keysByID
         let seedSettingIDs: Set<String> = [RandomSeedModeParameter.id, RandomSeed.id]
         let thisRun = rawValueMap()
         var differences: [ParameterDifference] = []

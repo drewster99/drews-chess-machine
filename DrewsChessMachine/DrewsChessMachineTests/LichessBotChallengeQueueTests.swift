@@ -50,7 +50,7 @@ final class LichessBotChallengeQueueTests: XCTestCase {
 
     func testAPlayerBeingSentIsStillADuplicate() throws {
         var queue = LichessBotChallengeQueue()
-        queue.add(players("Alice"), request: request, pendingUserIDs: [])
+        _ = queue.add(players("Alice"), request: request, pendingUserIDs: [])
         let alice = try sendStep(queue)
         XCTAssertTrue(queue.markSending(alice.id))
         let result = queue.add(players("Alice"), request: request, pendingUserIDs: [])
@@ -60,7 +60,7 @@ final class LichessBotChallengeQueueTests: XCTestCase {
 
     func testChoosingASkippedPlayerAgainRetriesThemAtTheEnd() throws {
         var queue = LichessBotChallengeQueue()
-        queue.add(players("Alice", "Bob"), request: request, pendingUserIDs: [])
+        _ = queue.add(players("Alice", "Bob"), request: request, pendingUserIDs: [])
         let alice = try sendStep(queue)
         queue.markSending(alice.id)
         queue.record(.skipped(reason: "offline"), for: alice.id)
@@ -72,7 +72,7 @@ final class LichessBotChallengeQueueTests: XCTestCase {
 
     func testSkippedEntriesStayListedWithTheirReasonAndTheQueueMovesOn() throws {
         var queue = LichessBotChallengeQueue()
-        queue.add(players("Alice", "Bob", "Carol"), request: request, pendingUserIDs: [])
+        _ = queue.add(players("Alice", "Bob", "Carol"), request: request, pendingUserIDs: [])
 
         let alice = try sendStep(queue)
         queue.markSending(alice.id)
@@ -92,7 +92,7 @@ final class LichessBotChallengeQueueTests: XCTestCase {
 
     func testADroppedEntryLeavesTheQueue() throws {
         var queue = LichessBotChallengeQueue()
-        queue.add(players("Alice", "Bob"), request: request, pendingUserIDs: [])
+        _ = queue.add(players("Alice", "Bob"), request: request, pendingUserIDs: [])
         let alice = try sendStep(queue)
         queue.markSending(alice.id)
         queue.record(.dropped(reason: "HTTP 400"), for: alice.id)
@@ -101,7 +101,7 @@ final class LichessBotChallengeQueueTests: XCTestCase {
 
     func testOnlyOneEntryIsSentAtATime() throws {
         var queue = LichessBotChallengeQueue()
-        queue.add(players("Alice", "Bob"), request: request, pendingUserIDs: [])
+        _ = queue.add(players("Alice", "Bob"), request: request, pendingUserIDs: [])
         let alice = try sendStep(queue, freeSlots: 5)
         queue.markSending(alice.id)
         XCTAssertEqual(queue.nextStep(sendingBlockedReason: nil, freeSlots: 5), .wait(reason: LichessBotChallengeQueue.sendInProgressReason))
@@ -110,7 +110,7 @@ final class LichessBotChallengeQueueTests: XCTestCase {
     func testEntriesWaitForAFreeSlot() {
         var queue = LichessBotChallengeQueue()
         XCTAssertEqual(queue.nextStep(sendingBlockedReason: nil, freeSlots: 1), .idle)
-        queue.add(players("Alice"), request: request, pendingUserIDs: [])
+        _ = queue.add(players("Alice"), request: request, pendingUserIDs: [])
         XCTAssertEqual(queue.nextStep(sendingBlockedReason: nil, freeSlots: 0), .wait(reason: LichessBotChallengeQueue.waitingForSlotReason))
         XCTAssertEqual(queue.nextStep(sendingBlockedReason: "draining", freeSlots: 3), .wait(reason: "draining"))
     }
@@ -119,7 +119,7 @@ final class LichessBotChallengeQueueTests: XCTestCase {
     /// hold is over, the same entry goes next.
     func testTheQueueStopsOnARateLimitAndResumesAfter() throws {
         var queue = LichessBotChallengeQueue()
-        queue.add(players("Alice", "Bob"), request: request, pendingUserIDs: [])
+        _ = queue.add(players("Alice", "Bob"), request: request, pendingUserIDs: [])
         let alice = try sendStep(queue)
         queue.markSending(alice.id)
         queue.record(LichessBotController.queueOutcome(for: LichessBotGateError.rateLimited(cooldown: .seconds(60))), for: alice.id)
@@ -132,7 +132,7 @@ final class LichessBotChallengeQueueTests: XCTestCase {
 
     func testCancelingAnEntryBeingSentIgnoresItsOutcome() throws {
         var queue = LichessBotChallengeQueue()
-        queue.add(players("Alice", "Bob"), request: request, pendingUserIDs: [])
+        _ = queue.add(players("Alice", "Bob"), request: request, pendingUserIDs: [])
         let alice = try sendStep(queue)
         queue.markSending(alice.id)
         queue.remove(alice.id)
