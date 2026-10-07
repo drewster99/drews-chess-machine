@@ -502,4 +502,6 @@ struct LichessBotPeriodBreakdowns: Sendable, Equatable {
     let selfAssessment: LichessBotSelfAssessmentStatistics
     let endings: LichessBotEndingStatistics
     let opponentStrength: LichessBotOpponentStrengthStatistics
+    /// The later panes (§11, L1–L6).
+    let later: LichessBotLaterBreakdowns
 }

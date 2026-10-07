@@ -160,6 +160,32 @@ enum LichessBotStatsFormat {
         return "Scores 50% against opponents rated \(signedEstimate(estimate)) (\(games) game\(games == 1 ? "" : "s"))"
     }
 
+    /// "12.3 s", or "–".
+    static func seconds(_ value: Double?) -> String {
+        guard let value else { return missing }
+        return value < 0
+            ? minus + String(format: "%.1f s", -value)
+            : String(format: "%.1f s", value)
+    }
+
+    /// A mean or median with one decimal, or "–".
+    static func oneDecimal(_ value: Double?) -> String {
+        guard let value else { return missing }
+        return String(format: "%.1f", value)
+    }
+
+    /// "3 wins", "1 draw", "2 losses"; "none" without a streak.
+    static func streak(_ streak: LichessBotStreak?) -> String {
+        guard let streak else { return "none" }
+        let noun: String
+        switch streak.ourScore {
+        case 1: noun = streak.length == 1 ? "win" : "wins"
+        case 0: noun = streak.length == 1 ? "loss" : "losses"
+        default: noun = streak.length == 1 ? "draw" : "draws"
+        }
+        return "\(streak.length) \(noun)"
+    }
+
     /// "x blown of y held wins (z%)".
     static func held(turned: Int, held: Int, verb: String, noun: String) -> String {
         guard held > 0 else { return "No \(noun)" }

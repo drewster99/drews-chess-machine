@@ -195,7 +195,7 @@ final class LichessBotRecordStatisticsPipelineTests: XCTestCase {
 
     func testRememberedSelectionsThatNoLongerExistAreIgnored() throws {
         let suite = try makeTemporaryDefaultsSuite()
-        suite.defaults.set("openings", forKey: LichessBotRecordStatisticsPipeline.paneKey)
+        suite.defaults.set("heatmaps", forKey: LichessBotRecordStatisticsPipeline.paneKey)
         suite.defaults.set("lastDecade", forKey: LichessBotRecordStatisticsPipeline.periodKey)
         suite.defaults.set("blitzOnly", forKey: LichessBotRecordStatisticsPipeline.filterKey)
         let controller = try makeController(suite: suite)

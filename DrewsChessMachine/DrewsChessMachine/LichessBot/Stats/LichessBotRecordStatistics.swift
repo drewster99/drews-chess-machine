@@ -72,7 +72,7 @@ struct LichessBotRecordStatistics: Sendable, Equatable {
         var accumulators = LichessBotPeriodValues { _ in PeriodAccumulator() }
         for row in rows {
             for period in LichessBotStatsPeriod.allCases where starts.contains(row.row.createdAt, in: period) {
-                accumulators[period].add(row)
+                accumulators.update(period) { $0.add(row) }
             }
         }
         let periodRows = LichessBotPeriodValues { period in
@@ -349,6 +349,19 @@ private struct HeldAccumulator {
     }
 }
 
+/// One speed's games, for the Time controls pane.
+private struct SpeedAccumulator {
+    var tally = LichessBotResultTally()
+    var performance = PerformanceAccumulator()
+    var ratingChange = LichessBotRatingChange()
+
+    mutating func add(_ row: LichessBotGameSummary) {
+        tally.add(ourScore: row.ourScore)
+        performance.add(row)
+        ratingChange.add(row)
+    }
+}
+
 private struct BandAccumulator {
     var games = 0
     var score = 0.0
@@ -361,7 +374,7 @@ private struct PeriodAccumulator {
     var ratingChange = LichessBotRatingChange()
     var scoredWithoutMoveData = 0
 
-    var speeds: [String: (tally: LichessBotResultTally, performance: PerformanceAccumulator, ratingChange: LichessBotRatingChange)] = [:]
+    var speeds: [String: SpeedAccumulator] = [:]
 
     var groups: [String: ModelLineAccumulator] = [:]
     var checkpoints: [LichessBotModelKey: (facts: LichessBotGenerationFacts, line: ModelLineAccumulator)] = [:]
@@ -376,6 +389,7 @@ private struct PeriodAccumulator {
     var decisiveLosses = DecisiveAccumulator()
 
     var endings: [LichessBotGameEnding: LichessBotEndingRow] = [:]
+    var later = LaterAccumulator()
 
     var bands: [Int: BandAccumulator] = [:]
     var gaps: [Int] = []
@@ -384,6 +398,7 @@ private struct PeriodAccumulator {
 
     mutating func add(_ derived: DerivedRow) {
         let row = derived.row
+        later.add(derived)
         var endingRow = endings[derived.ending] ?? LichessBotEndingRow(ending: derived.ending)
         switch row.ourScore {
         case .some(1): endingRow.wins += 1
@@ -393,11 +408,9 @@ private struct PeriodAccumulator {
         }
         endings[derived.ending] = endingRow
 
-        var speed = speeds[row.speed] ?? (LichessBotResultTally(), PerformanceAccumulator(), LichessBotRatingChange())
-        speed.tally.add(ourScore: row.ourScore)
-        speed.performance.add(row)
-        speed.ratingChange.add(row)
-        speeds[row.speed] = speed
+        // In place, as in `addModel`: the performance accumulator holds an
+        // array that a copy-out-and-back would copy on every game.
+        speeds[row.speed, default: SpeedAccumulator()].add(row)
 
         // Everything below counts scored games only (§3.1).
         guard let ourScore = row.ourScore else { return }
@@ -420,12 +433,11 @@ private struct PeriodAccumulator {
             return
         }
         let mixed = derived.attribution.mixed
-        var group = groups[model.facts.modelID] ?? ModelLineAccumulator(createdAt: row.createdAt)
-        group.add(row, ourScore: ourScore, mixed: mixed)
-        groups[model.facts.modelID] = group
-        var checkpoint = checkpoints[model.key] ?? (model.facts, ModelLineAccumulator(createdAt: row.createdAt))
-        checkpoint.line.add(row, ourScore: ourScore, mixed: mixed)
-        checkpoints[model.key] = checkpoint
+        // Mutated in place through the defaulting subscript: copying an
+        // entry out and back would copy its opponent-rating array on every
+        // game, which is quadratic in the games of one model.
+        groups[model.facts.modelID, default: ModelLineAccumulator(createdAt: row.createdAt)].add(row, ourScore: ourScore, mixed: mixed)
+        checkpoints[model.key, default: (model.facts, ModelLineAccumulator(createdAt: row.createdAt))].line.add(row, ourScore: ourScore, mixed: mixed)
     }
 
     private mutating func addOpponentStrength(_ row: LichessBotGameSummary, ourScore: Double) {
@@ -490,7 +502,8 @@ private struct PeriodAccumulator {
             models: modelStatistics(),
             selfAssessment: selfAssessment(),
             endings: endingStatistics(),
-            opponentStrength: opponentStrength()
+            opponentStrength: opponentStrength(),
+            later: later.breakdowns()
         )
     }
 
@@ -664,6 +677,199 @@ private struct PeriodAccumulator {
             games: gaps.count,
             gamesWithoutRatings: gamesWithoutRatings,
             fiftyPercentPoint: LichessBotEloMath.ratingOffset(gaps: gaps, score: gapScore)
+        )
+    }
+}
+
+// MARK: - Later panes (§11, L1–L6)
+
+/// The later panes' values for one filter and one period, filled in the
+/// same pass as the rest.
+private struct LaterAccumulator {
+    var moveChoice = LichessBotMoveChoiceLine()
+    var moveChoiceByModel: [String: LichessBotMoveChoiceLine] = [:]
+    var clock: [String: LichessBotClockRow] = [:]
+    var plies: [Double: [Int]] = [1: [], 0.5: [], 0: []]
+    var shortLosses: [LichessBotShortGame] = []
+    var openings: [String: (lowest: String, highest: String, white: LichessBotResultTally, black: LichessBotResultTally)] = [:]
+    var gamesWithoutOpening = 0
+    var opponents: [String: (name: String, kind: LichessBotOpponentKind, tally: LichessBotResultTally, last: Date)] = [:]
+    var highestRatedWin: LichessBotNotableWin?
+    /// Scored games in time order, for the streaks.
+    var results: [(createdAt: Date, gameID: String, ourScore: Double)] = []
+    var health = LichessBotHealthStatistics()
+
+    mutating func add(_ derived: DerivedRow) {
+        let row = derived.row
+        addHealth(row)
+        addOpponent(row)
+        guard let ourScore = row.ourScore else { return }
+        results.append((row.createdAt, row.gameID, ourScore))
+        plies[ourScore, default: []].append(row.plies)
+        if ourScore == 0, row.plies < LichessBotGameLengthStatistics.shortLossPlies {
+            shortLosses.append(LichessBotShortGame(gameID: row.gameID, createdAt: row.createdAt, opponentName: row.opponentName ?? row.opponentID, plies: row.plies))
+        }
+        if ourScore == 1, let rating = row.opponentRating {
+            let candidate = LichessBotNotableWin(gameID: row.gameID, createdAt: row.createdAt, opponentName: row.opponentName ?? row.opponentID ?? "?", rating: rating)
+            if Self.beats(candidate, highestRatedWin) {
+                highestRatedWin = candidate
+            }
+        }
+        addOpening(row, ourScore: ourScore)
+        guard let moves = row.facts?.moves else { return }
+        moveChoice.add(moves.choice, decisions: moves.ourMovesWithDecision)
+        if let model = derived.attribution.model {
+            moveChoiceByModel[model.facts.modelID, default: LichessBotMoveChoiceLine()].add(moves.choice, decisions: moves.ourMovesWithDecision)
+        }
+        if let clockFacts = moves.clock {
+            var clockRow = clock[row.speed] ?? LichessBotClockRow(speed: row.speed)
+            clockRow.games += 1
+            clockRow.thinkTimeMoves += clockFacts.thinkTimeMoves
+            clockRow.sumThinkMilliseconds += clockFacts.sumThinkMilliseconds
+            if let final = clockFacts.finalClockMilliseconds {
+                clockRow.gamesWithFinalClock += 1
+                clockRow.sumFinalClockMilliseconds += Double(final)
+            }
+            if ourScore == 0, LichessBotGameStatusName(rawValue: row.status) == .outOfTime {
+                clockRow.flagged += 1
+            }
+            clock[row.speed] = clockRow
+        }
+    }
+
+    /// The higher rating wins; on a tie, the more recent game (then the
+    /// game ID), so the result does not depend on the rows' order.
+    private static func beats(_ candidate: LichessBotNotableWin, _ best: LichessBotNotableWin?) -> Bool {
+        guard let best else { return true }
+        return (candidate.rating, candidate.createdAt, candidate.gameID) > (best.rating, best.createdAt, best.gameID)
+    }
+
+    private mutating func addHealth(_ row: LichessBotGameSummary) {
+        health.games += 1
+        health.anomalies += row.anomalyCount
+        if row.anomalyCount > 0 {
+            health.gamesWithAnomalies += 1
+        }
+        switch row.reconciliation {
+        case .matched: break
+        case .corrected: health.reconciliationCorrected += 1
+        case .exportUnavailable: health.exportUnavailable += 1
+        }
+        guard let facts = row.facts else {
+            health.rowsWithoutFacts += 1
+            return
+        }
+        health.rejectedMoves += facts.rejectedMoves
+        health.streamReconnects += facts.streamReconnects
+    }
+
+    private mutating func addOpponent(_ row: LichessBotGameSummary) {
+        guard let opponentID = row.opponentID else { return }
+        let id = opponentID.lowercased()
+        var entry = opponents[id] ?? (row.opponentName ?? opponentID, row.opponentKind, LichessBotResultTally(), row.createdAt)
+        entry.tally.add(ourScore: row.ourScore)
+        if row.createdAt >= entry.last {
+            entry.last = row.createdAt
+            entry.name = row.opponentName ?? entry.name
+        }
+        opponents[id] = entry
+    }
+
+    private mutating func addOpening(_ row: LichessBotGameSummary, ourScore: Double) {
+        guard let name = row.facts?.openingName, let eco = row.facts?.openingECO else {
+            gamesWithoutOpening += 1
+            return
+        }
+        let family = LichessBotOpeningRow.family(of: name)
+        var entry = openings[family] ?? (eco, eco, LichessBotResultTally(), LichessBotResultTally())
+        entry.lowest = min(entry.lowest, eco)
+        entry.highest = max(entry.highest, eco)
+        switch row.ourColor {
+        case .white: entry.white.add(ourScore: ourScore)
+        case .black: entry.black.add(ourScore: ourScore)
+        }
+        openings[family] = entry
+    }
+
+    func breakdowns() -> LichessBotLaterBreakdowns {
+        LichessBotLaterBreakdowns(
+            moveChoice: LichessBotMoveChoiceStatistics(
+                overall: moveChoice,
+                byModel: moveChoiceByModel
+                    .map { LichessBotModelMoveChoice(modelID: $0.key, line: $0.value) }
+                    .sorted { $0.line.decisions != $1.line.decisions ? $0.line.decisions > $1.line.decisions : $0.modelID < $1.modelID }
+            ),
+            clock: LichessBotTimeControlOrder.speeds(recordSpeeds: Set(clock.keys), accountSpeeds: []).compactMap { clock[$0] },
+            gameLength: gameLength(),
+            openings: LichessBotOpeningStatistics(
+                rows: openings
+                    .map { LichessBotOpeningRow(family: $0.key, lowestECO: $0.value.lowest, highestECO: $0.value.highest, asWhite: $0.value.white, asBlack: $0.value.black) }
+                    .sorted { lhs, rhs in
+                        let left = lhs.asWhite.games + lhs.asBlack.games
+                        let right = rhs.asWhite.games + rhs.asBlack.games
+                        return left != right ? left > right : lhs.family < rhs.family
+                    },
+                gamesWithoutOpening: gamesWithoutOpening
+            ),
+            opponents: opponentStatistics(),
+            health: health
+        )
+    }
+
+    private func gameLength() -> LichessBotGameLengthStatistics {
+        let rows = [1.0, 0.5, 0.0].map { score -> LichessBotGameLengthRow in
+            let values = (plies[score] ?? []).sorted()
+            let mean = values.isEmpty ? nil : Double(values.reduce(0, +)) / Double(values.count)
+            let median: Double?
+            if values.isEmpty {
+                median = nil
+            } else if values.count % 2 == 1 {
+                median = Double(values[values.count / 2])
+            } else {
+                median = Double(values[values.count / 2 - 1] + values[values.count / 2]) / 2
+            }
+            return LichessBotGameLengthRow(ourScore: score, games: values.count, meanPlies: mean, medianPlies: median)
+        }
+        let recent = shortLosses.sorted { lhs, rhs in
+            lhs.createdAt != rhs.createdAt ? lhs.createdAt > rhs.createdAt : lhs.gameID < rhs.gameID
+        }
+        return LichessBotGameLengthStatistics(
+            rows: rows,
+            shortLosses: Array(recent.prefix(LichessBotGameLengthStatistics.shortLossLimit)),
+            shortLossCount: shortLosses.count
+        )
+    }
+
+    private func opponentStatistics() -> LichessBotOpponentsStatistics {
+        let ordered = results.sorted { lhs, rhs in
+            lhs.createdAt != rhs.createdAt ? lhs.createdAt < rhs.createdAt : lhs.gameID < rhs.gameID
+        }
+        var longestWin = 0
+        var longestLoss = 0
+        var run: LichessBotStreak?
+        for result in ordered {
+            if let current = run, current.ourScore == result.ourScore {
+                run = LichessBotStreak(ourScore: result.ourScore, length: current.length + 1)
+            } else {
+                run = LichessBotStreak(ourScore: result.ourScore, length: 1)
+            }
+            if let run, run.ourScore == 1 { longestWin = max(longestWin, run.length) }
+            if let run, run.ourScore == 0 { longestLoss = max(longestLoss, run.length) }
+        }
+        let mostPlayed = opponents
+            .map { LichessBotOpponentRecordRow(id: $0.key, name: $0.value.name, kind: $0.value.kind, tally: $0.value.tally, lastPlayedAt: $0.value.last) }
+            .sorted { lhs, rhs in
+                if lhs.tally.games != rhs.tally.games { return lhs.tally.games > rhs.tally.games }
+                if lhs.lastPlayedAt != rhs.lastPlayedAt { return lhs.lastPlayedAt > rhs.lastPlayedAt }
+                return lhs.id < rhs.id
+            }
+        return LichessBotOpponentsStatistics(
+            mostPlayed: Array(mostPlayed.prefix(LichessBotOpponentsStatistics.mostPlayedLimit)),
+            opponentCount: opponents.count,
+            highestRatedWin: highestRatedWin,
+            currentStreak: run,
+            longestWinStreak: longestWin,
+            longestLossStreak: longestLoss
         )
     }
 }

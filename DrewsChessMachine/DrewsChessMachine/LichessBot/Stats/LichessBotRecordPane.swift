@@ -1,16 +1,28 @@
 import Foundation
 
-/// The Record card panel's tabs (`LICHESS_BOT_RECORD_STATS_PLAN.md` §5.1),
-/// in the order OD-21 shipped them. Raw values are stable identifiers: the
-/// selected tab is remembered in the defaults.
+/// The Record card panel's tabs (`LICHESS_BOT_RECORD_STATS_PLAN.md` §5.1,
+/// §11): the first pass in the order OD-21 shipped them, then the later
+/// panes. Raw values are stable identifiers: the selected tab is remembered
+/// in the defaults.
 enum LichessBotRecordPane: String, CaseIterable, Sendable, Identifiable {
     case timeControls
     case models
     case selfAssessment
     case endings
     case opponentStrength
+    case moveChoice
+    case clock
+    case gameLength
+    case openings
+    case opponents
+    case botHealth
 
     var id: String { rawValue }
+
+    /// The first pass (§9 P3–P8), the picker's first section.
+    static let firstPass: [LichessBotRecordPane] = [.timeControls, .models, .selfAssessment, .endings, .opponentStrength]
+    /// The later panes (§11 L1–L6), its second section.
+    static let later: [LichessBotRecordPane] = [.moveChoice, .clock, .gameLength, .openings, .opponents, .botHealth]
 
     var label: String {
         switch self {
@@ -19,6 +31,12 @@ enum LichessBotRecordPane: String, CaseIterable, Sendable, Identifiable {
         case .selfAssessment: return "Self-assessment"
         case .endings: return "Endings"
         case .opponentStrength: return "Opponent strength"
+        case .moveChoice: return "Move choice"
+        case .clock: return "Clock"
+        case .gameLength: return "Game length"
+        case .openings: return "Openings"
+        case .opponents: return "Opponents"
+        case .botHealth: return "Bot health"
         }
     }
 }

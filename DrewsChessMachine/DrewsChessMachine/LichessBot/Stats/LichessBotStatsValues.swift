@@ -46,25 +46,29 @@ struct LichessBotPeriodValues<Value> {
     }
 
     subscript(period: LichessBotStatsPeriod) -> Value {
-        get {
-            switch period {
-            case .lastHour: return lastHour
-            case .today: return today
-            case .thisWeek: return thisWeek
-            case .thisMonth: return thisMonth
-            case .thisYear: return thisYear
-            case .allTime: return allTime
-            }
+        switch period {
+        case .lastHour: return lastHour
+        case .today: return today
+        case .thisWeek: return thisWeek
+        case .thisMonth: return thisMonth
+        case .thisYear: return thisYear
+        case .allTime: return allTime
         }
-        set {
-            switch period {
-            case .lastHour: lastHour = newValue
-            case .today: today = newValue
-            case .thisWeek: thisWeek = newValue
-            case .thisMonth: thisMonth = newValue
-            case .thisYear: thisYear = newValue
-            case .allTime: allTime = newValue
-            }
+    }
+
+    /// Mutate one period's value in place. Not a subscript setter: a
+    /// get-and-set copies the value out and back, and when the value holds
+    /// arrays (the statistics accumulators) every mutation would copy them
+    /// — quadratic over the games. `inout` on the stored property mutates
+    /// it where it lies.
+    mutating func update(_ period: LichessBotStatsPeriod, _ body: (inout Value) -> Void) {
+        switch period {
+        case .lastHour: body(&lastHour)
+        case .today: body(&today)
+        case .thisWeek: body(&thisWeek)
+        case .thisMonth: body(&thisMonth)
+        case .thisYear: body(&thisYear)
+        case .allTime: body(&allTime)
         }
     }
 

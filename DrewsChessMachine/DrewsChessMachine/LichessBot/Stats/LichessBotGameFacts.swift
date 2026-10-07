@@ -132,6 +132,43 @@ struct LichessBotGameMoveFacts: Sendable, Codable, Equatable {
     /// DCM decisions whose generation reference names no listed generation
     /// (a corrupt record); counted rather than given to a neighbor.
     let decisionsWithoutGeneration: Int
+    /// How DCM picked among its own policy's moves (§11 L1).
+    let choice: LichessBotMoveChoiceFacts
+    /// DCM's think time and time left (§11 L2); nil for a game without a
+    /// clock (correspondence, or a record without the clock setup).
+    let clock: LichessBotClockFacts?
+}
+
+/// How DCM's moves related to its own policy (§11 L1): how often it played
+/// the policy's top move, the probability its sampling gave the move it
+/// chose, and how many decisions were close to a random pick.
+struct LichessBotMoveChoiceFacts: Sendable, Codable, Equatable {
+    /// Decisions that recorded the policy's top moves (the rest can't say
+    /// whether the top move was played).
+    let decisionsWithTopMoves: Int
+    /// Of those, decisions that played the policy's top move.
+    let topMoveChosen: Int
+    /// Σ of the sampling probability of the chosen move, over every
+    /// decision.
+    let sumChosenProbability: Double
+    /// Decisions whose post-temperature distribution was essentially
+    /// uniform.
+    let randomish: Int
+}
+
+/// DCM's clock use in one game (§11 L2), from the server clocks recorded
+/// after each of its moves.
+struct LichessBotClockFacts: Sendable, Codable, Equatable {
+    /// DCM moves whose think time is known: the move and DCM's previous
+    /// move both carry DCM's clock. DCM's first move is never among them
+    /// (Lichess starts a side's clock after its first move).
+    let thinkTimeMoves: Int
+    /// Σ think time over those moves: previous clock + increment − clock.
+    /// Time the opponent gave DCM counts against it, so a move can come out
+    /// negative; it is kept, not clamped, so the sum stays the clocks' own.
+    let sumThinkMilliseconds: Double
+    /// DCM's clock after its last move that carries one; nil with none.
+    let finalClockMilliseconds: Int?
 }
 
 /// Everything about a game beyond its index row's plain fields that the
@@ -141,10 +178,20 @@ struct LichessBotGameFacts: Sendable, Codable, Equatable {
     let localDrawCondition: ChessDrawCondition?
     /// Nil for a game that did not start from the standard position.
     let moves: LichessBotGameMoveFacts?
+    /// The opening Lichess's export named (§11 L4); nil without an export.
+    let openingECO: String?
+    let openingName: String?
+    /// Moves Lichess refused, and game-stream reconnections (§11 L6).
+    let rejectedMoves: Int
+    let streamReconnects: Int
 
-    init(localDrawCondition: ChessDrawCondition?, moves: LichessBotGameMoveFacts?) {
+    init(localDrawCondition: ChessDrawCondition?, moves: LichessBotGameMoveFacts?, openingECO: String?, openingName: String?, rejectedMoves: Int, streamReconnects: Int) {
         self.localDrawCondition = localDrawCondition
         self.moves = moves
+        self.openingECO = openingECO
+        self.openingName = openingName
+        self.rejectedMoves = rejectedMoves
+        self.streamReconnects = streamReconnects
     }
 
     init(record: LichessBotGameRecord) {
@@ -152,6 +199,10 @@ struct LichessBotGameFacts: Sendable, Codable, Equatable {
         let standard = record.setup.variant == "standard"
             && LichessBotPositionTracker.isStandardStart(record.setup.initialFen)
         moves = standard ? LichessBotGameMoveFacts(record: record) : nil
+        openingECO = record.openingECO
+        openingName = record.openingName
+        rejectedMoves = record.rejectedMoves.count
+        streamReconnects = record.streamReconnects
     }
 }
 
@@ -202,6 +253,14 @@ extension LichessBotGameMoveFacts {
             decisive = .notApplicable
         }
 
+        choice = LichessBotMoveChoiceFacts(
+            decisionsWithTopMoves: decided.filter { !$0.decision.topMoves.isEmpty }.count,
+            topMoveChosen: decided.filter { $0.decision.topMoves.first?.uci == $0.decision.uci }.count,
+            sumChosenProbability: decided.reduce(0.0) { $0 + Double($1.decision.chosenProbability) },
+            randomish: decided.filter(\.decision.randomish).count
+        )
+        clock = Self.clockFacts(ourMoves, ourColor: record.ourColor, incrementMilliseconds: record.setup.clockIncrementMilliseconds, initialMilliseconds: record.setup.clockInitialMilliseconds)
+
         var movesByGeneration = Array(repeating: 0, count: record.generations.count)
         var withoutGeneration = 0
         for move in ourMoves where move.decision != nil {
@@ -239,6 +298,26 @@ extension LichessBotGameMoveFacts {
         guard let id = move.generationID else { return nil }
         let matches = generations.indices.filter { generations[$0].generationID == id }
         return matches.count == 1 ? matches[0] : nil
+    }
+
+    /// DCM's clock use, or nil when the game had no clock (both the initial
+    /// time and the increment are needed: think time is the previous clock
+    /// plus the increment minus the clock after the move).
+    private static func clockFacts(_ ourMoves: [LichessBotGameRecord.Move], ourColor: LichessBotColorName, incrementMilliseconds: Int?, initialMilliseconds: Int?) -> LichessBotClockFacts? {
+        guard let increment = incrementMilliseconds, initialMilliseconds != nil else { return nil }
+        let clocks = ourMoves.map { ourColor == .white ? $0.whiteClockMilliseconds : $0.blackClockMilliseconds }
+        var thinkTimeMoves = 0
+        var sumThink = 0.0
+        for index in clocks.indices.dropFirst() {
+            guard let previous = clocks[index - 1], let current = clocks[index] else { continue }
+            thinkTimeMoves += 1
+            sumThink += Double(previous + increment - current)
+        }
+        return LichessBotClockFacts(
+            thinkTimeMoves: thinkTimeMoves,
+            sumThinkMilliseconds: sumThink,
+            finalClockMilliseconds: clocks.compactMap { $0 }.last
+        )
     }
 
     /// The ply of the first DCM move of the first run of

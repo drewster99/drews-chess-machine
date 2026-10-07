@@ -86,7 +86,13 @@ enum LichessBotStatsFixtures {
         heldLossStartPly: Int? = nil,
         decisive: LichessBotDecisivePly = .notApplicable,
         generations: [LichessBotGenerationFacts] = [],
-        decisionsWithoutGeneration: Int = 0
+        decisionsWithoutGeneration: Int = 0,
+        choice: LichessBotMoveChoiceFacts = LichessBotMoveChoiceFacts(decisionsWithTopMoves: 0, topMoveChosen: 0, sumChosenProbability: 0, randomish: 0),
+        clock: LichessBotClockFacts? = nil,
+        openingECO: String? = nil,
+        openingName: String? = nil,
+        rejectedMoves: Int = 0,
+        streamReconnects: Int = 0
     ) -> LichessBotGameFacts {
         LichessBotGameFacts(
             localDrawCondition: localDrawCondition,
@@ -100,8 +106,14 @@ enum LichessBotStatsFixtures {
                 heldLossStartPly: heldLossStartPly,
                 decisive: decisive,
                 generations: generations,
-                decisionsWithoutGeneration: decisionsWithoutGeneration
-            )
+                decisionsWithoutGeneration: decisionsWithoutGeneration,
+                choice: choice,
+                clock: clock
+            ),
+            openingECO: openingECO,
+            openingName: openingName,
+            rejectedMoves: rejectedMoves,
+            streamReconnects: streamReconnects
         )
     }
 
@@ -163,7 +175,13 @@ enum LichessBotStatsFixtures {
                     heldWinStartPly: index % 3 == 0 ? 18 : nil,
                     heldLossStartPly: index % 4 == 0 ? 22 : nil,
                     decisive: decisive,
-                    generations: [generation("M\(index % models)", step: (index / models) % 25 * 1000, moves: 20)]
+                    generations: [generation("M\(index % models)", step: (index / models) % 25 * 1000, moves: 20)],
+                    choice: LichessBotMoveChoiceFacts(decisionsWithTopMoves: 18, topMoveChosen: 14 + index % 5, sumChosenProbability: 12, randomish: index % 7 == 0 ? 1 : 0),
+                    clock: speeds[index % speeds.count] == "correspondence" ? nil : LichessBotClockFacts(thinkTimeMoves: 19, sumThinkMilliseconds: Double(19 * (1500 + index % 900)), finalClockMilliseconds: 20_000 + index * 37 % 90_000),
+                    openingECO: index % 6 == 0 ? nil : ["B20", "B90", "C50", "C65", "D02"][index % 5],
+                    openingName: index % 6 == 0 ? nil : ["Sicilian Defense", "Sicilian Defense: Najdorf Variation", "Italian Game: Giuoco Piano", "Ruy Lopez: Berlin Defense", "Queen's Pawn Game: London System"][index % 5],
+                    rejectedMoves: index % 17 == 0 ? 1 : 0,
+                    streamReconnects: index % 5 == 0 ? 1 : 0
                 )
             )
         }
@@ -231,6 +249,8 @@ enum LichessBotStatsFixtures {
         /// Posted with no decision journaled (as if the decision line was
         /// lost): the move has no decision in the record.
         case postedWithoutDecision
+        /// Decided with a decision built from the move's token.
+        case decidedWith(makeDecision: (String) -> LichessBotMoveDecision, generation: LichessBotGenerationInfo)
     }
 
     /// A record of the first `plies` plies of `longGame`, DCM playing
@@ -265,6 +285,8 @@ enum LichessBotStatsFixtures {
                     entries.append(.init(at: next(), event: .moveDecided(ply: ply, decision: decision(token, win: win, draw: draw, loss: loss), generation: generation)))
                 case .postedWithoutDecision:
                     break
+                case .decidedWith(let makeDecision, let generation):
+                    entries.append(.init(at: next(), event: .moveDecided(ply: ply, decision: makeDecision(token), generation: generation)))
                 }
                 entries.append(.init(at: next(), event: .movePosted(ply: ply, uci: token, offeringDraw: false, milliseconds: 40)))
             }
