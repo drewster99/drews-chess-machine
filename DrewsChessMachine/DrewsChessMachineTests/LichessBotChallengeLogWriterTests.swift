@@ -99,6 +99,8 @@ final class LichessBotChallengeLogWriterTests: XCTestCase {
         try await log.flush()
         XCTAssertEqual(failures.value, [])
         XCTAssertEqual(calls.value, [
+            // The append created `Challenges/` too: its entry in the bot folder.
+            .fullSyncDirectory(name: tempRoot.lastPathComponent),
             .write, .fullSync(name: "challenges-20261005.jsonl"), .fullSyncDirectory(name: "Challenges"),
             .write, .fullSync(name: "challenges-20261005.jsonl"),
         ])

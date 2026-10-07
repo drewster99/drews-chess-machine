@@ -35,26 +35,34 @@ extension LichessBotChallengeOutcomeLog {
         liveLogFirstEntryAt: Date?,
         now: Date
     ) -> LichessBotChallengeOutcomeLog {
+        // Only rows that can make a record of the last day are built: this
+        // runs on the main actor for every recorded fact, and the ledger
+        // and the history hold every challenge ever. A live record's
+        // `sentAt` is one of its row's facts, so a row whose latest fact is
+        // a day old can only make a record `prune` drops; a rebuilt
+        // record's `sentAt` is its row's `firstAt`. The rows are sorted
+        // once, as records, after the filter.
         var records: [LichessBotChallengeOutcomeRecord] = []
-        var liveChallengeIDs: Set<String> = []
-        for row in ledger.rows {
-            if case .challenge(let id) = row.key {
-                liveChallengeIDs.insert(id)
-            }
+        for row in ledger.unorderedRows where now.timeIntervalSince(row.lastAt) < LichessBotChallengeCredits.dayWindow {
             if let record = record(from: row) {
                 records.append(record)
             }
         }
         if let history {
-            for row in history.rows {
+            for row in history.rows where now.timeIntervalSince(row.firstAt) < LichessBotChallengeCredits.dayWindow {
                 if let liveLogFirstEntryAt, row.firstAt >= liveLogFirstEntryAt { continue }
-                if case .challenge(let id) = row.key, liveChallengeIDs.contains(id) { continue }
+                if case .challenge(let id) = row.key, ledger.row(challengeID: id) != nil { continue }
                 if let record = record(from: row) {
                     records.append(record)
                 }
             }
         }
-        var log = LichessBotChallengeOutcomeLog(records: records.sorted { $0.sentAt < $1.sentAt })
+        // The rows came in no order, so ties on `sentAt` are broken by the
+        // record's stable id: a refold of the same facts is equal.
+        var log = LichessBotChallengeOutcomeLog(records: records.sorted { lhs, rhs in
+            if lhs.sentAt != rhs.sentAt { return lhs.sentAt < rhs.sentAt }
+            return lhs.id.uuidString < rhs.id.uuidString
+        })
         log.prune(now: now)
         return log
     }

@@ -83,6 +83,20 @@ struct LichessBotRatingSparklineSeries: Sendable, Equatable {
         endsWithCurrentRating = currentRating != nil
     }
 
+    /// The ratings' range when there is a line to draw (two points or
+    /// more); nil otherwise, and the sparkline draws nothing.
+    var range: ClosedRange<Int>? {
+        guard ratings.count >= 2, let low = ratings.min(), let high = ratings.max() else { return nil }
+        return low...high
+    }
+
+    /// `range` as a list of zero or one item with a constant identity, so
+    /// the sparkline shows its chart with `ForEach` (no `if` in the body)
+    /// and keeps it across updates.
+    var drawableRanges: [LichessBotRatingSparklineRange] {
+        range.map { [LichessBotRatingSparklineRange(range: $0)] } ?? []
+    }
+
     /// "1402–1561 over 87 rated games, 2026-09-28 to 2026-10-06; last point
     /// is the current rating".
     var help: String {
@@ -99,6 +113,13 @@ struct LichessBotRatingSparklineSeries: Sendable, Equatable {
         }
         return text
     }
+}
+
+/// The range a sparkline with a line to draw spans, identified by a
+/// constant: there is only ever one.
+struct LichessBotRatingSparklineRange: Identifiable, Equatable {
+    let range: ClosedRange<Int>
+    var id: Int { 0 }
 }
 
 /// A starting rating Lichess reported for one rated game, for the
@@ -254,7 +275,9 @@ struct LichessBotModelTableRow: Sendable, Equatable, Identifiable {
 /// One point of the progression chart: consecutive checkpoints of one run
 /// merged until they hold enough scored games (OD-12).
 struct LichessBotProgressionPoint: Sendable, Equatable, Identifiable {
-    /// The run: its lineage run ID, else its model ID.
+    /// The series: the lineage run ID for cumulative steps; for
+    /// segment-local steps the run's segment, or the model ID without a
+    /// lineage. Never both kinds of step in one series.
     let series: String
     /// The point's place in its run, from 0. Part of the ID: two bins of a
     /// run can end at the same step (checkpoints that share a step).
@@ -271,6 +294,18 @@ struct LichessBotProgressionPoint: Sendable, Equatable, Identifiable {
     let performance: LichessBotRatingEstimate
 
     var id: String { "\(series)#\(ordinal)" }
+
+    /// The x axis's label for `points`: each series is one kind of step,
+    /// and the label names the kinds on the chart.
+    static func stepAxisLabel(for points: [LichessBotProgressionPoint]) -> String {
+        let cumulative = points.contains { $0.stepIsCumulative }
+        let segmentLocal = points.contains { !$0.stepIsCumulative }
+        switch (cumulative, segmentLocal) {
+        case (true, true): return "Cumulative trainer step, or segment step for runs without one"
+        case (true, false): return "Cumulative trainer step"
+        case (false, _): return "Training step"
+        }
+    }
 }
 
 /// What the progression chart plots on its y axis.

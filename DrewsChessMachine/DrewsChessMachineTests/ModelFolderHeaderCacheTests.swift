@@ -125,6 +125,23 @@ final class ModelFolderHeaderCacheTests: XCTestCase {
         XCTAssertEqual(third.unreadable, [])
     }
 
+    /// Changing permissions changes neither size nor modification time,
+    /// only the status change time: a file that arrived unreadable and was
+    /// then made readable must be read again at the next scan.
+    func testAFileMadeReadableIsReadAgain() throws {
+        let folder = try makeFolder()
+        let url = folder.appendingPathComponent("locked.safetensors")
+        try headerFile(modelID: "20261006-1-AAAA", step: 1, record: try record(localStep: 1)).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+        let first = try scan(folder)
+        XCTAssertEqual(first.unreadable.map(\.url.lastPathComponent), [url.lastPathComponent])
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+        let second = try scan(folder, previous: first.cache)
+        XCTAssertEqual(second.headersRead, 1, "its status changed, so it is read again")
+        XCTAssertEqual(second.entries.map(\.modelID), ["20261006-1-AAAA"])
+        XCTAssertEqual(second.unreadable, [])
+    }
+
     func testUnlistableFolderThrows() throws {
         let folder = try makeFolder().appendingPathComponent("absent", isDirectory: true)
         XCTAssertThrowsError(try scan(folder)) { error in

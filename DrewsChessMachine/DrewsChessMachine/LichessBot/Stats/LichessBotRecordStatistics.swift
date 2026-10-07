@@ -481,7 +481,7 @@ private struct PeriodAccumulator {
         var band = bands[LichessBotRatingBand.index(gap: gap)] ?? BandAccumulator()
         band.games += 1
         band.score += ourScore
-        band.expected += 1 / (1 + pow(10, Double(gap) / 400))
+        band.expected += LichessBotEloMath.expectedScore(rating: Double(ours), opponent: Double(theirs))
         bands[LichessBotRatingBand.index(gap: gap)] = band
         gaps.append(gap)
         gapScore += ourScore
@@ -588,10 +588,15 @@ private struct PeriodAccumulator {
         }
     }
 
-    /// The progression chart's points (OD-12). A run is a lineage run when
-    /// recorded, else a model ID (one CLI process is one segment). Its
-    /// checkpoints are placed by cumulative step when recorded, else by
-    /// training step, and consecutive ones are merged until a point holds
+    /// The progression chart's points (OD-12). A checkpoint with a
+    /// cumulative step is placed by it, in its lineage run's series. One
+    /// without is placed by its training step, which is segment-local and
+    /// repeats across segments (a run resumed from a file with no recorded
+    /// total keeps a null total), so its series is its run's segment, or
+    /// its model ID when it has no lineage (one CLI process is one segment):
+    /// a series never mixes cumulative and segment-local steps, nor two
+    /// segments' local steps. Consecutive checkpoints of a series are
+    /// merged until a point holds
     /// `minimumGamesPerPoint` scored games; a trailing remainder stays its
     /// own point. Checkpoints with no step at all can't be placed and are
     /// left out of the chart (they stay in the table). Runs with fewer than
@@ -605,18 +610,26 @@ private struct PeriodAccumulator {
         typealias Entry = (step: Int, cumulative: Bool, key: String, line: ModelLineAccumulator)
         var bySeries: [String: [Entry]] = [:]
         for checkpoint in checkpoints {
+            let facts = checkpoint.facts
             let step: Int
             let cumulative: Bool
-            if let cum = checkpoint.facts.cumTrainerStep {
+            let series: String
+            if let cum = facts.cumTrainerStep {
                 step = cum
                 cumulative = true
-            } else if let trainingStep = checkpoint.facts.trainingStep {
+                series = facts.lineageRunID ?? facts.modelID
+            } else if let trainingStep = facts.trainingStep {
                 step = trainingStep
                 cumulative = false
+                if let runID = facts.lineageRunID, let segmentIndex = facts.segmentIndex {
+                    series = "\(runID) segment \(segmentIndex)"
+                } else {
+                    series = facts.modelID
+                }
             } else {
                 continue
             }
-            bySeries[checkpoint.facts.lineageRunID ?? checkpoint.facts.modelID, default: []].append((step, cumulative, "\(checkpoint.key)", checkpoint.line))
+            bySeries[series, default: []].append((step, cumulative, "\(checkpoint.key)", checkpoint.line))
         }
         var points: [LichessBotProgressionPoint] = []
         for (series, unordered) in bySeries.sorted(by: { $0.key < $1.key }) {

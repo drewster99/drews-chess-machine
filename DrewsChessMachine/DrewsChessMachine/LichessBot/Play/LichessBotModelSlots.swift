@@ -701,7 +701,7 @@ actor LichessBotModelSlots {
         guard current.info.sourceKind == .followLineage, let lineage = current.info.lineage, lineage.followed == followed else {
             return nil
         }
-        return ModelLineageRank(segmentChain: lineage.segmentChain, segmentLocalStep: lineage.segmentLocalStep, recordedUnix: lineage.recordedUnix)
+        return lineage.rank
     }
 
     /// How a problem line ends while online: the generation that keeps
