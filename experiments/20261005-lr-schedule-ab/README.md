@@ -424,6 +424,45 @@ B-silu at 22,000; at its 22,030 abort save, value.bn has 1 more channel mostly o
 - **To add when clip1 ends at 40,000:** its full probe table, the cycle-peak behaviour at 30–31k, the final checkpoint layer health, and a comparison with B and B-silu at 40k.
 - **Reproduce the analysis:** `python3 -c` comparisons of the three logs' `[REPLAY]` lines (`dcm_log_20261005-234437.txt`, `dcm_log_20261006-170000.txt`, `dcm_log_20261006-181510.txt`); `bn_liveness.analyze()` on `20261005-lrBsilu-cyc1-replay-step22000`, `20261006-lrBsilu-ctl15-replay-seg1-step4000` / `-step4030` and `20261006-lrBsilu-clip1-replay-seg1-step4000`.
 
+## Arm B-leakyall: result (finished at 40,000; E-0022)
+
+- **Finished cleanly:** `[REPLAY] done: steps=40000 positionsFed=341561598 gamesFed=5152480` at 2026-10-07 00:12:40, final
+  save at step 40,000 (`20261005-lrBleakyall-cyc1-replay-latest.safetensors`, ModelID `20261006-43-a89C`, run
+  `A41BEB12…`), rc 0 (chain.log `LRAB Bleakyall ended rc=0`). Log `dcm_log_20261005-234434.txt`; 40 probes in
+  `probes-Bleakyall.jsonl`. Wall time 24 h 28 min on a GPU shared with up to three other runs and the implementation's
+  test suites.
+- **Policy probes vs B (ReLU)**, Δ = B-leakyall − B pElo per 1,000-step probe:
+  - low-LR probes (LR < 0.1, n = 28): mean −12.5, SD 13.0; high-LR probes (n = 12): mean −11.8, SD 59.2.
+  - by LR trough: 6k −6.2, 16k −20.5, 26k −3.6, 36k −18.5.
+  - by stretch: 13k–19k mean −24.2 (every probe −18.0 … −30.8); 24k–29k mean −0.6; 33k–39k mean −17.8.
+  - first probe 1104.9 vs B 1018.2 (+86.7); best 1629.4 at 38k vs B 1632.0 and B-leaky 1641.7 (all three peak at 38k);
+    40k (LR 0.5) 1446.1 vs B 1507.7 (−61.6) and B-leaky 1469.2.
+- **vs B-leaky (leaky value head only):** low-LR mean −9.7, SD 14.7.
+- **Value head:** same as B-leaky. `value.bn` 0 of 16 parked at 40k (B 6), value FC1 0 of 128 units at zero velocity
+  (B 27). Every one of the 801 live `[LAYER-HEALTH]` lines reports `dead=0`. Value loss over the last 60 step lines
+  (37,050–40,000) averages 0.8031, B's 37k–40k value 0.8031.
+- **Tower at 40k** (`bn_liveness.py`; parked / mostly off / lowest pass-through; leaky sites use the leaky pass-through):
+
+  | site | B-leakyall | B-leaky | B |
+  |---|---|---|---|
+  | blocks.0.bn1 | leaky 0 / 0 / 0.1631 | relu 0 / 0 / 0.1632 | relu 0 / 0 / 0.1190 |
+  | blocks.0.bn2 | leaky 0 / 0 / 0.0752 | relu 0 / 0 / 0.0532 | relu 0 / 0 / 0.0542 |
+  | blocks.1.bn1 | leaky 0 / 0 / 0.0536 | relu 0 / 0 / 0.0399 | relu 0 / 0 / 0.0551 |
+  | blocks.1.bn2 | leaky 0 / 1 / 0.0217 | relu 0 / 1 / 0.0144 | relu 0 / 0 / 0.0275 |
+  | blocks.2.bn1 | leaky 0 / 4 / 0.0134 | relu 0 / 1 / 0.0061 | relu 0 / 5 / 0.0056 |
+  | blocks.2.bn2 | leaky 0 / 0 / 0.0342 | relu 0 / 0 / 0.0554 | relu 0 / 0 / 0.0231 |
+  | tower_final_bn | leaky 0 / 0 / 0.2131 | relu 0 / 0 / 0.1952 | relu 0 / 0 / 0.2338 |
+  | policy.pre_bn | leaky 0 / 0 / 0.0587 | relu 0 / 0 / 0.0606 | relu 0 / 0 / 0.1117 |
+  | value.bn | leaky 0 / 1 / 0.0226 | leaky 0 / 1 / 0.0205 | relu 6 / 0 / ≈0 |
+
+  Worst β/|γ| at `blocks.2.bn1`: B-leakyall −2.70, B-leaky −2.51, B −2.53. Running-variance max/median (`[LAYER-HEALTH]`
+  checkpoint line at 40k, `blocks.1.bn1[14]` in all three): B-leakyall 101.8, B-leaky 95.6, B 37.1.
+- **Reading:** leaky ReLU everywhere keeps the value-head benefit B-leaky already showed (no parked `value.bn` channel,
+  no zero-velocity value FC1 unit), but the tower drifts the same way as B's: `blocks.2.bn1` ends with 4 channels mostly
+  off and the most negative β/|γ| of the three arms, so the leaky slope does not stop that layer's β from walking toward
+  the dead line across LR cycles. Policy strength is not better than ReLU B at any trough (mean −12.5 at low LR, about one
+  SD); the gap is largest through the second cycle's trough (13k–19k) and gone at the third (24k–29k). One seed, one start.
+
 ## Arm B-silu: result (stopped at 36,066; E-0021)
 
 - **Stopped by the owner** at 2026-10-06 23:10 ("terminate b silu. we haven't recovered any channels"): SIGINT, clean abort

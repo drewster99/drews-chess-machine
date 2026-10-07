@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0022">
+<meta name="dcm-date" content="2026-10-05">
+<meta name="dcm-title" content="Leaky ReLU at every activation on B's LR cycle (arm B-leakyall)">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="leaky-relu, activations, lr-schedule, basic24">
+<meta name="dcm-takeaway" content="Leaky ReLU at every activation kept the value head healthy (value.bn 0 of 16 parked vs B&#x27;s 6, no zero-velocity value FC1 unit) but did not help the tower or the policy: blocks.2.bn1 still drifted (4 channels mostly off, worst β/|γ| −2.70 vs B −2.53) and low-LR probes averaged −12.5 ± 13.0 pElo vs ReLU B (best 1629.4 vs 1632.0 at 38k), so leaky everywhere adds nothing over a leaky value head.">
+<meta name="dcm-related" content="E-0017, E-0019, E-0021">
+<meta name="dcm-superseded-by" content="">
+<title>E-0022 · Leaky ReLU at every activation on B's LR cycle (arm B-leakyall)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0022</span><span>2026-10-05</span><span class="status complete">complete</span></div>
+<h1>Leaky ReLU at every activation on B's LR cycle (arm B-leakyall)</h1>
+<div class="tags"><span class="tag">leaky-relu</span><span class="tag">activations</span><span class="tag">lr-schedule</span><span class="tag">basic24</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>ReLU arm B (1.0 ↔ 0.001 LR cycle, E-0017) lost 6 of 16 value-head BN channels and its tower's <code>blocks.2.bn1</code> drifted toward the dead line across LR cycles. A leaky value head (E-0019) fixed the value head. Does leaky ReLU at <em>every</em> activation (blocks, tower end, policy head, value conv, value FC1) also keep the tower healthy, and does it change policy strength?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Arch</dt><dd><code>r7_basic24_leakyall.json</code>: B's R7 shape (basic24, 3 blocks 7×7 at 128) with leaky ReLU at every site. Start net <code>20261005-r7b24-leakyall-fresh.safetensors</code> (<code>20261006-40-7URa</code>); trainable tensors byte-identical to B's start net, only BN running statistics differ.</dd><dt>Run</dt><dd>Corpus replay <code>20260624-192615-w3aA5b</code>, <code>parameters-B.json</code> (LR cycle, cap 15), <code>--seed 20261005</code>, <code>--policy-tail-precision fp32_from_pre_bn</code>, frozen build 2330. Stem <code>20261005-lrBleakyall-cyc1</code>, run <code>A41BEB12…</code>, ModelID <code>20261006-43-a89C</code>, log <code>dcm_log_20261005-234434.txt</code>.</dd><dt>Span</dt><dd>2026-10-05 23:44 → 2026-10-07 00:12, 40,000 steps, clean finish (rc 0).</dd><dt>Measured</dt><dd>Policy probes every 1,000 steps (<code>--probe-set wide</code>), <code>[LAYER-HEALTH]</code>, <code>bn_liveness.py</code> per site at 40k.</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<figure class="chart">
+<script type="application/json">{"x": {"label": "trainer step"}, "y": {"label": "pElo (wide probe set)"}, "series": [{"name": "B (ReLU)", "points": [[1000, 1018.2], [2000, 1251.6], [3000, 1321.7], [4000, 1391.2], [5000, 1402.5], [6000, 1405.6], [7000, 1395.8], [8000, 1409.2], [9000, 1372.2], [10000, 1384.0], [11000, 1320.7], [12000, 1430.7], [13000, 1554.9], [14000, 1557.5], [15000, 1566.2], [16000, 1571.4], [17000, 1581.6], [18000, 1573.9], [19000, 1558.5], [20000, 1471.3], [21000, 1332.5], [22000, 1372.2], [23000, 1573.4], [24000, 1597.5], [25000, 1604.7], [26000, 1609.4], [27000, 1603.7], [28000, 1598.6], [29000, 1596.0], [30000, 1504.6], [31000, 1372.7], [32000, 1431.3], [33000, 1578.5], [34000, 1614.0], [35000, 1628.4], [36000, 1620.7], [37000, 1627.8], [38000, 1632.0], [39000, 1583.7], [40000, 1507.7]]}, {"name": "B-leaky (leaky value head)", "points": [[1000, 1004.8], [2000, 1234.0], [3000, 1331.0], [4000, 1383.0], [5000, 1388.1], [6000, 1388.1], [7000, 1391.7], [8000, 1395.8], [9000, 1366.5], [10000, 1349.5], [11000, 1240.2], [12000, 1395.8], [13000, 1531.3], [14000, 1554.9], [15000, 1557.0], [16000, 1567.8], [17000, 1574.4], [18000, 1571.9], [19000, 1532.9], [20000, 1471.8], [21000, 1365.5], [22000, 1396.8], [23000, 1589.8], [24000, 1611.4], [25000, 1600.1], [26000, 1606.8], [27000, 1607.3], [28000, 1618.1], [29000, 1609.9], [30000, 1376.3], [31000, 1379.4], [32000, 1394.3], [33000, 1550.8], [34000, 1613.5], [35000, 1628.9], [36000, 1626.3], [37000, 1631.4], [38000, 1641.7], [39000, 1582.1], [40000, 1469.2]]}, {"name": "B-leakyall (leaky everywhere)", "points": [[1000, 1104.9], [2000, 1241.2], [3000, 1324.3], [4000, 1389.1], [5000, 1394.3], [6000, 1399.4], [7000, 1402.5], [8000, 1396.3], [9000, 1375.8], [10000, 1363.4], [11000, 1264.5], [12000, 1346.4], [13000, 1527.2], [14000, 1539.5], [15000, 1543.1], [16000, 1550.8], [17000, 1553.9], [18000, 1552.4], [19000, 1527.7], [20000, 1451.8], [21000, 1313.0], [22000, 1439.0], [23000, 1536.5], [24000, 1609.4], [25000, 1603.2], [26000, 1605.8], [27000, 1610.4], [28000, 1584.2], [29000, 1593.4], [30000, 1479.5], [31000, 1295.4], [32000, 1510.3], [33000, 1549.3], [34000, 1598.1], [35000, 1609.9], [36000, 1602.2], [37000, 1609.4], [38000, 1629.4], [39000, 1562.6], [40000, 1446.1]]}]}</script>
+<figcaption>Policy pElo every 1,000 steps for B, B-leaky and B-leakyall.</figcaption>
+</figure>
+<div class="tablebox"><table><caption>pElo at selected steps (the full grid is in the README).</caption><thead><tr><th>trainer step</th><th class="n">B</th><th class="n">B-leaky</th><th class="n">B-leakyall</th><th class="n">Δ vs B</th></tr></thead><tbody><tr><td>1,000</td><td class="n">1018.2</td><td class="n">1004.8</td><td class="n">1104.9</td><td class="n">+86.7</td></tr><tr><td>6,000</td><td class="n">1405.6</td><td class="n">1388.1</td><td class="n">1399.4</td><td class="n">-6.2</td></tr><tr><td>11,000</td><td class="n">1320.7</td><td class="n">1240.2</td><td class="n">1264.5</td><td class="n">-56.2</td></tr><tr><td>16,000</td><td class="n">1571.4</td><td class="n">1567.8</td><td class="n">1550.8</td><td class="n">-20.5</td></tr><tr><td>19,000</td><td class="n">1558.5</td><td class="n">1532.9</td><td class="n">1527.7</td><td class="n">-30.8</td></tr><tr><td>21,000</td><td class="n">1332.5</td><td class="n">1365.5</td><td class="n">1313.0</td><td class="n">-19.6</td></tr><tr><td>26,000</td><td class="n">1609.4</td><td class="n">1606.8</td><td class="n">1605.8</td><td class="n">-3.6</td></tr><tr><td>31,000</td><td class="n">1372.7</td><td class="n">1379.4</td><td class="n">1295.4</td><td class="n">-77.2</td></tr><tr><td>34,000</td><td class="n">1614.0</td><td class="n">1613.5</td><td class="n">1598.1</td><td class="n">-15.9</td></tr><tr><td>35,000</td><td class="n">1628.4</td><td class="n">1628.9</td><td class="n">1609.9</td><td class="n">-18.5</td></tr><tr><td>36,000</td><td class="n">1620.7</td><td class="n">1626.3</td><td class="n">1602.2</td><td class="n">-18.5</td></tr><tr><td>37,000</td><td class="n">1627.8</td><td class="n">1631.4</td><td class="n">1609.4</td><td class="n">-18.5</td></tr><tr><td>38,000</td><td class="n">1632.0</td><td class="n">1641.7</td><td class="n">1629.4</td><td class="n">-2.6</td></tr><tr><td>39,000</td><td class="n">1583.7</td><td class="n">1582.1</td><td class="n">1562.6</td><td class="n">-21.0</td></tr><tr><td>40,000</td><td class="n">1507.7</td><td class="n">1469.2</td><td class="n">1446.1</td><td class="n">-61.6</td></tr></tbody></table></div>
+<div class="tablebox"><table><caption>Per site at 40k (<code>bn_liveness.py</code>): parked / mostly off / lowest pass-through.</caption><thead><tr><th>site</th><th class="n">B-leakyall</th><th class="n">B-leaky</th><th class="n">B</th></tr></thead><tbody>
+<tr><td>blocks.0.bn1</td><td class="n">leaky 0 / 0 / 0.1631</td><td class="n">relu 0 / 0 / 0.1632</td><td class="n">relu 0 / 0 / 0.1190</td></tr>
+<tr><td>blocks.0.bn2</td><td class="n">leaky 0 / 0 / 0.0752</td><td class="n">relu 0 / 0 / 0.0532</td><td class="n">relu 0 / 0 / 0.0542</td></tr>
+<tr><td>blocks.1.bn1</td><td class="n">leaky 0 / 0 / 0.0536</td><td class="n">relu 0 / 0 / 0.0399</td><td class="n">relu 0 / 0 / 0.0551</td></tr>
+<tr><td>blocks.1.bn2</td><td class="n">leaky 0 / 1 / 0.0217</td><td class="n">relu 0 / 1 / 0.0144</td><td class="n">relu 0 / 0 / 0.0275</td></tr>
+<tr><td>blocks.2.bn1</td><td class="n">leaky 0 / 4 / 0.0134</td><td class="n">relu 0 / 1 / 0.0061</td><td class="n">relu 0 / 5 / 0.0056</td></tr>
+<tr><td>blocks.2.bn2</td><td class="n">leaky 0 / 0 / 0.0342</td><td class="n">relu 0 / 0 / 0.0554</td><td class="n">relu 0 / 0 / 0.0231</td></tr>
+<tr><td>tower_final_bn</td><td class="n">leaky 0 / 0 / 0.2131</td><td class="n">relu 0 / 0 / 0.1952</td><td class="n">relu 0 / 0 / 0.2338</td></tr>
+<tr><td>policy.pre_bn</td><td class="n">leaky 0 / 0 / 0.0587</td><td class="n">relu 0 / 0 / 0.0606</td><td class="n">relu 0 / 0 / 0.1117</td></tr>
+<tr><td>value.bn</td><td class="n">leaky 0 / 1 / 0.0226</td><td class="n">leaky 0 / 1 / 0.0205</td><td class="n">relu 6 / 0 / ≈0</td></tr>
+</tbody></table></div>
+<p>Δ vs B: low-LR probes (LR &lt; 0.1, n = 28) mean −12.5, SD 13.0; high-LR (n = 12) mean −11.8, SD 59.2; troughs 6k −6.2, 16k −20.5, 26k −3.6, 36k −18.5. Against B-leaky the low-LR mean is −9.7 (SD 14.7). All three arms peak at 38k (B-leakyall 1629.4, B 1632.0, B-leaky 1641.7). Value loss over 37,050–40,000 averages 0.8031 (B 0.8031). Value FC1 has 0 of 128 units at zero velocity (B 27), and all 801 live layer-health lines report <code>dead=0</code>. <code>blocks.2.bn1</code>'s worst β/|γ| is −2.70 (B −2.53, B-leaky −2.51); running-variance max/median at <code>blocks.1.bn1[14]</code> is 101.8 (B 37.1, B-leaky 95.6).</p>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>The leaky slope protects the value head exactly as the leaky value head alone does, and nothing else improves. The tower's <code>blocks.2.bn1</code> drift (β walking toward −3 across LR cycles) continues with a leaky activation, so it is not a ReLU dead-zone effect that a nonzero negative slope prevents. Policy strength sits about one SD below ReLU B at the LR troughs, most clearly in the second cycle. One seed, one start.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Leaky ReLU at every activation kept the value head healthy (value.bn 0 of 16 parked vs B&#x27;s 6, no zero-velocity value FC1 unit) but did not help the tower or the policy: blocks.2.bn1 still drifted (4 channels mostly off, worst β/|γ| −2.70 vs B −2.53) and low-LR probes averaged −12.5 ± 13.0 pElo vs ReLU B (best 1629.4 vs 1632.0 at 38k), so leaky everywhere adds nothing over a leaky value head.</p>
+</section>
+
+<section>
+<h2>Reproduce</h2>
+<p><code>DrewsChessMachine --replay-corpus 20260624-192615-w3aA5b --start-model …/Models/20261005-r7b24-leakyall-fresh.safetensors --out-model …/Models/20261005-lrBleakyall-cyc1-replay-latest.safetensors --parameters experiments/20261005-lr-schedule-ab/parameters-B.json --epochs 12 --training-step-limit 40000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005</code> with the frozen build <code>DCM-2331-4e70c615-p1headact.app</code>; probes with <code>experiments/probe_loop.sh 20261005-lrBleakyall-cyc1 probes-Bleakyall.jsonl</code> and <code>PROBE_BIN</code> = the frozen build. Per-site table: <code>bn_liveness.analyze()</code> on the three runs' 40k checkpoints.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261005-lr-schedule-ab/README.md">experiments/20261005-lr-schedule-ab/</a> — "Arms B-leakyall and B-silu", "Arm B-leakyall: result (finished at 40,000; E-0022)"</li><li><a href="../20261005-lr-schedule-ab/probes-Bleakyall.jsonl">probes-Bleakyall.jsonl</a> — all 40 probes</li><li><a href="../20261005-lr-schedule-ab/bn_liveness.py">bn_liveness.py</a> — per-site BN liveness</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

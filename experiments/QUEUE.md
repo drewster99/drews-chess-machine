@@ -8,7 +8,6 @@ conversation.
 
 | started | experiment | ends (est.) |
 |---|---|---|
-| 2026-10-05 23:44 | LR arm B-leakyall: B with leaky ReLU at every activation, to 40k | shares the GPU with two other runs |
 | 2026-10-06 17:00 | LR arm B-silu-clip1: exact resume of B-silu from its step-18000 checkpoint with `grad_clip_max_norm` 1.0 (B-silu: 15), to trainer step 40k | shares the GPU with two other runs |
 
 
@@ -33,6 +32,10 @@ conversation.
 
 ## Finished
 
+- 2026-10-05 23:44 → 2026-10-07 00:12 — LR arm B-leakyall (`20261005-lr-schedule-ab/`, E-0022): B with leaky ReLU at every
+  activation, to 40k (clean finish). Value head kept every channel (`value.bn` 0 of 16 parked vs B's 6; value FC1 0 of 128 at
+  zero velocity vs 27); tower `blocks.2.bn1` still drifted (4 mostly off, worst β/|γ| −2.70 vs B −2.53); policy probes −12.5 ± 13.0
+  pElo vs B at low LR; best 1629.4 at 38k (B 1632.0, B-leaky 1641.7).
 - 2026-10-05 23:44 → 2026-10-06 23:10 — LR arm B-silu (`20261005-lr-schedule-ab/`, E-0021): SiLU tower + leaky heads on B's
   LR cycle at cap 15. Tracked B to 19k (mean −3.7 pElo), blew up at 20,600 (E-0020); 20 of 128 policy pre-BN channels
   stayed parked from 21k to the end; pElo 1250.0 at 36k vs B 1620.7. Stopped by the owner at 36,066 (clean abort save).
