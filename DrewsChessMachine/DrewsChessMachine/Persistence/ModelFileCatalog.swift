@@ -18,6 +18,98 @@ struct ModelFileEntry: Sendable, Identifiable, Equatable {
     var parentModelID: String? = nil
     /// Who wrote the file: "manual", "replay", "train-vs-uci", "sigusr2", …
     var creator: String? = nil
+    /// The header's `content_sha256`: the hash of the file's data region,
+    /// which identifies its exact weights (a rolling `--out-model` file and
+    /// the step file of the same save share it). Nil when the header
+    /// records none.
+    var contentSHA256: String? = nil
+    /// What the header's `dcm_lineage` record says. The catalog always sets
+    /// it; nil only for an entry built elsewhere (a test).
+    var lineage: ModelFileLineageFacts? = nil
+}
+
+/// What a model file's header says about its lineage (follow-lineage plan
+/// §3.2), from its `dcm_lineage` record — the single source of truth; the
+/// flat mirror keys (`lineage_run_id`, `cum_trainer_step`, …) are never
+/// read.
+enum ModelFileLineageFacts: Sendable, Equatable {
+    case recorded(ModelFileLineagePosition)
+    /// Written at a format version from before lineage records.
+    case unrecorded(formatVersion: Int)
+    /// The record (or the format version, trainer clock or derivation
+    /// history read with it) does not decode. The file still lists: the
+    /// file picker shows what it always showed.
+    case unreadable(reason: String)
+}
+
+/// Where a file sits in its run, from its `dcm_lineage` record.
+struct ModelFileLineagePosition: Sendable, Equatable {
+    let lineageRunID: String
+    let segmentID: String
+    let segmentIndex: Int
+    let segmentStartedUnix: Int64
+    /// Earlier segments' IDs, oldest first, then this file's own.
+    let segmentChain: [String]
+    /// One per earlier segment, aligned with `segmentChain`: the segment
+    /// that resumed it, the step it handed on at and when the resuming
+    /// segment started. Read by the follow-lineage fork check
+    /// (`ModelLineageTip`), which needs them to see a parent that kept
+    /// training after a child resumed it.
+    let handoffs: [LineageHandoff]
+    /// The segment's own step count at the save (the CLI files'
+    /// `training_step`).
+    let segmentLocalStep: Int
+    /// Nil when the run continues history no record counted.
+    let cumTrainerStep: Int?
+    let recordedUnix: Int64
+    let pathKind: LineageRecord.PathKind
+}
+
+extension ModelFileLineagePosition {
+    /// The position `record` describes. Each earlier segment's summary holds
+    /// the step of the file that segment was resumed from; the segment that
+    /// resumed it is the next summary, or the record's own segment for the
+    /// last one.
+    init(record: LineageRecord) {
+        let earlier = record.segments
+        var handoffs: [LineageHandoff] = []
+        for (index, segment) in earlier.enumerated() {
+            let resumedByID: String
+            let resumedByStartedUnix: Int64
+            if index + 1 < earlier.count {
+                resumedByID = earlier[index + 1].segmentID
+                resumedByStartedUnix = earlier[index + 1].startedUnix
+            } else {
+                resumedByID = record.run.segmentID
+                resumedByStartedUnix = record.run.segmentStartedUnix
+            }
+            handoffs.append(LineageHandoff(
+                fromSegmentID: segment.segmentID,
+                atLocalStep: segment.segmentLocalStep,
+                toSegmentID: resumedByID,
+                toStartedUnix: resumedByStartedUnix))
+        }
+        self.init(
+            lineageRunID: record.run.lineageRunID,
+            segmentID: record.run.segmentID,
+            segmentIndex: record.run.segmentIndex,
+            segmentStartedUnix: record.run.segmentStartedUnix,
+            segmentChain: earlier.map(\.segmentID) + [record.run.segmentID],
+            handoffs: handoffs,
+            segmentLocalStep: record.steps.segmentLocalStep,
+            cumTrainerStep: record.steps.cumTrainerStep,
+            recordedUnix: record.run.recordedUnix,
+            pathKind: record.invocation.pathKind)
+    }
+}
+
+/// Segment `fromSegmentID` was resumed by `toSegmentID`, which started at
+/// `toStartedUnix` from `fromSegmentID`'s file at `atLocalStep`.
+struct LineageHandoff: Sendable, Equatable, Hashable {
+    let fromSegmentID: String
+    let atLocalStep: Int
+    let toSegmentID: String
+    let toStartedUnix: Int64
 }
 
 /// Every file of one model line (one `model_id`), newest step first.
@@ -89,23 +181,16 @@ enum ModelFileCatalog {
         }
     }
 
+    /// One full read of the folder: `ModelFolderHeaderCache` with nothing
+    /// cached, so the catalog and the Lichess bot's lineage follower share
+    /// one listing filter and one header reader.
     static func scanSynchronously(directory: URL) throws -> Scan {
-        let urls = try FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ).filter { $0.pathExtension == "safetensors" }
-
+        let scan = try ModelFolderHeaderCache.scanSynchronously(directory: directory, previous: .empty)
         var byModel: [String: [ModelFileEntry]] = [:]
-        var unreadable: [UnreadableModelFile] = []
-        for url in urls {
-            do {
-                let entry = try entry(for: url)
-                byModel[entry.modelID, default: []].append(entry)
-            } catch {
-                unreadable.append(UnreadableModelFile(url: url, reason: error.localizedDescription))
-            }
+        for entry in scan.entries {
+            byModel[entry.modelID, default: []].append(entry)
         }
+        let unreadable = scan.unreadable
         let lines = byModel.map { modelID, files in
             ModelLine(modelID: modelID, files: files.sorted(by: isMoreAdvanced))
         }
@@ -129,7 +214,11 @@ enum ModelFileCatalog {
     }
 
     static func entry(for url: URL) throws -> ModelFileEntry {
-        let metadata = try headerMetadata(at: url)
+        try entry(for: url, metadata: try headerMetadata(at: url))
+    }
+
+    /// The entry for `url` from its header's `__metadata__`, already read.
+    static func entry(for url: URL, metadata: [String: String]) throws -> ModelFileEntry {
         guard let modelID = metadata["model_id"], !modelID.isEmpty else {
             throw ModelFileCatalogError.missingModelID(file: url.lastPathComponent)
         }
@@ -164,6 +253,20 @@ enum ModelFileCatalog {
             }
             createdAt = Date(timeIntervalSince1970: seconds)
         }
+        // The one header-only lineage reader. Anything it refuses (the
+        // record, or the format version, trainer clock or derivation history
+        // read with it) makes the lineage unreadable, not the file.
+        let lineage: ModelFileLineageFacts
+        do {
+            switch try SafetensorsModelIO.readParentFile(fromMetadata: metadata, source: name).lineage {
+            case .recorded(let record):
+                lineage = .recorded(ModelFileLineagePosition(record: record))
+            case .unrecorded(let formatVersion):
+                lineage = .unrecorded(formatVersion: formatVersion)
+            }
+        } catch {
+            lineage = .unreadable(reason: String(describing: error))
+        }
         return ModelFileEntry(
             url: url,
             modelID: modelID,
@@ -172,7 +275,9 @@ enum ModelFileCatalog {
             architectureLabel: label,
             fileModifiedAt: modified,
             parentModelID: metadata["parent_model_id"].flatMap { $0.isEmpty ? nil : $0 },
-            creator: metadata["creator"].flatMap { $0.isEmpty ? nil : $0 }
+            creator: metadata["creator"].flatMap { $0.isEmpty ? nil : $0 },
+            contentSHA256: metadata[SafetensorsFile.contentHashKey],
+            lineage: lineage
         )
     }
 

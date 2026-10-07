@@ -1,6 +1,6 @@
 # Lichess bot: follow the newest checkpoint of one lineage on disk
 
-Status (2026-10-06): **IN PROGRESS.** Implemented: P-ready (a7803ac0, review fixes after it), P0 (4cc8b84b). OD-19 and the §5.1 test edits were decided by the owner on 2026-10-06 (§10); implementation follows the phase order of §7.
+Status (2026-10-06): **IN PROGRESS.** Implemented: P-ready (a7803ac0, review fixes 52fde131), P0 (4cc8b84b), P1. OD-19 and the §5.1 test edits were decided by the owner on 2026-10-06 (§10); implementation follows the phase order of §7.
 - **Owner decisions recorded 2026-10-06** (§10). They amend OD-6, OD-8, OD-9 and OD-17 (keep playing + alarm instead of declining) and add a rule for every source: **the bot builds its model generation before it goes online** (§3.10, OD-18, OD-19). The design, tests, validation and phasing below follow them.
 - Every `file:line` was checked against `main` at `f5be524b`.
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`) or `documentation/`.
@@ -740,3 +740,10 @@ Decisions taken while implementing, where the plan left a choice open or the cod
 - **`refreshIfDue` adopts a same-source settings value** (`currentSettings = settings`) before its refresh test, so the interval and toggle in force are the newest; a finished build sets `currentSettings` to the settings it was built for (a caller that joined it with a newer non-weight value is brought up to date by the next poll).
 - **Builds and tests run through `xcodebuild` with a private derived-data folder** (owner instruction, 2026-10-06): with several open workspaces named `DrewsChessMachine.xcodeproj` (agent worktrees), the Xcode tool resolved build and test commands to whichever window was frontmost. No Xcode window is opened or focused.
 - **Fail-first evidence, re-taken with `xcodebuild`.** With the two reads and the whole-settings comparison temporarily restored, `testRecordedHashIsOfTheBytesThatWereDecoded` failed (hash of the second read; two reads) and all three `LichessBotModelSlotsSettingsChangeTests` failed (generation 2, a second snapshot); with the fix, all four pass unmodified.
+
+**P1**
+- **`ModelLineageTip.select` takes a `ModelLineageAnchor`** (run ID + anchor segment ID), not `LichessBotFollowedLineage`: the persistence layer does not depend on the bot's settings type, and P1 lands before P2 defines it. The follower converts one to the other.
+- **A followed segment's newest file on another branch than the generation playing is its own outcome, `.divergedFromPlaying`** (§3.3 step 6), which the follower reports as a fork ("on another branch of the run than the generation playing"), so the log says which kind of fork it is.
+- **`ModelFileLineagePosition`'s record initializer lives in an extension**, so the memberwise initializer stays for tests that build positions by hand (`testNullCumulativeStepStillRanks`).
+- **The catalog's unreadable-folder error is `ModelFolderScanError.folderUnreadable`** ("The folder … can't be listed: …") instead of the raw Cocoa error; the picker shows it as before. Non-regular items and dangling links are listed as unreadable with their own reason ("… is a directory, not a model file", "… is a symbolic link to nothing") instead of the header read's Cocoa error.
+- **`FileSafety.resolvedItem(at:)`** is the one addition to `FileSafety`: kind, identity, size and modification time from one `stat` that follows links (read-only).

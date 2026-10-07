@@ -203,6 +203,37 @@ enum FileSafety {
         return FileIdentity(device: info.st_dev, inode: info.st_ino)
     }
 
+    /// What a path resolves to, following symbolic links: its kind,
+    /// identity, size and modification time.
+    struct ResolvedItem: Equatable, Sendable {
+        let kind: ItemKind
+        let identity: FileIdentity
+        let size: Int64
+        let modifiedAt: Date
+    }
+
+    /// What `url` resolves to, following symbolic links (as reading the path
+    /// does), or nil when nothing exists there (including a dangling link).
+    /// Read-only. A cache keyed on this describes the bytes a read of the
+    /// path would see — unlike `existingItem(at:)`, which describes a link
+    /// itself. Kind and identity come from the same `stat` as size and time,
+    /// so the four always describe one file.
+    static func resolvedItem(at url: URL) throws -> ResolvedItem? {
+        var info = stat()
+        guard stat(url.path, &info) == 0 else {
+            let code = errno
+            if code == ENOENT { return nil }
+            throw FileSafetyError.systemCallFailed(path: url.path, call: "stat", errnoValue: code)
+        }
+        let modified = info.st_mtimespec
+        return ResolvedItem(
+            kind: ItemKind(mode: info.st_mode),
+            identity: FileIdentity(device: info.st_dev, inode: info.st_ino),
+            size: Int64(info.st_size),
+            modifiedAt: Date(timeIntervalSince1970: TimeInterval(modified.tv_sec) + TimeInterval(modified.tv_nsec) / 1_000_000_000)
+        )
+    }
+
     /// The identity of the file open on `descriptor`. `path` only labels a
     /// failure.
     static func identity(ofOpenFileDescriptor descriptor: Int32, path: String) throws -> FileIdentity {
