@@ -135,6 +135,24 @@ struct LichessBotModelCheckpointStatistics: Sendable, Equatable, Identifiable {
     let line: LichessBotModelRecordLine
 
     var id: LichessBotModelKey { key }
+
+    /// "step 5,000 · cum 120,000 · Model file · ab12cd34": the training
+    /// step, the lineage's cumulative step when recorded, the source, and a
+    /// file's hash prefix.
+    var label: String {
+        var parts: [String] = []
+        if let trainingStep {
+            parts.append("step \(trainingStep.formatted())")
+        }
+        if let cumTrainerStep {
+            parts.append("cum \(cumTrainerStep.formatted())")
+        }
+        parts.append(sourceKind.displayName)
+        if case .file(let sha256) = key {
+            parts.append(String(sha256.prefix(8)))
+        }
+        return parts.joined(separator: " · ")
+    }
 }
 
 /// Item 4: one model ID (one CLI process, one lineage segment) and its
@@ -145,6 +163,92 @@ struct LichessBotModelGroupStatistics: Sendable, Equatable, Identifiable {
     let checkpoints: [LichessBotModelCheckpointStatistics]
 
     var id: String { modelID }
+}
+
+/// One visible row of the Models table: a model ID's group, one of its
+/// checkpoints (when the group is expanded), or the "No model recorded"
+/// row, in one shape so the table draws every row with one view (no
+/// `switch` in a view body). The table is a list of these, so expanding a
+/// group inserts rows rather than showing hidden ones.
+struct LichessBotModelTableRow: Sendable, Equatable, Identifiable {
+    enum Kind: Sendable, Equatable {
+        /// A model ID's group; `expanded` says whether its checkpoints show.
+        case group(expanded: Bool)
+        case checkpoint
+        case noModelRecorded
+    }
+
+    let id: String
+    let kind: Kind
+    /// The model ID a group row opens and closes; nil for other rows.
+    let groupModelID: String?
+    let label: String
+    let tally: LichessBotResultTally
+    let interval: LichessBotScoreInterval?
+    let performance: LichessBotRatingEstimate
+    let ratedOpponentGames: Int
+    let opponentAverage: Double?
+    /// Nil for the "No model recorded" row, which has no model to mix with.
+    let mixedGames: Int?
+    let firstGame: Date?
+    let lastGame: Date?
+
+    /// The rows for `models` with the groups in `expanded` opened. The
+    /// "No model recorded" row comes last, and only when it has games.
+    static func rows(_ models: LichessBotModelStatistics, expanded: Set<String>) -> [LichessBotModelTableRow] {
+        var rows: [LichessBotModelTableRow] = []
+        for group in models.groups {
+            let isExpanded = expanded.contains(group.modelID)
+            rows.append(LichessBotModelTableRow(id: "group:\(group.modelID)", kind: .group(expanded: isExpanded), groupModelID: group.modelID, label: group.modelID, line: group.line))
+            if isExpanded {
+                rows += group.checkpoints.map { checkpoint in
+                    LichessBotModelTableRow(id: "checkpoint:\(checkpoint.key)", kind: .checkpoint, groupModelID: nil, label: checkpoint.label, line: checkpoint.line)
+                }
+            }
+        }
+        let none = models.noModelRecorded
+        if none.games > 0 {
+            rows.append(LichessBotModelTableRow(
+                id: "noModelRecorded",
+                kind: .noModelRecorded,
+                groupModelID: nil,
+                label: "No model recorded",
+                tally: none,
+                interval: LichessBotEloMath.scoreInterval(score: Double(none.wins) + 0.5 * Double(none.draws), games: none.scored),
+                performance: .none,
+                ratedOpponentGames: 0,
+                opponentAverage: nil,
+                mixedGames: nil,
+                firstGame: nil,
+                lastGame: nil
+            ))
+        }
+        return rows
+    }
+
+    private init(id: String, kind: Kind, groupModelID: String?, label: String, line: LichessBotModelRecordLine) {
+        self.init(
+            id: id, kind: kind, groupModelID: groupModelID, label: label,
+            tally: line.tally, interval: line.interval, performance: line.performance,
+            ratedOpponentGames: line.ratedOpponentGames, opponentAverage: line.opponentAverage,
+            mixedGames: line.mixedGames, firstGame: line.firstGame, lastGame: line.lastGame
+        )
+    }
+
+    private init(id: String, kind: Kind, groupModelID: String?, label: String, tally: LichessBotResultTally, interval: LichessBotScoreInterval?, performance: LichessBotRatingEstimate, ratedOpponentGames: Int, opponentAverage: Double?, mixedGames: Int?, firstGame: Date?, lastGame: Date?) {
+        self.id = id
+        self.kind = kind
+        self.groupModelID = groupModelID
+        self.label = label
+        self.tally = tally
+        self.interval = interval
+        self.performance = performance
+        self.ratedOpponentGames = ratedOpponentGames
+        self.opponentAverage = opponentAverage
+        self.mixedGames = mixedGames
+        self.firstGame = firstGame
+        self.lastGame = lastGame
+    }
 }
 
 /// One point of the progression chart: consecutive checkpoints of one run
@@ -164,6 +268,52 @@ struct LichessBotProgressionPoint: Sendable, Equatable, Identifiable {
     let performance: LichessBotRatingEstimate
 
     var id: String { "\(series)#\(step)" }
+}
+
+/// What the progression chart plots on its y axis.
+enum LichessBotProgressMetric: String, CaseIterable, Sendable, Identifiable {
+    case score
+    case performance
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .score: return "Score"
+        case .performance: return "Perf"
+        }
+    }
+}
+
+/// One mark of the progression chart: a point and, for the score, its
+/// interval.
+struct LichessBotProgressChartMark: Sendable, Equatable, Identifiable {
+    let id: String
+    let series: String
+    let step: Int
+    let value: Double
+    let lower: Double?
+    let upper: Double?
+
+    /// The marks for `metric`. Score is in percent with its Wilson interval.
+    /// A performance rating is plotted only where it is an estimate: a
+    /// perfect or zero score is a bound with no value to place, and is left
+    /// out (the table shows it).
+    static func marks(_ points: [LichessBotProgressionPoint], metric: LichessBotProgressMetric) -> [LichessBotProgressChartMark] {
+        points.compactMap { point in
+            switch metric {
+            case .score:
+                guard let score = point.score else { return nil }
+                return LichessBotProgressChartMark(
+                    id: point.id, series: point.series, step: point.step, value: 100 * score,
+                    lower: point.interval.map { 100 * $0.lower }, upper: point.interval.map { 100 * $0.upper }
+                )
+            case .performance:
+                guard case .estimate(let rating) = point.performance else { return nil }
+                return LichessBotProgressChartMark(id: point.id, series: point.series, step: point.step, value: rating, lower: nil, upper: nil)
+            }
+        }
+    }
 }
 
 /// Item 4 over one period.

@@ -14,6 +14,7 @@ struct LichessBotRecordPanel: View {
         let period = pipeline.rememberedPeriod
         let pane = pipeline.rememberedPane
         let hasGames = statistics[filter].periodRows[period].record.all.games > 0
+        let breakdowns = statistics[filter].byPeriod[period]
         VStack(alignment: .leading, spacing: LichessBotStatsStyle.sectionSpacing) {
             // One "empty" line for every pane: a period without a single
             // game (scored or not) has nothing to break down.
@@ -24,6 +25,8 @@ struct LichessBotRecordPanel: View {
                 // so it shows even in an empty period.
                 LichessBotTimeControlTable(statistics: statistics, filter: filter, period: period, account: account)
                     .shown(pane == .timeControls)
+                LichessBotModelsPane(models: breakdowns.models)
+                    .shown(pane == .models)
             }
         }
     }
