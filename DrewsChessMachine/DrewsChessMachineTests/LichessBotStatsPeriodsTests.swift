@@ -94,8 +94,11 @@ final class LichessBotStatsPeriodsTests: XCTestCase {
         let now = try date("2026-10-07T12:00:00Z")
         let future = now.addingTimeInterval(90)
         let starts = try LichessBotStatsPeriods.starts(now: now, calendar: calendar)
+        // Every current period has no upper bound; a previous period ends
+        // where the current one begins, so a game in the future is in none.
+        let previousPeriods: Set<LichessBotStatsPeriod> = [.yesterday, .lastWeek, .lastMonth, .lastYear]
         for period in LichessBotStatsPeriod.allCases {
-            XCTAssertTrue(starts.contains(future, in: period), period.rawValue)
+            XCTAssertEqual(starts.contains(future, in: period), !previousPeriods.contains(period), period.rawValue)
         }
         let row = try LichessBotStatsFixtures.row(id: "f", at: future, score: 1)
         XCTAssertEqual(try LichessBotStatsPeriods.nextChange(after: now, rows: [row], calendar: calendar), future.addingTimeInterval(3600))
