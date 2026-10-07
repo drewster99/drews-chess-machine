@@ -434,5 +434,27 @@ window.DCM_EXPERIMENTS = [
    "E-0021"
   ],
   "supersededBy": null
+ },
+ {
+  "id": "E-0024",
+  "date": "2026-10-07",
+  "file": "E-0024_2026-10-07_relative-gradient-cap-validation.html",
+  "title": "Relative gradient cap validation: V-1 (per-step ratios on B-silu) and V-3 (fresh start, cap on)",
+  "status": "complete",
+  "tags": [
+   "gradient-clipping",
+   "silu",
+   "lr-schedule",
+   "training-stability",
+   "exact-resume",
+   "basic24"
+  ],
+  "takeaway": "V-1, an exact log-only rerun of B-silu from 18k, logged every step above its trailing median: healthy steps never exceeded 1.39x, while the run was broken by two precursor steps (19,785 at 28x, 19,795 at 18x) and an 11-step burst at 20,599-20,609 (up to 48x, two steps above the hard max 15). By the plan's rule k = 3. V-3, a fresh start on B's recipe with the cap on at k = 3, never clipped on the relative term in 3,000 steps and ended byte-identical to B. Both pass; switching the default from log only to clip (plan P5) waits on the owner.",
+  "related": [
+   "E-0020",
+   "E-0021",
+   "E-0023"
+  ],
+  "supersededBy": null
  }
 ];

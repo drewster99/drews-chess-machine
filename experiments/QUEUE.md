@@ -31,6 +31,11 @@ conversation.
 
 ## Finished
 
+- 2026-10-07 06:07 → 07:28 — Relative gradient cap validation V-1 and V-3 (`20261005-lr-schedule-ab/`, E-0024; plan
+  `RELATIVE_GRADIENT_CAP_PLAN.md` Part V). V-1: exact log-only rerun of B-silu from 18k to 21k, byte-identical to B-silu; healthy
+  steps ≤ 1.39× their trailing median, the breaking steps 18–48× (19,785, 19,795 and the 11-step burst 20,599–20,609) → k = 3.
+  V-3: fresh start on B's recipe with the cap on (k = 3), 3,000 steps, no relative clip, byte-identical to B. Both pass; P5 (default
+  to clip) waits on the owner's go (the edit was refused by the permission check). V-2 (k = 3 clip from 18k to 23k) not run.
 - 2026-10-07 03:50 → 05:47 — LR arms B-silu-clip2 and B-silu-clip5 (`20261005-lr-schedule-ab/`, E-0023): exact resumes of B-silu
   from 18k with `grad_clip_max_norm` 2.0 / 5.0, to 23k (both clean finishes, rc 0). Both left B-silu's path at 19,800 like clip1
   (so B-silu had an unlogged step with a pre-clip norm above 5) and neither blew up: 21k pElo 1373.2 / 1353.6 vs B-silu 457.4,

@@ -9,7 +9,7 @@
 <meta name="dcm-status" content="complete">
 <meta name="dcm-tags" content="gradient-clipping, silu, lr-schedule, training-stability, exact-resume, basic24">
 <meta name="dcm-takeaway" content="Exact reruns of B-silu from 18k with grad_clip_max_norm 2.0 and 5.0 both left B-silu's path at 19,800, exactly where the 1.0 cap did, and neither blew up (21k pElo 1373.2 and 1353.6 vs 457.4; 0 parked channels; 1560.6 and 1567.3 at 23k vs ReLU B's 1573.4). So B-silu had one unlogged step with a pre-clip norm above 5, more than 13x its usual 0.33-0.38, and any cap from 1 to 5 cut it. A cap at about 3x the recent median catches such a step without binding in normal training: the relative gradient cap, now on main, defaults to log only until its validation runs pass.">
-<meta name="dcm-related" content="E-0020, E-0021">
+<meta name="dcm-related" content="E-0020, E-0021, E-0024">
 <meta name="dcm-superseded-by" content="">
 <title>E-0023 · Looser fixed gradient caps (2.0 and 5.0) vs B-silu's step-20,600 blowup</title>
 <link rel="stylesheet" href="style.css">

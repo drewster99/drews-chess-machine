@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0024">
+<meta name="dcm-date" content="2026-10-07">
+<meta name="dcm-title" content="Relative gradient cap validation: V-1 (per-step ratios on B-silu) and V-3 (fresh start, cap on)">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="gradient-clipping, silu, lr-schedule, training-stability, exact-resume, basic24">
+<meta name="dcm-takeaway" content="V-1, an exact log-only rerun of B-silu from 18k, logged every step above its trailing median: healthy steps never exceeded 1.39x, while the run was broken by two precursor steps (19,785 at 28x, 19,795 at 18x) and an 11-step burst at 20,599-20,609 (up to 48x, two steps above the hard max 15). By the plan's rule k = 3. V-3, a fresh start on B's recipe with the cap on at k = 3, never clipped on the relative term in 3,000 steps and ended byte-identical to B. Both pass; switching the default from log only to clip (plan P5) waits on the owner.">
+<meta name="dcm-related" content="E-0020, E-0021, E-0023">
+<meta name="dcm-superseded-by" content="">
+<title>E-0024 · Relative gradient cap validation: V-1 (per-step ratios on B-silu) and V-3 (fresh start, cap on)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0024</span><span>2026-10-07</span><span class="status complete">complete</span></div>
+<h1>Relative gradient cap validation: V-1 (per-step ratios on B-silu) and V-3 (fresh start, cap on)</h1>
+<div class="tags"><span class="tag">gradient-clipping</span><span class="tag">silu</span><span class="tag">lr-schedule</span><span class="tag">training-stability</span><span class="tag">exact-resume</span><span class="tag">basic24</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>The relative gradient cap (plan <code>RELATIVE_GRADIENT_CAP_PLAN.md</code>) clips each step at min(<code>grad_clip_max_norm</code>, max(floor, k × median of the last N pre-clip norms)) once the window holds W entries. Before it becomes the default it needs two answers. V-1: how far above its own recent median does a healthy step's gradient norm go, and how far did the steps that broke B-silu go — which fixes k. V-3: does the cap, warm-up included, leave healthy early training alone?</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup"><dt>Build</dt><dd>Frozen build 2390 (<code>DCM-2390-b4845088-relcap.app</code>, git <code>b4845088</code>, clean; sha256 prefix <code>f9ac7a8ca47f</code>), corpus <code>20260624-192615-w3aA5b</code>, <code>--seed 20261005</code>, <code>--policy-tail-precision fp32_from_pre_bn</code>.</dd><dt>V-1</dt><dd>Exact resume of B-silu from <code>20261005-lrBsilu-cyc1-replay-step18000</code> (ModelID <code>20261006-44-8ipq</code>), <code>--accept-inexact params</code>, <code>[RESUME] EXACT</code> (build 2330 → 2390, behavior fingerprint matches); <code>parameters-B-relcap-v1.json</code>: log only, k = 1, N = 1000, W = 100, floor 0.01 (lowest allowed). Log only feeds the hard max 15, so the run is B-silu's; every step above 1 × its trailing median is logged with its ratio. To trainer step 21,000. ModelID <code>20261007-47-QMBc</code>, log <code>dcm_log_20261007-060735.txt</code>, 06:07 → 07:28, rc 0.</dd><dt>V-3</dt><dd>Fresh start from B's start net <code>20261005-r7b24-fresh</code> (ReLU tower); <code>parameters-B-relcap-v3.json</code>: clip, k = 3, N = 1000, W = 100, floor 0.5; 3,000 steps. ModelID <code>20261007-49-NZSp</code>, log <code>dcm_log_20261007-060832.txt</code>, 06:08 → 07:28, rc 0.</dd><dt>Measured</dt><dd><code>[GRAD-CLIP]</code> event lines (pre-clip norm, trailing median, ratio); <code>[REPLAY]</code> lines with <code>gNormMax=</code> / <code>gCap=</code>; wide-set probes every 1,000 steps; byte comparison of the checkpoints against B-silu / B (<code>scripts/safetensors_tensor_compare.py</code>).</dd></dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table><caption>V-1 vs B-silu: probe pElo (wide set). Identical; the 21,000 checkpoint is byte-identical to B-silu's in every tensor.</caption><thead><tr><th>trainer step</th><th class="n">B (ReLU)</th><th class="n">B-silu</th><th class="n">V-1 (log only)</th></tr></thead><tbody><tr><td>19,000</td><td class="n">1558.5</td><td class="n">1571.9</td><td class="n">1571.9</td></tr><tr><td>20,000</td><td class="n">1471.3</td><td class="n">1390.2</td><td class="n">1390.2</td></tr><tr><td>21,000</td><td class="n">1332.5</td><td class="n">457.4</td><td class="n">457.4</td></tr></tbody></table></div>
+<p>Healthy span 18,101–19,750 (1,650 steps): largest ratio <strong>1.39×</strong> its trailing median; whole-distribution p99 ≈ 1.22×, p99.9 ≈ 1.31×. 84% of steps sit above the trailing median because the learning rate rises over the span (0.013 → 0.357). 19,800–20,598: largest 2.27× (one step).</p>
+<div class="tablebox"><table><caption>Every V-1 step above 2× its trailing median.</caption><thead><tr><th>trainer step</th><th class="n">pre-clip norm</th><th class="n">trailing median</th><th class="n">ratio</th><th>note</th></tr></thead><tbody><tr><td>19,785</td><td class="n">8.4497</td><td class="n">0.3011</td><td class="n">28.06</td><td>precursor</td></tr><tr><td>19,795</td><td class="n">5.5758</td><td class="n">0.3019</td><td class="n">18.47</td><td>precursor</td></tr><tr><td>20,368</td><td class="n">0.7823</td><td class="n">0.3444</td><td class="n">2.27</td><td>isolated</td></tr><tr><td>20,599</td><td class="n">4.2119</td><td class="n">0.3623</td><td class="n">11.62</td><td>burst</td></tr><tr><td>20,600</td><td class="n">2.5656</td><td class="n">0.3624</td><td class="n">7.08</td><td>burst (the only one a 50-step line showed)</td></tr><tr><td>20,601</td><td class="n">3.0004</td><td class="n">0.3624</td><td class="n">8.28</td><td>burst</td></tr><tr><td>20,602</td><td class="n">4.0610</td><td class="n">0.3625</td><td class="n">11.20</td><td>burst</td></tr><tr><td>20,603</td><td class="n">17.5647</td><td class="n">0.3625</td><td class="n">48.45</td><td>burst; above the hard max 15</td></tr><tr><td>20,604</td><td class="n">13.8180</td><td class="n">0.3625</td><td class="n">38.12</td><td>burst</td></tr><tr><td>20,605</td><td class="n">17.4873</td><td class="n">0.3627</td><td class="n">48.21</td><td>burst; above the hard max 15</td></tr><tr><td>20,606</td><td class="n">3.6740</td><td class="n">0.3629</td><td class="n">10.12</td><td>burst</td></tr><tr><td>20,607</td><td class="n">2.6632</td><td class="n">0.3629</td><td class="n">7.34</td><td>burst</td></tr><tr><td>20,608</td><td class="n">1.6255</td><td class="n">0.3630</td><td class="n">4.48</td><td>burst</td></tr><tr><td>20,609</td><td class="n">2.5394</td><td class="n">0.3631</td><td class="n">6.99</td><td>burst</td></tr><tr><td>20,610</td><td class="n">0.7413</td><td class="n">0.3633</td><td class="n">2.04</td><td>burst tail</td></tr><tr><td>20,773–20,990</td><td class="n">0.76–1.71</td><td class="n">0.367–0.381</td><td class="n">2.04–4.62</td><td>41 steps of the damaged network (6 above 3x)</td></tr></tbody></table></div>
+<div class="tablebox"><table><caption>V-3 vs B: probe pElo. Identical; the 3,000 checkpoint is byte-identical to B's in every tensor.</caption><thead><tr><th>trainer step</th><th class="n">B (ReLU)</th><th class="n">V-3 (cap on, k = 3)</th></tr></thead><tbody><tr><td>1,000</td><td class="n">1018.2</td><td class="n">1018.2</td></tr><tr><td>2,000</td><td class="n">1251.6</td><td class="n">1251.6</td></tr><tr><td>3,000</td><td class="n">1321.7</td><td class="n">1321.7</td></tr></tbody></table></div>
+<p>V-3's only <code>[GRAD-CLIP]</code> events are the hard-max clips at steps 1–3 (pre-clip 31.17, 30.34, 26.50 → 15), which B made too. Its cap (<code>gCap=</code>) is 15 through step 100 (warm-up), then 7.82 (150), 5.39 (450), 2.77 (1,000), 1.15 (2,000), 0.94 (3,000); the closest any line interval's largest norm came to its line's cap was 5.01 vs 6.48 (interval ending 300). Its <code>[REPLAY]</code> lines equal B's at all 25 shared steps.</p>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>The steps that broke B-silu were 18–48× their trailing median; healthy steps stayed at or below 1.39×. The plan's rule for k (the smallest of 3, 4, 5 with no healthy ratio above it except isolated single steps) gives k = 3, which clips both precursor steps and the whole burst. The blowup was an 11-step burst, not one step: the hard max 15 clipped two of its steps in B-silu and it was not enough. After the burst the damaged network has six steps of 3.0–4.6×; a capped run would not have reached that state, but a k = 3 cap would clip them too. On a healthy fresh start the relative term never bound, so the cap left B's training unchanged to the byte. One start state per run, one seed.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">V-1, an exact log-only rerun of B-silu from 18k, logged every step above its trailing median: healthy steps never exceeded 1.39x, while the run was broken by two precursor steps (19,785 at 28x, 19,795 at 18x) and an 11-step burst at 20,599-20,609 (up to 48x, two steps above the hard max 15). By the plan's rule k = 3. V-3, a fresh start on B's recipe with the cap on at k = 3, never clipped on the relative term in 3,000 steps and ended byte-identical to B. Both pass; switching the default from log only to clip (plan P5) waits on the owner.</p>
+</section>
+
+<section>
+<h2>Reproduce</h2>
+<p>Binary <code>~/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2390-b4845088-relcap.app</code>; <code>M</code> = <code>~/Library/Application Support/DrewsChessMachine/Models</code>, <code>E</code> = <code>experiments/20261005-lr-schedule-ab</code>. V-1: <code>"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/20261005-lrBsilu-cyc1-replay-step18000.safetensors" --resume-exact --accept-inexact params --out-model "$M/20261007-lrBsilu-relcapV1-replay-latest.safetensors" --parameters $E/parameters-B-relcap-v1.json --epochs 12 --training-step-limit 3000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005</code>. V-3: <code>"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/20261005-r7b24-fresh.safetensors" --out-model "$M/20261007-lrB-relcapV3-replay-latest.safetensors" --parameters $E/parameters-B-relcap-v3.json --epochs 12 --training-step-limit 3000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005</code>. Probes: <code>experiments/probe_loop.sh</code> on stems <code>20261007-lrBsilu-relcapV1</code> (<code>PROBE_ABOVE_STEP=18000</code>) and <code>20261007-lrB-relcapV3</code>. Analysis: V-1's <code>[GRAD-CLIP] trainerStep=</code> lines; <code>[REPLAY]</code> lines against <code>dcm_log_20261005-234437.txt</code> (B-silu) and <code>dcm_log_20261005-013235.txt</code> (B) by <code>trainerStep=</code>; <code>scripts/safetensors_tensor_compare.py</code> on the 21,000 and 3,000 checkpoints.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts"><li><a href="../20261005-lr-schedule-ab/README.md">experiments/20261005-lr-schedule-ab/</a> — "Relative gradient cap validation V-1 and V-3" and its results subsection</li><li><a href="../20261005-lr-schedule-ab/parameters-B-relcap-v1.json">parameters-B-relcap-v1.json</a>, <a href="../20261005-lr-schedule-ab/parameters-B-relcap-v3.json">parameters-B-relcap-v3.json</a> — the recipes</li><li><a href="../20261005-lr-schedule-ab/probes-Bsilu-relcapV1.jsonl">probes-Bsilu-relcapV1.jsonl</a>, <a href="../20261005-lr-schedule-ab/probes-B-relcapV3.jsonl">probes-B-relcapV3.jsonl</a> — probes (trainer steps)</li><li><a href="../../documentation/plans-active/RELATIVE_GRADIENT_CAP_PLAN.md">RELATIVE_GRADIENT_CAP_PLAN.md</a> — the design, Part V and P5</li></ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

@@ -657,6 +657,97 @@ PROBE_BIN="$BIN" PROBE_SEGMENT=1 TRAINER_PID=<trainer pid> experiments/probe_loo
   this GPU should match these lines exactly up to 19,750 (ctl15 matched B-silu bit for bit); after the split, MPSGraph's
   numerics on a shared GPU are not guaranteed to repeat.
 
+## Relative gradient cap validation V-1 and V-3 (added 2026-10-07 06:07; E-0024)
+
+- Plan `documentation/plans-active/RELATIVE_GRADIENT_CAP_PLAN.md`, Part V: cap = min(`grad_clip_max_norm`, max(floor, k × median of
+  the last N pre-clip gradient norms)), applied once the window holds W entries. V-1 is the gate for k; V-3 (owner-required) checks
+  that the cap leaves healthy early training alone. Both pass; the plan's P5 (default mode → clip with k = 3) is ready but not
+  applied: the edit was refused by the session's permission check and waits on the owner's go.
+- Both run frozen build 2390 (`FrozenBuilds/DCM-2390-b4845088-relcap.app`, git `b4845088`, clean; sha256 prefix `f9ac7a8ca47f`),
+  corpus `20260624-192615-w3aA5b`, `--seed 20261005`, `--policy-tail-precision fp32_from_pre_bn`.
+- **V-1** — exact resume of B-silu from `20261005-lrBsilu-cyc1-replay-step18000` (ModelID `20261006-44-8ipq`), `--accept-inexact params`,
+  `parameters-B-relcap-v1.json` (`parameters-B.json` + mode 1 = log only, k = 1, N = 1000, W = 100, floor 0.01 — the lowest allowed,
+  so the floor hides nothing between the median and 0.5), to trainer step 21,000. Log only feeds the hard max (15), so the training is
+  B-silu's own; every step above 1 × its trailing median writes `[GRAD-CLIP] … applied=false` with its ratio. `[RESUME] EXACT` (build
+  changed 2330 → 2390, behavior fingerprint matches). Stem `20261007-lrBsilu-relcapV1`, ModelID `20261007-47-QMBc`, log
+  `dcm_log_20261007-060735.txt`, 06:07:35 → 07:28:28, rc 0, probes `probes-Bsilu-relcapV1.jsonl`.
+- **V-3** — fresh start from B's own start net `20261005-r7b24-fresh` (ReLU tower, ModelID `20261005-22-yRzB`),
+  `parameters-B-relcap-v3.json` (`parameters-B.json` + mode 2 = clip, k = 3, N = 1000, W = 100, floor 0.5), 3,000 steps. Stem
+  `20261007-lrB-relcapV3`, ModelID `20261007-49-NZSp`, log `dcm_log_20261007-060832.txt`, 06:08:32 → 07:28:54, rc 0, probes
+  `probes-B-relcapV3.jsonl`.
+
+### V-1 and V-3: results (both finished 2026-10-07 07:28)
+
+- **V-1 is B-silu, bit for bit.** Its `[REPLAY]` lines equal B-silu's at all six trainer steps both logged (18,600, 19,000, 19,600,
+  20,000, 20,600, 21,000); its probes equal B-silu's (19k 1571.9, 20k 1390.2, 21k 457.4; NLL equal to the fourth decimal); and its
+  21,000 checkpoint is byte-identical to B-silu's in every tensor (`scripts/safetensors_tensor_compare.py`, exit 0, max relative
+  difference 0). Log-only mode changes nothing, and V-1 measured exactly the run that blew up.
+- **Healthy span 18,101–19,750** (1,650 steps, from the first step with W = 100 entries to the last line before the precursor):
+  1,381 steps above their trailing median, largest ratio **1.39×**; whole-distribution p99 ≈ 1.22× and p99.9 ≈ 1.31× (from the
+  logged upper half). 84% of steps sit above the trailing median because the learning rate is rising (0.013 at 18,102 → 0.357 at 19,750),
+  so each norm tends to exceed the median of the 1,000 before it. 19,800–20,598: largest 2.27× (one step, 20,368).
+- **Every step above 2× its trailing median:**
+
+| trainer step | pre-clip norm | trailing median | ratio | LR | |
+|---:|---:|---:|---:|---:|---|
+| 19,785 | 8.4497 | 0.3011 | 28.06 | 0.377 | precursor |
+| 19,795 | 5.5758 | 0.3019 | 18.47 | 0.382 | precursor |
+| 20,368 | 0.7823 | 0.3444 | 2.27 | 0.750 | isolated |
+| 20,599 | 4.2119 | 0.3623 | 11.62 | 0.880 | burst |
+| 20,600 | 2.5656 | 0.3624 | 7.08 | 0.881 | burst (the only one a 50-step line showed) |
+| 20,601 | 3.0004 | 0.3624 | 8.28 | 0.881 | burst |
+| 20,602 | 4.0610 | 0.3625 | 11.20 | 0.882 | burst |
+| 20,603 | 17.5647 | 0.3625 | 48.45 | 0.882 | burst; above the hard max 15, clipped in B-silu too |
+| 20,604 | 13.8180 | 0.3625 | 38.12 | 0.883 | burst |
+| 20,605 | 17.4873 | 0.3627 | 48.21 | 0.883 | burst; above the hard max 15 |
+| 20,606 | 3.6740 | 0.3629 | 10.12 | 0.884 | burst |
+| 20,607 | 2.6632 | 0.3629 | 7.34 | 0.884 | burst |
+| 20,608 | 1.6255 | 0.3630 | 4.48 | 0.885 | burst |
+| 20,609 | 2.5394 | 0.3631 | 6.99 | 0.885 | burst |
+| 20,610 | 0.7413 | 0.3633 | 2.04 | 0.885 | burst tail |
+| 20,773–20,990 | 0.76–1.71 | 0.367–0.381 | 2.04–4.62 | 0.95–0.98 | 41 steps after the blowup, network damaged (20 parked policy pre-BN channels) |
+
+  Above 3× after the blowup: 20,818 (3.44), 20,872 (4.62), 20,874 (3.35), 20,876 (3.52), 20,916 (3.36), 20,957 (3.45). These are
+  steps of a network the burst had already broken; a run capped at 3× would have clipped the precursor and the burst and not
+  reached that state, so they are not false positives on a healthy run, but a k = 3 cap would clip them too.
+- **The plan's rule for k** ("the smallest of 3, 4, 5 with no healthy per-step ratio above it except isolated single steps") gives
+  **k = 3**: the healthy maximum is 1.39×, and 3× clips both precursor steps and the whole burst from 20,599 to 20,609.
+- **The blowup was an 11-step burst, not one step.** Steps 20,599–20,609 all exceed 4× their trailing median, three of them 38–48×;
+  the hard max 15 clipped 20,603 and 20,605 in B-silu and it was not enough. The precursor (19,785 and 19,795) explains why caps of
+  1.0, 2.0 and 5.0 all left B-silu's path between 19,750 and 19,800 (E-0020, E-0023).
+- **V-3 is B, bit for bit.** Its only `[GRAD-CLIP]` events are the hard-max clips at steps 1–3 (pre-clip 31.17, 30.34, 26.50 → 15),
+  which B made too; the relative term never bound in 3,000 steps. Its `[REPLAY]` lines equal B's at all 25 steps both logged; probes
+  equal B's (1k 1018.2, 2k 1251.6, 3k 1321.7); its 3,000 checkpoint is byte-identical to B's in every tensor; `bn_liveness` per site
+  at 3,000 is identical (value.bn 6 parked in both, nothing else).
+- **V-3's cap trajectory** (`gCap=` on the step lines): 15 through step 100 (warm-up, fewer than W = 100 entries), then k × median:
+  7.82 (150), 5.39 (450), 3.75 (700), 2.77 (1,000), 1.57 (1,480), 1.15 (2,000), 0.99 (2,600), 0.94 (3,000). The closest approach of a
+  line interval's largest pre-clip norm (`gNormMax=`) to the line's cap was 5.01 vs 6.48 (interval ending 300); after 1,000 the
+  largest was 0.92 vs 2.38 (1,120). Each line's cap is the cap at that line's step, slightly lower than earlier in its interval.
+- **Reading.** On the incident run the gap between healthy steps (≤ 1.39×) and the steps that broke it (18–48×) is wide; 3× sits
+  far from both. On a healthy fresh start the cap never bound. Both pass the plan's criteria; P5 waits on the owner. V-2 (k = 3 in
+  clip mode from B-silu's 18k, to 23k) was not run.
+- **Reproduce:** binary as above; `S` = the session scratchpad holding `relcapV1_launch.sh` / `relcapV3_launch.sh`. Commands:
+
+```
+BIN="$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2390-b4845088-relcap.app/Contents/MacOS/DrewsChessMachine"
+M="$HOME/Library/Application Support/DrewsChessMachine/Models"; R=/Users/andrew/cursor/drews-chess-machine; E=$R/experiments/20261005-lr-schedule-ab
+# V-1
+"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/20261005-lrBsilu-cyc1-replay-step18000.safetensors" --resume-exact --accept-inexact params \
+  --out-model "$M/20261007-lrBsilu-relcapV1-replay-latest.safetensors" --parameters $E/parameters-B-relcap-v1.json --epochs 12 \
+  --training-step-limit 3000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005
+PROBE_BIN="$BIN" PROBE_ABOVE_STEP=18000 TRAINER_PID=<V-1 pid> $R/experiments/probe_loop.sh 20261007-lrBsilu-relcapV1 $E/probes-Bsilu-relcapV1.jsonl
+# V-3
+"$BIN" --replay-corpus 20260624-192615-w3aA5b --start-model "$M/20261005-r7b24-fresh.safetensors" \
+  --out-model "$M/20261007-lrB-relcapV3-replay-latest.safetensors" --parameters $E/parameters-B-relcap-v3.json --epochs 12 \
+  --training-step-limit 3000 --enumerate-checkpoints --policy-tail-precision fp32_from_pre_bn --seed 20261005
+PROBE_BIN="$BIN" TRAINER_PID=<V-3 pid> $R/experiments/probe_loop.sh 20261007-lrB-relcapV3 $E/probes-B-relcapV3.jsonl
+```
+
+  Analysis: V-1's `[GRAD-CLIP] trainerStep=` lines (`preNorm=`, `median=`, `ratio=`); the `[REPLAY]` lines of
+  `dcm_log_20261005-234437.txt` (B-silu) and `dcm_log_20261005-013235.txt` (B) against V-1's and V-3's, by `trainerStep=`;
+  `python3 scripts/safetensors_tensor_compare.py "$M/20261005-lrBsilu-cyc1-replay-step21000.safetensors" "$M/20261007-lrBsilu-relcapV1-replay-step21000.safetensors"`
+  and the same for `20261005-lrB-cyc1-replay-step3000` against `20261007-lrB-relcapV3-replay-step3000`.
+
 ## Arm C-leaky (added 2026-10-05 23:13, owner)
 
 - Owner: "let's do a leaky version of C with the crazy high LR schedule". C's damage was not confined to the value head
