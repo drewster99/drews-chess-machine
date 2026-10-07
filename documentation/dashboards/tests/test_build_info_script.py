@@ -285,6 +285,33 @@ class BuildInfoScriptTests(unittest.TestCase):
         info = repository.build_info(extra_environment={"GIT_CONFIG_GLOBAL": config})
         self.assertEqual(info["git_diff_sha256"], baseline, f"{key}={value} must not change the hash")
 
+    def test_a_user_wide_excludes_file_does_not_change_the_tree(self):
+        repository = self.repository()
+        path = "DrewsChessMachine/DrewsChessMachine/Ignored.swift"
+        repository.write(path, b"let compiled = 1\n")
+        baseline = repository.build_info()
+        self.assertTrue(baseline["git_dirty"])
+        excludes = os.path.join(self.folder, "excludes")
+        with open(excludes, "w") as handle:
+            handle.write("Ignored.swift\n")
+        config = os.path.join(self.folder, "gitconfig-excludes")
+        subprocess.run(["git", "config", "--file", config, "core.excludesFile", excludes], check=True,
+                       env=git_environment())
+        info = repository.build_info(extra_environment={"GIT_CONFIG_GLOBAL": config})
+        self.assertTrue(info["git_dirty"], "a file one Mac ignores user-wide is still compiled")
+        self.assertEqual(info["git_diff_sha256"], baseline["git_diff_sha256"])
+
+    def test_local_tool_settings_under_DrewsChessMachine_are_not_dirty(self):
+        repository = self.repository()
+        repository.write("DrewsChessMachine/.claude/settings.local.json", b'{"permissions": {}}\n')
+        # An empty XDG configuration folder, so git's default user-wide excludes file
+        # (`$XDG_CONFIG_HOME/git/ignore`) cannot be what keeps the file out.
+        empty_configuration = os.path.join(self.folder, "xdg")
+        os.makedirs(empty_configuration)
+        info = repository.build_info(extra_environment={"XDG_CONFIG_HOME": empty_configuration})
+        self.assertFalse(info["git_dirty"])
+        self.assertIsNone(info["git_diff_sha256"])
+
     def test_toolchain_fields_are_written_and_empty_refuses(self):
         repository = self.repository()
         info = repository.build_info()
