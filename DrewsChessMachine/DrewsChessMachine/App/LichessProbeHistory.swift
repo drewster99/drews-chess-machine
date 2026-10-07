@@ -215,10 +215,11 @@ final class LichessProbeHistory {
     /// champion before Play-and-Train has started).
     private(set) var latestTickTrainingStep: Int?
 
-    /// Total positions the trainer has consumed at tick time
-    /// (`completedTrainSteps × trainingBatchSize`). Matches the
-    /// "Positions trained" status bar cell. nil iff
-    /// `latestTickTrainingStep` is nil.
+    /// Total positions the trainer has consumed at tick time, each step at
+    /// the batch size it trained at
+    /// (`SessionController.trainedPositions(atTrainerStep:)`). nil when
+    /// `latestTickTrainingStep` is nil, or when no record covers the
+    /// trainer's clock.
     private(set) var latestTickPositionsTrained: Int?
 
     /// Cumulative active training wall-time in seconds at tick time

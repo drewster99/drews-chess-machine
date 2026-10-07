@@ -209,13 +209,15 @@ extension SessionController {
                 buffer.restoreSamplerState(resumedRunStreams.samplerState)
                 SessionLogger.shared.log("[RESUME] rng: sampler=restored")
             }
-            replayBuffer = buffer
         }
         // The batch size, pre-train fill and capacity this run trains under,
         // from here until the next start — every reader below and every
         // record of the run takes them from this capture, never from the
-        // settings, which the popover may change during the run.
+        // settings, which the popover may change during the run. Taken before
+        // the buffer is installed, so a start that fails puts the replaced
+        // buffer back with the replaced capture.
         let runCapture = beginRunStartCapture(buffer: buffer)
+        replayBuffer = buffer
         // Seed the buffer's per-batch sampling constraints from the
         // current parameters. Subsequent updates come reactively from
         // `ControlSideEffectsProbe.onChange(of: trainingParams.X)` —

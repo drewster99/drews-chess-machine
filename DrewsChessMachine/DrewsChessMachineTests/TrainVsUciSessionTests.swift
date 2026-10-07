@@ -184,7 +184,7 @@ final class TrainVsUciSessionTests: XCTestCase {
         let buffer = try ResumeEquivalenceTests.fixtureBuffer(sampler: DCMRandom(seed: 3))
         let state = TrainVsUciSession.sessionState(
             sessionID: "20261003-9-TeSt", savedAt: saved, runStart: started,
-            trainerCompletedSteps: snapshot.schedule.completedTrainSteps,
+            trainerCompletedSteps: snapshot.schedule.completedTrainSteps, trainedPositions: 0,
             parameters: parameters, hyperparameters: hyperparameters, arch: arch,
             bufferSnapshot: buffer.stateSnapshot(), maxPliesPerGame: 400)
         let sessions = tempDir.appendingPathComponent("Sessions", isDirectory: true)
@@ -233,7 +233,7 @@ final class TrainVsUciSessionTests: XCTestCase {
         XCTAssertEqual(gui.invocation.pathKind, .gui)
         let state = TrainVsUciSession.sessionState(
             sessionID: "s", savedAt: Date(timeIntervalSince1970: 1_800_000_100),
-            runStart: Date(timeIntervalSince1970: 1_800_000_000), trainerCompletedSteps: 0,
+            runStart: Date(timeIntervalSince1970: 1_800_000_000), trainerCompletedSteps: 0, trainedPositions: 0,
             parameters: TrainingParameters.shared.snapshot(),
             hyperparameters: TrainerHyperparameters(TrainingParameters.shared.snapshot()),
             arch: ResumeEquivalenceTests.architecture, bufferSnapshot: nil, maxPliesPerGame: 400)

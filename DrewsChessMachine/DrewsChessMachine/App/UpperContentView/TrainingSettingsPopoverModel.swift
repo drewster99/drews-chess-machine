@@ -286,22 +286,24 @@ final class TrainingSettingsPopoverModel {
     /// Pushes the freshly-edited self-play τ-schedule into the live
     /// `samplingScheduleBox`. No-op before the first session.
     var pushSelfPlaySchedule: () -> Void = {}
-    /// Returns the current (or last stopped) Play-and-Train run's start-time
-    /// capture (`SessionController.runStartCapture`), nil when no run has
-    /// started, so an edit of a captured key can say the run keeps its value.
+    /// Returns the active Play-and-Train run's start-time capture
+    /// (`SessionController.activeRunStartCapture`), nil when no run is
+    /// active, so an edit of a captured key can say the run keeps its value.
+    /// A stopped run keeps nothing: a Continue captures the edited value.
     var runStartCaptureProvider: () -> RunStartParameterCapture? = { nil }
 
-    /// The `[PARAM]` line for an edit of a key a Play-and-Train run captures
-    /// at its start. While a run holds a capture the edit is saved for the
-    /// next start and the line names the value the run keeps; with none it
-    /// is the plain old -> new line.
-    private func capturedKeyEditLogLine(name: String, old: Int, new: Int,
-                                        inForce: KeyPath<RunStartParameterCapture, Int>) -> String {
+    /// The `[PARAM]` line for an edit of the key `id`, which a Play-and-Train
+    /// run captures at its start. While a run holds a capture the edit is
+    /// saved for the next start and the line names the value the run keeps;
+    /// with none it is the plain old -> new line. Internal (not private) so
+    /// a test can check both forms.
+    func capturedKeyEditLogLine(id: String, old: Int, new: Int,
+                                inForce: KeyPath<RunStartParameterCapture, Int>) -> String {
         guard let capture = runStartCaptureProvider() else {
-            return "[PARAM] \(name): \(old) -> \(new)"
+            return "[PARAM] \(id): \(old) -> \(new)"
         }
         return RunStartParameterCapture.deferredEditLogLine(
-            name: name, old: old, new: new, inForceValue: capture[keyPath: inForce])
+            id: id, old: old, new: new, inForceValue: capture[keyPath: inForce])
     }
 
     /// The self-play worker counts the Concurrency field and stepper accept:
@@ -1253,7 +1255,7 @@ final class TrainingSettingsPopoverModel {
             trainingBatchSizeError = false
             if n != p.trainingBatchSize {
                 SessionLogger.shared.log(capturedKeyEditLogLine(
-                    name: "trainingBatchSize", old: p.trainingBatchSize, new: n, inForce: \.trainingBatchSize))
+                    id: TrainingBatchSize.id, old: p.trainingBatchSize, new: n, inForce: \.trainingBatchSize))
                 p.trainingBatchSize = n
             }
         } else {
@@ -1390,7 +1392,7 @@ final class TrainingSettingsPopoverModel {
             replayBufferCapacityError = false
             if n != p.replayBufferCapacity {
                 SessionLogger.shared.log(capturedKeyEditLogLine(
-                    name: "replayBufferCapacity", old: p.replayBufferCapacity, new: n, inForce: \.replayBufferCapacity))
+                    id: ReplayBufferCapacity.id, old: p.replayBufferCapacity, new: n, inForce: \.replayBufferCapacity))
                 p.replayBufferCapacity = n
             }
         } else {
@@ -1405,7 +1407,7 @@ final class TrainingSettingsPopoverModel {
             replayBufferMinPositionsError = false
             if n != p.replayBufferMinPositionsBeforeTraining {
                 SessionLogger.shared.log(capturedKeyEditLogLine(
-                    name: "replayBufferMinPositionsBeforeTraining", old: p.replayBufferMinPositionsBeforeTraining, new: n,
+                    id: ReplayBufferMinPositionsBeforeTraining.id, old: p.replayBufferMinPositionsBeforeTraining, new: n,
                     inForce: \.replayBufferMinPositionsBeforeTraining))
                 p.replayBufferMinPositionsBeforeTraining = n
             }

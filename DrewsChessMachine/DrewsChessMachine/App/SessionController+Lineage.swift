@@ -98,7 +98,8 @@ extension SessionController {
     /// it (consuming it here would have left the restored trainer to a
     /// "Continue" that re-records the run as unrecorded history). A kept
     /// trainer's segment is put back as it was, with the run-start
-    /// parameter capture it was trained under, since a failed `[RUN]`
+    /// parameter capture, positions count and replay buffer it was trained
+    /// with, since a failed `[RUN]`
     /// record must not replace or reset it. A trainer this start already
     /// reset leaves no segment behind: the old one no longer describes it.
     func beginRunLineage(mode: TrainingStartMode, trainer: ChessTrainer, championIdentifier: ModelID?,
@@ -134,6 +135,10 @@ extension SessionController {
             guard let tracker = lineageTracker else {
                 throw LineageSegmentError.noSegment("Play and Train")
             }
+            // The trainer holds this start's starting state now — the clock
+            // the segment just read — which the positions count needs to
+            // tell whether the session's steps are the trainer's clock.
+            anchorRunTrainedPositions(atTrainerStep: trainer.completedTrainSteps)
             // Consume the pending load — from here on, the running session
             // owns the restored state.
             pendingLoadedSession = nil
@@ -360,9 +365,15 @@ extension SessionController {
     /// source every reader of them uses until the next start (see
     /// `RunStartParameterCapture`). Called at every start, right after the
     /// buffer is chosen and before the lineage segment begins, whose `[RUN]`
-    /// record describes the parameters in force. The capture it replaces is
-    /// kept, so a start that fails before its lineage segment begins can put
-    /// it back (`restoreRunStartCaptureAfterFailedStart`).
+    /// record describes the parameters in force. The positions count begins
+    /// with it (`beginRunTrainedPositions`), at the capture's batch.
+    ///
+    /// Call it before the start installs `buffer` as `replayBuffer`: the
+    /// capture, positions count and buffer it replaces are kept together,
+    /// so a start that fails before its lineage segment begins puts all
+    /// three back (`restoreRunStartCaptureAfterFailedStart`) — a new buffer
+    /// left behind with the old capture would make session.json's buffer
+    /// counters disagree with the record's capacity.
     @discardableResult
     func beginRunStartCapture(buffer: ReplayBuffer) -> RunStartParameterCapture {
         let params = TrainingParameters.shared
@@ -370,8 +381,10 @@ extension SessionController {
             trainingBatchSize: params.trainingBatchSize,
             replayBufferMinPositionsBeforeTraining: params.replayBufferMinPositionsBeforeTraining,
             replayBufferCapacity: buffer.capacity)
-        runStartCaptureReplacedByLatestStart = runStartCapture
+        runStartStateReplacedByLatestStart = ReplacedRunStartState(
+            capture: runStartCapture, trainedPositions: runTrainedPositions, replayBuffer: replayBuffer)
         runStartCapture = capture
+        runTrainedPositions = beginRunTrainedPositions(batchSize: capture.trainingBatchSize)
         SessionLogger.shared.log(
             "[PARAM] run-start capture: \(TrainingBatchSize.id)=\(capture.trainingBatchSize) "
                 + "\(ReplayBufferMinPositionsBeforeTraining.id)=\(capture.replayBufferMinPositionsBeforeTraining) "
@@ -379,12 +392,20 @@ extension SessionController {
         return capture
     }
 
-    /// Put back the capture the latest start replaced, for a start that ends
-    /// without beginning (or replacing) its lineage segment: the segment
-    /// left in place — and any save of it before the next start — was
-    /// trained under that capture, not under the failed start's.
+    /// Put back the capture, positions count and replay buffer the latest
+    /// start replaced, for a start that ends without beginning (or
+    /// replacing) its lineage segment: the segment left in place — and any
+    /// save of it before the next start — was trained under that capture,
+    /// counted by that count, and holds that buffer, not the failed start's.
     func restoreRunStartCaptureAfterFailedStart() {
-        runStartCapture = runStartCaptureReplacedByLatestStart
+        guard let replaced = runStartStateReplacedByLatestStart else {
+            SessionLogger.shared.log("[PARAM] error: a failed Play-and-Train start found no replaced run-start state to put back")
+            return
+        }
+        runStartCapture = replaced.capture
+        runTrainedPositions = replaced.trainedPositions
+        replayBuffer = replaced.replayBuffer
+        runStartStateReplacedByLatestStart = nil
     }
 
     /// The running (or last stopped) run's start-time capture. Asked for

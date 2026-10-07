@@ -2188,7 +2188,7 @@ private struct ReplayTab: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Replay buffer")
                     .font(.subheadline.weight(.semibold))
-                Text("Capacity and pre-train fill apply at the next Play-and-Train start")
+                Text(RunStartParameterCapture.replayBufferCaption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 PopoverRow(

@@ -116,11 +116,17 @@ enum TrainVsUciSession {
     /// `TrainVsUciConfig.maxPliesPerGame`), which every game against the
     /// engines was played to. The self-play cap in the parameter snapshot is
     /// a setting this path never reads.
+    ///
+    /// `trainedPositions` is the run's `trainingPositionsSeen` over
+    /// `trainerCompletedSteps` (the lifetime trainer clock): its positions
+    /// count (`trainedPositionsCount(startTrainerSteps:startSession:batchSize:)`)
+    /// at that clock, nil when steps before the run are unrecorded.
     static func sessionState(
         sessionID: String,
         savedAt: Date,
         runStart: Date,
         trainerCompletedSteps: Int,
+        trainedPositions: Int?,
         parameters p: TrainingParametersSnapshot,
         hyperparameters hp: TrainerHyperparameters,
         arch: NetworkArchitecture,
@@ -136,7 +142,7 @@ enum TrainVsUciSession {
             trainingSteps: trainerCompletedSteps,
             selfPlayGames: 0,
             selfPlayMoves: 0,
-            trainingPositionsSeen: trainerCompletedSteps * p.trainingBatchSize,
+            trainingPositionsSeen: trainedPositions,
             batchSize: p.trainingBatchSize,
             learningRate: hp.learningRate,
             entropyRegularizationCoeff: hp.entropyRegularizationCoeff,
@@ -218,6 +224,30 @@ enum TrainVsUciSession {
             arenaHistory: []
         )
         .withArchitecture(ArchitectureMetadata(describing: arch))
+    }
+
+    /// The positions count of a run whose trainer starts at clock
+    /// `startTrainerSteps` and trains at `batchSize` (`TrainedPositionsCount`,
+    /// on the trainer-clock axis session.json's `trainingSteps` uses here).
+    /// The steps before the run are counted from what records them:
+    /// - none (a fresh trainer, or a new branch, whose clock starts at 0): 0;
+    /// - a session folder whose session.json covers exactly those steps
+    ///   (its step count is the clock the run starts from): the positions it
+    ///   recorded, nil if it recorded none;
+    /// - anything else (a model file, or a GUI session counted from a "New
+    ///   Session, keep trainer" start): unrecorded — never this run's batch
+    ///   size times the earlier steps, which may have trained at another.
+    static func trainedPositionsCount(startTrainerSteps: Int, startSession: SessionCheckpointState?,
+                                      batchSize: Int) -> TrainedPositionsCount {
+        let before: Int?
+        if startTrainerSteps == 0 {
+            before = 0
+        } else if let startSession, startSession.trainingSteps == startTrainerSteps {
+            before = startSession.trainingPositionsSeen
+        } else {
+            before = nil
+        }
+        return TrainedPositionsCount(stepsAtStart: startTrainerSteps, positionsBeforeStart: before, batchSize: batchSize)
     }
 
     /// Lower-cased extensions that make a `--checkpoint-stem` name a model

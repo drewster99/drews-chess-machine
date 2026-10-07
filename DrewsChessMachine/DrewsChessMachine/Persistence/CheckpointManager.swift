@@ -1101,7 +1101,8 @@ struct SessionResumeSummary: Sendable, Equatable {
     let savedAtUnix: Int64
     let elapsedTrainingSec: Double
     let trainingSteps: Int
-    let trainingPositionsSeen: Int
+    /// nil when the session did not record it (`SessionCheckpointState.trainingPositionsSeen`).
+    let trainingPositionsSeen: Int?
     let selfPlayGames: Int
     let selfPlayMoves: Int
     let replayBufferTotalPositionsAdded: Int?

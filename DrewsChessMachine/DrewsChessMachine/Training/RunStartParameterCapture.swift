@@ -39,8 +39,16 @@ struct RunStartParameterCapture: Sendable, Equatable {
         ReplayBufferCapacity.id,
     ]
 
-    /// The caption the settings popover shows beside each captured field.
-    static let appliesAtNextStartCaption = "Applies at the next Play-and-Train start"
+    /// When an edit of a captured key takes effect — the one wording every
+    /// caption and `[PARAM]` line about it uses.
+    static let nextStartPhrase = "at the next Play-and-Train start"
+
+    /// The caption the settings popover shows beside a captured field.
+    static let appliesAtNextStartCaption = "Applies \(nextStartPhrase)"
+
+    /// The caption under the popover's Replay-buffer group, which holds two
+    /// captured fields.
+    static let replayBufferCaption = "Capacity and pre-train fill apply \(nextStartPhrase)"
 
     /// `snapshot` with the three captured keys replaced by the values this
     /// run uses — the parameters in force. Every other key is `snapshot`'s.
@@ -53,10 +61,12 @@ struct RunStartParameterCapture: Sendable, Equatable {
             .replacing(ReplayBufferCapacity.self, with: replayBufferCapacity)
     }
 
-    /// The `[PARAM]` line for a settings edit of a captured key while a run
-    /// holds this capture: the edit is saved, and takes effect at the next
-    /// start; this run keeps `inForceValue`.
-    static func deferredEditLogLine(name: String, old: Int, new: Int, inForceValue: Int) -> String {
-        "[PARAM] \(name): \(old) -> \(new) (applies at the next Play-and-Train start; this run keeps \(inForceValue))"
+    /// The `[PARAM]` line for a settings edit of the captured key `id` while
+    /// a run holds this capture: the edit is saved, and takes effect at the
+    /// next start; this run keeps `inForceValue`. Keys are named by their
+    /// parameter id, as the run-start capture line and `[RESUME-DIFF]` name
+    /// them, so one grep finds every line about a key.
+    static func deferredEditLogLine(id: String, old: Int, new: Int, inForceValue: Int) -> String {
+        "[PARAM] \(id): \(old) -> \(new) (applies \(nextStartPhrase); this run keeps \(inForceValue))"
     }
 }

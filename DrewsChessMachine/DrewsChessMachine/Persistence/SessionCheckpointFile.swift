@@ -270,7 +270,13 @@ struct SessionCheckpointState: Codable, Equatable {
     let trainingSteps: Int
     let selfPlayGames: Int
     let selfPlayMoves: Int
-    let trainingPositionsSeen: Int
+    /// Positions trained over `trainingSteps`, each step at the batch size
+    /// it trained at (`TrainedPositionsCount`). Absent (nil) when some of
+    /// those steps are not recorded anywhere — never a model of them, such
+    /// as the step count times one batch size. A file written before this
+    /// was counted per start holds the step count times the batch size in
+    /// force at its save; it is read as written.
+    let trainingPositionsSeen: Int?
 
     // Hyperparameters (as they were in effect at save time)
     let batchSize: Int

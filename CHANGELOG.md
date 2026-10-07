@@ -9,6 +9,18 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Hyperparameter recording P1–P3: review fixes
+
+Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` ("Implementation notes ▸ Review fixes").
+
+- **Every in-run reader of batch size, pre-train fill and capacity takes the run's capture** while a run is active (`SessionController+RunStartReadings.swift`): the Training panel's batch size, the status chip's prefill test, the buffer line (the run's buffer, never the capacity setting), moves/sec, the Run All Analyses export, and session.json's `replayBufferMinPositionsBeforeTraining`. With no run active the displays show the setting labelled "(setting)", and the analysis export writes `training.batchSizeSetting` instead of `training.batchSize` (export schema v3). The settings popover's "this run keeps N" line appears only while a run is active (a Continue captures the edit), and names keys by their parameter id, like the capture line.
+- **Positions trained are counted at the batch each step trained at** (`TrainedPositionsCount`): session.json `trainingPositionsSeen` (GUI and train-vs-UCI), the status bar, the progress-rate chart and the Lichess probe history / export no longer multiply the whole step count by today's batch. Steps before a start are taken from what records them (a Continue's own count, the resumed session.json, a train-vs-UCI session covering the start clock); where nothing records them the value is unrecorded — `trainingPositionsSeen` is now optional and omitted, the resume sheet shows "unrecorded", the probe exports null. Older session files are read as written.
+- **Parameters files read back exactly.** `--parameters`, the settings load and the CLI `[RESUME-DIFF]` comparison read parameter JSON through one reader, `ParameterValue.parametersObject(fromJSON:)`: kinds from `JSONSerialization`, every `Double` from `JSONDecoder`. A defaults file no longer reads `weight_decay` 0.0003 as 0.0002999999999999999. `training_step_limit` with a fraction, and true/false for either budget key, are refused instead of truncated or read as 1.
+- **`gitDiffSHA256` is the SHA-256 of the built `DrewsChessMachine/` tree's git id**, staged in a temporary index from HEAD with line-ending and file-mode settings pinned: independent of diff options (`diff.context`, `diff.interHunkContext`, `diff.orderFile`, `core.quotePath`, …) and of what the real index holds (a staged and an untracked new file are one identity). It equals the scope's tree hash once the code is committed.
+- `[RESUME-DIFF]` reads a key the parent predates through its `absentValue`: at its pre-feature value it is no difference; otherwise `parent=absent(pre-feature …)`; operational settings and training keys with no known value are reported as such (gap or not is still O-4).
+- A failed start puts back the capture, positions count and replay buffer together. The heartbeat no longer stops the training chart and divergence alarm when it finds no capture: it surfaces the error and skips only the progress-rate sample. The effective-LR readouts are published only while a run is active. `--max-plies` below 1 is refused at parse; the driver no longer raises it silently.
+- Tests: `RunStartReadingsTests`, `ParametersFileRoundTripTests`, `ResumeDiffAbsentValueTests`, `ReplayResumeDiffLogTests`, `MaxPliesArgumentTests`, `TrainVsUciTrainedPositionsTests`, new cases in `test_build_info_script.py`; edits to existing tests listed in the plan notes.
+
 ## 2026-10-06 — Hyperparameter recording P3: GUI records the values in force
 
 Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (gap 3).

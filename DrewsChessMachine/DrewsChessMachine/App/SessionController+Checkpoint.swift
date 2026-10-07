@@ -1144,11 +1144,14 @@ extension SessionController {
     /// `includeReplayBuffer` whether the save writes the replay buffer, which
     /// `hasReplayBuffer` and the buffer counters then describe.
     ///
-    /// `batchSize` and `trainingPositionsSeen` come from the run's
-    /// start-time capture (`RunStartParameterCapture`), the batch size the
-    /// trainer steps at; a save describes a run, so a missing capture
-    /// throws. The other settings are recorded from `TrainingParameters` as
-    /// before: a GUI resume restores its settings from them.
+    /// `batchSize` and `replayBufferMinPositionsBeforeTraining` come from the
+    /// run's start-time capture (`RunStartParameterCapture`), the values the
+    /// run trains under; `trainingPositionsSeen` from its positions count
+    /// (`RunTrainedPositions`), each step at the batch it trained at, nil
+    /// when steps before the run are unrecorded. A save describes a run, so
+    /// a missing capture or count throws, before any side effect. The other
+    /// settings are recorded from `TrainingParameters` as before: a GUI
+    /// resume restores its settings from them.
     @MainActor
     func buildCurrentSessionState(
         championID: String,
@@ -1158,6 +1161,7 @@ extension SessionController {
     ) throws -> SessionCheckpointState {
         let params = TrainingParameters.shared
         let runCapture = try requiredRunStartCapture(for: "the session state of this save")
+        let trainedPositions = try trainedPositionsForSessionState(atSessionSteps: trainingStats?.steps ?? 0)
         let wasTraining = realTraining
         checkpoint?.closeActiveTrainingSegment(reason: "save")
         if wasTraining && checkpoint?.activeSegmentStart == nil {
@@ -1223,7 +1227,7 @@ extension SessionController {
             trainingSteps: trainingSnap?.steps ?? 0,
             selfPlayGames: snap?.selfPlayGames ?? 0,
             selfPlayMoves: snap?.selfPlayPositions ?? 0,
-            trainingPositionsSeen: (trainingSnap?.steps ?? 0) * runCapture.trainingBatchSize,
+            trainingPositionsSeen: trainedPositions,
             batchSize: runCapture.trainingBatchSize,
             learningRate: lr,
             entropyRegularizationCoeff: entropyCoeff,
@@ -1258,7 +1262,7 @@ extension SessionController {
             lrWarmupSteps: params.lrWarmupSteps,
             sqrtBatchScalingForLR: params.sqrtBatchScalingLR,
             signedAdvantageComplementCE: params.signedAdvantageComplementCE,
-            replayBufferMinPositionsBeforeTraining: params.replayBufferMinPositionsBeforeTraining,
+            replayBufferMinPositionsBeforeTraining: runCapture.replayBufferMinPositionsBeforeTraining,
             arenaAutoIntervalSec: params.arenaAutoIntervalSec,
             candidateProbeIntervalSec: params.candidateProbeIntervalSec,
             legalMassCollapseThreshold: params.legalMassCollapseThreshold,

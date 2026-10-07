@@ -186,11 +186,16 @@ final class SessionController {
     /// the steps just trained; cleared only when the trainer is dropped
     /// (`dropTrainerEndingLineageSegment`). Not displayed.
     @ObservationIgnored var runStartCapture: RunStartParameterCapture?
-    /// The capture the latest start replaced, so a start that fails before
-    /// its lineage segment begins (or whose segment cannot begin) puts back
-    /// the capture of the segment it leaves in place
-    /// (`restoreRunStartCaptureAfterFailedStart`).
-    @ObservationIgnored var runStartCaptureReplacedByLatestStart: RunStartParameterCapture?
+    /// The positions the current (or last stopped) run has trained, counted
+    /// at the batch each step trained at (`RunTrainedPositions`). Begun with
+    /// the capture at every start, and kept and cleared with it. Not
+    /// displayed itself.
+    @ObservationIgnored var runTrainedPositions: RunTrainedPositions?
+    /// The capture, positions count and replay buffer the latest start
+    /// replaced, so a start that fails before its lineage segment begins (or
+    /// whose segment cannot begin) puts all three back together for the
+    /// segment it leaves in place (`restoreRunStartCaptureAfterFailedStart`).
+    @ObservationIgnored var runStartStateReplacedByLatestStart: ReplacedRunStartState?
     /// Fed counts the lineage segment carried across stats boxes.
     @ObservationIgnored var lineageFedCarry = LineageFedCarry()
     /// This process's behavior fingerprint for the running trainer's
@@ -1207,15 +1212,16 @@ final class SessionController {
     /// invalidates. The trainer's lineage segment ends with the trainer: a
     /// later save must not attribute another trainer's (or the champion's)
     /// weights to it. So the segment's tracker and fed counts go too, and
-    /// the run's resume verdict and run-start parameter capture, which
-    /// described that segment. The one
+    /// the run's resume verdict, run-start parameter capture and positions
+    /// count, which described that segment. The one
     /// place a trainer is dropped, so the two rebuild paths (Build Network
     /// and the auto-build before a load) cannot disagree.
     func dropTrainerEndingLineageSegment() {
         trainer = nil
         lineageTracker = nil
         runStartCapture = nil
-        runStartCaptureReplacedByLatestStart = nil
+        runTrainedPositions = nil
+        runStartStateReplacedByLatestStart = nil
         lineageFedCarry = LineageFedCarry()
         checkpoint?.runResumeExactness = nil
     }

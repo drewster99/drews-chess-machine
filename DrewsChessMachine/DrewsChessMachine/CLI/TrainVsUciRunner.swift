@@ -462,6 +462,11 @@ enum TrainVsUciRunner {
             record: try lineageTracker.startRecord(at: Date(), trainerCompletedSteps: trainer.completedTrainSteps,
                                                    parameters: p.lineageParameters),
             seed: runSeed))
+        // session.json's positions trained: this run's steps at its batch,
+        // on top of what a record says about the steps before it.
+        let trainedPositions = TrainVsUciSession.trainedPositionsCount(
+            startTrainerSteps: trainer.completedTrainSteps, startSession: startSession?.state,
+            batchSize: p.trainingBatchSize)
 
         // Build the opponent pool: one UCIArbiter per instance.
         var opponents: [TrainVsUciDriver.Opponent] = []
@@ -609,6 +614,7 @@ enum TrainVsUciRunner {
                     savedAt: save.savedAt,
                     runStart: Date(timeIntervalSinceReferenceDate: runStart),
                     trainerCompletedSteps: save.snapshot.schedule.completedTrainSteps,
+                    trainedPositions: try trainedPositions.positions(atSteps: save.snapshot.schedule.completedTrainSteps),
                     parameters: p.parameters,
                     hyperparameters: hp,
                     arch: arch,

@@ -61,9 +61,9 @@ extension SessionController {
         // counts) at tick time so the snapshot is consistent with the
         // probed weights regardless of when the export is invoked.
         let trainingStep = trainer?.completedTrainSteps
-        let positionsTrained = trainingStep.map {
-            $0 * TrainingParameters.shared.trainingBatchSize
-        }
+        // Each step at the batch it trained at, nil where no record covers
+        // the trainer's clock — never the clock times today's setting.
+        let positionsTrained = trainingStep.flatMap { trainedPositions(atTrainerStep: $0) }
         let activeTrainingSec = checkpoint?.cumulativeActiveTrainingSec
         let arenaCount = tournamentHistory.count
         let promotionCount = tournamentHistory.lazy.filter { $0.promoted }.count
