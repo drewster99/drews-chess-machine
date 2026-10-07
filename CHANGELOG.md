@@ -9,12 +9,22 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 18:12 — Model naming (lineage schema 4); title bar shows file format, not v3/v4/v5 `4eb5c117`
+
+- A model keeps the name it was made under (New Network Name field, `--new-model --name`, `--derive-model --name`) and the preset its topology started from, with an `edited` flag, in lineage schema 4's `model_naming`. It rides with the model through saves, resumes, branches and promotions; a derive keeps the source's (edited when it changes the architecture); a graft records the target preset. Older records read it as unrecorded.
+- The `v3/v4/v5` family label is gone from the title bar, About popover, summaries, logs, session.json and the analysis export (schema v6). The title bar reads `<name> · preset <p> (edited) · format v<N> · <topology>`, where the format is the file the champion's weights were loaded from (or this build's for weights made in this process).
+- `scripts/dcm_lineage.py` reads schema 4 (`model_naming`). Plan: `documentation/plans-active/MODEL_NAMING_PLAN.md`.
+
 ## 2026-10-07 17:26 — Lichess bot: a move refused after the game ended is not an anomaly; Record card recent games visible again; Account card at the top `7dd5a2f8`
 
 - A 400 on a move POST is classified by the first game state after it: game over at the refused ply journals `moveRefusedAfterGameEnded` (game 9jXSDaFa: a threefold drawn while DCM's reply was in flight). The game window drops that refusal's anomaly and notes the race; the filed record lists it as a timeline event, not a rejected move. New journal case: earlier builds can't decode a journal holding it.
 - The live grid tile shows the game's anomaly count.
 - Record card: since `88cb3a55` its content frame reported only the dragged height inside the scroll view, so the stacked recent games were drawn under the next card. `LichessBotAtLeastHeightLayout` makes the dragged height a minimum.
 - Overview: the Account card sits under the controls, full width.
+
+## 2026-10-07 17:05 — Lichess bot Record: whole-percent scores `19d6bfa5`
+
+- Score columns show whole percentages (`LichessBotStatsFormat.score`); a score short of perfect or zero is held at 99% / 1%.
 
 ## 2026-10-07 15:45 — Policy tail precision is an architecture field (format v12) `5d192c0a`
 
