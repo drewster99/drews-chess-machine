@@ -57,7 +57,8 @@ Work from 2026-10-06 ~09:00 to 2026-10-07 ~06:55 (the 06:00 target slipped ~55 m
 ## Update 07:05 — V-1 found the hidden step
 
 - V-1 (log only, so B-silu's exact path: its 20k probe is 1390.2, identical) logs every step above the trailing median. Through trainer step 20,000 (1,900 steps after warm-up, 1,650 above the median): the median ratio of a logged step is 1.07×, the 99th percentile 1.35×, and only **two steps exceed 2×: step 19,785 (pre-clip norm 8.45 = 28.1× the median 0.301) and step 19,795 (5.58 = 18.5×)**. These are the hidden steps that made clip 1.0 / 2.0 / 5.0 part from B-silu between 19,751 and 19,799 (8.45 and 5.58 both exceed 5; the 15 cap clipped neither).
-- So a k = 3 relative cap would have clipped exactly those two steps up to 20k and nothing else: no false positives on this run. V-1 continues to 21,000 (through B-silu's 20,600 spike).
+- So a k = 3 relative cap would have clipped exactly those two steps up to 20k and nothing else: no false positives on this run.
+- **07:20 — the step-20,600 blow-up was an 11-step burst, not one step.** Steps 20,599–20,609 all exceed 3× the median (0.362): 11.6×, 7.1×, 8.3×, 11.2×, **48.5× (pre-clip norm 17.56), 38.1× (13.82), 48.2× (17.49)**, 10.1×, 7.3×, 4.5×, 7.0×. The 50-step log line at 20,600 showed only 2.566. Two steps exceeded even B-silu's hard max of 15. Through 20,720, those 11 steps and the two at 19,785 / 19,795 are the only steps above 3×: a k = 3 cap acts on exactly the incident and nothing else.
 
 ## Decisions I made (and why)
 
