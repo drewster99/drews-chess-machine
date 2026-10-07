@@ -35,6 +35,10 @@ enum LichessBotStatsStyle {
     static let headerFont = Font.caption.weight(.semibold)
     /// Every number in a table: monospaced, so padded columns align.
     static let numberFont = Font.system(.callout, design: .monospaced)
+    /// Sentences that carry numbers (the self-assessment figures): the body
+    /// font with monospaced digits, so the numbers align without the whole
+    /// sentence in a code font.
+    static let figureFont = Font.callout.monospacedDigit()
     /// A row's name (a period, a speed, a model).
     static let rowLabelFont = Font.callout.weight(.medium)
     /// A pane's section title.

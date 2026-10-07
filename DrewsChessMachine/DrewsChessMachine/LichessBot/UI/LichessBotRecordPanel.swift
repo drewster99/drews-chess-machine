@@ -23,10 +23,14 @@ struct LichessBotRecordPanel: View {
             ZStack(alignment: .topLeading) {
                 // Time controls also lists speeds the account is rated in,
                 // so it shows even in an empty period.
-                LichessBotTimeControlTable(statistics: statistics, filter: filter, period: period, account: account)
-                    .shown(pane == .timeControls)
+                ScrollView(.horizontal) {
+                    LichessBotTimeControlTable(statistics: statistics, filter: filter, period: period, account: account)
+                }
+                .shown(pane == .timeControls)
                 LichessBotModelsPane(models: breakdowns.models)
                     .shown(pane == .models)
+                LichessBotSelfAssessmentPane(assessment: breakdowns.selfAssessment)
+                    .shown(pane == .selfAssessment)
             }
         }
     }

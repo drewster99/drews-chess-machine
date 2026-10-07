@@ -120,6 +120,22 @@ enum LichessBotStatsFormat {
         return "\(rating)" + (perf?.prov == true ? "?" : "")
     }
 
+    /// "Won: settled at ply 37.7 on average (median 25.5), 29.4 plies before
+    /// the end; n 46, never 7, no data 0".
+    static func decisive(_ summary: LichessBotDecisiveSummary, result: String) -> String {
+        guard let mean = summary.meanPly, let median = summary.medianPly, let lead = summary.meanLead else {
+            return "\(result): no game settled (never \(summary.never), no data \(summary.noData))"
+        }
+        return String(format: "%@: settled at ply %.1f on average (median %.1f), %.1f plies before the end; n %d, never %d, no data %d",
+                      result, mean, median, lead, summary.games, summary.never, summary.noData)
+    }
+
+    /// W / D / L probabilities or frequencies as "0.41/0.22/0.37".
+    static func triple(_ triple: LichessBotOutcomeTriple?) -> String {
+        guard let triple else { return missing }
+        return String(format: "%.2f/%.2f/%.2f", triple.win, triple.draw, triple.loss)
+    }
+
     /// "x blown of y held wins (z%)".
     static func held(turned: Int, held: Int, verb: String, noun: String) -> String {
         guard held > 0 else { return "No \(noun)" }

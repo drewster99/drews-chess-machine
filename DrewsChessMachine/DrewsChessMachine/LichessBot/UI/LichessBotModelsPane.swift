@@ -8,7 +8,9 @@ struct LichessBotModelsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: LichessBotStatsStyle.sectionSpacing) {
-            LichessBotModelRecordTable(models: models)
+            ScrollView(.horizontal) {
+                LichessBotModelRecordTable(models: models)
+            }
             LichessBotPaneEmptyNote(text: "\(models.decisionsWithoutGeneration) of DCM's decisions name no model the record lists; they are left out of every model's count")
                 .shown(models.decisionsWithoutGeneration > 0)
             LichessBotModelProgressChart(points: models.progression)

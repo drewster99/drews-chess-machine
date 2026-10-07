@@ -34,5 +34,6 @@ struct LichessBotTimeControlRow: View {
         }
         .font(LichessBotStatsStyle.numberFont)
         .lineLimit(1)
+        .fixedSize()
     }
 }

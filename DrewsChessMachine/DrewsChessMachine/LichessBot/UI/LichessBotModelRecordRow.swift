@@ -28,5 +28,6 @@ struct LichessBotModelRecordRow: View {
         }
         .font(LichessBotStatsStyle.numberFont)
         .lineLimit(1)
+        .fixedSize()
     }
 }

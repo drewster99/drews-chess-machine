@@ -131,6 +131,12 @@ final class LichessBotRecordCardRenderTests: XCTestCase {
                 try render(LichessBotRecordPeriodGrid(rows: statistics[filter].periodRows), size: narrow, name: "grid-\(filter.rawValue)", scheme: scheme)
             }
             try render(LichessBotRecordFootnote(statistics: statistics[.all]), size: CGSize(width: 680, height: 80), name: "footnote", scheme: scheme)
+            // The panes put their tables in horizontal scroll views; the
+            // tables on their own:
+            let breakdowns = statistics[.all].byPeriod.allTime
+            try render(LichessBotModelRecordTable(models: breakdowns.models), size: narrow, name: "table-models", scheme: scheme)
+            try render(LichessBotTimeControlTable(statistics: statistics, filter: .all, period: .allTime, account: nil), size: CGSize(width: 680, height: 200), name: "table-time-controls", scheme: scheme)
+            try render(LichessBotCalibrationTable(rows: breakdowns.selfAssessment.calibration), size: CGSize(width: 680, height: 200), name: "table-calibration", scheme: scheme)
             try renderPanes(statistics, controller: controller, scheme: scheme)
         }
     }
