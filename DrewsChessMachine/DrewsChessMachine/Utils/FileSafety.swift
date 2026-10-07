@@ -209,13 +209,41 @@ enum FileSafety {
         return FileIdentity(device: info.st_dev, inode: info.st_ino)
     }
 
+    /// Create `folder` and any missing ancestors, then pass the parent of
+    /// each folder this call created to `fullSyncDirectory`: a new folder is
+    /// an entry in its parent, flushed separately from anything written
+    /// inside it, so without this a power loss can keep a fully synced file
+    /// and lose the folder that names it. Returns the folders created,
+    /// outermost first. A folder another process creates between the check
+    /// and the creation is flushed too, which is harmless.
+    @discardableResult
+    static func createDirectoryFlushingNewEntries(at folder: URL, fullSyncDirectory: (_ directory: URL) throws -> Void) throws -> [URL] {
+        var missing: [URL] = []
+        var candidate = folder
+        while try existingItem(at: candidate) == nil {
+            missing.insert(candidate, at: 0)
+            let parent = candidate.deletingLastPathComponent()
+            guard parent.path != candidate.path else { break }
+            candidate = parent
+        }
+        guard !missing.isEmpty else { return [] }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for created in missing.reversed() {
+            try fullSyncDirectory(created.deletingLastPathComponent())
+        }
+        return missing
+    }
+
     /// What a path resolves to, following symbolic links: its kind,
-    /// identity, size and modification time.
+    /// identity, size, modification time and status change time.
     struct ResolvedItem: Equatable, Sendable {
         let kind: ItemKind
         let identity: FileIdentity
         let size: Int64
         let modifiedAt: Date
+        /// `st_ctimespec`: moves on a permission or owner change, which
+        /// leaves size and modification time alone.
+        let statusChangedAt: Date
     }
 
     /// What `url` resolves to, following symbolic links (as reading the path
@@ -232,11 +260,13 @@ enum FileSafety {
             throw FileSafetyError.systemCallFailed(path: url.path, call: "stat", errnoValue: code)
         }
         let modified = info.st_mtimespec
+        let statusChanged = info.st_ctimespec
         return ResolvedItem(
             kind: ItemKind(mode: info.st_mode),
             identity: FileIdentity(device: info.st_dev, inode: info.st_ino),
             size: Int64(info.st_size),
-            modifiedAt: Date(timeIntervalSince1970: TimeInterval(modified.tv_sec) + TimeInterval(modified.tv_nsec) / 1_000_000_000)
+            modifiedAt: Date(timeIntervalSince1970: TimeInterval(modified.tv_sec) + TimeInterval(modified.tv_nsec) / 1_000_000_000),
+            statusChangedAt: Date(timeIntervalSince1970: TimeInterval(statusChanged.tv_sec) + TimeInterval(statusChanged.tv_nsec) / 1_000_000_000)
         )
     }
 

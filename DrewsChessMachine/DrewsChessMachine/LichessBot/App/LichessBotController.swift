@@ -252,10 +252,15 @@ final class LichessBotController {
         didSet {
             recordsByOpponent = LichessBotRecordSummary.byOpponent(rows: index?.rows ?? [])
             pastOpponents = LichessBotRecordSummary.pastOpponents(rows: index?.rows ?? [])
-            refreshGameOrigins()
+            indexedGameIDs = Set(index?.rows.map(\.gameID) ?? [])
+            // The statistics take the new rows and their origins together
+            // and compute once; `originsByGameID`'s own report is then a
+            // no-op, its categories already taken.
+            let origins = resolvedGameOrigins()
             if let index {
-                recordStatistics.indexChanged(rows: index.rows)
+                recordStatistics.indexChanged(rows: index.rows, origins: origins.mapValues(\.category))
             }
+            publishGameOrigins(origins)
             // Reported whenever the set of undecodable records changes (and so
             // at least once per launch): they are left out of every count.
             if let index, !index.unreadableRecords.isEmpty, index.unreadableRecords != oldValue?.unreadableRecords {
@@ -441,6 +446,14 @@ final class LichessBotController {
             recordStatistics.originsChanged(originsByGameID.mapValues(\.category))
         }
     }
+    /// How many times every game's origin was resolved, for tests that
+    /// check a challenge fact resolves them only when it can change one.
+    @ObservationIgnored private(set) var gameOriginRefreshCount = 0
+    /// The live log's cutoff the origins were last resolved against.
+    @ObservationIgnored private var originsResolvedWithCutoff: Date?
+    /// The indexed games' ids, kept with the index, so a challenge fact
+    /// finds whether it names a game without walking every row.
+    @ObservationIgnored private var indexedGameIDs: Set<String> = []
     /// Games whose record and challenge log disagree about the origin,
     /// already logged (once per game per launch).
     @ObservationIgnored private var loggedOriginDisagreements: Set<String> = []
@@ -544,7 +557,7 @@ final class LichessBotController {
         }
         challengeLogRecorder.onRecorded = { [weak self] event in
             self?.challengeFactRecorded(event)
-            self?.refreshGameOrigins()
+            self?.refreshGameOrigins(after: event)
             self?.refreshChallengeOutcomeLog()
         }
         challengeLogRecorder.onLoaded = { [weak self] in
@@ -1577,14 +1590,27 @@ final class LichessBotController {
     /// game whose record and challenge log disagree (once per game): the
     /// record wins, and the disagreement is never hidden.
     private func refreshGameOrigins() {
-        guard let rows = index?.rows else {
-            if !originsByGameID.isEmpty {
-                originsByGameID = [:]
-            }
-            return
+        publishGameOrigins(resolvedGameOrigins())
+    }
+
+    /// Assigned only on a change: every assignment redraws the views that
+    /// read it and reports to the statistics.
+    private func publishGameOrigins(_ origins: [String: LichessBotGameOriginDisplay]) {
+        if origins != originsByGameID {
+            originsByGameID = origins
         }
+    }
+
+    /// Every indexed game's origin, resolved from the record, the challenge
+    /// log and the rebuilt history; logs each disagreement once per game.
+    private func resolvedGameOrigins() -> [String: LichessBotGameOriginDisplay] {
+        gameOriginRefreshCount += 1
         let ledger = challengeLedger
         let cutoff = challengeLogRecorder.liveLogFirstEntryAt
+        originsResolvedWithCutoff = cutoff
+        guard let rows = index?.rows else {
+            return [:]
+        }
         var origins: [String: LichessBotGameOriginDisplay] = [:]
         origins.reserveCapacity(rows.count)
         for row in rows {
@@ -1599,9 +1625,23 @@ final class LichessBotController {
                 SessionLogger.shared.log("[LICHESS-BOT] origin disagreement for \(row.gameID): record \(recorded.token), challenge log \(fromLog.token); showing the record's")
             }
         }
-        if origins != originsByGameID {
-            originsByGameID = origins
+        return origins
+    }
+
+    /// A challenge fact was recorded: re-resolve the origins only when it
+    /// can change one — it names an indexed game (a game's id is its
+    /// challenge's), or it started the live log, which moves the cutoff
+    /// every origin is resolved against. Resolving every game on every fact
+    /// is main-actor work that grows with the whole history.
+    private func refreshGameOrigins(after event: LichessBotChallengeLogEvent) {
+        let namesIndexedGame: Bool
+        if case .challenge(let id)? = LichessBotChallengeLedgerRowKey(event) {
+            namesIndexedGame = indexedGameIDs.contains(id)
+        } else {
+            namesIndexedGame = false
         }
+        guard namesIndexedGame || challengeLogRecorder.liveLogFirstEntryAt != originsResolvedWithCutoff else { return }
+        refreshGameOrigins()
     }
 
     /// The one funnel for challenge facts: the ledger and the log's files

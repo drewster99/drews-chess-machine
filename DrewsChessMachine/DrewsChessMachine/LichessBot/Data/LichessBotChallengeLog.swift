@@ -448,8 +448,12 @@ final class LichessBotChallengeLog: Sendable {
     }
 
     /// Read every day file, on the file queue (so it sees every append
-    /// enqueued before it, and none after).
-    func readAll() async throws -> LichessBotChallengeLogContents {
+    /// enqueued before it, and none after). `nonisolated(nonsending)`, like
+    /// `LichessBotFileQueue.run`: the read is enqueued on the caller's actor
+    /// before the first suspension, so on the main actor "before" and
+    /// "after" are the caller's own order — a fact recorded while the read
+    /// is in flight is never in what it returns.
+    nonisolated(nonsending) func readAll() async throws -> LichessBotChallengeLogContents {
         let directory = self.directory
         return try await fileQueue.run {
             try Self.readAll(in: directory)

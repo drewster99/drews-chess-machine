@@ -42,10 +42,15 @@ final class LichessBotChallengeLogRecorder {
 
     /// The fold of the challenge log; nil until loaded.
     private(set) var ledger: LichessBotChallengeLedger?
-    /// When the live log began, as of the load
-    /// (`LichessBotChallengeLogContents.liveLogFirstEntryAt`): the
-    /// reconstruction's cutoff, and the line between "played before origins
-    /// were recorded" and "not recorded". Nil when no log existed at load.
+    /// When the live log began: the reconstruction's cutoff, and the line
+    /// between "played before origins were recorded" and "not recorded".
+    /// From the load (`LichessBotChallengeLogContents.liveLogFirstEntryAt`)
+    /// when a log existed; else the first entry this run records (a fact
+    /// held while the ledger loaded, or the first one after), so a rebuild
+    /// later in the same run never also rebuilds this run's facts from the
+    /// protocol log. After a failed load, when the load began: the ledger
+    /// holds only facts recorded from then on. Nil until the live log has
+    /// an entry.
     private(set) var liveLogFirstEntryAt: Date?
     /// What the load read, for the Challenge Log window's footer; nil until
     /// loaded, and when the read failed (the ledger's load status says why).
@@ -136,11 +141,12 @@ final class LichessBotChallengeLogRecorder {
         // is in the files; only what is recorded from here on is held.
         eventsAwaitingLedger = []
         let start = ContinuousClock.now
+        let loadBegan = clock()
         var loaded: LichessBotChallengeLedger
         do {
             let contents = try await log.readAll()
             loaded = LichessBotChallengeLedger(contents: contents)
-            liveLogFirstEntryAt = contents.liveLogFirstEntryAt
+            liveLogFirstEntryAt = contents.liveLogFirstEntryAt ?? eventsAwaitingLedger.first.map { cutoff(at: $0.at) }
             loadedFiles = LoadedFiles(fileCount: contents.filesRead.count, lineCount: contents.lineCount,
                                       byteCount: contents.byteCount, skippedNewerLines: contents.skippedNewerLines)
             let elapsed = ContinuousClock.now - start
@@ -157,12 +163,35 @@ final class LichessBotChallengeLogRecorder {
             }
         } catch {
             loaded = LichessBotChallengeLedger(loadStatus: .failed(reason: error.localizedDescription))
+            // What the log held before is unknown; every fact the ledger
+            // will hold is recorded from here on.
+            liveLogFirstEntryAt = cutoff(at: loadBegan)
             alarm("Loading the challenge log failed: \(error.localizedDescription); it holds only this run's challenges until it loads")
         }
         loaded.apply(contentsOf: eventsAwaitingLedger)
         eventsAwaitingLedger = []
         ledger = loaded
         onLoaded?()
+    }
+
+    /// `date` as a cutoff: at the millisecond the logs store it at
+    /// (`iso8601withFractionalSeconds`). The reconstruction compares
+    /// protocol lines by their stored times, so a line written in the same
+    /// millisecond as the entry, but stored as earlier than the unrounded
+    /// entry time, would be rebuilt too; and the stored form is what the
+    /// next launch reads back from the day file, so both launches use the
+    /// same cutoff. The storage format's own round trip can't fail for a
+    /// date it formatted; if it ever does, the unrounded time is used and
+    /// an alarm says so.
+    private func cutoff(at date: Date) -> Date {
+        let style = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+        let text = date.formatted(style)
+        do {
+            return try style.parse(text)
+        } catch {
+            alarm("The challenge log cutoff \(text) didn't parse back (\(error.localizedDescription)); using the unrounded time")
+            return date
+        }
     }
 
     // MARK: - The funnel
@@ -173,6 +202,9 @@ final class LichessBotChallengeLogRecorder {
         let entry = LichessBotChallengeLogEntry(at: clock(), event: event)
         if ledger != nil {
             ledger?.apply(entry)
+            if liveLogFirstEntryAt == nil {
+                liveLogFirstEntryAt = cutoff(at: entry.at)
+            }
         } else {
             eventsAwaitingLedger.append(entry)
         }

@@ -73,6 +73,12 @@ struct LichessBotChallengeLedger: Sendable, Equatable {
         rowsByKey[.attempt(id: attemptID)]
     }
 
+    /// Every row, in no particular order: for a caller that filters before
+    /// it sorts (`rows` sorts every row on each access).
+    var unorderedRows: Dictionary<LichessBotChallengeLedgerRowKey, LichessBotChallengeLedgerRow>.Values {
+        rowsByKey.values
+    }
+
     /// Every row, oldest first fact first.
     var rows: [LichessBotChallengeLedgerRow] {
         rowsByKey.values.sorted { lhs, rhs in
@@ -238,16 +244,20 @@ struct LichessBotChallengeLedgerRow: Sendable, Equatable {
     private(set) var facts: [LichessBotChallengeLedgerFact]
     /// The earliest fact's time.
     private(set) var firstAt: Date
+    /// The latest fact's time.
+    private(set) var lastAt: Date
 
     init(key: LichessBotChallengeLedgerRowKey, firstFact: LichessBotChallengeLedgerFact) {
         self.key = key
         self.facts = [firstFact]
         self.firstAt = firstFact.at
+        self.lastAt = firstFact.at
     }
 
     mutating func add(_ fact: LichessBotChallengeLedgerFact) {
         LichessBotChallengeLedgerFact.insert(fact, into: &facts)
         firstAt = min(firstAt, fact.at)
+        lastAt = max(lastAt, fact.at)
     }
 
     // MARK: Facts by kind (canonical order)

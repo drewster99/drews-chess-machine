@@ -193,6 +193,23 @@ actor LichessBotGameSession {
         }
     }
 
+    /// For a followed lineage, whether `latest`'s file is later work than
+    /// `playing`'s on the same branch. A higher generation ID alone is not:
+    /// after the playing file is deleted and the source is switched away
+    /// and back, the lineage's newest remaining file — an older one — is
+    /// built as a new generation. Without a lineage (the live trainer) the
+    /// generation ID is the order.
+    nonisolated static func isLaterInItsLineage(_ latest: LichessBotGenerationInfo, than playing: LichessBotGenerationInfo) -> Bool {
+        switch (latest.lineage, playing.lineage) {
+        case (nil, nil):
+            return true
+        case let (latestLineage?, playingLineage?):
+            return latestLineage.rank.isOnTheSameBranch(as: playingLineage.rank) && latestLineage.rank.isAbove(playingLineage.rank)
+        case (.some, nil), (nil, .some):
+            return false
+        }
+    }
+
     // MARK: - Running
 
     /// Play until the game finishes, the task is cancelled, or the gate
@@ -613,7 +630,8 @@ actor LichessBotGameSession {
             let latest = await latestMoveSource()
             if latest.info.sourceKind == refreshingSource,
                latest.info.lineage?.followed == playingMoveSource.info.lineage?.followed,
-               latest.info.generationID > playingMoveSource.info.generationID {
+               latest.info.generationID > playingMoveSource.info.generationID,
+               Self.isLaterInItsLineage(latest.info, than: playingMoveSource.info) {
                 playingMoveSource = latest
             }
         }

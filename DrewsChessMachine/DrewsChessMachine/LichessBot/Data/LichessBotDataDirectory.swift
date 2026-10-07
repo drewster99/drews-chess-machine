@@ -116,9 +116,16 @@ struct LichessBotDataDirectory: Sendable, Equatable {
     }
 
     func createDirectories() throws {
-        let fm = FileManager.default
+        try createDirectories(fullSyncDirectory: { folder in try FileSafety.fullSync(at: folder) })
+    }
+
+    /// `createDirectories()` with the folder flush as a value, so a test can
+    /// see which folders were flushed (`F_FULLFSYNC` leaves no trace). Each
+    /// folder created is flushed in its parent: the challenge log's fully
+    /// synced appends (OD-3) are only as durable as `Challenges/` itself.
+    func createDirectories(fullSyncDirectory: (_ folder: URL) throws -> Void) throws {
         for directory in [root, gamesDirectory, inProgressDirectory, protocolDirectory, challengesDirectory] {
-            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileSafety.createDirectoryFlushingNewEntries(at: directory, fullSyncDirectory: fullSyncDirectory)
         }
     }
 }
@@ -230,7 +237,14 @@ final class LichessBotFileQueue: Sendable {
     /// Run `body` on the queue and return its result. Throws
     /// `LichessBotFileQueueError.closed`, without running `body`, if the
     /// queue was closed before `body`'s turn came.
-    func run<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+    ///
+    /// `nonisolated(nonsending)`: `body` is enqueued on the caller's actor,
+    /// before the call first suspends, so work a main-actor caller enqueues
+    /// before or after this call (an append, through `enqueue`) lands in the
+    /// queue in that same order. Without it the call would hop to the
+    /// global executor first, and an append made on the main actor in that
+    /// gap could overtake it.
+    nonisolated(nonsending) func run<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
         let closedReason = self.closedReason
         let label = queue.label
         return try await withCheckedThrowingContinuation { continuation in

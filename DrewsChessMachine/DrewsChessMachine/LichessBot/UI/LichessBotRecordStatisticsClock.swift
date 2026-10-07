@@ -18,16 +18,7 @@ struct LichessBotRecordStatisticsClock: ViewModifier {
     func body(content: Content) -> some View {
         content.task {
             pipeline.observeSystemTimeChanges()
-            while true {
-                do {
-                    try await Task.sleep(for: Self.tickInterval)
-                } catch {
-                    // Canceled: the window closed. `Task.sleep` throws
-                    // nothing else.
-                    return
-                }
-                pipeline.clockTick(now: Date())
-            }
+            await pipeline.runClock(tickInterval: Self.tickInterval)
         }
     }
 }

@@ -64,4 +64,33 @@ final class LichessBotGenerationLineageFactsTests: XCTestCase {
         let checkpoint = try XCTUnwrap(models.groups.first { $0.modelID == "SEG2" }?.checkpoints.first)
         XCTAssertTrue(checkpoint.label.contains("cum \(120_000.formatted())"), checkpoint.label)
     }
+
+    /// A run resumed from a file with no cumulative total (a pre-v7 start)
+    /// keeps a null total, so its files are placed by segment-local steps,
+    /// which repeat across segments. Each segment is then its own series:
+    /// segment 1's step 1000 must never be binned or ordered with segment
+    /// 0's steps.
+    func testSegmentLocalStepsOfDifferentSegmentsAreNeverOneSeries() throws {
+        var rows: [LichessBotGameSummary] = []
+        var serial = 0
+        let now = Date(timeIntervalSince1970: 1_791_374_400)
+        for (segment, step, sha) in [(0, 1000, "01"), (0, 5000, "02"), (1, 1000, "03"), (1, 3000, "04")] {
+            let generation = LichessBotGenerationFacts(
+                sourceKind: .followLineage, modelID: "SEG\(segment)", trainingStep: step,
+                fileSHA256: String(repeating: sha, count: 32), lineageRunID: "RUN-P", segmentIndex: segment,
+                cumTrainerStep: nil, ourMoves: 10)
+            for game in 0..<30 {
+                serial += 1
+                rows.append(try Fixtures.row(
+                    id: "s\(serial)", at: now - Double(10_000 - serial), score: game % 2 == 0 ? 1 : 0,
+                    facts: Fixtures.facts(generations: [generation])
+                ))
+            }
+        }
+        let progression = try LichessBotRecordStatistics.compute(rows: rows, now: now, calendar: Fixtures.utcCalendar)[.all].byPeriod.allTime.models.progression
+        let stepsBySeries = Dictionary(grouping: progression, by: \.series).mapValues { $0.map(\.step) }
+        XCTAssertEqual(stepsBySeries.count, 2, "one series per segment: \(stepsBySeries)")
+        XCTAssertEqual(Set(stepsBySeries.values), [[1000, 5000], [1000, 3000]])
+        XCTAssertTrue(progression.allSatisfy { !$0.stepIsCumulative })
+    }
 }

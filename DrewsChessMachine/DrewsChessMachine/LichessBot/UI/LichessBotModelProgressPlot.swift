@@ -6,7 +6,7 @@ import SwiftUI
 struct LichessBotModelProgressPlot: View {
     let marks: [LichessBotProgressChartMark]
     let metric: LichessBotProgressMetric
-    let stepIsCumulative: Bool
+    let stepAxisLabel: String
 
     var body: some View {
         Chart(marks) { mark in
@@ -18,7 +18,7 @@ struct LichessBotModelProgressPlot: View {
                 .accessibilityLabel("\(mark.series) at step \(mark.step)")
                 .accessibilityValue(metric == .score ? String(format: "%.1f%%", mark.value) : "\(Int(mark.value.rounded()))")
         }
-        .chartXAxisLabel(stepIsCumulative ? "Cumulative trainer step" : "Training step")
+        .chartXAxisLabel(stepAxisLabel)
         .chartYAxisLabel(metric == .score ? "Score %" : "Performance rating")
         .frame(height: 180)
     }
