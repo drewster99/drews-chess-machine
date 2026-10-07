@@ -137,7 +137,7 @@ struct ModelFileStepReading: Sendable, Equatable {
         case .legacyUnknownWriter:
             return ModelFileStepReading(
                 basis: .legacyUnknownWriter, statedTrainingStep: stated, trainerStep: trainerCompletedSteps ?? stated,
-                segmentStep: try recordSteps()?.segmentLocalStep ?? stated,
+                segmentStep: try recordSteps()?.segmentLocalStep,
                 legacyResolution: "training_step \(stated) was stated by writer '\(creator)', read as the trainer "
                     + "step as \(before)")
         }

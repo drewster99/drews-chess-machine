@@ -50,6 +50,25 @@ final class TrainingAlarmControllerHealthTests: XCTestCase {
         XCTAssertFalse(controller.shouldSound)
     }
 
+    /// Silencing mutes what is sounding now, not every later critical
+    /// alarm (final review m2, OD-8): a newly critical rule, or a warning
+    /// escalating to critical, sounds again; the same set stays silenced.
+    func testANewOrEscalatedCriticalAlarmSoundsAfterASilence() {
+        let controller = TrainingAlarmController()
+        controller.refreshHealth([alarm(.illegalMass, .critical), alarm(.gradientSpike, .warning)])
+        controller.silence()
+        controller.refreshHealth([alarm(.illegalMass, .critical), alarm(.gradientSpike, .warning)])
+        XCTAssertFalse(controller.shouldSound, "the same set stays silenced")
+        controller.refreshHealth([alarm(.illegalMass, .critical), alarm(.deadChannels, .critical)])
+        XCTAssertTrue(controller.shouldSound, "a newly raised critical rule beeps")
+        controller.silence()
+        controller.refreshHealth([alarm(.illegalMass, .critical), alarm(.gradientSpike, .warning)])
+        XCTAssertFalse(controller.shouldSound, "a rule clearing is no reason to beep")
+        controller.refreshHealth([alarm(.illegalMass, .critical), alarm(.gradientSpike, .critical)])
+        XCTAssertTrue(controller.shouldSound, "a warning escalating to critical beeps")
+        controller.refreshHealth([])
+    }
+
     func testDismissKeepsHealthAlarms() {
         let controller = TrainingAlarmController()
         controller.raise(severity: .warning, title: "Banner", detail: "d")

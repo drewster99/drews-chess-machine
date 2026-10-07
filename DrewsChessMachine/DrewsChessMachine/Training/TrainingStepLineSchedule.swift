@@ -158,4 +158,17 @@ struct TrainingStepLineSchedule: Sendable, Equatable {
         }
         return nil
     }
+
+    /// The GUI ticker's poll: no line before the session's first step
+    /// (`sessionSteps`, the run's stats-box count), else `lineDue` at
+    /// `trainerStep`, the trainer's own clock. The two differ after "New
+    /// Session, keep trainer", whose stats box counts the session from 0 on
+    /// a trained trainer; keying on the box there would restart the dense
+    /// phase and fall off the trainer's forced-diagnostics steps.
+    mutating func guiPollLineDue(sessionSteps: Int, trainerStep: Int, elapsedSec: Double,
+                                 carriesDiagnostics: Bool, intervalSec: Double) -> Reason? {
+        guard sessionSteps > 0 else { return nil }
+        return lineDue(trainerStep: trainerStep, elapsedSec: elapsedSec,
+                       carriesDiagnostics: carriesDiagnostics, intervalSec: intervalSec)
+    }
 }

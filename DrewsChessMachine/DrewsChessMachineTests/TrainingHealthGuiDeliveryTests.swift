@@ -123,6 +123,60 @@ final class TrainingHealthGuiDeliveryTests: XCTestCase {
         XCTAssertNil(harness.controller.trainingSuspension)
     }
 
+    /// Stop after a health suspension (final review M1): the ended run's
+    /// critical alarms stay listed for review but never sound again, a late
+    /// delivery from that run's monitor does not restart the beep, and the
+    /// "suspended" header is cleared.
+    func testStopSilencesTheEndedRunsHealthAlarmsAndClearsTheSuspendedHeader() throws {
+        let harness = try GuiSaveHarness()
+        defer {
+            do { try harness.removeSessionsDirectory() } catch { XCTFail("\(error)") }
+        }
+        let alarms = TrainingAlarmController()
+        harness.controller.trainingAlarm = alarms
+        let monitor = try monitorWithCriticalDeadChannels()
+        harness.controller.trainingHealthMonitor = monitor
+        TrainingParameters.shared.trainingHealthActionDeadChannels = .stopOnCritical
+        harness.controller.deliverTrainingHealth(from: monitor)
+        XCTAssertEqual(alarms.healthSuspendedRule, .deadChannels)
+        alarms.silence()
+
+        harness.controller.stopRealTraining()
+
+        XCTAssertNil(harness.controller.trainingSuspension)
+        XCTAssertNil(alarms.healthSuspendedRule, "the suspended header ends with the run")
+        XCTAssertEqual(alarms.healthAlarms.map(\.rule), [.deadChannels], "kept for review")
+        XCTAssertFalse(alarms.shouldSound, "Stop must not restart the beep for the ended run's alarms")
+        harness.controller.deliverTrainingHealth(from: monitor)
+        XCTAssertFalse(alarms.shouldSound, "nor may a late delivery from the ended run")
+        alarms.refreshHealth([])
+    }
+
+    /// A save during a health suspension (final review m1) closes the
+    /// training segment and leaves it closed: the parked idle is not
+    /// training wall time.
+    func testASaveDuringAHealthSuspensionDoesNotReopenTheTrainingSegment() throws {
+        let harness = try GuiSaveHarness()
+        defer {
+            do { try harness.removeSessionsDirectory() } catch { XCTFail("\(error)") }
+        }
+        let checkpoint = CheckpointController()
+        harness.controller.checkpoint = checkpoint
+        checkpoint.beginActiveTrainingSegment()
+        let monitor = try monitorWithCriticalDeadChannels()
+        harness.controller.trainingHealthMonitor = monitor
+        TrainingParameters.shared.trainingHealthActionDeadChannels = .stopOnCritical
+        harness.controller.deliverTrainingHealth(from: monitor)
+        XCTAssertNotNil(harness.controller.trainingSuspension)
+        XCTAssertNil(checkpoint.activeSegmentStart, "the suspension closes the segment")
+
+        _ = try harness.controller.buildCurrentSessionState(
+            championID: "c", trainerID: "t", arenaClock: .live, includeReplayBuffer: false)
+
+        XCTAssertNil(checkpoint.activeSegmentStart, "a save while parked must not reopen the segment")
+        withExtendedLifetime(checkpoint) {}
+    }
+
     /// The parked worker acknowledges a training pause, so a session save
     /// (which waits for that acknowledgement) completes during a health
     /// suspension; Stop (cancellation) ends the parked loop.
