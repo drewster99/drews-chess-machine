@@ -1782,7 +1782,16 @@ final class TrainingSettingsPopoverModel {
         // still owns the bundled `[PARAM] lr_momentum_cycle` line) is what makes
         // a cycling edit take effect even if the probe is not mounted.
         if let trainer {
-            TrainerHyperparameters(p.snapshot()).apply(to: trainer)
+            // The relative cap's W ≤ N pair is checked above before either is
+            // written; `validated` is the backstop, and a refusal keeps the
+            // popover open with the error logged.
+            do {
+                try TrainerHyperparameters.validated(p.snapshot()).apply(to: trainer)
+            } catch {
+                SessionLogger.shared.log("[PARAM] trainer not updated: \(error.localizedDescription)")
+                relativeGradClipMinHistoryStepsError = true
+                anyError = true
+            }
         }
 
         if !anyError {

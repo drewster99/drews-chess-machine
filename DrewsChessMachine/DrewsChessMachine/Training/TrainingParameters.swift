@@ -2256,6 +2256,7 @@ public final class TrainingParameters {
     /// instead of half-applied in dictionary order.
     public func apply(_ values: [String: ParameterValue]) throws {
         try Self.validate(values)
+        try checkRelativeGradientCapPair(afterApplying: values)
         for (id, raw) in values {
             try applyOne(id: id, raw: raw)
         }
@@ -2271,6 +2272,22 @@ public final class TrainingParameters {
                 throw TrainingConfigError.unknownParameter(id: id)
             }
             try definition.validate(raw)
+        }
+    }
+
+    /// The relative gradient cap's one cross-parameter rule, W ≤ N, over the
+    /// values the singleton would hold after `values` is applied (a file may
+    /// set either key alone). Per-key validation cannot see it, and a pair
+    /// that broke it would reach a trainer; refused before anything is
+    /// assigned, naming both ids.
+    private func checkRelativeGradientCapPair(afterApplying values: [String: ParameterValue]) throws {
+        let window = try values[RelativeGradClipWindowSteps.id].map(RelativeGradClipWindowSteps.decode)
+            ?? relativeGradClipWindowSteps
+        let minimumHistory = try values[RelativeGradClipMinHistorySteps.id].map(RelativeGradClipMinHistorySteps.decode)
+            ?? relativeGradClipMinHistorySteps
+        guard minimumHistory <= window else {
+            throw RelativeGradientCapConfigurationError.minimumHistoryAboveWindow(
+                minimumHistorySteps: minimumHistory, windowSteps: window)
         }
     }
 

@@ -58,7 +58,7 @@ final class RelativeGradientCapParameterTests: XCTestCase {
         ])
         let hyperparameters = try TrainerHyperparameters.validated(snapshot)
         XCTAssertEqual(hyperparameters.relativeGradientCap, try RelativeGradientCapConfiguration(
-            mode: .clip, multiple: 4, windowSteps: 2000, minimumHistorySteps: 200, floor: 0.25))
+            mode: .clip, multiple: 4, windowSteps: 2000, minimumHistorySteps: 200, floor: 0.25).settings)
         let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: hyperparameters,
                                        arch: .current, initialization: .seeded(initSeed: 1))
         XCTAssertEqual(trainer.relativeGradientCap, hyperparameters.relativeGradientCap)
@@ -76,6 +76,52 @@ final class RelativeGradientCapParameterTests: XCTestCase {
             XCTAssertTrue(text.contains("relative_grad_clip_window_steps"), text)
         }
         XCTAssertThrowsError(try TrainerHyperparameters.validated(snapshot))
+    }
+
+    /// Review MAJOR 1: per-key validation let a parameters file (File ▸
+    /// Load Parameters, GUI `--parameters`) set W > N, which then reached a
+    /// trainer. The singleton refuses the pair before assigning anything.
+    func test_applyRefusesMinimumHistoryAboveWindow_andAssignsNothing() throws {
+        let p = TrainingParameters.shared
+        let saved = p.snapshot().rawValueMap()
+        TrainingParameters.suppressPersistence = true
+        defer {
+            do { try p.apply(saved) } catch { XCTFail("restore failed: \(error)") }
+            TrainingParameters.suppressPersistence = false
+        }
+        p.relativeGradClipWindowSteps = 1000
+        p.relativeGradClipMinHistorySteps = 100
+        p.learningRate = 0.001
+        XCTAssertThrowsError(try p.apply([
+            "relative_grad_clip_min_history_steps": .int(2000), "learning_rate": .double(0.002),
+        ])) { error in
+            let text = "\(error)"
+            XCTAssertTrue(text.contains("relative_grad_clip_min_history_steps"), text)
+            XCTAssertTrue(text.contains("relative_grad_clip_window_steps"), text)
+        }
+        XCTAssertEqual(p.relativeGradClipMinHistorySteps, 100)
+        XCTAssertEqual(p.learningRate, 0.001, "a refused map assigns nothing")
+        XCTAssertNoThrow(try p.apply(["relative_grad_clip_window_steps": .int(3000), "relative_grad_clip_min_history_steps": .int(2000)]))
+        XCTAssertEqual(p.relativeGradClipMinHistorySteps, 2000)
+    }
+
+    /// The trainer validates its settings on every real-data step, so a pair
+    /// that slipped past every entry point stops training with the error
+    /// instead of crashing or clipping under a cap nobody chose.
+    func test_trainerStepRefusesAnInvalidPair() async throws {
+        let trainer = try RelativeGradientCapFixture.makeTrainer(
+            hardMax: 15, configuration: try RelativeGradientCapFixture.configuration(.clip))
+        trainer.relativeGradientCap = RelativeGradientCapSettings(
+            modeRawValue: 2, multiple: 3, windowSteps: 100, minimumHistorySteps: 200, floor: 0.5)
+        let buffer = RelativeGradientCapFixture.makeReplayBuffer(arch: .current)
+        do {
+            _ = try await trainer.trainStep(replayBuffer: buffer, batchSize: RelativeGradientCapFixture.batchSize)
+            XCTFail("W > N must stop the step")
+        } catch {
+            XCTAssertEqual(error as? RelativeGradientCapConfigurationError,
+                           .minimumHistoryAboveWindow(minimumHistorySteps: 200, windowSteps: 100))
+        }
+        XCTAssertEqual(trainer.completedTrainSteps, 0)
     }
 
     func test_parametersFileRoundTrip() throws {

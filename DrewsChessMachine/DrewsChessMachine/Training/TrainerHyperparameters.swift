@@ -59,17 +59,12 @@ struct TrainerHyperparameters: Sendable, Equatable {
     /// flags off means the trainer uses the static `learningRate` and
     /// `momentumCoeff` — the switch that turns cycling off everywhere.
     var lrMomentumCycle: LRMomentumCycle
-    /// The relative gradient cap's five settings, validated together.
-    var relativeGradientCap: RelativeGradientCapConfiguration
+    /// The relative gradient cap's five settings (validated where they
+    /// enter a run and again by the trainer each step; see
+    /// `RelativeGradientCapSettings`).
+    var relativeGradientCap: RelativeGradientCapSettings
 
     /// Resolve every trainer-level parameter from `parameters`.
-    ///
-    /// The relative cap's cross-parameter rule (W ≤ N) is checked where
-    /// parameters enter a run — `ReplayParams.init` (both CLI runners, exit 2
-    /// with the message), the settings popover's validation and the GUI's
-    /// Play-and-Train start (`TrainerHyperparameters.validated(_:)`) — so a
-    /// snapshot that reaches this initializer with W > N is a bug, and it
-    /// stops the process rather than training under a cap nobody chose.
     init(_ parameters: TrainingParametersSnapshot) {
         learningRate = Float(parameters.learningRate)
         entropyRegularizationCoeff = Float(parameters.entropyBonus)
@@ -92,19 +87,16 @@ struct TrainerHyperparameters: Sendable, Equatable {
         batchStatsInterval = parameters.batchStatsInterval
         klProbeInterval = parameters.klProbeInterval
         lrMomentumCycle = parameters.lrMomentumCycle
-        do {
-            relativeGradientCap = try RelativeGradientCapConfiguration(parameters)
-        } catch {
-            preconditionFailure("relative gradient cap parameters reached a trainer unvalidated: \(error)")
-        }
+        relativeGradientCap = RelativeGradientCapSettings(parameters)
     }
 
     /// `TrainerHyperparameters(parameters)`, or the relative cap's
     /// configuration error (W > N) for the caller to surface: the check every
     /// entry point runs before building a trainer configuration.
     static func validated(_ parameters: TrainingParametersSnapshot) throws -> TrainerHyperparameters {
-        _ = try RelativeGradientCapConfiguration(parameters)
-        return TrainerHyperparameters(parameters)
+        let hyperparameters = TrainerHyperparameters(parameters)
+        _ = try hyperparameters.relativeGradientCap.validated()
+        return hyperparameters
     }
 
     /// Read back the configuration a trainer currently holds. Used by the
@@ -232,10 +224,10 @@ extension ChessTrainer {
     }
 }
 
-extension RelativeGradientCapConfiguration {
-    /// The configuration a parameter snapshot holds; throws on W > N.
-    init(_ parameters: TrainingParametersSnapshot) throws {
-        try self.init(
+extension RelativeGradientCapSettings {
+    /// The settings a parameter snapshot holds.
+    init(_ parameters: TrainingParametersSnapshot) {
+        self.init(
             modeRawValue: parameters.relativeGradClipMode,
             multiple: parameters.relativeGradClipMultiple,
             windowSteps: parameters.relativeGradClipWindowSteps,

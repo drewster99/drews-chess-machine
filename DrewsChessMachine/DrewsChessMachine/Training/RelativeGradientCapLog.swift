@@ -46,11 +46,11 @@ enum RelativeGradientCapLogFormat {
     /// `[GRAD-CLIP] config …`, logged at each run start (and, in the GUI,
     /// at each Play-and-Train start). A floor at or above the hard max is
     /// allowed (OD-14) but makes the relative term inert; the line says so.
-    static func configLine(_ configuration: RelativeGradientCapConfiguration, hardMax: Float) -> String {
-        var line = "[GRAD-CLIP] config mode=\(configuration.mode.token) k=\(number(configuration.multiple))"
-            + " N=\(configuration.windowSteps) W=\(configuration.minimumHistorySteps)"
-            + " floor=\(number(configuration.floor)) hardMax=\(number(Double(hardMax)))"
-        if configuration.mode != .off && configuration.floor >= Double(hardMax) {
+    static func configLine(_ settings: RelativeGradientCapSettings, hardMax: Float) -> String {
+        var line = "[GRAD-CLIP] config mode=\(settings.modeToken) k=\(number(settings.multiple))"
+            + " N=\(settings.windowSteps) W=\(settings.minimumHistorySteps)"
+            + " floor=\(number(settings.floor)) hardMax=\(number(Double(hardMax)))"
+        if settings.mode != .off && settings.floor >= Double(hardMax) {
             line += " relative_cap_inert=floor_at_or_above_hard_max"
         }
         return line
@@ -101,14 +101,18 @@ struct GradientCapStepLineWindow: Sendable {
         lastCoveredTrainerStep = startTrainerStep
     }
 
+    /// A GUI promotion rewinds the trainer clock and its history to the
+    /// arena start; the window restarts there, so the next line covers the
+    /// steps trained after the rewind exactly once.
+    mutating func rewind(toTrainerStep trainerStep: Int) {
+        lastCoveredTrainerStep = trainerStep
+    }
+
     /// The reading for the steps after the previous line through
-    /// `trainerStep`, from the trainer's `history`; advances the window. A
-    /// clock behind the previous line (a GUI promotion rewound the trainer)
-    /// restarts the window at the line's own step.
+    /// `trainerStep`, from the trainer's `history`; advances the window.
     mutating func take(history: GradientNormHistory, throughTrainerStep trainerStep: Int,
                        fedCap: Float?) -> GradientCapStepLineReading {
-        let lower = trainerStep <= lastCoveredTrainerStep ? trainerStep : lastCoveredTrainerStep + 1
-        if trainerStep < lastCoveredTrainerStep { lastCoveredTrainerStep = trainerStep }
+        let lower = lastCoveredTrainerStep + 1
         let summary = lower <= trainerStep
             ? history.summary(trainerSteps: lower...trainerStep)
             : (maxPreClipNorm: nil, clipped: 0, steps: 0)

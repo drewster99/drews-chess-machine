@@ -44,6 +44,9 @@ struct ReplayParams: Sendable {
     /// its settings from.
     let parameters: TrainingParametersSnapshot
     let trainer: TrainerHyperparameters
+    /// `trainer.relativeGradientCap`, validated (W ≤ N) when the run's
+    /// parameters were read.
+    let relativeGradientCap: RelativeGradientCapConfiguration
     let trainingBatchSize: Int
     let replayBufferCapacity: Int
     let replayRatioTarget: Double
@@ -59,7 +62,8 @@ struct ReplayParams: Sendable {
         self.parameters = parameters
         // `validated` refuses a relative-cap configuration with W > N, naming
         // both parameters, before any trainer exists.
-        trainer = try TrainerHyperparameters.validated(parameters)
+        trainer = TrainerHyperparameters(parameters)
+        relativeGradientCap = try trainer.relativeGradientCap.validated()
         lineageParameters = try LineageRecord.Parameters(values: parameters.lineageValues())
         trainingBatchSize = parameters.trainingBatchSize
         replayBufferCapacity = parameters.replayBufferCapacity
@@ -1198,11 +1202,11 @@ enum CorpusReplayRunner {
             + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
-            + " relClip=\(hp.relativeGradientCap.compactDescription)"
+            + " relClip=\(p.relativeGradientCap.settings.compactDescription)"
             + " stepLineSec=" + String(format: "%g", p.parameters.stepLineIntervalSec)
             + p.samplingConstraints.logFields(batchSize: p.trainingBatchSize)
         emit(hparamsLine)
-        emit(RelativeGradientCapLogFormat.configLine(hp.relativeGradientCap, hardMax: hp.gradClipMaxNorm))
+        emit(RelativeGradientCapLogFormat.configLine(p.relativeGradientCap.settings, hardMax: hp.gradClipMaxNorm))
         // Rolling trainer-model output file. The same file is overwritten by
         // the periodic autosave and by the final save on exit/abort, so it
         // always holds the latest weights. Destination precedence: explicit
@@ -1400,7 +1404,7 @@ enum CorpusReplayRunner {
             // with the relative cap (its first W steps would feed the hard
             // max where the uninterrupted run fed the relative cap).
             resumeGaps += ResumeGap.gradNormHistoryGaps(
-                restoring: snapshot.gradNormHistory, runningMode: p.trainer.relativeGradientCap.mode)
+                restoring: snapshot.gradNormHistory, runningMode: p.relativeGradientCap.mode)
             resumeGaps += PolicyTailPrecisionResume.gaps(
                 saved: startFile.metadata.trainerPolicyTailPrecision, running: config.policyTailPrecision)
             if let parentRecord, let corpus = parentRecord.fed.corpus {
@@ -2230,7 +2234,7 @@ enum CorpusReplayRunner {
                         trainerCompletedSteps: observedSteps,
                         segmentGames: feedTally.games - reconstructionFed.games)
                 )
-                statsRow.recordGradientCap(gradientCapReading, configuration: hp.relativeGradientCap)
+                statsRow.recordGradientCap(gradientCapReading, settings: p.relativeGradientCap.settings)
                 recorder?.appendStats(statsRow)
             }
             // The live training-health evaluation, every 50 trainer steps:

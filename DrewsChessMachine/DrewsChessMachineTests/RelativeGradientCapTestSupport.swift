@@ -88,7 +88,7 @@ enum RelativeGradientCapFixture {
             dropoutStream: DCMRandom(seed: 1),
             weightDecayC: 0,
             gradClipMaxNorm: hardMax,
-            relativeGradientCap: configuration,
+            relativeGradientCap: configuration.settings,
             arch: .current,
             initialization: .seeded(initSeed: initSeed)
         )

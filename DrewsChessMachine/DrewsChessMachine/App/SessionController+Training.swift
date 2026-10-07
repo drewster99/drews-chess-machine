@@ -126,11 +126,17 @@ extension SessionController {
                 let p = TrainingParameters.shared
                 let resume = SessionParameterResume(parameters: p, log: { SessionLogger.shared.log($0) })
                 resume.applyGuiSession(rs, acceptedReplacements: pendingLoadedSessionAcceptedReplacements)
-                TrainerHyperparameters(p.snapshot()).apply(to: trainer)
-            } else {
-                // Fresh start: every trainer-level parameter from the live
-                // singleton, through the same path the CLI runners use.
-                TrainerHyperparameters(TrainingParameters.shared.snapshot()).apply(to: trainer)
+            }
+            // Fresh start or resume: every trainer-level parameter from the
+            // live singleton, through the same path the CLI runners use.
+            // `validated` refuses a relative-cap pair with W > N; the start
+            // stops and says why instead of configuring the trainer with it.
+            do {
+                try TrainerHyperparameters.validated(TrainingParameters.shared.snapshot()).apply(to: trainer)
+            } catch {
+                trainingError = "Training parameters refused: \(error.localizedDescription)"
+                SessionLogger.shared.log("[PARAM] Play-and-Train start refused: \(error.localizedDescription)")
+                return
             }
             var initialTrainingStats = TrainingRunStats()
             if let rs = resumeState {
@@ -1530,10 +1536,12 @@ extension SessionController {
                     var prevVmTotal: UInt32 = 0
                     var prevVmIoAccel: UInt32 = 0
                     // Each `[STATS]` line's `gNormMax=` / `clips=` cover the
-                    // trainer steps since the previous line; nil until the
-                    // first line, which covers every step the trainer's
-                    // history holds (on a resume, the restored steps too).
+                    // trainer steps since the previous line, starting from
+                    // the clock this task started at — never the restored
+                    // steps of a resumed run, which an earlier run reported.
+                    let runStartTrainerStep = trainer.completedTrainSteps
                     var gradientCapWindow: GradientCapStepLineWindow? = nil
+                    var gradientCapRestoreGeneration = trainer.gradNormHistoryRestorePoint.generation
 
                     func logOne(elapsedTarget: TimeInterval, legalMassOverride: ChessTrainer.LegalMassSnapshot?,
                                 stepLineIntervalSec: Double) async {
@@ -1965,8 +1973,16 @@ extension SessionController {
                         do {
                             let history = try await trainer.exportGradNormHistory()
                             let through = history.lastTrainerStep ?? completedSteps
-                            var window = gradientCapWindow ?? GradientCapStepLineWindow(
-                                startTrainerStep: (history.firstTrainerStep ?? (through + 1)) - 1)
+                            // A history restore since the previous line (a
+                            // promotion's rewind, or the resume's restore)
+                            // restarts the window at the restored clock, so
+                            // each step is reported exactly once.
+                            var window = gradientCapWindow ?? GradientCapStepLineWindow(startTrainerStep: runStartTrainerStep)
+                            let restorePoint = trainer.gradNormHistoryRestorePoint
+                            if restorePoint.generation != gradientCapRestoreGeneration {
+                                window.rewind(toTrainerStep: restorePoint.trainerStep)
+                                gradientCapRestoreGeneration = restorePoint.generation
+                            }
                             let reading = window.take(history: history, throughTrainerStep: through, fedCap: history.lastFedCap)
                             gradientCapWindow = window
                             gradientCapReading = reading
@@ -2153,7 +2169,7 @@ extension SessionController {
                             )
                             if let gradientCapReading {
                                 entry.recordGradientCap(gradientCapReading,
-                                                        configuration: policySmoothingConfig.relativeGradientCap)
+                                                        settings: policySmoothingConfig.relativeGradientCap)
                             }
                             recorder.appendStats(entry)
                         }

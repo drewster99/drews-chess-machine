@@ -252,7 +252,7 @@ extension SessionController {
                     // clips with the relative cap.
                     + ResumeGap.gradNormHistoryGaps(
                         restoring: GradNormHistoryResumeState(resumed.trainerFile.metadata.trainerGradNormHistory),
-                        runningMode: trainer.relativeGradientCap.mode)
+                        runningMode: try trainer.relativeGradientCap.validated().mode)
                 let exactness = ResumeExactness.resume(of: resumed.trainerFile.lineageParent, gaps: gaps)
                 SessionLogger.shared.log(exactness.logLine)
                 checkpoint?.runResumeExactness = exactness

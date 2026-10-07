@@ -90,6 +90,88 @@ final class GradientCapGraphTests: XCTestCase {
                        second.gradGlobalNorm > first.gradGlobalNorm)
     }
 
+    /// Review MAJOR 3: the relative cap reaches the graph. Three trainers
+    /// from one seed on the same batches: B clips with the relative cap
+    /// (k = 0.5, W = N = 1, so step 2's cap is half step 1's pre-clip norm);
+    /// A has the cap off and is fed that same value as its hard max for step
+    /// 2; C is never clipped. Step 1 is bit-identical in all three; after
+    /// step 2, B equals A bit for bit, and B's step-2 increment
+    /// (v₂ − μ·v₁) is C's scaled by cap/‖g₂‖. If `buildFeeds` fed the hard
+    /// max (1e9) instead of the decision, B would equal C instead.
+    func test_relativeCapIsWhatTheGraphClipsWith() async throws {
+        let hugeMax: Float = 1.0e9
+        let clipConfig = try RelativeGradientCapFixture.configuration(.clip, k: 0.5, n: 1, w: 1)
+        let off = try RelativeGradientCapFixture.configuration(.off)
+        let b = try RelativeGradientCapFixture.makeTrainer(hardMax: hugeMax, configuration: clipConfig)
+        let a = try RelativeGradientCapFixture.makeTrainer(hardMax: hugeMax, configuration: off)
+        let c = try RelativeGradientCapFixture.makeTrainer(hardMax: hugeMax, configuration: off)
+        let bufferB = RelativeGradientCapFixture.makeReplayBuffer(arch: .current)
+        let bufferA = RelativeGradientCapFixture.makeReplayBuffer(arch: .current)
+        let bufferC = RelativeGradientCapFixture.makeReplayBuffer(arch: .current)
+
+        let b1 = try await RelativeGradientCapFixture.step(b, bufferB)
+        _ = try await RelativeGradientCapFixture.step(a, bufferA)
+        _ = try await RelativeGradientCapFixture.step(c, bufferC)
+        let v1 = try await b.exportVelocitySnapshot()
+        let v1a = try await a.exportVelocitySnapshot()
+        XCTAssertEqual(v1.map { $0.map(\.bitPattern) }, v1a.map { $0.map(\.bitPattern) }, "step 1 is identical")
+
+        let cap = Float(0.5 * Double(b1.gradGlobalNorm))
+        a.gradClipMaxNorm = cap
+        let b2 = try await RelativeGradientCapFixture.step(b, bufferB)
+        let a2 = try await RelativeGradientCapFixture.step(a, bufferA)
+        let c2 = try await RelativeGradientCapFixture.step(c, bufferC)
+        XCTAssertEqual(b2.gradientCap.fedCap, cap)
+        XCTAssertEqual(a2.gradientCap.fedCap, cap)
+        XCTAssertGreaterThan(c2.gradGlobalNorm, cap, "the fixture's step 2 must exceed the cap for it to bind")
+
+        let v2b = try await b.exportVelocitySnapshot()
+        let v2a = try await a.exportVelocitySnapshot()
+        let v2c = try await c.exportVelocitySnapshot()
+        XCTAssertEqual(v2b.map { $0.map(\.bitPattern) }, v2a.map { $0.map(\.bitPattern) },
+                       "the relative cap clips exactly as the same value fed as the hard max")
+        let wb = try await b.exportTrainerWeights()
+        let wa = try await a.exportTrainerWeights()
+        XCTAssertEqual(wb.map { $0.map(\.bitPattern) }, wa.map { $0.map(\.bitPattern) })
+
+        // B's increment is C's scaled by cap/‖g₂‖.
+        let mu = Double(b.effectiveMomentum(completedSteps: 1))
+        let scale = Double(cap) / Double(c2.gradGlobalNorm)
+        var residual = 0.0
+        var reference = 0.0
+        for ((vb, vc), v) in zip(zip(v2b, v2c), v1) {
+            for ((xb, xc), x) in zip(zip(vb, vc), v) {
+                let incrementB = Double(xb) - mu * Double(x)
+                let incrementC = Double(xc) - mu * Double(x)
+                residual += (incrementB - scale * incrementC) * (incrementB - scale * incrementC)
+                reference += (scale * incrementC) * (scale * incrementC)
+            }
+        }
+        XCTAssertLessThan(residual.squareRoot(), reference.squareRoot() * 1.0e-3,
+                          "the clipped increment is the unclipped one scaled by cap/‖g₂‖")
+    }
+
+    /// Log-only feeds the hard max, so over several steps it trains bit for
+    /// bit like mode off (the validation runs' "identical until the first
+    /// clip" rests on this).
+    func test_logOnlyIsBitIdenticalToOffOverSeveralSteps() async throws {
+        let logOnly = try RelativeGradientCapFixture.makeTrainer(
+            hardMax: 15, configuration: try RelativeGradientCapFixture.configuration(.logOnly, k: 1, n: 1, w: 1))
+        let off = try RelativeGradientCapFixture.makeTrainer(
+            hardMax: 15, configuration: try RelativeGradientCapFixture.configuration(.off))
+        let bufferL = RelativeGradientCapFixture.makeReplayBuffer(arch: .current)
+        let bufferO = RelativeGradientCapFixture.makeReplayBuffer(arch: .current)
+        for _ in 0..<4 {
+            let l = try await RelativeGradientCapFixture.step(logOnly, bufferL)
+            let o = try await RelativeGradientCapFixture.step(off, bufferO)
+            XCTAssertEqual(l.gradientCap.fedCap, 15)
+            XCTAssertEqual(l.gradGlobalNorm.bitPattern, o.gradGlobalNorm.bitPattern)
+        }
+        let wl = try await logOnly.exportTrainerWeights()
+        let wo = try await off.exportTrainerWeights()
+        XCTAssertEqual(wl.map { $0.map(\.bitPattern) }, wo.map { $0.map(\.bitPattern) })
+    }
+
     func test_syntheticStep_feedsTheHardMaxAndRecordsNothing() async throws {
         let config = try RelativeGradientCapFixture.configuration(.clip, k: 1, n: 1, w: 1)
         let trainer = try RelativeGradientCapFixture.makeTrainer(hardMax: 15, configuration: config)

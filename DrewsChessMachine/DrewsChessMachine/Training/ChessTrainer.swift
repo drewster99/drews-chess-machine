@@ -1355,13 +1355,19 @@ final class ChessTrainer: @unchecked Sendable {
     /// single-step blowups; under heavy policy-collapse pressure the natural
     /// norm can far exceed it, which is why it is live-tunable.
     var gradClipMaxNorm: Float
-    /// Live relative gradient-cap settings (mode, k, N, W, floor), set like
-    /// `gradClipMaxNorm` (through `TrainerHyperparameters.apply(to:)`) and
+    /// Live relative gradient-cap settings (mode, k, N, W, floor), written
+    /// from the main actor (through `TrainerHyperparameters.apply(to:)`) and
     /// read once per real-data step on `executionQueue` when the step's cap
-    /// is decided, so an edit takes effect on the next step. Validated by
-    /// construction (`RelativeGradientCapConfiguration`'s throwing init), so
-    /// the trainer never sees W > N.
-    var relativeGradientCap: RelativeGradientCapConfiguration
+    /// is decided, so an edit takes effect on the next step. A `SyncBox`
+    /// for the same reason as `lrMomentumCycle`: a multi-field struct in a
+    /// bare `var` could tear across the main/off-main boundary and feed a
+    /// step a half-applied (k, N, W) combination. The step validates the
+    /// settings it read (W ≤ N) and throws on a bad pair.
+    private let _relativeGradientCap: SyncBox<RelativeGradientCapSettings>
+    var relativeGradientCap: RelativeGradientCapSettings {
+        get { _relativeGradientCap.value }
+        set { _relativeGradientCap.value = newValue }
+    }
     /// Every real-data step's pre-clip global gradient norm and fed cap — the
     /// relative cap's input, and trainer state like the clock it is indexed
     /// by. Read and written ONLY on `executionQueue`: the decision, the feed,
@@ -2109,7 +2115,7 @@ final class ChessTrainer: @unchecked Sendable {
         drawPenalty: Float = Float(DrawPenalty.declaredDefault),
         weightDecayC: Float = Float(WeightDecay.declaredDefault),
         gradClipMaxNorm: Float = Float(GradClipMaxNorm.declaredDefault),
-        relativeGradientCap: RelativeGradientCapConfiguration? = nil,
+        relativeGradientCap: RelativeGradientCapSettings = .declaredDefaults,
         policyLossWeight: Float = ChessTrainer.policyLossWeightDefault,
         valueLossWeight: Float = ChessTrainer.valueLossWeightDefault,
         illegalMassPenaltyWeight: Float = Float(IllegalMassWeight.declaredDefault),
@@ -2138,10 +2144,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.drawPenalty = drawPenalty
         self.weightDecayC = weightDecayC
         self.gradClipMaxNorm = gradClipMaxNorm
-        // nil = the five parameters' declared defaults (tests and timing
-        // sweeps, like the other defaulted arguments above); production
-        // trainers are configured through `TrainerHyperparameters`.
-        self.relativeGradientCap = try relativeGradientCap ?? RelativeGradientCapConfiguration.declaredDefaults()
+        self._relativeGradientCap = SyncBox(relativeGradientCap)
         self.policyLossWeight = policyLossWeight
         self.valueLossWeight = valueLossWeight
         self.illegalMassPenaltyWeight = illegalMassPenaltyWeight
@@ -4969,7 +4972,7 @@ final class ChessTrainer: @unchecked Sendable {
             // clock belongs to another trajectory.
             try self.gradNormHistory.checkContinues(toTrainerStep: self._completedTrainSteps.value + 1)
             let gradientCap = GradientCapPolicy.decide(
-                configuration: self.relativeGradientCap,
+                configuration: try self.relativeGradientCap.validated(),
                 hardMax: self.gradClipMaxNorm,
                 history: self.gradNormHistory,
                 nextTrainerStep: self._completedTrainSteps.value + 1
@@ -6147,10 +6150,20 @@ final class ChessTrainer: @unchecked Sendable {
     /// would give caps the saved run never fed. Caller pauses training first.
     func restoreGradNormHistory(_ history: GradientNormHistory) async throws {
         try await enqueue {
-            try history.checkEnds(atTrainerClock: self._completedTrainSteps.value)
+            let clock = self._completedTrainSteps.value
+            try history.checkEnds(atTrainerClock: clock)
             self.gradNormHistory = history
+            self._gradNormHistoryRestorePoint.modify { $0 = (generation: $0.generation + 1, trainerStep: clock) }
         }
     }
+
+    /// How many times the history was restored (an exact resume, a
+    /// promotion's rewind) and the trainer clock of the latest restore. A
+    /// step-line window that has not seen the latest generation restarts at
+    /// that clock, so a rewind never drops or repeats a step in
+    /// `gNormMax=` / `clips=`.
+    var gradNormHistoryRestorePoint: (generation: Int, trainerStep: Int) { _gradNormHistoryRestorePoint.value }
+    private let _gradNormHistoryRestorePoint = SyncBox<(generation: Int, trainerStep: Int)>((generation: 0, trainerStep: 0))
 
     /// Begin a run's dropout mask sequence: `stream` (the run's `dropout`
     /// stream) replaces the trainer's, and its first draw seeds the graph's

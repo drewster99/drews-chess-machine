@@ -62,9 +62,9 @@ final class RelativeGradientCapPolicyTests: XCTestCase {
         let decision = decide(try configuration(floor: 20), hardMax: 15, try history([0.1, 0.1, 0.1, 0.1]))
         XCTAssertEqual(decision.decidedCap, 15)
         XCTAssertEqual(decision.binding, .hard)
-        XCTAssertTrue(RelativeGradientCapLogFormat.configLine(try configuration(floor: 20), hardMax: 15)
+        XCTAssertTrue(RelativeGradientCapLogFormat.configLine(try configuration(floor: 20).settings, hardMax: 15)
             .hasSuffix(" relative_cap_inert=floor_at_or_above_hard_max"))
-        XCTAssertFalse(RelativeGradientCapLogFormat.configLine(try configuration(floor: 0.5), hardMax: 15)
+        XCTAssertFalse(RelativeGradientCapLogFormat.configLine(try configuration(floor: 0.5).settings, hardMax: 15)
             .contains("relative_cap_inert"))
     }
 

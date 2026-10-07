@@ -158,9 +158,61 @@ struct RelativeGradientCapConfiguration: Sendable, Equatable {
         )
     }
 
+    /// The raw settings this configuration was validated from.
+    var settings: RelativeGradientCapSettings {
+        RelativeGradientCapSettings(modeRawValue: mode.rawValue, multiple: multiple, windowSteps: windowSteps,
+                                    minimumHistorySteps: minimumHistorySteps, floor: floor)
+    }
+}
+
+/// The relative cap's five settings as the parameters hold them, before the
+/// cross-parameter check. This is what travels through
+/// `TrainerHyperparameters` and what the trainer holds: every entry point
+/// (`TrainingParameters.apply`, the settings popover, a session resume, CLI
+/// start, GUI trainer setup) refuses W > N with an error, and the trainer
+/// validates the settings again on every real-data step
+/// (`validated()`), so a pair that slipped past them stops training with
+/// that error rather than crashing the app or training under a cap nobody
+/// chose.
+struct RelativeGradientCapSettings: Sendable, Equatable {
+    let modeRawValue: Int
+    let multiple: Double
+    let windowSteps: Int
+    let minimumHistorySteps: Int
+    let floor: Double
+
+    init(modeRawValue: Int, multiple: Double, windowSteps: Int, minimumHistorySteps: Int, floor: Double) {
+        self.modeRawValue = modeRawValue
+        self.multiple = multiple
+        self.windowSteps = windowSteps
+        self.minimumHistorySteps = minimumHistorySteps
+        self.floor = floor
+    }
+
+    /// The five parameters' declared defaults.
+    static let declaredDefaults = RelativeGradientCapSettings(
+        modeRawValue: RelativeGradClipMode.declaredDefault,
+        multiple: RelativeGradClipMultiple.declaredDefault,
+        windowSteps: RelativeGradClipWindowSteps.declaredDefault,
+        minimumHistorySteps: RelativeGradClipMinHistorySteps.declaredDefault,
+        floor: RelativeGradClipFloor.declaredDefault
+    )
+
+    /// The validated configuration, or the error naming the parameters.
+    func validated() throws -> RelativeGradientCapConfiguration {
+        try RelativeGradientCapConfiguration(modeRawValue: modeRawValue, multiple: multiple, windowSteps: windowSteps,
+                                             minimumHistorySteps: minimumHistorySteps, floor: floor)
+    }
+
+    /// The mode, nil for a code outside 0…2.
+    var mode: RelativeGradientCapMode? { RelativeGradientCapMode(rawValue: modeRawValue) }
+
+    /// The mode's log token (`invalid(<code>)` for a code outside 0…2).
+    var modeToken: String { mode?.token ?? "invalid(\(modeRawValue))" }
+
     /// `relClip=<mode>/k<k>/N<N>/W<W>/floor<f>` for the HPARAMS lines.
     var compactDescription: String {
-        "\(mode.token)/k\(RelativeGradientCapLogFormat.number(multiple))/N\(windowSteps)/W\(minimumHistorySteps)"
+        "\(modeToken)/k\(RelativeGradientCapLogFormat.number(multiple))/N\(windowSteps)/W\(minimumHistorySteps)"
             + "/floor\(RelativeGradientCapLogFormat.number(floor))"
     }
 }

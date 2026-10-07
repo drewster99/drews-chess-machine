@@ -80,7 +80,7 @@ final class GradientNormHistoryTests: XCTestCase {
     // MARK: - Metadata round trip
 
     func test_metadataRoundTrip_isBitExact() throws {
-        var rng = SystemRandomNumberGenerator()
+        var rng = DCMRandom(seed: 20261007)
         var history = GradientNormHistory()
         let specials: [Float] = [
             .leastNonzeroMagnitude, .leastNormalMagnitude, Float.leastNormalMagnitude.nextDown,

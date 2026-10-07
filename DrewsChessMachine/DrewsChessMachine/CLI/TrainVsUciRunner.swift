@@ -268,7 +268,7 @@ enum TrainVsUciRunner {
                 // A history-less checkpoint is a gap only when this run clips
                 // with the relative cap.
                 resumeGaps += ResumeGap.gradNormHistoryGaps(
-                    restoring: snapshot.gradNormHistory, runningMode: p.trainer.relativeGradientCap.mode)
+                    restoring: snapshot.gradNormHistory, runningMode: p.relativeGradientCap.mode)
                 if let parentRecord = file.lineageParent.lineage.record {
                     if let streams = parentRecord.rng.streams, streams.nextGameSerial != nil {
                         do {
@@ -437,8 +437,8 @@ enum TrainVsUciRunner {
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
             + " stepLineSec=" + String(format: "%g", p.parameters.stepLineIntervalSec)
             + p.samplingConstraints.logFields(batchSize: p.trainingBatchSize)
-            + " relClip=\(hp.relativeGradientCap.compactDescription)")
-        emit(RelativeGradientCapLogFormat.configLine(hp.relativeGradientCap, hardMax: hp.gradClipMaxNorm))
+            + " relClip=\(p.relativeGradientCap.settings.compactDescription)")
+        emit(RelativeGradientCapLogFormat.configLine(p.relativeGradientCap.settings, hardMax: hp.gradClipMaxNorm))
         let buffer = ReplayBuffer(
             capacity: p.replayBufferCapacity,
             inputEncoding: evalNet.inputEncoding,
@@ -1020,7 +1020,7 @@ enum TrainVsUciRunner {
                             trainerCompletedSteps: observedSteps,
                             segmentGames: slots.reduce(0) { $0 + $1.gamesCompleted })
                     )
-                    statsRow.recordGradientCap(gradientCapReading, configuration: hp.relativeGradientCap)
+                    statsRow.recordGradientCap(gradientCapReading, settings: p.relativeGradientCap.settings)
                     recorder?.appendStats(statsRow)
                 }
                 // The live training-health evaluation, every 50 trainer

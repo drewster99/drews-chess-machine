@@ -363,7 +363,7 @@ extension ChessTrainer {
         case .notInCheckpoint:
             try await restoreGradNormHistory(GradientNormHistory())
             SessionLogger.shared.log(
-                "[RESUME] grad-norm history: not in checkpoint (relative cap mode=\(relativeGradientCap.mode.token); "
+                "[RESUME] grad-norm history: not in checkpoint (relative cap mode=\(relativeGradientCap.modeToken); "
                 + "the relative cap warms up from an empty history)"
             )
         }

@@ -106,6 +106,23 @@ final class RelativeGradientCapGuiTests: XCTestCase {
         XCTAssertEqual(p.relativeGradClipMultiple, 4, "k is inert while off and keeps the current setting")
     }
 
+    /// Review MAJOR 1: a session saved with W > N is reported on resume and
+    /// keeps the current pair, never a crash on every later start.
+    func test_sessionWithMinimumHistoryAboveWindow_isReportedAndKeepsTheCurrentPair() throws {
+        var saved = try sessionState(extraFields: "")
+        saved.relativeGradClipMode = 2
+        saved.relativeGradClipWindowSteps = 500
+        saved.relativeGradClipMinHistorySteps = 800
+        let p = TrainingParameters.shared
+        p.relativeGradClipWindowSteps = 1000
+        p.relativeGradClipMinHistorySteps = 100
+        makeResume().applyGuiSession(saved, acceptedReplacements: [])
+        XCTAssertEqual(p.relativeGradClipWindowSteps, 1000)
+        XCTAssertEqual(p.relativeGradClipMinHistorySteps, 100)
+        XCTAssertEqual(logLines.filter { $0.contains("saved pair refused") }.count, 1, logLines.joined(separator: "\n"))
+        XCTAssertNoThrow(try TrainerHyperparameters.validated(p.snapshot()))
+    }
+
     func test_popoverRefusesMinimumHistoryAboveWindow_andWritesNeither() {
         let p = TrainingParameters.shared
         p.relativeGradClipWindowSteps = 1000

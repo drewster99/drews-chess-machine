@@ -1189,11 +1189,11 @@ extension CliTrainingRecorder.StatsLine {
     /// Fill the relative gradient cap's fields from the step line's reading
     /// and the configuration the trainer ran under.
     mutating func recordGradientCap(_ reading: GradientCapStepLineReading,
-                                    configuration: RelativeGradientCapConfiguration) {
+                                    settings configuration: RelativeGradientCapSettings) {
         gradNormMax = reading.maxPreClipNorm.map(Double.init)
         gradClipEvents = reading.clipped
         gradClipCap = reading.fedCap.map(Double.init)
-        relativeGradClipMode = configuration.mode.rawValue
+        relativeGradClipMode = configuration.modeRawValue
         relativeGradClipMultiple = configuration.multiple
         relativeGradClipWindowSteps = configuration.windowSteps
         relativeGradClipMinHistorySteps = configuration.minimumHistorySteps
