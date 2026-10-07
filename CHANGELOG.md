@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Lichess bot challenge log P4: back-fill from the protocol log
+
+- Algorithm v1 rebuilds past challenges from `Protocol/events-*.jsonl` into `Challenges/reconstructed-from-protocol.json` (derived, regenerable, written only when its bytes change). On this Mac it reproduces the plan's numbers exactly: 206 games = incoming 12, matchmaking 132, operator (inferred) 62, unknown 0; today's files give 222 = 12 / 148 / 62 / 0.
+- The controller rebuilds it once after the challenge log loads (not on the go-online path) and on demand; `LichessBotGameOriginDisplay` resolves what each game shows (record, live log, rebuilt challenge, the record's gap, unknown with a reason) into `originsByGameID`; disagreements are logged once per game.
+- The challenge log reader reports when the live log begins (the rebuild's cutoff).
+- New tests: `LichessBotChallengeReconstructionTests`, `LichessBotChallengeReconstructionRealDataTests` (read-only), `LichessBotGameOriginDisplayTests`, `LichessBotChallengeHistoryControllerTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §15.
+
 ## 2026-10-06 — Lichess bot challenge log P3: how each game started
 
 - `LichessBotGameOrigin` (incoming, DCM's challenge with its sender, sender not recorded, tournament, undetermined with its gap) and `LichessBotGameOriginResolver`: decided at session start from the challenge ledger and the `gameStart`, later when the challenge's facts arrive (the POST race), or written as undetermined at session end. Once per game per run.

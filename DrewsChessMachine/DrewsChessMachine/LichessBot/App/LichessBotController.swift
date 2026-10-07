@@ -142,6 +142,16 @@ final class LichessBotController {
         }
     }
 
+    /// Where rebuilding the challenge history from the protocol log stands.
+    enum ChallengeHistoryStatus: Equatable {
+        case notBuilt
+        /// No Lichess account is configured, so no direction can be told.
+        case noAccount
+        case rebuilding
+        case ready(LichessBotChallengeReconstructionStore.Outcome, at: Date)
+        case failed(String)
+    }
+
     struct PendingChallenge: Equatable {
         let id: String
         let username: String
@@ -234,6 +244,7 @@ final class LichessBotController {
         didSet {
             recordsByOpponent = LichessBotRecordSummary.byOpponent(rows: index?.rows ?? [])
             pastOpponents = LichessBotRecordSummary.pastOpponents(rows: index?.rows ?? [])
+            refreshGameOrigins()
             // Reported whenever the set of undecodable records changes (and so
             // at least once per launch): they are left out of every count.
             if let index, !index.unreadableRecords.isEmpty, index.unreadableRecords != oldValue?.unreadableRecords {
@@ -396,6 +407,20 @@ final class LichessBotController {
     let challengeLogRecorder: LichessBotChallengeLogRecorder
     /// Decides each game's origin while the bot follows it (§3.5).
     @ObservationIgnored private var gameOriginResolver = LichessBotGameOriginResolver()
+    /// Past challenges rebuilt from the protocol log (§3.7); nil until built
+    /// or read back.
+    private(set) var challengeHistory: LichessBotChallengeReconstruction?
+    /// The rebuild's state, for the Challenge Log window.
+    private(set) var challengeHistoryStatus: ChallengeHistoryStatus = .notBuilt
+    /// `challengeHistory`'s rows by challenge id, rebuilt with it.
+    @ObservationIgnored private var challengeHistoryLookup: LichessBotReconstructedChallengeLookup?
+    /// What every game shows for how it began, by game id (§3.6): the one
+    /// map views read, recomputed whenever the index, the challenge log or
+    /// the rebuilt history changes.
+    private(set) var originsByGameID: [String: LichessBotGameOriginDisplay] = [:]
+    /// Games whose record and challenge log disagree about the origin,
+    /// already logged (once per game per launch).
+    @ObservationIgnored private var loggedOriginDisagreements: Set<String> = []
     private var nextAlarmID = 0
 
     // MARK: - Runtime
@@ -495,9 +520,11 @@ final class LichessBotController {
         }
         challengeLogRecorder.onRecorded = { [weak self] event in
             self?.challengeFactRecorded(event)
+            self?.refreshGameOrigins()
         }
         challengeLogRecorder.onLoaded = { [weak self] in
             self?.decideWaitingGameOrigins()
+            self?.refreshGameOrigins()
         }
         challengeLogRecorder.alarmSink = { [weak self] text in
             if let self {
@@ -1458,7 +1485,91 @@ final class LichessBotController {
     /// online). Losing it never stops the bot: a failed load is an alarm,
     /// and recording goes on.
     func loadChallengeLog() async {
+        let wasLoaded = challengeLedger != nil
         await challengeLogRecorder.load()
+        guard !wasLoaded, challengeLedger != nil, challengeHistory == nil else { return }
+        // Off the caller's path: going online doesn't wait for the rebuild.
+        Task {
+            await rebuildChallengeHistory()
+        }
+    }
+
+    // MARK: - Challenge history (challenge-log plan §3.7)
+
+    /// Bring `Challenges/reconstructed-from-protocol.json` up to date and
+    /// read it (the bot window's Rebuild button, and once after the
+    /// challenge log loads). It runs on the general file queue; it is
+    /// skipped while another rebuild runs, before the challenge log has
+    /// loaded (its first entry is the cutoff), and with no account
+    /// configured (directions depend on it). Written only when its bytes
+    /// change; idempotent.
+    func rebuildChallengeHistory() async {
+        guard challengeHistoryStatus != .rebuilding else { return }
+        guard challengeLedger != nil else { return }
+        let ourAccountID = accountID
+        guard !ourAccountID.isEmpty else {
+            challengeHistoryStatus = .noAccount
+            return
+        }
+        challengeHistoryStatus = .rebuilding
+        if index == nil {
+            await refreshIndex()
+        }
+        let directory = dataDirectory
+        let cutoff = challengeLogRecorder.liveLogFirstEntryAt
+        do {
+            let result = try await fileQueue.run {
+                try directory.createDirectories()
+                return try LichessBotChallengeReconstructionStore.update(in: directory, ourAccountID: ourAccountID, liveLogFirstEntryAt: cutoff)
+            }
+            if let reason = result.undecodableStoredFile {
+                SessionLogger.shared.log("[LICHESS-BOT] \(directory.reconstructedChallengesURL.lastPathComponent) didn't decode (\(reason)); rebuilt")
+            }
+            let lookup = LichessBotReconstructedChallengeLookup(result.reconstruction)
+            challengeHistoryLookup = lookup
+            challengeHistory = result.reconstruction
+            challengeHistoryStatus = .ready(result.outcome, at: Date())
+            if let rows = index?.rows {
+                SessionLogger.shared.log(LichessBotChallengeReconstructionStore.summaryLine(result, games: lookup.gameCounts(gameIDs: rows.map(\.gameID))))
+            } else {
+                SessionLogger.shared.log("[LICHESS-BOT] challenge history reconstructed: rows=\(result.reconstruction.rows.count) (games not counted: the games index isn't loaded); \(result.outcome.rawValue)")
+            }
+            refreshGameOrigins()
+        } catch {
+            challengeHistoryStatus = .failed(Self.safeDescription(error))
+            raiseAlarm("Rebuilding the challenge history from the protocol log failed: \(Self.safeDescription(error))")
+        }
+    }
+
+    /// Recompute `originsByGameID` for every indexed game, and log each
+    /// game whose record and challenge log disagree (once per game): the
+    /// record wins, and the disagreement is never hidden.
+    private func refreshGameOrigins() {
+        guard let rows = index?.rows else {
+            if !originsByGameID.isEmpty {
+                originsByGameID = [:]
+            }
+            return
+        }
+        let ledger = challengeLedger
+        let cutoff = challengeLogRecorder.liveLogFirstEntryAt
+        var origins: [String: LichessBotGameOriginDisplay] = [:]
+        origins.reserveCapacity(rows.count)
+        for row in rows {
+            origins[row.gameID] = LichessBotGameOriginDisplay.resolve(
+                gameID: row.gameID, createdAt: row.createdAt, recorded: row.origin,
+                ledger: ledger, reconstruction: challengeHistoryLookup, liveLogFirstEntryAt: cutoff)
+            if let recorded = row.origin, recorded.isDetermined,
+               let ledgerRow = ledger?.row(challengeID: row.gameID),
+               let fromLog = LichessBotGameOrigin.fromChallengeLog(gameID: row.gameID, row: ledgerRow),
+               fromLog != recorded,
+               loggedOriginDisagreements.insert(row.gameID).inserted {
+                SessionLogger.shared.log("[LICHESS-BOT] origin disagreement for \(row.gameID): record \(recorded.token), challenge log \(fromLog.token); showing the record's")
+            }
+        }
+        if origins != originsByGameID {
+            originsByGameID = origins
+        }
     }
 
     /// The one funnel for challenge facts: the ledger and the log's files

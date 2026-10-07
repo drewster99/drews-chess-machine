@@ -1005,6 +1005,45 @@ Tests (new files; no existing test changed):
 - `LichessBotGameOriginResolverTests` (13): incoming whatever DCM decided; each of the six senders; the POST race (waiting, then decided once); echo-only, attributed and not; arena and swiss; an unknown source kept verbatim; partial, failed and not-loaded ledgers → `challengeLogIncomplete`; resumed with determined, none, and undetermined later decided or not rewritten; decided once per run; the tokens; the source as an open value.
 - `LichessBotGameOriginJournalTests` (9): first determined kept; conflicting determined → anomaly; an old journal → no origin, no row origin, no PGN tag; the resumed journal's origin; carryover unchanged; live replay; a new record's origin in its row and PGN; a record written before origins decodes with none; an index stored at `LichessBotIndex.schemaVersion - 1` is rebuilt and stored at `LichessBotIndex.schemaVersion`.
 
+## 15. Implementation notes: P4 back-fill (2026-10-06)
+
+The pure reconstruction was built in parallel by a helper agent on its own branch (`9500c0fb`), from P1, and merged in. Its report, recorded here:
+- **Files:** `Stats/LichessBotChallengeReconstruction.swift` (Algorithm v1 of §3.7, the row types, the frozen message parser, the game join) and `Data/LichessBotChallengeReconstructionStore.swift` (regenerate-when-stale, write-only-when-different, the summary line). `LichessBotChallengeLogState` and `LichessBotChallengeLedgerNote` gained `Codable`, so rebuilt rows persist.
+- **Validation on this Mac (read-only):**
+  - On the plan's own inputs (the live files cut back to Appendix A's sizes): rows 373 (outgoing created 289, not created 54, incoming 30); games 206 = incoming 12, matchmaking 132, operator (inferred) 62, unknown 0. Every number equals Appendix B and B.2.
+  - On today's files: rows 400 (310 / 58 / 32); games 222 = incoming 12, matchmaking 148, operator (inferred) 62, unknown 0. These match Appendix B and B.2 rerun on the same snapshot.
+  - No unpaired, ambiguous or unexplained lines. The pick line was present for 190 of 190 matchmaking sends and 0 of 99 inferred-operator sends. Build time about 190 ms.
+- **Its decisions:**
+  - `publishNewFile` rather than `writeNewFile` for an absent file, so no partial file is ever visible.
+  - `replaceRegularFile` without an expected identity (a derived file: the newer read wins).
+  - A bot-limit line with no outcome line is its own not-created reason (`botGameLimit`), not an invented refusal.
+  - States come from the P1 ledger's precedence, by feeding the rebuilt facts through `LichessBotChallengeLedgerRow`.
+  - Three more message forms are read, so failures and acceptances aren't misread: matchmaking and queue "stopped" companions, and "outgoing challenge accepted; game X".
+  - Pairing is directional and consumes candidates; ambiguity is counted, never guessed.
+  - A timeout withdrawal is attributed only when exactly one challenge to that player is open.
+  - Pick lines go into `pickLineCheck`, not into `evidence`.
+  - An undecodable protocol line is listed per input rather than failing the run.
+  - An extra log category, "outgoing sender not determined".
+  - The store does no logging (it returns `undecodableStoredFile`).
+  - Freshness compares the cutoff as its encoded text.
+- **Found, not changed (outside this plan):** Lichess sends decline keys in lowercase (`nobot`, `timecontrol`, `toofast`), but `LichessBotDeclineReason`'s raw values are camelCase. So `LichessBotDeclineReasonRecord(reasonKey:)` stores most real declines as `.unrecognized`: 39 `nobot` and 19 `timecontrol` in today's data.
+
+Integration (this branch):
+- **Live log cutoff.** The reader's day files carry `firstEntryAt`, and `LichessBotChallengeLogContents.liveLogFirstEntryAt` is the first entry of the oldest day file that has one. If an older day file was left out (corrupt), the start of its UTC day stands in, so the cutoff is never later than the real first entry. The recorder keeps the value from its load.
+- **Controller:**
+  - `challengeHistory`, `challengeHistoryStatus` (`notBuilt` / `noAccount` / `rebuilding` / `ready(outcome, at:)` / `failed`) and `rebuildChallengeHistory()`, which runs the store on the general file queue. It runs once after the challenge log first loads, in a `Task`, so going online doesn't wait for it, and again from the Challenge Log window's Rebuild button (P5).
+  - The summary line is logged with the game counts joined from the index rows. An undecodable stored file is logged, and a failure raises an alarm.
+  - It is skipped before the challenge log has loaded, since its cutoff isn't known yet. With no account it would be skipped too, but settings validation already refuses an empty account, so `noAccount` is a guard, not a reachable state today.
+- **`Play/LichessBotGameOriginDisplay.swift`:** the §3.6 resolver, all five steps, plus `display(_:basis:)` for a known origin.
+  - `LichessBotGameOrigin.fromChallengeLog(gameID:row:)` (in P3's file) is the one ledger-row mapping, shared with the P3 resolver.
+  - Rebuilt operator sends show as `challengeSheet` with their confidence, because the reconstruction can't tell the sheet from Resend as Casual. Ambiguous or missing senders show as `outgoingSenderNotRecorded`, with basis `reconstructed(.certain)`: the direction is certain, the category says the sender isn't.
+- **`originsByGameID`** is recomputed when the index changes, when a challenge fact is recorded, when the ledger loads, and when the history is ready. A record that disagrees with the challenge log is logged once per game per launch: `[LICHESS-BOT] origin disagreement for <id>: …`.
+
+Tests (new files; no existing test changed):
+- From the helper: `LichessBotChallengeReconstructionTests` (24) and `LichessBotChallengeReconstructionRealDataTests` (1). The real-data test is read-only, skips when the folder is absent, and never runs the store.
+- `LichessBotGameOriginDisplayTests` (8): each step of the order; step 5's split, including no live log; every category from an origin; the cutoff from the oldest day file, and from an older left-out file's day start.
+- `LichessBotChallengeHistoryControllerTests` (1): loading the challenge log rebuilds the history into the temporary data folder, and a rerun writes nothing (the modification time is unchanged).
+
 ## Appendix A. Measured data (2026-10-06, read-only)
 
 - Protocol files:

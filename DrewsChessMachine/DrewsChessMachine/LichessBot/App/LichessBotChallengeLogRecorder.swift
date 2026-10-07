@@ -42,6 +42,11 @@ final class LichessBotChallengeLogRecorder {
 
     /// The fold of the challenge log; nil until loaded.
     private(set) var ledger: LichessBotChallengeLedger?
+    /// When the live log began, as of the load
+    /// (`LichessBotChallengeLogContents.liveLogFirstEntryAt`): the
+    /// reconstruction's cutoff, and the line between "played before origins
+    /// were recorded" and "not recorded". Nil when no log existed at load.
+    private(set) var liveLogFirstEntryAt: Date?
 
     /// Facts recorded while the ledger is nil, in order.
     @ObservationIgnored private var eventsAwaitingLedger: [LichessBotChallengeLogEntry] = []
@@ -122,6 +127,7 @@ final class LichessBotChallengeLogRecorder {
         do {
             let contents = try await log.readAll()
             loaded = LichessBotChallengeLedger(contents: contents)
+            liveLogFirstEntryAt = contents.liveLogFirstEntryAt
             let elapsed = ContinuousClock.now - start
             let milliseconds = Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15
             SessionLogger.shared.log("[LICHESS-BOT] challenge log loaded: files=\(contents.filesRead.count) lines=\(contents.lineCount) bytes=\(contents.byteCount) ms=\(String(format: "%.1f", milliseconds)) skipped_newer=\(contents.skippedNewerLines) files_left_out=\(contents.filesLeftOut.count)")
