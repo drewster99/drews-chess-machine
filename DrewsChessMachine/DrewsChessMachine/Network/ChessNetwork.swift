@@ -201,18 +201,6 @@ final class ChessNetwork: @unchecked Sendable {
     // `ChessNetwork.architectureSummary` was removed to avoid a second,
     // divergently-formatted source.
 
-    /// Hand-maintained qualitative note about the current architecture
-    /// experiment, surfaced as `architecture.notes` in analysis exports.
-    /// Deliberately carries **no numbers** — every quantity lives in the
-    /// structured arch constants and `architectureSummary`, so this
-    /// string can't go stale when a constant changes. Edit it when
-    /// starting a new architecture experiment; an empty string is
-    /// omitted from the export.
-    static let architectureNotes =
-        "Shallow-wide kernel experiment: fewer residual blocks with larger "
-        + "spatial convolutions, probing whether kernel width can substitute "
-        + "for tower depth."
-
     // MARK: Graph Tensors
 
     let graph: MPSGraph

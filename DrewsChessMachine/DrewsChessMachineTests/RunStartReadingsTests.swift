@@ -195,7 +195,7 @@ final class RunStartReadingsTests: XCTestCase {
         let training = try XCTUnwrap(harness.controller.currentAnalysisExportMetadata().training)
         XCTAssertNil(training.batchSize, "no run is active: no run's batch size")
         XCTAssertEqual(training.batchSizeSetting, 128, "the setting, under the setting's own key")
-        XCTAssertEqual(AnalysisExportMetadata.currentSchemaVersion, 3)
+        XCTAssertEqual(AnalysisExportMetadata.currentSchemaVersion, 4)
     }
 
     func testTheDisplayLabelSaysWhenAValueIsTheSetting() {

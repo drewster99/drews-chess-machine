@@ -30,13 +30,13 @@ enum NumericsAuditStepOutcome: Sendable {
 /// Run All Analyses, against the champion or the trainer.
 extension SessionController {
 
-    /// Run the audit on `network`, write its JSON under
+    /// Run the audit on `snapshot`, write its JSON under
     /// `CheckpointPaths.analysesDir`, and log the `[NUMERICS]` block.
+    /// `metadata` is the session-level snapshot; the file is stamped with
+    /// the audited weights through `describing(_:)`.
     nonisolated static func runNumericsAuditStep(
-        network: ChessNetwork,
+        snapshot: AnalyzedNetworkSnapshot,
         modelLabel: String,
-        modelID: String?,
-        trainingStep: Int?,
         mastersSource: NumericsMastersSource,
         metadata: AnalysisExportMetadata,
         tag: String
@@ -45,20 +45,24 @@ extension SessionController {
         do {
             let masters: [[Float]]?
             let mastersNote: String?
+            let velocity: LayerHealth.VelocitySource
             switch mastersSource {
             case .unavailable(let note):
                 masters = nil
                 mastersNote = note
+                velocity = .unavailable(reason: NumericsAudit.liveNetworkVelocityNote)
             case .trainer(let trainer, let running):
                 (masters, mastersNote) = try await NumericsAudit.trainerMasters(trainer: trainer, trainingIsRunning: running)
+                velocity = try await NumericsAudit.trainerVelocity(
+                    trainer: trainer, networkTensorCount: snapshot.names.count,
+                    trainableCount: snapshot.trainableCount, trainingIsRunning: running)
             }
             result = try await NumericsAudit.run(
-                network: network,
+                snapshot: snapshot,
                 modelLabel: modelLabel,
-                modelID: modelID,
-                trainingStep: trainingStep,
                 masters: masters,
                 mastersNote: mastersNote,
+                velocity: velocity,
                 corpusShardURL: nil,
                 lichessDirectory: .standard
             )
@@ -66,7 +70,7 @@ extension SessionController {
             SessionLogger.shared.log("[NUMERICS] audit failed (\(tag)): \(error)")
             return .failed(error.localizedDescription)
         }
-        result.exportMetadata = metadata
+        result.exportMetadata = metadata.describing(snapshot)
         let summary = result.textSummary()
         SessionLogger.shared.log("[NUMERICS] === Numerics audit begin (\(tag)) ===")
         for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {

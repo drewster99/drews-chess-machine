@@ -13,6 +13,11 @@ import Foundation
 ///   2. Value head     (against champion; skipped if no network)
 ///   3. Network weights (against champion; skipped if no network)
 ///   4. Network weights (against trainer; skipped if no trainer)
+///   5. Numerics audit (champion, then trainer)
+///
+/// The champion and the trainer are each exported once
+/// (`AnalyzedNetworkSnapshot`); every analysis of a network reads that one
+/// snapshot, so the files describe the same weights at the same step.
 ///
 /// Each sub-analysis is independent: a failure in one doesn't stop
 /// the others. Successes log their JSON path; failures log the
@@ -35,6 +40,8 @@ extension SessionController {
         let bufferRef = replayBuffer
         let championRef = network
         let trainerRef = trainer
+        let championTarget = championAnalysisTarget()
+        let trainerTarget = trainerAnalysisTarget()
         // Masters are read for the numerics audit only while training is
         // stopped; snapshot that on the main actor.
         let trainingIsRunning = realTraining
@@ -93,79 +100,96 @@ extension SessionController {
                 summaryLines.append("• Replay buffer:           SKIPPED — no buffer loaded")
             }
 
+            // One snapshot of each network, shared by its analyses below.
+            var championSnapshot: Swift.Result<AnalyzedNetworkSnapshot, Error>?
+            if let championTarget {
+                do {
+                    championSnapshot = .success(try await self.analysisSnapshot(of: championTarget))
+                } catch {
+                    SessionLogger.shared.log("[ANALYSES] champion snapshot failed: \(error)")
+                    championSnapshot = .failure(error)
+                }
+            }
+            var trainerSnapshot: Swift.Result<AnalyzedNetworkSnapshot, Error>?
+            if let trainerTarget {
+                do {
+                    trainerSnapshot = .success(try await self.analysisSnapshot(of: trainerTarget))
+                } catch {
+                    SessionLogger.shared.log("[ANALYSES] trainer snapshot failed: \(error)")
+                    trainerSnapshot = .failure(error)
+                }
+            }
+
             // 2. Value head (champion).
-            if let net = championRef {
-                let modelLabel = "champion:\(net.identifier?.description ?? "<no-id>")"
-                let step = await Self.runValueHeadStep(
-                    network: net,
-                    modelLabel: modelLabel,
-                    metadata: exportMetadata
-                )
+            switch championSnapshot {
+            case .success(let snapshot)?:
+                let step = await Self.runValueHeadStep(snapshot: snapshot, modelLabel: snapshot.modelLabel, metadata: exportMetadata)
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
-            } else {
+            case .failure(let error)?:
+                summaryLines.append("• Value head (champion):    FAILED — \(error.localizedDescription)")
+            case nil:
                 summaryLines.append("• Value head (champion):    SKIPPED — no champion loaded")
             }
 
             // 3. Network weights (champion).
-            if let net = championRef {
-                let modelLabel = "champion:\(net.identifier?.description ?? "<no-id>")"
-                let step = await Self.runNetworkWeightsStep(
-                    networkInner: net.network,
-                    modelLabel: modelLabel,
-                    tag: "Champion",
-                    metadata: exportMetadata
-                )
+            switch championSnapshot {
+            case .success(let snapshot)?:
+                let step = await Self.runNetworkWeightsStep(snapshot: snapshot, modelLabel: snapshot.modelLabel, tag: "Champion", metadata: exportMetadata)
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
-            } else {
+            case .failure(let error)?:
+                summaryLines.append("• Network weights (champion): FAILED — \(error.localizedDescription)")
+            case nil:
                 summaryLines.append("• Network weights (champion): SKIPPED — no champion loaded")
             }
 
             // 4. Network weights (trainer).
-            if let trainer = trainerRef {
-                let modelLabel = "trainer:\(trainer.identifier?.description ?? "<no-id>")"
-                let step = await Self.runNetworkWeightsStep(
-                    networkInner: trainer.network,
-                    modelLabel: modelLabel,
-                    tag: "Trainer",
-                    metadata: exportMetadata
-                )
+            switch trainerSnapshot {
+            case .success(let snapshot)?:
+                let step = await Self.runNetworkWeightsStep(snapshot: snapshot, modelLabel: snapshot.modelLabel, tag: "Trainer", metadata: exportMetadata)
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
-            } else {
+            case .failure(let error)?:
+                summaryLines.append("• Network weights (trainer):  FAILED — \(error.localizedDescription)")
+            case nil:
                 summaryLines.append("• Network weights (trainer):  SKIPPED — no trainer initialized")
             }
 
             // 5. Numerics audit (champion, then trainer).
-            if let net = championRef {
+            switch championSnapshot {
+            case .success(let snapshot)?:
                 let outcome = await Self.runNumericsAuditStep(
-                    network: net.network,
-                    modelLabel: "champion:\(net.identifier?.description ?? "<no-id>")",
-                    modelID: net.identifier?.description,
-                    trainingStep: nil,
+                    snapshot: snapshot,
+                    modelLabel: snapshot.modelLabel,
                     mastersSource: .unavailable(NumericsAudit.championMastersNote),
                     metadata: exportMetadata,
                     tag: "RunAll Champion"
                 )
                 summaryLines.append(Self.numericsSummaryLine(outcome, tag: "champion"))
                 if firstSuccessURL == nil, case .saved(let url) = outcome { firstSuccessURL = url }
-            } else {
+            case .failure(let error)?:
+                summaryLines.append("• Numerics audit (champion): FAILED — \(error.localizedDescription)")
+            case nil:
                 summaryLines.append("• Numerics audit (champion): SKIPPED — no champion loaded")
             }
-            if let trainer = trainerRef {
+            switch trainerSnapshot {
+            case .success(let snapshot)?:
+                guard case .trainer(let trainer)? = trainerTarget?.source else {
+                    preconditionFailure("a trainer snapshot was taken without a trainer target")
+                }
                 let outcome = await Self.runNumericsAuditStep(
-                    network: trainer.network,
-                    modelLabel: "trainer:\(trainer.identifier?.description ?? "<no-id>")",
-                    modelID: trainer.identifier?.description,
-                    trainingStep: trainer.completedTrainSteps,
+                    snapshot: snapshot,
+                    modelLabel: snapshot.modelLabel,
                     mastersSource: .trainer(trainer, trainingIsRunning: trainingIsRunning),
                     metadata: exportMetadata,
                     tag: "RunAll Trainer"
                 )
                 summaryLines.append(Self.numericsSummaryLine(outcome, tag: "trainer"))
                 if firstSuccessURL == nil, case .saved(let url) = outcome { firstSuccessURL = url }
-            } else {
+            case .failure(let error)?:
+                summaryLines.append("• Numerics audit (trainer):  FAILED — \(error.localizedDescription)")
+            case nil:
                 summaryLines.append("• Numerics audit (trainer):  SKIPPED — no trainer initialized")
             }
 
@@ -186,44 +210,18 @@ extension SessionController {
 
     // MARK: - Export metadata
 
-    /// Snapshot the live training-progress context into an
-    /// `AnalysisExportMetadata` for stamping onto analysis exports.
-    /// Reads the trainer / self-play stats boxes, replay buffer, model
-    /// identifiers, and the static architecture constants, so it must run
-    /// on the main actor (the class's isolation) where that state is
-    /// reachable. The `selfPlay` and `training` sub-blocks are present
-    /// only when their backing context exists, so an export taken before
-    /// any run simply omits them rather than reporting misleading zeros.
+    /// Snapshot the session's context into an `AnalysisExportMetadata` for
+    /// stamping onto analysis exports: build, the session's champion and
+    /// trainer IDs, self-play volume and training progress. Reads the stats
+    /// boxes, replay buffer and model identifiers, so it runs on the main
+    /// actor. The `selfPlay` and `training` sub-blocks are present only when
+    /// their backing context exists. It describes no network's weights: an
+    /// export of a network is stamped with its snapshot through
+    /// `describing(_:)`.
     ///
     /// Used by both `Run All Analyses` (one snapshot shared across the
-    /// pass) and the three single-analysis Debug hooks.
+    /// pass) and the single-analysis Debug hooks.
     func currentAnalysisExportMetadata() -> AnalysisExportMetadata {
-        // Describe the ACTUAL champion architecture, not the build's static
-        // defaults — they diverge once a non-default net is built.
-        let arch = network?.network.arch ?? .current
-        let notes = ChessNetwork.architectureNotes
-        let architecture = AnalysisExportMetadata.Architecture(
-            architectureVersion: arch.architectureVersionLabel,
-            parameterCount: arch.parameterCount,
-            // These legacy uniform scalars describe the FIRST block group
-            // (mixed towers carry the full structure in `summary`).
-            numBlocks: arch.numBlocks,
-            channels: arch.towerOutputChannels,
-            convKernelSize: arch.blockGroups[0].conv1KernelSize,
-            inputPlanes: arch.inputPlanes,
-            boardSize: arch.boardSize,
-            policyChannels: arch.policyChannels,
-            policySize: arch.policySize,
-            seReductionRatio: arch.blockGroups[0].seReductionRatio,
-            valueHead: AnalysisExportMetadata.Architecture.ValueHead(
-                classes: arch.valueHeadClasses,
-                convChannels: arch.valueHeadConvChannels,
-                hiddenUnits: arch.valueHeadHiddenUnits
-            ),
-            summary: arch.architectureSummary,
-            notes: notes.isEmpty ? nil : notes
-        )
-
         let selfPlay: AnalysisExportMetadata.SelfPlay?
         if let snap = parallelWorkerStatsBox?.snapshot() {
             selfPlay = AnalysisExportMetadata.SelfPlay(
@@ -273,7 +271,7 @@ extension SessionController {
                 championModelID: network?.identifier?.description,
                 trainerModelID: trainer?.identifier?.description
             ),
-            architecture: architecture,
+            analyzedWeights: nil,
             selfPlay: selfPlay,
             training: training
         )
@@ -399,16 +397,13 @@ extension SessionController {
     /// Runs the value-head analyzer, writes the JSON, logs a
     /// `[VALHEAD]` block.
     nonisolated private static func runValueHeadStep(
-        network: ChessMPSNetwork,
+        snapshot: AnalyzedNetworkSnapshot,
         modelLabel: String,
         metadata: AnalysisExportMetadata
     ) async -> AnalysisStepResult {
         var result: ValueHeadAnalyzer.Result
         do {
-            result = try await ValueHeadAnalyzer.run(
-                network: network,
-                modelLabel: modelLabel
-            )
+            result = try ValueHeadAnalyzer.run(snapshot: snapshot, modelLabel: modelLabel)
         } catch {
             SessionLogger.shared.log("[VALHEAD] (RunAll) failed: \(error)")
             return AnalysisStepResult(
@@ -417,7 +412,7 @@ extension SessionController {
             )
         }
 
-        result.exportMetadata = metadata
+        result.exportMetadata = metadata.describing(snapshot)
         let outcome = writeJSON(
             encodable: result,
             filenameStem: "valuehead_analysis",
@@ -453,21 +448,18 @@ extension SessionController {
         }
     }
 
-    /// Runs the network weight analyzer against `networkInner`. `tag`
-    /// is "Champion" / "Trainer" — used in the summary line and the
-    /// log block header so the two paths are distinguishable.
+    /// Runs the network weight analyzer on `snapshot`. `tag` is
+    /// "Champion" / "Trainer" — used in the summary line and the log block
+    /// header so the two paths are distinguishable.
     nonisolated private static func runNetworkWeightsStep(
-        networkInner: ChessNetwork,
+        snapshot: AnalyzedNetworkSnapshot,
         modelLabel: String,
         tag: String,
         metadata: AnalysisExportMetadata
     ) async -> AnalysisStepResult {
         var result: NetworkWeightAnalyzer.Result
         do {
-            result = try await NetworkWeightAnalyzer.run(
-                network: networkInner,
-                modelLabel: modelLabel
-            )
+            result = try await NetworkWeightAnalyzer.runOffPool(snapshot: snapshot, modelLabel: modelLabel)
         } catch {
             SessionLogger.shared.log("[NETW] (RunAll \(tag)) failed: \(error)")
             return AnalysisStepResult(
@@ -476,7 +468,7 @@ extension SessionController {
             )
         }
 
-        result.exportMetadata = metadata
+        result.exportMetadata = metadata.describing(snapshot)
         let outcome = writeJSON(
             encodable: result,
             filenameStem: "network_weights",

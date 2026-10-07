@@ -2,25 +2,23 @@ import AppKit
 import Foundation
 
 /// `SessionController`'s value-head analyzer hook — wired to the
-/// `Analyze Value Head Weights…` Debug menu item. Runs
-/// `ValueHeadAnalyzer.run(...)` against the currently-loaded
-/// champion network, writes a timestamped JSON file under
-/// `~/Library/Application Support/DrewsChessMachine/Analyses/`,
-/// logs a `[VALHEAD]` text-summary block to the session log, and
-/// surfaces an NSAlert with a Reveal-in-Finder action.
+/// `Analyze Value Head Weights…` Debug menu item. Takes a weights snapshot
+/// of the champion (`AnalyzedNetworkSnapshot`), runs `ValueHeadAnalyzer` on
+/// it, writes a timestamped JSON file under
+/// `~/Library/Application Support/DrewsChessMachine/Analyses/`, logs a
+/// `[VALHEAD]` text-summary block to the session log, and surfaces an
+/// NSAlert with a Reveal-in-Finder action.
 ///
-/// Independent of the replay-buffer analyzer — the value-head pass
-/// reads only the network's weights via `exportWeights()`, never
-/// touches the replay buffer, and runs in well under a second on
-/// any network the project actually builds.
+/// Independent of the replay-buffer analyzer — the value-head pass reads
+/// only the network's weights, never touches the replay buffer.
 extension SessionController {
 
-    /// Entry point invoked by the Debug menu item. Runs the analyzer
-    /// against `network` (the champion); if no network is loaded,
-    /// surfaces an explanatory alert instead of silently doing nothing.
+    /// Entry point invoked by the Debug menu item. Runs the analyzer on the
+    /// champion; if no network is loaded, surfaces an explanatory alert
+    /// instead of silently doing nothing.
     func analyzeValueHeadToFile() {
         SessionLogger.shared.log("[BUTTON] Analyze Value Head Weights")
-        guard let net = network else {
+        guard let target = championAnalysisTarget() else {
             Self.presentValueHeadAlert(
                 title: "Analyze Value Head Weights",
                 message: "No network is loaded. Build a network or load a saved session first.",
@@ -28,80 +26,68 @@ extension SessionController {
             )
             return
         }
-        let modelLabel = net.identifier?.description ?? "<no-id>"
+        let modelLabel = target.modelLabel
         guard beginAnalysis("Value Head") else { return }
-        // Snapshot training-progress context on the main actor before
-        // the detached work; stamped onto the result below.
+        // The session's context, on the main actor; the file is stamped
+        // with the analyzed weights below.
         let exportMetadata = currentAnalysisExportMetadata()
 
-        Task.detached(priority: .utility) {
-            defer { Task { @MainActor in self.endAnalysis() } }
-            // Off-main work: exportWeights() bounces through the
-            // network's executionQueue (so it serializes against any
-            // inference forward pass currently running) and the rest
-            // is pure CPU stat-crunching. Both are bounded — well
-            // under a second for a 2.4M-parameter network — but the
-            // exportWeights await yields, so keep it off the main
-            // actor.
+        Task {
+            defer { self.endAnalysis() }
+            let snapshot: AnalyzedNetworkSnapshot
             var result: ValueHeadAnalyzer.Result
             do {
-                result = try await ValueHeadAnalyzer.run(
-                    network: net,
-                    modelLabel: modelLabel
-                )
+                snapshot = try await self.analysisSnapshot(of: target)
+                result = try ValueHeadAnalyzer.run(snapshot: snapshot, modelLabel: modelLabel)
             } catch {
                 SessionLogger.shared.log("[VALHEAD] analyzer failed: \(error)")
-                await MainActor.run {
-                    Self.presentValueHeadAlert(
-                        title: "Value Head Analyzer — Failed",
-                        message: "The value-head analyzer threw an error:\n\n\(error.localizedDescription)",
-                        revealURL: nil
-                    )
-                }
+                Self.presentValueHeadAlert(
+                    title: "Value Head Analyzer — Failed",
+                    message: "The value-head analyzer threw an error:\n\n\(error.localizedDescription)",
+                    revealURL: nil
+                )
                 return
             }
 
-            result.exportMetadata = exportMetadata
+            result.exportMetadata = exportMetadata.describing(snapshot)
             let summary = result.textSummary()
             let writeOutcome = Self.writeValueHeadJSON(
                 result: result,
                 modelLabel: modelLabel
             )
 
-            await MainActor.run {
-                SessionLogger.shared.log("[VALHEAD] === Value head analysis begin ===")
-                for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {
-                    SessionLogger.shared.log("[VALHEAD] \(line)")
-                }
-                SessionLogger.shared.log("[VALHEAD] === Value head analysis end ===")
+            SessionLogger.shared.log("[VALHEAD] === Value head analysis begin ===")
+            for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {
+                SessionLogger.shared.log("[VALHEAD] \(line)")
+            }
+            SessionLogger.shared.log("[VALHEAD] === Value head analysis end ===")
 
-                switch writeOutcome {
-                case .success(let url):
-                    SessionLogger.shared.log("[VALHEAD] Saved JSON: \(url.path)")
-                    Self.presentValueHeadAlert(
-                        title: "Value Head Analysis Complete",
-                        message: """
-                            Saved JSON to:
-                            \(url.path)
+            switch writeOutcome {
+            case .success(let url):
+                SessionLogger.shared.log("[VALHEAD] Saved JSON: \(url.path)")
+                Self.presentValueHeadAlert(
+                    title: "Value Head Analysis Complete",
+                    message: """
+                        Saved JSON to:
+                        \(url.path)
 
-                            A text summary was written to the session log under [VALHEAD]; \
-                            click Reveal in Finder to open the JSON in the output folder.
-                            """,
-                        revealURL: url
-                    )
-                case .failure(let err):
-                    SessionLogger.shared.log("[VALHEAD] JSON write failed: \(err)")
-                    Self.presentValueHeadAlert(
-                        title: "Value Head Analysis — JSON Write Failed",
-                        message: """
-                            The analyzer ran and a text summary was written to the session \
-                            log, but writing the JSON file failed:
+                        A text summary was written to the session log under [VALHEAD]; \
+                        click Reveal in Finder to open the JSON in the output folder.
+                        """,
+                    revealURL: url
+                )
+            case .failure(let err):
+                SessionLogger.shared.log("[VALHEAD] JSON write failed: \(err)")
+                Self.presentValueHeadAlert(
+                    title: "Value Head Analysis — JSON Write Failed",
+                    message: """
+                        The analyzer ran and a text summary was written to the session \
+                        log, but writing the JSON file failed:
 
-                            \(err.localizedDescription)
-                            """,
-                        revealURL: nil
-                    )
-                }
+                        \(err.localizedDescription)
+                        """,
+                    revealURL: nil
+                )
             }
         }
     }

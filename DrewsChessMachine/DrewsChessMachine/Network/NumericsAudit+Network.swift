@@ -2,40 +2,39 @@ import Foundation
 
 extension NumericsAudit {
 
-    /// Audit a live network: its current weights, named by its graph
-    /// variables, over the standard position set (start position, the
-    /// Lichess bot's filed games under `lichessDirectory`, and a corpus
-    /// sample when `corpusShardURL` is given).
+    /// Audit a live network's weights from its analysis snapshot (one
+    /// export, shared with the other analyses of the same request) over the
+    /// standard position set (start position, the Lichess bot's filed games
+    /// under `lichessDirectory`, and a corpus sample when `corpusShardURL` is
+    /// given). The result's step is the snapshot's: the step the audited
+    /// weights were taken at.
     static func run(
-        network: ChessNetwork,
+        snapshot: AnalyzedNetworkSnapshot,
         modelLabel: String,
-        modelID: String?,
-        trainingStep: Int?,
         masters: [[Float]]?,
         mastersNote: String?,
+        velocity: LayerHealth.VelocitySource,
         corpusShardURL: URL?,
         lichessDirectory: LichessBotDataDirectory?
     ) async throws -> Result {
-        let weights = try await network.exportWeights()
-        let names = (network.trainableVariables + network.bnRunningStatsVariables).map { $0.operation.name }
         let positions = try await buildPositionSetOffPool(
-            encoding: network.arch.inputEncoding,
+            encoding: snapshot.architecture.inputEncoding,
             corpusShardURL: corpusShardURL,
             lichessDirectory: lichessDirectory
         )
         return try await run(
-            names: names,
-            weights: weights,
-            arch: network.arch,
+            names: snapshot.names,
+            weights: snapshot.weights,
+            arch: snapshot.architecture,
             masters: masters,
             mastersNote: mastersNote,
-            velocity: .unavailable(reason: liveNetworkVelocityNote),
+            velocity: velocity,
             positions: positions,
             dynamicSkippedReason: nil,
-            policyTailPrecision: network.policyTailPrecision,
+            policyTailPrecision: snapshot.policyTailPrecision,
             modelLabel: modelLabel,
-            modelID: modelID,
-            trainingStep: trainingStep
+            modelID: snapshot.modelID,
+            trainingStep: snapshot.trainingStep
         )
     }
 
@@ -78,9 +77,31 @@ extension NumericsAudit {
         return (masters, nil)
     }
 
-    /// Why an audit of a live network has no velocity for the layer-health
-    /// checks: the optimizer state lives in the trainer, not the network.
-    static let liveNetworkVelocityNote = "a network holds no optimizer state; velocity lives in the trainer"
+    /// A trainer's optimizer velocity for the layer-health checks — the
+    /// tail of its trainer-state export, one tensor per trainable — or why
+    /// it wasn't read. Like the masters, it is read only while training is
+    /// stopped: the export needs training paused.
+    /// `networkTensorCount` is the trainables plus the BN running statistics,
+    /// which the export carries before the velocity.
+    static func trainerVelocity(
+        trainer: ChessTrainer,
+        networkTensorCount: Int,
+        trainableCount: Int,
+        trainingIsRunning: Bool
+    ) async throws -> LayerHealth.VelocitySource {
+        guard !trainingIsRunning else {
+            return .unavailable(reason: "training is running, so the trainer's velocity can't be read safely")
+        }
+        let state = try await trainer.exportTrainerWeights()
+        guard state.count == networkTensorCount + trainableCount else {
+            throw NumericsAuditError.trainerStateCountMismatch(tensors: state.count, expected: networkTensorCount + trainableCount)
+        }
+        return .trainerVelocity(Array(state.suffix(trainableCount)))
+    }
+
+    /// Why an audit of the champion has no velocity for the layer-health
+    /// checks: an inference network holds no optimizer state.
+    static let liveNetworkVelocityNote = "an inference network holds no optimizer state; velocity lives in the trainer"
 
     /// Why a champion has no masters to compare.
     static let championMastersNote = "the champion is an inference network; it has no fp32 masters"

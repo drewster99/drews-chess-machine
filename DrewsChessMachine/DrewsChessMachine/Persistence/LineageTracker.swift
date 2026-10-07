@@ -193,6 +193,10 @@ final class LineageTracker: @unchecked Sendable {
     /// (`rng.init_seed` / `init_scheme`); nil for a run that started from a
     /// file's weights.
     private let initialization: ModelInitRecord?
+
+    /// `initialization`, for the analyzers' init reference
+    /// (`AnalysisInitReference`): the seed the run's weights descend from.
+    var startingInitialization: ModelInitRecord? { initialization }
     /// Carried verbatim into every record of the segment (determinism plan
     /// B4): the parent's history on a branch or resume, none on a fresh run.
     private let derivationHistory: [ModelDerivation.DerivationRecord]

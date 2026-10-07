@@ -20,59 +20,29 @@ import Foundation
 //
 // The two highest-signal reads are `value_wdl_fc2_weights` (output-layer
 // magnitudes — if these are near zero the head is bias-only) and
-// `value_wdl_fc2_bias` (initialized to `[0, ln 6, 0]` for a draw-heavy
-// 0.125 / 0.75 / 0.125 prior; current value plus its softmax shows
-// how much the bias-only prediction has shifted toward the empirical
-// W/D/L distribution).
+// `value_wdl_fc2_bias` (initialized to
+// `NetworkArchitecture.wdlBiasPrior(drawProbability:)` of the model's
+// `value_head_draw_prior`; `[0, ln 6, 0]` for the standard 0.75). The
+// bias's softmax is what the head would predict if fc2's input were zero —
+// not what it predicts: the hidden activations are not zero-mean, so fc2's
+// weights add a per-class offset of their own. The head's real W/D/L
+// prediction is `pW` / `pD` / `pL` on the `[STATS]` line.
+//
+// Every "init" figure comes from the snapshot's init reference
+// (`AnalysisInitReference`): the architecture built by the network builder
+// itself, under the model's own init seed when it is recorded — so a model
+// built with another final init or draw prior is compared with its own
+// starting point, and no init rule is copied here.
 //
 // The BN running stats (`value_bn_running_mean|var`) are also pulled
 // in even though they're not "weights" per se — they're learned
 // statistics that affect inference behavior, and a sanity check on
 // their magnitudes is cheap.
 //
-// Pure analysis — no Metal/GPU work besides the single
-// `network.exportWeights()` call that's already in the codebase for
-// session checkpoint serialization.
+// Pure analysis over an `AnalyzedNetworkSnapshot` (one export, shared with
+// the other analyses of the same request).
 
 enum ValueHeadAnalyzer {
-
-    // MARK: - He-init reference scales
-
-    /// Reference He-init L2 norm for a weight tensor, used as the
-    /// denominator of the `currentL2 / initL2` ratio reported per
-    /// variable. Computed as `sqrt(N) · std`, where `std = sqrt(2 / fanIn)`
-    /// is the per-element He-init standard deviation and `N` is the
-    /// tensor's element count. Mirrors the He-normal role of
-    /// `WeightInitScheme.standardDeviation`. A ratio near 1 means the tensor's
-    /// magnitude is close to its initialization scale (weight decay
-    /// hasn't pulled it down much); a ratio near 0 means the tensor
-    /// has collapsed toward zero.
-    private static func heInitL2(elementCount n: Int, fanIn: Int) -> Double {
-        guard n > 0, fanIn > 0 else { return 0 }
-        let std = sqrt(2.0 / Double(fanIn))
-        return sqrt(Double(n)) * std
-    }
-
-    /// Per-variable fan-in for the He-init reference. Returns `nil`
-    /// for tensors that don't have a meaningful "init L2" — BN
-    /// gamma/beta (init constants, not He-init), BN running stats
-    /// (statistics, not weights), and the FC biases (init to zero).
-    private static func fanIn(forVariableNamed name: String, arch: NetworkArchitecture) -> Int? {
-        switch name {
-        case "value_conv_weights":   return arch.towerOutputChannels  // 1×1 conv: inC = tower output
-        case "value_fc1_weights":    return ChessNetwork.boardSize * ChessNetwork.boardSize * arch.valueHeadConvChannels  // FC [flatten, hidden], fan_in = flatten
-        case "value_wdl_fc2_weights", "value_scalar_fc2_weights":
-            return arch.valueHeadHiddenUnits  // FC [hidden, classes], fan_in = hidden
-        default:                     return nil         // bn/bias: no He-init reference
-        }
-    }
-
-    /// Initial value of `value_wdl_fc2_bias` as set in
-    /// `ChessNetwork.valueHead`: `[0, ln 6, 0]`, which softmaxes to
-    /// `[0.125, 0.75, 0.125]` — the empirically draw-heavy prior of
-    /// a fresh self-play buffer. Reported so the JSON consumer can
-    /// see the delta between current and initial bias side by side.
-    static let valueFC2BiasInitial: [Double] = [0.0, log(6.0), 0.0]
 
     // MARK: - Result struct
 
@@ -89,32 +59,33 @@ enum ValueHeadAnalyzer {
             let mean: Double
             let stdev: Double
             let percentiles: [Double]
-            /// `l2Norm / heInitL2` when the variable has a He-init
-            /// reference; `nil` for tensors that don't (BN γ/β,
-            /// running stats, FC biases). A value near 1.0 means the
-            /// tensor is still at roughly its init scale; near 0
-            /// means weight decay has pulled it close to zero.
+            /// `l2Norm / initL2Norm`; nil when the tensor started at zero.
+            /// Near 1.0, the tensor is still at roughly its init scale;
+            /// near 0, weight decay has pulled it close to zero.
             let l2NormRatioToInit: Double?
-            /// Reference He-init L2 norm — kept alongside the ratio
-            /// so downstream readers don't have to recompute it.
-            let initL2Norm: Double?
+            /// The tensor's L2 norm at init (init reference): exact when
+            /// `initExact`, else a draw of the same distribution.
+            let initL2Norm: Double
+            let initExact: Bool
         }
 
         struct FC2BiasDetail: Codable, Sendable {
             /// Current 3-element bias values, in slot order
             /// `[win, draw, loss]`.
             let current: [Double]
-            /// Softmax of `current` — the bias-only prediction the
-            /// network would produce if every input multiplied to
-            /// zero. Compare against the empirical buffer W/D/L
-            /// distribution to see whether the bias is tracking it.
-            let currentSoftmax: [Double]
-            /// Initial value `[0, ln 6, 0]`, included so the
-            /// per-slot delta is computable without consulting the
-            /// network code.
+            /// Softmax of `current` alone: what the head would predict if
+            /// fc2's input were zero. NOT the head's prediction — the hidden
+            /// activations are not zero-mean, so fc2's weights add their own
+            /// per-class offset; `pW` / `pD` / `pL` on the `[STATS]` line is
+            /// the prediction.
+            let biasOnlySoftmax: [Double]
+            /// The bias this model started with (init reference: the draw
+            /// prior's bias, exactly), so the per-slot delta is computable
+            /// without the network code.
             let initial: [Double]
-            /// Initial softmax `[0.125, 0.75, 0.125]`, same rationale.
-            let initialSoftmax: [Double]
+            /// Softmax of `initial` alone, read the same way as
+            /// `biasOnlySoftmax`.
+            let initialBiasOnlySoftmax: [Double]
             /// Per-slot delta `current[i] - initial[i]`.
             let delta: [Double]
         }
@@ -122,15 +93,17 @@ enum ValueHeadAnalyzer {
         struct FC2WeightsDetail: Codable, Sendable {
             /// Per-output-column L2 norm of `value_wdl_fc2_weights`.
             /// Indexed `[win, draw, loss]`. The `value_wdl_fc2_weights`
-            /// tensor has shape `[64, 3]` (in × out); for column `c`
-            /// we sum the squares of `weights[i, c]` for i in 0..<64.
+            /// tensor has shape `[valueHeadHiddenUnits, 3]` (in × out);
+            /// for column `c` we sum the squares of `weights[i, c]` over
+            /// every input `i`.
             /// A near-zero norm for, say, the `draw` column would
             /// say the network puts no input-dependent information
             /// into its draw prediction (it's all bias).
             let columnL2Norms: [Double]
-            /// Reference He-init per-column L2 norm — same
-            /// He-init reference applied to a 64-element column.
-            let initColumnL2Norm: Double
+            /// Each column's L2 norm at init (init reference): about √2 for
+            /// a He-normal fc2, 0 for a zero init (no ratio is then
+            /// meaningful).
+            let initColumnL2Norms: [Double]
         }
 
         let producedAtISO8601: String
@@ -157,45 +130,29 @@ enum ValueHeadAnalyzer {
     /// the analyzer doesn't care which but the JSON's `modelLabel`
     /// should reflect the caller's choice so downstream readers know
     /// what was analyzed.
-    static func run(
-        network: ChessMPSNetwork,
-        modelLabel: String
-    ) async throws -> Result {
-        // exportWeights returns one [Float] per variable, in the order
-        // `trainableVariables + bnRunningStatsVariables`. Match each
-        // chunk to its variable's name via the same join. The
-        // variable lists live on the underlying `ChessNetwork`, not
-        // the `ChessMPSNetwork` wrapper, hence the `.network.` hop.
-        let weights = try await network.exportWeights()
-        let arch = network.network.arch
-        let allVariables = network.network.trainableVariables
-            + network.network.bnRunningStatsVariables
-
-        guard weights.count == allVariables.count else {
-            throw ValueHeadAnalyzerError.weightCountMismatch(
-                expected: allVariables.count,
-                got: weights.count
-            )
-        }
+    static func run(snapshot: AnalyzedNetworkSnapshot, modelLabel: String) throws -> Result {
+        let arch = snapshot.architecture
+        let reference = snapshot.initReference
 
         var stats: [Result.WeightStats] = []
         var fc2BiasDetail: Result.FC2BiasDetail?
         var fc2WeightsDetail: Result.FC2WeightsDetail?
 
-        for (i, variable) in allVariables.enumerated() {
-            let name = variable.operation.name
-            guard name.hasPrefix("value_") else { continue }
-            let values = weights[i]
-
-            stats.append(makeStats(name: name, values: values, arch: arch))
+        for (i, name) in snapshot.names.enumerated() where name.hasPrefix("value_") {
+            let values = snapshot.weights[i]
+            guard let initial = reference.initialValues[name], initial.count == values.count else {
+                throw ValueHeadAnalyzerError.noInitialValues(name)
+            }
+            stats.append(makeStats(name: name, values: values, initial: initial,
+                                   initExact: reference.exactNames.contains(name)))
 
             // The W/D/L details describe the three-class head's fc2 (its
             // variables are named for the head style; see
             // `ChessNetwork.valueHead`).
             if name == "value_wdl_fc2_bias" {
-                fc2BiasDetail = makeFC2BiasDetail(values: values)
+                fc2BiasDetail = makeFC2BiasDetail(values: values, initial: initial)
             } else if name == "value_wdl_fc2_weights" {
-                fc2WeightsDetail = makeFC2WeightsDetail(values: values, arch: arch)
+                fc2WeightsDetail = makeFC2WeightsDetail(values: values, initial: initial, arch: arch)
             }
         }
 
@@ -222,7 +179,8 @@ enum ValueHeadAnalyzer {
     private static func makeStats(
         name: String,
         values: [Float],
-        arch: NetworkArchitecture
+        initial: [Float],
+        initExact: Bool
     ) -> Result.WeightStats {
         let n = values.count
         guard n > 0 else {
@@ -233,7 +191,8 @@ enum ValueHeadAnalyzer {
                 min: 0, max: 0, mean: 0, stdev: 0,
                 percentiles: Array(repeating: 0, count: percentileLabels.count),
                 l2NormRatioToInit: nil,
-                initL2Norm: nil
+                initL2Norm: 0,
+                initExact: initExact
             )
         }
 
@@ -264,10 +223,9 @@ enum ValueHeadAnalyzer {
             percentile(p: Double(p), sortedAscending: sorted)
         }
 
-        let initL2 = fanIn(forVariableNamed: name, arch: arch).map {
-            heInitL2(elementCount: n, fanIn: $0)
-        }
-        let ratio = initL2.map { $0 > 0 ? l2 / $0 : 0 }
+        let initL2 = sqrt(initial.reduce(0.0) { $0 + Double($1) * Double($1) })
+        // A tensor that started at zero has no ratio to its start.
+        let ratio: Double? = initL2 > 0 ? l2 / initL2 : nil
 
         return Result.WeightStats(
             name: name,
@@ -281,27 +239,26 @@ enum ValueHeadAnalyzer {
             stdev: stdev,
             percentiles: percentiles,
             l2NormRatioToInit: ratio,
-            initL2Norm: initL2
+            initL2Norm: initL2,
+            initExact: initExact
         )
     }
 
-    private static func makeFC2BiasDetail(values: [Float]) -> Result.FC2BiasDetail? {
-        guard values.count == 3 else { return nil }
+    private static func makeFC2BiasDetail(values: [Float], initial initialValues: [Float]) -> Result.FC2BiasDetail? {
+        guard values.count == 3, initialValues.count == 3 else { return nil }
         let current = values.map { Double($0) }
-        let initial = valueFC2BiasInitial
-        let currentSoftmax = softmax(current)
-        let initialSoftmax = softmax(initial)
+        let initial = initialValues.map { Double($0) }
         let delta = zip(current, initial).map { $0 - $1 }
         return Result.FC2BiasDetail(
             current: current,
-            currentSoftmax: currentSoftmax,
+            biasOnlySoftmax: softmax(current),
             initial: initial,
-            initialSoftmax: initialSoftmax,
+            initialBiasOnlySoftmax: softmax(initial),
             delta: delta
         )
     }
 
-    private static func makeFC2WeightsDetail(values: [Float], arch: NetworkArchitecture) -> Result.FC2WeightsDetail? {
+    private static func makeFC2WeightsDetail(values: [Float], initial: [Float], arch: NetworkArchitecture) -> Result.FC2WeightsDetail? {
         // The `value_wdl_fc2_weights` tensor has shape [hidden, 3] (in × out)
         // and is stored row-major (every 3 consecutive floats are the
         // weights from one input neuron to W/D/L). To get the L2 norm
@@ -310,7 +267,15 @@ enum ValueHeadAnalyzer {
         // the value-head shape — they're structural facts, not tunables.
         let outDim = arch.valueHeadClasses
         let inDim = arch.valueHeadHiddenUnits
-        guard values.count == inDim * outDim else { return nil }
+        guard values.count == inDim * outDim, initial.count == values.count else { return nil }
+        return Result.FC2WeightsDetail(
+            columnL2Norms: columnL2Norms(values, inDim: inDim, outDim: outDim),
+            initColumnL2Norms: columnL2Norms(initial, inDim: inDim, outDim: outDim)
+        )
+    }
+
+    /// Each output column's L2 norm of an `[inDim, outDim]` row-major tensor.
+    private static func columnL2Norms(_ values: [Float], inDim: Int, outDim: Int) -> [Double] {
         var columnSumSq = [Double](repeating: 0, count: outDim)
         for i in 0..<inDim {
             for c in 0..<outDim {
@@ -318,12 +283,7 @@ enum ValueHeadAnalyzer {
                 columnSumSq[c] += v * v
             }
         }
-        let columnL2 = columnSumSq.map { sqrt($0) }
-        let initColL2 = heInitL2(elementCount: inDim, fanIn: inDim)
-        return Result.FC2WeightsDetail(
-            columnL2Norms: columnL2,
-            initColumnL2Norm: initColL2
-        )
+        return columnSumSq.map { sqrt($0) }
     }
 
     // MARK: - Numeric helpers
@@ -359,12 +319,13 @@ enum ValueHeadAnalyzer {
 // MARK: - Error type
 
 enum ValueHeadAnalyzerError: LocalizedError {
-    case weightCountMismatch(expected: Int, got: Int)
+    /// The init reference has no initial values of this variable's size.
+    case noInitialValues(String)
 
     var errorDescription: String? {
         switch self {
-        case .weightCountMismatch(let expected, let got):
-            return "ValueHeadAnalyzer: exportWeights() returned \(got) tensors, expected \(expected) (trainables + BN running stats)"
+        case .noInitialValues(let name):
+            return "ValueHeadAnalyzer: the init reference has no initial values for \(name)"
         }
     }
 }
@@ -399,7 +360,7 @@ extension ValueHeadAnalyzer.Result {
                       pctHeader.padded(20))
         for s in weightStats {
             let ratioStr = s.l2NormRatioToInit.map { String(format: "%6.3f", $0) } ?? "  --  "
-            let initL2Str = s.initL2Norm.map { String(format: "%6.3f", $0) } ?? "  --  "
+            let initL2Str = String(format: "%6.3f", s.initL2Norm) + (s.initExact ? "" : "~")
             let pctStr = s.percentiles
                 .map { String(format: "%+6.3f", $0) }
                 .joined(separator: "/")
@@ -418,28 +379,29 @@ extension ValueHeadAnalyzer.Result {
 
         // FC2 bias detail.
         if let bias = fc2Bias {
-            out += "value_fc2_bias — bias-only prediction:\n"
-            out += String(format: "  current values        : %@\n",
+            out += "value_fc2_bias (the head's prediction is pW/pD/pL on [STATS], not these softmaxes):\n"
+            out += String(format: "  current values             : %@\n",
                           bias.current.map { String(format: "%+7.4f", $0) }.joined(separator: ", "))
-            out += String(format: "  current softmax (WDL) : %@\n",
-                          bias.currentSoftmax.map { String(format: "%.4f", $0) }.joined(separator: ", "))
-            out += String(format: "  initial values        : %@\n",
+            out += String(format: "  softmax of bias alone (WDL): %@\n",
+                          bias.biasOnlySoftmax.map { String(format: "%.4f", $0) }.joined(separator: ", "))
+            out += String(format: "  initial values             : %@\n",
                           bias.initial.map { String(format: "%+7.4f", $0) }.joined(separator: ", "))
-            out += String(format: "  initial softmax (WDL) : %@\n",
-                          bias.initialSoftmax.map { String(format: "%.4f", $0) }.joined(separator: ", "))
-            out += String(format: "  delta from initial    : %@\n",
+            out += String(format: "  initial bias softmax (WDL) : %@\n",
+                          bias.initialBiasOnlySoftmax.map { String(format: "%.4f", $0) }.joined(separator: ", "))
+            out += String(format: "  delta from initial         : %@\n",
                           bias.delta.map { String(format: "%+7.4f", $0) }.joined(separator: ", "))
             out += "\n"
         }
 
         // FC2 weights per-output-column.
         if let fc2w = fc2Weights {
-            out += "value_fc2_weights — per-output-column L2 norms (vs init_L2 ≈ \(String(format: "%.3f", fc2w.initColumnL2Norm))):\n"
+            out += "value_fc2_weights — per-output-column L2 norms (each against its own L2 at init):\n"
             let names = ["win", "draw", "loss"]
-            for (i, n) in names.enumerated() where i < fc2w.columnL2Norms.count {
+            for (i, n) in names.enumerated() where i < fc2w.columnL2Norms.count && i < fc2w.initColumnL2Norms.count {
                 let v = fc2w.columnL2Norms[i]
-                let ratio = fc2w.initColumnL2Norm > 0 ? v / fc2w.initColumnL2Norm : 0
-                out += String(format: "  %@: L2=%6.3f  ratio=%6.3f\n", n.padded(5), v, ratio)
+                let initial = fc2w.initColumnL2Norms[i]
+                let ratioStr = initial > 0 ? String(format: "%6.3f", v / initial) : "  --  "
+                out += String(format: "  %@: L2=%6.3f  init=%6.3f  ratio=%@\n", n.padded(5), v, initial, ratioStr)
             }
         }
 

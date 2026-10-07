@@ -101,8 +101,14 @@ enum NumericsAudit {
         /// the mean row.
         let residualNormMedian: Double
         let ratio: Double
-        /// What random init gives for `ratio`.
+        /// What a matrix of independent entries gives for `ratio`,
+        /// `1/√(outputs − 1)` — the yardstick for "is there a shared row?".
+        /// It describes an unstructured matrix, not this model's start: a
+        /// He-initialized head starts there, a zero-initialized one at no
+        /// ratio at all, and either can grow a shared row in training, which
+        /// is what the verdict measures.
         let initExpectedRatio: Double
+        /// `ratio / initExpectedRatio`.
         let ratioToInitExpectation: Double
         let biasName: String
         let biasMean: Double
@@ -152,6 +158,12 @@ enum NumericsAudit {
         let masterDivergence: [MasterDivergence]?
         /// Why masters weren't compared, when they weren't.
         let mastersNote: String?
+        /// Set when every audited value already lies exactly on the compute
+        /// dtype's grid — working weights stored in that dtype — so the
+        /// `tensors[].fitness` rounding check for that dtype (and for fp32)
+        /// is zero by construction and says nothing about it; only a
+        /// narrower format's check, or the masters, test anything.
+        let fitnessNote: String?
     }
 
     struct Finding: Codable, Sendable {
@@ -340,17 +352,45 @@ enum NumericsAudit {
             batchNormStats: bnReports,
             reZero: reZero,
             masterDivergence: divergence,
-            mastersNote: masters == nil ? mastersNote : nil
+            mastersNote: masters == nil ? mastersNote : nil,
+            fitnessNote: storedInComputeDtypeNote(weights: weights, dataType: arch.computeDataType)
         )
     }
 
-    /// The mean of a tensor's deterministic init, or zero for one without.
+    /// The mean of a head-final bias at init, from the values the network
+    /// builder itself uses: the W/D/L bias is
+    /// `NetworkArchitecture.wdlBiasPrior(drawProbability:)` of the model's
+    /// `value_head_draw_prior` (`ChessNetwork.valueHead`); the policy head's
+    /// final bias starts at zero (`ChessNetwork.policyHead`).
     private static func initMean(of name: String, count: Int, arch: NetworkArchitecture) -> Double {
-        guard let values = NetworkWeightAnalyzer.deterministicInit(forVariableNamed: name, elementCount: count, arch: arch),
-              !values.isEmpty else {
+        switch name {
+        case "value_wdl_fc2_bias":
+            let prior = NetworkArchitecture.wdlBiasPrior(drawProbability: arch.valueHeadDrawPrior)
+            return prior.reduce(0.0) { $0 + Double($1) } / Double(prior.count)
+        default:
             return 0
         }
-        return values.reduce(0, +) / Double(values.count)
+    }
+
+    /// `StaticResult.fitnessNote` for `weights` under `dataType`, or nil when
+    /// some value is off the dtype's grid (or the dtype is fp32).
+    static func storedInComputeDtypeNote(weights: [[Float]], dataType: ComputeDataType) -> String? {
+        let onGrid: (Float) -> Bool
+        switch dataType {
+        case .float32:
+            return nil
+        case .bFloat16:
+            // bf16 is fp32's top 16 bits.
+            onGrid = { $0.bitPattern & 0xFFFF == 0 }
+        case .float16:
+            onGrid = { !$0.isFinite || Float(Float16($0)) == $0 }
+        }
+        for tensor in weights {
+            for value in tensor where !onGrid(value) {
+                return nil
+            }
+        }
+        return "every value is exactly representable in \(dataType.rawValue) (working weights stored in it), so the \(dataType.rawValue) and float32 fitness checks are zero by construction; only a narrower format's check, or the fp32 masters, test anything"
     }
 
     static func tensorReport(name: String, values: [Float]) -> TensorReport {
@@ -663,9 +703,14 @@ enum NumericsAuditError: LocalizedError {
     case positionSetEmpty
     case recordReplayFailed(String)
     case formatBuildFailed(format: NumericFormat, error: String)
+    /// A trainer-state export without exactly one velocity tensor per
+    /// trainable after the network's tensors.
+    case trainerStateCountMismatch(tensors: Int, expected: Int)
 
     var errorDescription: String? {
         switch self {
+        case .trainerStateCountMismatch(let tensors, let expected):
+            return "numerics audit: the trainer-state export has \(tensors) tensors, expected \(expected) (network tensors plus one velocity per trainable)"
         case .weightCountMismatch(let names, let weights):
             return "numerics audit: \(names) variable names for \(weights) weight tensors"
         case .masterCountMismatch(let masters, let weights):

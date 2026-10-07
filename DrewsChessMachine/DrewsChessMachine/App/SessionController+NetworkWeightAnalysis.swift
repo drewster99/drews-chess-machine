@@ -2,25 +2,21 @@ import AppKit
 import Foundation
 
 /// `SessionController`'s whole-network weight analyzer hook — wired to
-/// the `Analyze Network Weights…` Debug menu item. Runs
-/// `NetworkWeightAnalyzer.run(...)` against the currently-loaded
-/// champion network, writes a timestamped JSON file under
-/// `CheckpointPaths.analysesDir`, logs a `[NETW]` text summary
-/// block to the session log, and surfaces an NSAlert with a
+/// the `Analyze Network Weights…` Debug menu items (champion and trainer).
+/// Takes one weights snapshot of the chosen network
+/// (`AnalyzedNetworkSnapshot`), runs `NetworkWeightAnalyzer` and then
+/// `NumericsAudit` on that same snapshot, writes a timestamped JSON file for
+/// each under `CheckpointPaths.analysesDir`, logs `[NETW]` / `[NUMERICS]`
+/// text summaries to the session log, and surfaces an NSAlert with a
 /// Reveal-in-Finder action.
-///
-/// Independent of the buffer / value-head analyzers — reads only
-/// the network's weights and runs in well under a second on the
-/// project's ~2.4M-parameter network.
 extension SessionController {
 
     /// Entry point invoked by the "Analyze Network Weights (Champion)…"
-    /// Debug menu item. Runs the analyzer against the champion's
-    /// network (`self.network`); surfaces an explanatory alert if no
-    /// champion is loaded.
+    /// Debug menu item; surfaces an explanatory alert if no champion is
+    /// loaded.
     func analyzeNetworkWeightsToFile() {
         SessionLogger.shared.log("[BUTTON] Analyze Network Weights (Champion)")
-        guard let net = network else {
+        guard let target = championAnalysisTarget() else {
             Self.presentNetworkWeightsAlert(
                 title: "Analyze Network Weights",
                 message: "No champion network is loaded. Build a network or load a saved session first.",
@@ -28,24 +24,19 @@ extension SessionController {
             )
             return
         }
-        let modelLabel = "champion:\(net.identifier?.description ?? "<no-id>")"
         runNetworkWeightsAnalysis(
-            networkInner: net.network,
-            modelLabel: modelLabel,
-            modelID: net.identifier?.description,
-            trainingStep: nil,
+            target: target,
             mastersSource: .unavailable(NumericsAudit.championMastersNote),
             buttonContext: "Champion"
         )
     }
 
     /// Entry point invoked by the "Analyze Network Weights (Trainer)…"
-    /// Debug menu item. Runs against the trainer's inner network
-    /// (`self.trainer?.network`); surfaces an explanatory alert if
-    /// no trainer is initialized.
+    /// Debug menu item; surfaces an explanatory alert if no trainer is
+    /// initialized.
     func analyzeNetworkWeightsTrainerToFile() {
         SessionLogger.shared.log("[BUTTON] Analyze Network Weights (Trainer)")
-        guard let trainer = trainer else {
+        guard let trainer, let target = trainerAnalysisTarget() else {
             Self.presentNetworkWeightsAlert(
                 title: "Analyze Network Weights — Trainer",
                 message: "No trainer is initialized. Start Play-and-Train first so the trainer network exists.",
@@ -53,113 +44,103 @@ extension SessionController {
             )
             return
         }
-        let modelLabel = "trainer:\(trainer.identifier?.description ?? "<no-id>")"
         runNetworkWeightsAnalysis(
-            networkInner: trainer.network,
-            modelLabel: modelLabel,
-            modelID: trainer.identifier?.description,
-            trainingStep: trainer.completedTrainSteps,
+            target: target,
             mastersSource: .trainer(trainer, trainingIsRunning: realTraining),
             buttonContext: "Trainer"
         )
     }
 
-    /// Shared runner for the champion + trainer paths. Each path picks
-    /// the right `ChessNetwork` (the type with `trainableVariables`)
-    /// and a descriptive `modelLabel`; from there the analyzer pipeline,
-    /// JSON write, log block, and alert presentation are identical.
-    /// `buttonContext` is a short tag (e.g. "Champion" / "Trainer")
-    /// that appears in the alert titles so the user knows which path
-    /// produced the result.
-    ///
-    /// The numerics audit (`NumericsAudit`) runs right after the weight
-    /// analysis, on the same network, and writes its own JSON and
-    /// `[NUMERICS]` block.
+    /// Shared runner for the champion + trainer paths: one snapshot, then
+    /// the weight analysis and the numerics audit of that snapshot, JSON
+    /// writes, log blocks and the alert. `buttonContext` is a short tag
+    /// (e.g. "Champion" / "Trainer") that appears in the alert titles.
     private func runNetworkWeightsAnalysis(
-        networkInner: ChessNetwork,
-        modelLabel: String,
-        modelID: String?,
-        trainingStep: Int?,
+        target: AnalysisTarget,
         mastersSource: NumericsMastersSource,
         buttonContext: String
     ) {
         guard beginAnalysis("Network Weights (\(buttonContext))") else { return }
-        // Snapshot training-progress context on the main actor before
-        // the detached work; stamped onto the result below.
+        // The session's context, on the main actor; each file is stamped
+        // with the analyzed weights below.
         let exportMetadata = currentAnalysisExportMetadata()
-        Task.detached(priority: .utility) {
-            defer { Task { @MainActor in self.endAnalysis() } }
+        let modelLabel = target.modelLabel
+        Task {
+            defer { self.endAnalysis() }
+            let snapshot: AnalyzedNetworkSnapshot
             var result: NetworkWeightAnalyzer.Result
             do {
-                result = try await NetworkWeightAnalyzer.run(
-                    network: networkInner,
-                    modelLabel: modelLabel
-                )
+                snapshot = try await self.analysisSnapshot(of: target)
+                result = try await NetworkWeightAnalyzer.runOffPool(snapshot: snapshot, modelLabel: modelLabel)
             } catch {
                 SessionLogger.shared.log("[NETW] analyzer failed (\(buttonContext)): \(error)")
-                await MainActor.run {
-                    Self.presentNetworkWeightsAlert(
-                        title: "Network Weight Analyzer — \(buttonContext) Failed",
-                        message: "The analyzer threw an error:\n\n\(error.localizedDescription)",
-                        revealURL: nil
-                    )
-                }
+                Self.presentNetworkWeightsAlert(
+                    title: "Network Weight Analyzer — \(buttonContext) Failed",
+                    message: "The analyzer threw an error:\n\n\(error.localizedDescription)",
+                    revealURL: nil
+                )
                 return
             }
 
-            result.exportMetadata = exportMetadata
+            result.exportMetadata = exportMetadata.describing(snapshot)
             let summary = result.textSummary()
-            let writeOutcome = Self.writeNetworkWeightsJSON(
-                result: result,
-                modelLabel: modelLabel
-            )
+            let writeOutcome = await Self.writeNetworkWeightsJSONOffMain(result: result, modelLabel: modelLabel)
             let numerics = await Self.runNumericsAuditStep(
-                network: networkInner,
+                snapshot: snapshot,
                 modelLabel: modelLabel,
-                modelID: modelID,
-                trainingStep: trainingStep,
                 mastersSource: mastersSource,
                 metadata: exportMetadata,
                 tag: buttonContext
             )
             let numericsLine = numerics.description
 
-            await MainActor.run {
-                SessionLogger.shared.log("[NETW] === Network weight analysis begin ===")
-                for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {
-                    SessionLogger.shared.log("[NETW] \(line)")
-                }
-                SessionLogger.shared.log("[NETW] === Network weight analysis end ===")
+            SessionLogger.shared.log("[NETW] === Network weight analysis begin ===")
+            for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {
+                SessionLogger.shared.log("[NETW] \(line)")
+            }
+            SessionLogger.shared.log("[NETW] === Network weight analysis end ===")
 
-                switch writeOutcome {
-                case .success(let url):
-                    SessionLogger.shared.log("[NETW] Saved JSON (\(buttonContext)): \(url.path)")
-                    Self.presentNetworkWeightsAlert(
-                        title: "Network Weight Analysis Complete — \(buttonContext)",
-                        message: """
-                            Saved JSON to:
-                            \(url.path)
+            switch writeOutcome {
+            case .success(let url):
+                SessionLogger.shared.log("[NETW] Saved JSON (\(buttonContext)): \(url.path)")
+                Self.presentNetworkWeightsAlert(
+                    title: "Network Weight Analysis Complete — \(buttonContext)",
+                    message: """
+                        Saved JSON to:
+                        \(url.path)
 
-                            \(numericsLine)
+                        \(numericsLine)
 
-                            Text summaries were written to the session log under [NETW] and \
-                            [NUMERICS]; click Reveal in Finder to open the JSON in the output folder.
-                            """,
-                        revealURL: url
-                    )
-                case .failure(let err):
-                    SessionLogger.shared.log("[NETW] JSON write failed (\(buttonContext)): \(err)")
-                    Self.presentNetworkWeightsAlert(
-                        title: "Network Weight Analysis — \(buttonContext) JSON Write Failed",
-                        message: """
-                            The analyzer ran and a text summary was written to the session \
-                            log, but writing the JSON file failed:
+                        Text summaries were written to the session log under [NETW] and \
+                        [NUMERICS]; click Reveal in Finder to open the JSON in the output folder.
+                        """,
+                    revealURL: url
+                )
+            case .failure(let err):
+                SessionLogger.shared.log("[NETW] JSON write failed (\(buttonContext)): \(err)")
+                Self.presentNetworkWeightsAlert(
+                    title: "Network Weight Analysis — \(buttonContext) JSON Write Failed",
+                    message: """
+                        The analyzer ran and a text summary was written to the session \
+                        log, but writing the JSON file failed:
 
-                            \(err.localizedDescription)
-                            """,
-                        revealURL: nil
-                    )
-                }
+                        \(err.localizedDescription)
+                        """,
+                    revealURL: nil
+                )
+            }
+        }
+    }
+
+    /// `writeNetworkWeightsJSON` on a GCD queue: encoding a multi-megabyte
+    /// result and writing it is synchronous work.
+    nonisolated private static func writeNetworkWeightsJSONOffMain(
+        result: NetworkWeightAnalyzer.Result,
+        modelLabel: String
+    ) async -> Result<URL, Error> {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: writeNetworkWeightsJSON(result: result, modelLabel: modelLabel))
             }
         }
     }
