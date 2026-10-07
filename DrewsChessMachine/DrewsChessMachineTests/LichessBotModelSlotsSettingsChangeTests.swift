@@ -8,7 +8,7 @@ import XCTest
 final class LichessBotModelSlotsSettingsChangeTests: XCTestCase {
 
     private func prepare(_ settings: LichessBotModelSettings, provider: LichessBotHoldableModelProvider, time: LichessBotManualTime) async throws -> LichessBotModelSlots {
-        try await LichessBotModelSlots.prepare(for: settings, provider: provider, time: time, log: { _ in })
+        try await LichessBotModelSlots.prepare(for: settings, provider: provider, time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in })
     }
 
     private func liveTrainer(interval: Int = 120, filePath: String? = nil) -> LichessBotModelSettings {
