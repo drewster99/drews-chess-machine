@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 17:26 — Lichess bot: a move refused after the game ended is not an anomaly; Record card recent games visible again; Account card at the top `7dd5a2f8`
+
+- A 400 on a move POST is classified by the first game state after it: game over at the refused ply journals `moveRefusedAfterGameEnded` (game 9jXSDaFa: a threefold drawn while DCM's reply was in flight). The game window drops that refusal's anomaly and notes the race; the filed record lists it as a timeline event, not a rejected move. New journal case: earlier builds can't decode a journal holding it.
+- The live grid tile shows the game's anomaly count.
+- Record card: since `88cb3a55` its content frame reported only the dragged height inside the scroll view, so the stacked recent games were drawn under the next card. `LichessBotAtLeastHeightLayout` makes the dragged height a minimum.
+- Overview: the Account card sits under the controls, full width.
+
 ## 2026-10-07 15:45 — Policy tail precision is an architecture field (format v12) `5d192c0a`
 
 - `NetworkArchitecture.policyTailPrecision` (`fp32_from_pre_bn` / `mixed_final_projection`, `does_not_apply` exactly on fp32) is chosen in Build New Model and set with `--derive-model --set-policy-tail-precision`; architecture format v12 requires it. A pre-v12 file resolves to the tail it records (flat key, else lineage; refused when they disagree), else `mixed_final_projection`; fp32 always resolves to `does_not_apply`. A session's unrecorded champion takes its trainer file's tail.
