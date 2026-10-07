@@ -28,9 +28,13 @@ struct LichessBotGenerationInfo: Sendable, Equatable, Codable {
     let sourceKind: LichessBotModelSourceKind
     let modelID: String
     /// The step the weights were taken at: the trainer's completed step
-    /// count for a trainer snapshot, a file's `training_step` (segment-local
-    /// on the CLI paths) for a file; nil when the source records none (a
-    /// champion, a file that states no step).
+    /// count for a trainer snapshot; for a file, its trainer step where the
+    /// file records one, else the `training_step` it states
+    /// (`ModelFileStepReading.trainerStepOrStatedStep`). Since format v11 a
+    /// file's `training_step` is the trainer step on every path; a CLI file
+    /// written before v11 with no trainer step on record states its writing
+    /// segment's step. Nil when the source records none (a champion, a file
+    /// that states no step).
     let trainingStep: Int?
     let snapshotAt: Date
     let architectureSummary: String

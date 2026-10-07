@@ -48,9 +48,11 @@ struct LichessBotLineageFile: Sendable, Equatable {
         contentSHA256 = candidate.contentSHA256
     }
 
-    /// "<file> (<model_id>) seg k step s cum n|—".
+    /// "<file> (<model_id>) seg k segment step s cum n|—": `s` is the
+    /// writing segment's own step (the lineage record's
+    /// `segment_local_step`), `n` the run's cumulative trainer step.
     var description: String {
-        "\(url.lastPathComponent) (\(modelID)) seg \(segmentIndex) step \(segmentLocalStep) cum \(cumTrainerStep.map(String.init) ?? "—")"
+        "\(url.lastPathComponent) (\(modelID)) seg \(segmentIndex) segment step \(segmentLocalStep) cum \(cumTrainerStep.map(String.init) ?? "—")"
     }
 }
 
@@ -272,7 +274,7 @@ struct LichessBotLineageFollower: Sendable {
         case .following(let newest, let sameWeights, let redos):
             for redo in redos where !loggedRedos.contains(redo.childSegmentID) {
                 loggedRedos.insert(redo.childSegmentID)
-                lines.append("[LICHESS-BOT] lineage follow: segment \(redo.childSegmentID) resumed \(redo.parentSegmentID) at step \(redo.resumedAtLocalStep), below its newest step \(redo.parentNewestLocalStep); following \(redo.childSegmentID)")
+                lines.append("[LICHESS-BOT] lineage follow: segment \(redo.childSegmentID) resumed \(redo.parentSegmentID) at segment step \(redo.resumedAtLocalStep), below its newest segment step \(redo.parentNewestLocalStep); following \(redo.childSegmentID)")
             }
             // Among byte-identical copies, the first that is not known to
             // fail. None left: the newest weights failed; never step back.
@@ -303,7 +305,7 @@ struct LichessBotLineageFollower: Sendable {
         case .keepPlaying(let newestOnDisk):
             outcome = .keepPlaying(newestOnDisk: LichessBotLineageFile(newestOnDisk))
         case .fork(let tips):
-            outcome = .fork(continuations: tips.map { "segment \($0.segmentID) (\($0.modelID)) at step \($0.newestLocalStep), \($0.file.lastPathComponent)" })
+            outcome = .fork(continuations: tips.map { "segment \($0.segmentID) (\($0.modelID)) at segment step \($0.newestLocalStep), \($0.file.lastPathComponent)" })
         case .divergedFromPlaying(let newest):
             outcome = .fork(continuations: ["\(LichessBotLineageFile(newest).description) is on another branch of the run than the generation playing"])
         case .conflict(let files):
@@ -350,7 +352,7 @@ struct LichessBotLineageFollower: Sendable {
             if wasProblem {
                 lines.append("[LICHESS-BOT] lineage follow available again: \(newStatus.outcome.description)")
             }
-            lines.append("[LICHESS-BOT] lineage follow: run=\(newStatus.followed.lineageRunID) anchor=\(newStatus.followed.anchorSegmentID) newest=\(newest.url.lastPathComponent) model=\(newest.modelID) seg=\(newest.segmentIndex) step=\(newest.segmentLocalStep) cum=\(newest.cumTrainerStep.map(String.init) ?? "null") sha=\(newest.contentSHA256.prefix(12)) files=\(newStatus.candidateCount) excluded=\(newStatus.excludedText) scan ms=\(String(format: "%.1f", newStatus.scanMilliseconds)) headers read=\(newStatus.headersRead) reused=\(newStatus.reused)")
+            lines.append("[LICHESS-BOT] lineage follow: run=\(newStatus.followed.lineageRunID) anchor=\(newStatus.followed.anchorSegmentID) newest=\(newest.url.lastPathComponent) model=\(newest.modelID) seg=\(newest.segmentIndex) segment_step=\(newest.segmentLocalStep) cum=\(newest.cumTrainerStep.map(String.init) ?? "null") sha=\(newest.contentSHA256.prefix(12)) files=\(newStatus.candidateCount) excluded=\(newStatus.excludedText) scan ms=\(String(format: "%.1f", newStatus.scanMilliseconds)) headers read=\(newStatus.headersRead) reused=\(newStatus.reused)")
             return lines
         case .keepPlaying:
             return ["[LICHESS-BOT] lineage follow: \(newStatus.outcome.description); \(consequence)"]

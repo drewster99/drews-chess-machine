@@ -441,7 +441,16 @@ def selftest():
                       time=dict(cum_train_step_sec=None, cum_wall_sec=None, segment_train_step_sec=0.0,
                                 segment_wall_sec=0.0),
                       device=dict(hw_model="m", chip="c", is_vm=False, os_version="v", gpu_name="g"),
-                      invocation=dict(argv=[], path_kind="replay"), segments=[])
+                      invocation=dict(argv=[], path_kind="replay"), segments=[],
+                      # Schema 3 (hyperparameter recording P4) requires the build identity and
+                      # these top-level keys; their values don't affect the step reading.
+                      build=dict(build_number=2400, git_hash="abc1234", git_branch="main", git_dirty=False,
+                                 git_diff_sha256=dict(recorded=True, value=None),
+                                 xcode_build=dict(recorded=True, value="17A5241e"),
+                                 sdk_build=dict(recorded=True, value="26A5300a"),
+                                 configuration=dict(recorded=True, value="Release")),
+                      configuration=dict(recorded=False), run_seeds=dict(recorded=False),
+                      ancestry=dict(history_before_oldest_run="none", runs=[]))
         metadata = dict(training_step=str(stated), dcm_format_version="11", creator="replay",
                         dcm_lineage=json.dumps(record))
         return (name, name, filename_step, metadata, record)
