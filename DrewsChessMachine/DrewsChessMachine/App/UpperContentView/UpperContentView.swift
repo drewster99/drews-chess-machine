@@ -398,8 +398,8 @@ struct UpperContentView: View {
 
     // The training-alarm thresholds, divergence-streak detector, and the
     // banner / beep state moved to `TrainingAlarmController` (held below as
-    // `@State private var trainingAlarm`). `policyEntropyAlarmThreshold` lives
-    // there now too — referenced as `TrainingAlarmController.policyEntropyAlarmThreshold`.
+    // `@State private var trainingAlarm`). `TrainingHealthThresholds.policyEntropyAlarm` (shared with
+    // the training-health rules, OD-9) is the entropy threshold.
 
     // Real (self-play) training run state moved to SessionController in
     // Stage 4d — forwarding proxies below. (Self-play generates games, labels
@@ -3224,11 +3224,11 @@ struct UpperContentView: View {
     /// Apply attribute-based color highlighting to the multi-line
     /// body text of a stats panel. Wraps `AttributedMetricColor`
     /// with the live grad-clip ceiling and the project's
-    /// `policyEntropyAlarmThreshold` so the entropy/gNorm bands stay
+    /// `TrainingHealthThresholds.policyEntropyAlarm` so the entropy/gNorm bands stay
     /// calibrated against whatever values are currently in use.
     private func colorizedPanelBody(_ body: String) -> AttributedString {
         let thresholds = AttributedMetricColor.Thresholds.default(
-            entropyCollapseBelow: TrainingAlarmController.policyEntropyAlarmThreshold,
+            entropyCollapseBelow: TrainingHealthThresholds.policyEntropyAlarm,
             gradClipMaxNorm: trainingParams.gradClipMaxNorm
         )
         return AttributedMetricColor.colorize(body: body, thresholds: thresholds)

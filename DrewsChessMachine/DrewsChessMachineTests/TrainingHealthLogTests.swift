@@ -82,10 +82,10 @@ final class TrainingHealthLogTests: XCTestCase {
         actions[.illegalMass] = .stopOnCritical
         let config = try TrainingHealthConfig(
             enabled: true, checkIntervalSteps: 1000, learningGraceSteps: 1000, lrWarmupSteps: 1000,
-            momentumCoefficient: 0.85, actions: actions)
+            momentumCoefficient: 0.85, legalMassStallThreshold: 0.99, legalMassStallEvaluations: 8, actions: actions)
         XCTAssertEqual(
             TrainingHealthLog.configLine(config: config, path: "replay", valueFC1Applicability: .applies),
-            "[HEALTH] config enabled=true interval=1000 grace=1000 warmup=1000 momentum=0.85 path=replay actions=non_finite:log,dead_channels:log,value_fc1_zero_velocity:log,illegal_mass:stop_on_critical,gradient_collapse:log,loss_spike:log,policy_offset_drift:log,bn_running_variance_runaway:log,gradient_spike:log value_fc1_zero_velocity=applies")
+            "[HEALTH] config enabled=true interval=1000 grace=1000 warmup=1000 momentum=0.85 legalMassStall=0.99x8 path=replay actions=non_finite:log,dead_channels:log,value_fc1_zero_velocity:log,illegal_mass:stop_on_critical,gradient_collapse:log,loss_spike:log,policy_offset_drift:log,bn_running_variance_runaway:log,gradient_spike:log,divergence:log,value_saturation:log,value_draw_saturation:log,legal_mass_stall:log value_fc1_zero_velocity=applies")
         XCTAssertTrue(TrainingHealthLog.configLine(
             config: config, path: "gui", valueFC1Applicability: .doesNotApply(activation: .leakyRelu))
             .hasSuffix(" value_fc1_zero_velocity=not_applicable(activation=leaky_relu)"))

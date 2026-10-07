@@ -28,7 +28,7 @@ import SwiftUI
 ///
 /// The constants below are the canonical alarm thresholds for the project;
 /// `colorizedPanelBody` and the periodic `[ALARM]` log line in `startRealTraining`
-/// reference `TrainingAlarmController.policyEntropyAlarmThreshold`.
+/// reference `TrainingHealthThresholds.policyEntropyAlarm`.
 @MainActor
 @Observable
 final class TrainingAlarmController {
@@ -40,11 +40,11 @@ final class TrainingAlarmController {
     /// (≈ 2.7 effective legal moves), leaving a ~0.9-nat margin below
     /// fresh-init baseline. Normal training concentrates the policy over time,
     /// so moderate decline from 1.9 is expected and healthy.
-    nonisolated static let policyEntropyAlarmThreshold: Double = 1.0
-    nonisolated static let divergenceAlarmGradNormWarningThreshold: Double = 50.0
-    nonisolated static let divergenceAlarmGradNormCriticalThreshold: Double = 500.0
-    /// Post-mask entropy critical floor: ≈ 1.6 effective legal moves.
-    nonisolated static let divergenceAlarmEntropyCriticalThreshold: Double = 0.5
+    // The levels themselves (entropy, gradient-norm, vAbs and pD
+    // thresholds) live in `TrainingHealthThresholds` and are applied by
+    // `TrainingHealthDetectorConditions`, shared with the training-health
+    // evaluator's rules 10–13 (OD-9). This controller keeps the banner's
+    // heartbeat streaks and titles.
     nonisolated static let divergenceAlarmConsecutiveWarningSamples: Int = 3
     nonisolated static let divergenceAlarmConsecutiveCriticalSamples: Int = 2
     nonisolated static let divergenceAlarmRecoverySamples: Int = 10
@@ -62,8 +62,6 @@ final class TrainingAlarmController {
     /// this alarm.) Thresholds kept at the prior `(0.97, 0.995)`
     /// levels; they no longer index a tanh-gradient and are just
     /// "very confident" / "near-degenerate" markers.
-    nonisolated static let valueAbsMeanSaturationWarningThreshold: Double = 0.97
-    nonisolated static let valueAbsMeanSaturationCriticalThreshold: Double = 0.995
 
     /// Streak counts for the value-head saturation detector. Match the
     /// divergence detector's `(warning: 3, critical: 2, recovery: 10)`
@@ -88,8 +86,6 @@ final class TrainingAlarmController {
     /// buffer), critical at 0.97 (basically degenerate). Distinct from
     /// `valueAbsMeanSaturation` above, which catches the *opposite*
     /// extreme (`vAbs → 1`, over-confident win/loss everywhere).
-    nonisolated static let valueDrawCollapseWarningThreshold: Double = 0.92
-    nonisolated static let valueDrawCollapseCriticalThreshold: Double = 0.97
     nonisolated static let valueDrawCollapseConsecutiveWarningSamples: Int = 3
     nonisolated static let valueDrawCollapseConsecutiveCriticalSamples: Int = 2
     nonisolated static let valueDrawCollapseRecoverySamples: Int = 10
@@ -155,12 +151,9 @@ final class TrainingAlarmController {
     }
 
     private func evaluateDivergence(entropy: Double?, gradNorm: Double?) {
-        let warningOutOfLine =
-            (entropy.map { $0 < Self.policyEntropyAlarmThreshold } ?? false)
-            && (gradNorm.map { $0 > Self.divergenceAlarmGradNormWarningThreshold } ?? false)
-        let criticalOutOfLine =
-            (entropy.map { $0 < Self.divergenceAlarmEntropyCriticalThreshold } ?? false)
-            || (gradNorm.map { $0 > Self.divergenceAlarmGradNormCriticalThreshold } ?? false)
+        let level = TrainingHealthDetectorConditions.divergenceLevel(entropy: entropy, gradientNorm: gradNorm)
+        let warningOutOfLine = level == .warning
+        let criticalOutOfLine = level == .critical
 
         if criticalOutOfLine {
             divergenceCriticalStreak += 1
@@ -220,8 +213,9 @@ final class TrainingAlarmController {
             valueAbsMeanSaturationRecoveryStreak = 0
             return
         }
-        let critical = vAbs >= Self.valueAbsMeanSaturationCriticalThreshold
-        let warning = vAbs >= Self.valueAbsMeanSaturationWarningThreshold
+        let level = TrainingHealthDetectorConditions.valueSaturationLevel(valueAbsMean: vAbs)
+        let critical = level == .critical
+        let warning = level != nil
         if critical {
             valueAbsMeanSaturationCriticalStreak += 1
             valueAbsMeanSaturationWarningStreak = 0
@@ -271,8 +265,9 @@ final class TrainingAlarmController {
             valueDrawCollapseRecoveryStreak = 0
             return
         }
-        let critical = pD >= Self.valueDrawCollapseCriticalThreshold
-        let warning = pD >= Self.valueDrawCollapseWarningThreshold
+        let level = TrainingHealthDetectorConditions.valueDrawSaturationLevel(valueProbDraw: pD)
+        let critical = level == .critical
+        let warning = level != nil
         if critical {
             valueDrawCollapseCriticalStreak += 1
             valueDrawCollapseWarningStreak = 0

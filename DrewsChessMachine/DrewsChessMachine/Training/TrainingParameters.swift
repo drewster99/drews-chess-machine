@@ -1344,7 +1344,7 @@ public enum SessionSaveIncludeReplayBuffer: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Training Health Alarms Enabled",
-    description: "Run the training-health checks on every training path (GUI Play-and-Train, corpus replay, train-vs-UCI): nine rules over every SGD step and the layer-health reads, logged as [ALARM] health lines and a [HEALTH] check line every Training Health Check Interval steps. Off: no evaluation at all, and one [HEALTH] alarms disabled line at run start. The checks only observe: no random draws, no change to the trainer, optimizer or replay buffer.",
+    description: "Run the training-health checks on every training path (GUI Play-and-Train, corpus replay, train-vs-UCI): thirteen rules over every SGD step and the layer-health reads, logged as [ALARM] health lines and a [HEALTH] check line every Training Health Check Interval steps. Off: no evaluation at all, and one [HEALTH] alarms disabled line at run start. The checks only observe: no random draws, no change to the trainer, optimizer or replay buffer.",
     default: true,
     category: "Health",
     id: "training_health_alarms_enabled",
@@ -1484,6 +1484,54 @@ public enum TrainingHealthActionBatchNormRunningVarianceRunaway: TrainingParamet
     absentValue: .currentSetting
 )
 public enum TrainingHealthActionGradientSpike: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Divergence",
+    description: "What the divergence alarm (the window medians of policy entropy and gradient norm: critical when entropy < 0.5 or gNorm > 500, warning when entropy < 1.0 together with gNorm > 50 — the GUI banner's divergence condition) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_divergence",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionDivergence: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Value Saturation",
+    description: "What the value_saturation alarm (the window median of the value head's mean |p_win − p_loss|: warning at 0.97, critical at 0.995 — the GUI banner's value-saturation condition) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_value_saturation",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionValueSaturation: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Value Draw Saturation",
+    description: "What the value_draw_saturation alarm (the window median of the value head's mean p_draw: warning at 0.92, critical at 0.97 (a fresh head starts at 0.75) — the GUI banner's draw condition) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_value_draw_saturation",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionValueDrawSaturation: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: Legal Mass Stall",
+    description: "What the legal_mass_stall alarm (window median illegal mass above Legal-Mass Collapse Threshold on Legal-Mass Collapse No-Improvement Probes consecutive evaluations with no improvement, past warmup plus the learning grace — the GUI legal-mass probe's condition. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_legal_mass_stall",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionLegalMassStall: TrainingParameterKey {}
 
 // MARK: Reproducibility (determinism plan, Part A3.2)
 //
@@ -1700,6 +1748,10 @@ extension TrainingParametersSnapshot {
         case .policyOffsetDrift: raw = value(for: TrainingHealthActionPolicyOffsetDrift.self)
         case .batchNormRunningVarianceRunaway: raw = value(for: TrainingHealthActionBatchNormRunningVarianceRunaway.self)
         case .gradientSpike: raw = value(for: TrainingHealthActionGradientSpike.self)
+        case .divergence: raw = value(for: TrainingHealthActionDivergence.self)
+        case .valueSaturation: raw = value(for: TrainingHealthActionValueSaturation.self)
+        case .valueDrawSaturation: raw = value(for: TrainingHealthActionValueDrawSaturation.self)
+        case .legalMassStall: raw = value(for: TrainingHealthActionLegalMassStall.self)
         }
         return TrainingHealthAction(persistedRawValue: raw)
     }
@@ -1854,6 +1906,10 @@ public final class TrainingParameters {
     public var trainingHealthActionPolicyOffsetDrift: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionPolicyOffsetDrift.self, value: trainingHealthActionPolicyOffsetDrift.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionPolicyOffsetDrift = oldValue } } }
     public var trainingHealthActionBatchNormRunningVarianceRunaway: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionBatchNormRunningVarianceRunaway.self, value: trainingHealthActionBatchNormRunningVarianceRunaway.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionBatchNormRunningVarianceRunaway = oldValue } } }
     public var trainingHealthActionGradientSpike: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionGradientSpike.self, value: trainingHealthActionGradientSpike.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionGradientSpike = oldValue } } }
+    public var trainingHealthActionDivergence: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionDivergence.self, value: trainingHealthActionDivergence.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionDivergence = oldValue } } }
+    public var trainingHealthActionValueSaturation: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionValueSaturation.self, value: trainingHealthActionValueSaturation.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionValueSaturation = oldValue } } }
+    public var trainingHealthActionValueDrawSaturation: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionValueDrawSaturation.self, value: trainingHealthActionValueDrawSaturation.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionValueDrawSaturation = oldValue } } }
+    public var trainingHealthActionLegalMassStall: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionLegalMassStall.self, value: trainingHealthActionLegalMassStall.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionLegalMassStall = oldValue } } }
     /// Stored as the enum; the raw value appears only at the persistence
     /// boundary (see `RandomSeedMode`).
     public var randomSeedMode: RandomSeedMode {
@@ -1976,6 +2032,10 @@ public final class TrainingParameters {
         self.trainingHealthActionPolicyOffsetDrift = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionPolicyOffsetDrift.self))
         self.trainingHealthActionBatchNormRunningVarianceRunaway = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionBatchNormRunningVarianceRunaway.self))
         self.trainingHealthActionGradientSpike = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionGradientSpike.self))
+        self.trainingHealthActionDivergence = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionDivergence.self))
+        self.trainingHealthActionValueSaturation = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionValueSaturation.self))
+        self.trainingHealthActionValueDrawSaturation = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionValueDrawSaturation.self))
+        self.trainingHealthActionLegalMassStall = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionLegalMassStall.self))
         self.randomSeedMode = RandomSeedMode(persistedRawValue: Self.read(RandomSeedModeParameter.self))
         self.randomSeed = Self.read(RandomSeed.self)
         self.invalidStoredSettings = Self.invalidStoredValuesFound.value.values.sorted { $0.id < $1.id }
@@ -2085,6 +2145,10 @@ public final class TrainingParameters {
         v[TrainingHealthActionPolicyOffsetDrift.id] = TrainingHealthActionPolicyOffsetDrift.encode(trainingHealthActionPolicyOffsetDrift.rawValue)
         v[TrainingHealthActionBatchNormRunningVarianceRunaway.id] = TrainingHealthActionBatchNormRunningVarianceRunaway.encode(trainingHealthActionBatchNormRunningVarianceRunaway.rawValue)
         v[TrainingHealthActionGradientSpike.id] = TrainingHealthActionGradientSpike.encode(trainingHealthActionGradientSpike.rawValue)
+        v[TrainingHealthActionDivergence.id] = TrainingHealthActionDivergence.encode(trainingHealthActionDivergence.rawValue)
+        v[TrainingHealthActionValueSaturation.id] = TrainingHealthActionValueSaturation.encode(trainingHealthActionValueSaturation.rawValue)
+        v[TrainingHealthActionValueDrawSaturation.id] = TrainingHealthActionValueDrawSaturation.encode(trainingHealthActionValueDrawSaturation.rawValue)
+        v[TrainingHealthActionLegalMassStall.id] = TrainingHealthActionLegalMassStall.encode(trainingHealthActionLegalMassStall.rawValue)
         v[RandomSeedModeParameter.id] = RandomSeedModeParameter.encode(randomSeedMode.rawValue)
         v[RandomSeed.id] = RandomSeed.encode(randomSeed)
         return v
@@ -2328,6 +2392,18 @@ public final class TrainingParameters {
         case TrainingHealthActionGradientSpike.id:
             try TrainingHealthActionGradientSpike.definition.validate(raw)
             trainingHealthActionGradientSpike = TrainingHealthAction(persistedRawValue: try TrainingHealthActionGradientSpike.decode(raw))
+        case TrainingHealthActionDivergence.id:
+            try TrainingHealthActionDivergence.definition.validate(raw)
+            trainingHealthActionDivergence = TrainingHealthAction(persistedRawValue: try TrainingHealthActionDivergence.decode(raw))
+        case TrainingHealthActionValueSaturation.id:
+            try TrainingHealthActionValueSaturation.definition.validate(raw)
+            trainingHealthActionValueSaturation = TrainingHealthAction(persistedRawValue: try TrainingHealthActionValueSaturation.decode(raw))
+        case TrainingHealthActionValueDrawSaturation.id:
+            try TrainingHealthActionValueDrawSaturation.definition.validate(raw)
+            trainingHealthActionValueDrawSaturation = TrainingHealthAction(persistedRawValue: try TrainingHealthActionValueDrawSaturation.decode(raw))
+        case TrainingHealthActionLegalMassStall.id:
+            try TrainingHealthActionLegalMassStall.definition.validate(raw)
+            trainingHealthActionLegalMassStall = TrainingHealthAction(persistedRawValue: try TrainingHealthActionLegalMassStall.decode(raw))
         case RandomSeedModeParameter.id:
             try RandomSeedModeParameter.definition.validate(raw)
             randomSeedMode = RandomSeedMode(persistedRawValue: try RandomSeedModeParameter.decode(raw))
@@ -2890,6 +2966,10 @@ public final class TrainingParameters {
         TrainingHealthActionPolicyOffsetDrift.self,
         TrainingHealthActionBatchNormRunningVarianceRunaway.self,
         TrainingHealthActionGradientSpike.self,
+        TrainingHealthActionDivergence.self,
+        TrainingHealthActionValueSaturation.self,
+        TrainingHealthActionValueDrawSaturation.self,
+        TrainingHealthActionLegalMassStall.self,
         RandomSeedModeParameter.self,
         RandomSeed.self
     ]
@@ -3042,6 +3122,10 @@ extension TrainingParameters {
         case .policyOffsetDrift: return \.trainingHealthActionPolicyOffsetDrift
         case .batchNormRunningVarianceRunaway: return \.trainingHealthActionBatchNormRunningVarianceRunaway
         case .gradientSpike: return \.trainingHealthActionGradientSpike
+        case .divergence: return \.trainingHealthActionDivergence
+        case .valueSaturation: return \.trainingHealthActionValueSaturation
+        case .valueDrawSaturation: return \.trainingHealthActionValueDrawSaturation
+        case .legalMassStall: return \.trainingHealthActionLegalMassStall
         }
     }
 }

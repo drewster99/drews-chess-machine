@@ -15,7 +15,7 @@ import SwiftUI
 ///
 /// Thresholds used here are calibrated against the running-values
 /// the user has described as healthy / alarming in CLAUDE.md and
-/// the in-tree `policyEntropyAlarmThreshold` constant, not invented.
+/// the in-tree `TrainingHealthThresholds.policyEntropyAlarm` constant, not invented.
 enum AttributedMetricColor {
 
     /// Thresholds for the metrics the colorizer understands. Held
@@ -23,7 +23,7 @@ enum AttributedMetricColor {
     /// bands without editing the parser.
     struct Thresholds {
         /// Policy entropy "collapse" band — below this is red.
-        /// Matches `TrainingAlarmController.policyEntropyAlarmThreshold` (1.0
+        /// Matches `TrainingHealthThresholds.policyEntropyAlarm` (1.0
         /// in-repo, calibrated for post-mask / legal-only entropy).
         /// The "flat" orange band (`entropyFlatAbove`) is currently
         /// derived from `ln(policySize)` — an upper bound that only

@@ -83,7 +83,9 @@ enum TrainingHealthLog {
         }
         return "\(healthTag) config enabled=\(config.enabled) interval=\(config.checkIntervalSteps)"
             + " grace=\(config.learningGraceSteps) warmup=\(config.lrWarmupSteps)"
-            + " momentum=\(String(format: "%.4g", config.momentumCoefficient)) path=\(path)"
+            + " momentum=\(String(format: "%.4g", config.momentumCoefficient))"
+            + " legalMassStall=\(String(format: "%g", config.legalMassStallThreshold))x\(config.legalMassStallEvaluations)"
+            + " path=\(path)"
             + " actions=\(actions) value_fc1_zero_velocity=\(rule3)"
     }
 

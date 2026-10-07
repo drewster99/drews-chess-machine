@@ -714,6 +714,7 @@ final class TrainingHealthEvaluatorTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: try encoder.encode(config)) as? [String: Any])
         XCTAssertEqual(Set(object.keys), [
             "enabled", "check_interval_steps", "learning_grace_steps", "lr_warmup_steps", "momentum_coefficient", "actions",
+            "legal_mass_stall_threshold", "legal_mass_stall_evaluations",
         ])
         let encodedActions = try XCTUnwrap(object["actions"] as? [String: String])
         XCTAssertEqual(encodedActions.count, TrainingHealthRule.allCases.count)
