@@ -137,6 +137,13 @@ enum LichessBotGameEvent: Sendable {
     case moveDecided(ply: Int, decision: LichessBotMoveDecision, generation: LichessBotGenerationInfo)
     case movePosted(ply: Int, uci: String, offeringDraw: Bool, milliseconds: Double)
     case moveRejected(ply: Int, uci: String, error: String)
+    /// The move refused at `ply` (the last `moveRejected` there for `uci`)
+    /// was refused because the game had already ended: the first game state
+    /// after the refusal reports the game over (`status`) with no move after
+    /// `ply`. The game's end raced the move (a draw Lichess or the opponent
+    /// claimed, a resignation, an abort, a flag), so the refusal is not a
+    /// disagreement about the position and not an anomaly.
+    case moveRefusedAfterGameEnded(ply: Int, uci: String, status: LichessBotOpenValue<LichessBotGameStatusName>)
     case action(String)
     /// DCM decided `uci` at `ply` and is holding it for the operator's
     /// Play move, or waiting out a per-game delay (plan §14.3c).

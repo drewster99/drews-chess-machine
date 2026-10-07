@@ -166,6 +166,9 @@ struct LichessBotGameRecord: Sendable, Codable, Equatable {
     let events: [TimedNote]
     let chat: [ChatMessage]
     let anomalies: [TimedNote]
+    /// Moves Lichess refused while the game went on. A move refused because
+    /// the game had already ended is a timeline event instead
+    /// (`LichessBotJournalEvent.moveRefusedAfterGameEnded`).
     let rejectedMoves: [RejectedMove]
     /// Game-stream connections after the first.
     let streamReconnects: Int
@@ -567,6 +570,14 @@ enum LichessBotRecordBuilder {
                 // after it, so there is no POST of this attempt to take back.
                 // An earlier accepted POST of the same move stays: it happened.
                 rejectedMoves.append(.init(at: entry.at, ply: ply, uci: uci, error: error))
+            case .moveRefusedAfterGameEnded(let ply, let uci, let status):
+                // The refusal raced the game's end; it was no disagreement,
+                // so it leaves the rejected moves (what the health pane
+                // counts) for the timeline.
+                if let index = rejectedMoves.lastIndex(where: { $0.ply == ply && $0.uci == uci }) {
+                    rejectedMoves.remove(at: index)
+                }
+                events.append(.init(at: entry.at, text: "the game ended (\(status)) before Lichess took \(uci) at ply \(ply)"))
             case .action(let text):
                 events.append(.init(at: entry.at, text: text))
             case .chatSent(let room, let text, _):

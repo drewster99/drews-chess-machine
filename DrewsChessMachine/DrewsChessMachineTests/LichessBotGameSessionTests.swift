@@ -87,6 +87,11 @@ actor LichessBotFakeGameServer: LichessBotGameAPI {
         case accept
         case rateLimited
         case rejected(status: Int)
+        /// The game ends (`status`, `winner`) just before the move arrives,
+        /// without a state on the open stream: the move is refused with the
+        /// 400 Lichess sends for a finished game (observed live, game
+        /// 9jXSDaFa: a threefold drawn while DCM's reply was in flight).
+        case gameEndsFirst(status: String, winner: String?)
     }
 
     /// What the server does after accepting one of the bot's moves. Once
@@ -188,6 +193,9 @@ actor LichessBotFakeGameServer: LichessBotGameAPI {
             throw LichessBotGateError.rateLimited(cooldown: .seconds(60))
         case .rejected(let status):
             throw LichessBotAPIError.http(status: status, message: "Not your turn, or game already over")
+        case .gameEndsFirst(let newStatus, let newWinner):
+            status = newStatus
+            winner = newWinner
         }
         guard status == "started", isBotToMove else {
             throw LichessBotAPIError.http(status: 400, message: "Not your turn, or game already over")
@@ -475,6 +483,14 @@ final class LichessBotRecordingGameObserver: LichessBotGameObserver, @unchecked 
         }.last ?? nil
     }
 
+    /// Refusals the session explained by the game having ended.
+    var refusalsAfterGameEnded: [(ply: Int, uci: String, status: String)] {
+        events.value.compactMap { event in
+            if case .moveRefusedAfterGameEnded(let ply, let uci, let status) = event { return (ply, uci, status.raw) }
+            return nil
+        }
+    }
+
     var finishedStatus: String? {
         events.value.compactMap { event in
             if case .finished(let status, _, _) = event { return status.raw }
@@ -633,6 +649,57 @@ final class LichessBotGameSessionTests: XCTestCase {
         XCTAssertEqual(record.acceptedPlies, [0])
         XCTAssertEqual(h.observer.rejections.count, 1)
         XCTAssertEqual(record.chats.count, 1, "the greeting is not repeated on a resync")
+    }
+
+    /// The game ends while our move is in flight (game 9jXSDaFa): Lichess
+    /// refuses the move with a 400, and the resync's `gameFull` has the game
+    /// over at the refused ply. The refusal is explained, not an anomaly,
+    /// and the live view shows no anomaly for it.
+    @MainActor
+    func testMoveRefusedBecauseTheGameEndedIsNotAnAnomaly() async throws {
+        let server = try LichessBotFakeGameServer()
+        await server.setScript(moveOutcomes: [.gameEndsFirst(status: "draw", winner: nil)], afterOurMoves: [])
+        let h = makeHarness(server: server)
+        await runToEnd(h)
+        let record = await server.record()
+        XCTAssertEqual(record.streamOpens, 2)
+        XCTAssertEqual(record.acceptedPlies, [])
+        XCTAssertEqual(h.observer.rejections.count, 1)
+        let explained = h.observer.refusalsAfterGameEnded
+        XCTAssertEqual(explained.map { $0.ply }, [0])
+        XCTAssertEqual(explained.map { $0.status }, ["draw"])
+        XCTAssertEqual(explained.map { $0.uci }, h.observer.events.value.compactMap { event -> String? in
+            if case .moveRejected(_, let uci, _) = event { return uci }
+            return nil
+        })
+        XCTAssertEqual(h.observer.anomalies, [])
+        XCTAssertEqual(h.observer.finishedStatus, "draw")
+
+        let game = LichessBotLiveGame(id: LichessBotFakeGameServer.gameID, startedAt: Date(), ourAccountID: LichessBotFakeGameServer.botID)
+        for event in h.observer.events.value {
+            game.apply(event)
+        }
+        XCTAssertEqual(game.anomalies, [])
+        XCTAssertTrue(game.transcript.contains { $0.title.hasPrefix("the game ended (draw) before Lichess took") && !$0.isProblem })
+    }
+
+    /// A move refused while the game goes on stays an anomaly: the resync's
+    /// state is live, so the refusal is never explained.
+    @MainActor
+    func testMoveRefusedWhileTheGameGoesOnStaysAnAnomaly() async throws {
+        let server = try LichessBotFakeGameServer()
+        await server.setScript(moveOutcomes: [.rejected(status: 400)], afterOurMoves: [.finish(status: "resign", winner: "white")])
+        let h = makeHarness(server: server)
+        await runToEnd(h)
+        XCTAssertEqual(h.observer.rejections.count, 1)
+        XCTAssertTrue(h.observer.refusalsAfterGameEnded.isEmpty)
+
+        let game = LichessBotLiveGame(id: LichessBotFakeGameServer.gameID, startedAt: Date(), ourAccountID: LichessBotFakeGameServer.botID)
+        for event in h.observer.events.value {
+            game.apply(event)
+        }
+        XCTAssertEqual(game.anomalies.count, 1)
+        XCTAssertTrue(game.anomalies.first?.text.contains("rejected") == true)
     }
 
     /// A 429 on a move: post the same decision again once the gate lets

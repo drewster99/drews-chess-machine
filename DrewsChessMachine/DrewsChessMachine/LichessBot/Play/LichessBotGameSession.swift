@@ -114,6 +114,13 @@ actor LichessBotGameSession {
     private var highestPlySeen = 0
     /// Rejected move POSTs per ply (plan §6.1 B, §5.5).
     private var rejectionsByPly: [Int: Int] = [:]
+    /// The move Lichess just refused (a 4xx), until the next game state says
+    /// why: a state reporting the game over at the refused ply means the
+    /// game ended while the move was in flight
+    /// (`LichessBotGameEvent.moveRefusedAfterGameEnded`). Lichess answers
+    /// both cases with the same 400 ("Not your turn, or game already over"),
+    /// so only the state that follows tells them apart.
+    private var refusalAwaitingNextState: (ply: Int, uci: String)?
     /// The move this client tried to post at each ply, normalized UCI.
     private var attemptedPosts: [Int: String] = [:]
     /// Moves arriving after the first `gameFull` of this session are
@@ -507,6 +514,16 @@ actor LichessBotGameSession {
             }
         }
 
+        // The first state after a refused move: the refusal raced the
+        // game's end when this state has the game over with no move after
+        // the refused ply. Any other state leaves it a disagreement.
+        if let refusal = refusalAwaitingNextState {
+            refusalAwaitingNextState = nil
+            if state.status.isLive == false, state.moveTokens.count == refusal.ply {
+                await observer.gameEvent(gameID: gameID, .moveRefusedAfterGameEnded(ply: refusal.ply, uci: refusal.uci, status: state.status))
+            }
+        }
+
         // A finished status ends the game whether or not DCM could track
         // its position — including an unplayable game it just aborted.
         switch state.status.isLive {
@@ -885,7 +902,9 @@ actor LichessBotGameSession {
                     return
                 }
                 // A 4xx means Lichess disagrees about the position (or the
-                // game just ended). Reopen for a fresh gameFull (§5.5, E21).
+                // game just ended). Reopen for a fresh gameFull (§5.5, E21);
+                // its state tells the two apart.
+                refusalAwaitingNextState = (ply, decision.uci)
                 throw ResyncNeeded(reason: "move rejected: \(error.localizedDescription)", isDisagreement: true)
             } catch let error as LichessBotAPIError where !Self.isServerFailure(error) {
                 // The request could not be built or its answer read: a fault

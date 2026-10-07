@@ -184,9 +184,17 @@ final class LichessBotLiveGame: Identifiable {
         LichessBotMovePacingSnapshot(delaySeconds: moveDelaySeconds, holds: holdsMoves, releaseRequested: releaseRequested)
     }
 
+    /// Something wrong in this game, for the header's and the grid tile's
+    /// count. Identified so a rejected move's entry can be withdrawn once
+    /// the game turns out to have ended before the move arrived.
+    struct Anomaly: Identifiable, Equatable {
+        let id: Int
+        let text: String
+    }
+
     private(set) var transcript: [LichessBotTranscriptEntry] = []
     private(set) var chat: [ChatMessage] = []
-    private(set) var anomalies: [String] = []
+    private(set) var anomalies: [Anomaly] = []
     private(set) var streamConnections = 0
 
     /// A move token that failed to replay, reported once per ply: every later
@@ -197,8 +205,18 @@ final class LichessBotLiveGame: Identifiable {
     }
     @ObservationIgnored private var reportedUnreplayableMoves: Set<UnreplayableMove> = []
 
+    /// The anomaly each rejected move recorded, in order, so the matching
+    /// one is withdrawn when the refusal is explained.
+    private struct RejectionAnomaly {
+        let ply: Int
+        let uci: String
+        let anomalyID: Int
+    }
+    @ObservationIgnored private var rejectionAnomalies: [RejectionAnomaly] = []
+
     private var nextTranscriptID = 0
     private var nextChatID = 0
+    @ObservationIgnored private var nextAnomalyID = 0
 
     init(id: String, startedAt: Date, ourAccountID: String) {
         self.id = id
@@ -278,7 +296,10 @@ final class LichessBotLiveGame: Identifiable {
         case .movePosted:
             break
         case .moveRejected(let ply, let uci, let error):
-            anomalies.append("move \(uci) at ply \(ply) rejected: \(error)")
+            let anomalyID = recordAnomaly("move \(uci) at ply \(ply) rejected: \(error)")
+            rejectionAnomalies.append(RejectionAnomaly(ply: ply, uci: uci, anomalyID: anomalyID))
+        case .moveRefusedAfterGameEnded(let ply, let uci, let status):
+            explainRefusal(ply: ply, uci: uci, status: status.raw, at: at)
         case .action(let text):
             note(text, isProblem: false, at: at)
         case .moveHeld(let ply, let uci, let san):
@@ -298,13 +319,13 @@ final class LichessBotLiveGame: Identifiable {
             nextChatID += 1
             note("post-game chat from \(username)", isProblem: false, at: at)
         case .anomaly(let text):
-            anomalies.append(text)
+            recordAnomaly(text)
             note(text, isProblem: true, at: at)
         case .stoppedMoving(let reason):
-            anomalies.append("stopped moving: \(reason)")
+            recordAnomaly("stopped moving: \(reason)")
             note("stopped moving: \(reason)", isProblem: true, at: at)
         case .tokenRejected(let detail):
-            anomalies.append("token rejected: \(detail)")
+            recordAnomaly("token rejected: \(detail)")
             note("token rejected: \(detail)", isProblem: true, at: at)
         case .finished(let status, let winner, let localDrawCondition):
             self.status = status.raw
@@ -366,6 +387,8 @@ final class LichessBotLiveGame: Identifiable {
                 apply(.moveDecided(ply: ply, decision: decision, generation: generation), at: entry.at)
             case .moveRejected(let ply, let uci, let error):
                 apply(.moveRejected(ply: ply, uci: uci, error: error), at: entry.at)
+            case .moveRefusedAfterGameEnded(let ply, let uci, let status):
+                explainRefusal(ply: ply, uci: uci, status: status, at: entry.at)
             case .action(let text):
                 apply(.action(text), at: entry.at)
             case .chatSent(let room, let text, let origin):
@@ -513,7 +536,7 @@ final class LichessBotLiveGame: Identifiable {
                 let legal = MoveGenerator.legalMoves(for: current)
                 guard let move = ChessMove.parseUCI(token, legal: legal, state: current) else {
                     if reportedUnreplayableMoves.insert(UnreplayableMove(ply: index, token: token)).inserted {
-                        anomalies.append("move \(token) at ply \(index) does not replay; the board stops here")
+                        recordAnomaly("move \(token) at ply \(index) does not replay; the board stops here")
                     }
                     break
                 }
@@ -522,7 +545,7 @@ final class LichessBotLiveGame: Identifiable {
                     san = try SANFormatter.san(for: move, in: current, legalMoves: legal)
                 } catch {
                     if reportedUnreplayableMoves.insert(UnreplayableMove(ply: index, token: token)).inserted {
-                        anomalies.append("SAN for \(token) at ply \(index): \(error.localizedDescription)")
+                        recordAnomaly("SAN for \(token) at ply \(index): \(error.localizedDescription)")
                     }
                     break
                 }
@@ -548,6 +571,25 @@ final class LichessBotLiveGame: Identifiable {
         }
     }
 
+    @discardableResult
+    private func recordAnomaly(_ text: String) -> Int {
+        let id = nextAnomalyID
+        nextAnomalyID += 1
+        anomalies.append(Anomaly(id: id, text: text))
+        return id
+    }
+
+    /// The latest refusal of `uci` at `ply` came after the game had ended
+    /// (`LichessBotGameEvent.moveRefusedAfterGameEnded`): withdraw its
+    /// anomaly and say what happened instead.
+    private func explainRefusal(ply: Int, uci: String, status: String, at: Date) {
+        if let index = rejectionAnomalies.lastIndex(where: { $0.ply == ply && $0.uci == uci }) {
+            let anomalyID = rejectionAnomalies.remove(at: index).anomalyID
+            anomalies.removeAll { $0.id == anomalyID }
+        }
+        note("the game ended (\(status)) before Lichess took \(uci) at ply \(ply); the refusal was that race, not a disagreement", isProblem: false, at: at)
+    }
+
     private func note(_ text: String, isProblem: Bool, at: Date) {
         appendTranscript(at: at, direction: .note, title: text, detail: "", isProblem: isProblem)
     }
@@ -566,7 +608,7 @@ final class LichessBotLiveGame: Identifiable {
         } else if let id = player.id {
             name = id
         } else {
-            anomalies.append("a player in gameFull has no name, id or AI level")
+            recordAnomaly("a player in gameFull has no name, id or AI level")
             name = "unidentified player"
         }
         return Player(id: player.id, name: name, rating: player.rating, title: player.title)

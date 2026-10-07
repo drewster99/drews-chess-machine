@@ -181,7 +181,8 @@ struct LichessBotGameFacts: Sendable, Codable, Equatable {
     /// The opening Lichess's export named (§11 L4); nil without an export.
     let openingECO: String?
     let openingName: String?
-    /// Moves Lichess refused, and game-stream reconnections (§11 L6).
+    /// Moves Lichess refused while the game went on (not those that raced
+    /// the game's end), and game-stream reconnections (§11 L6).
     let rejectedMoves: Int
     let streamReconnects: Int
 

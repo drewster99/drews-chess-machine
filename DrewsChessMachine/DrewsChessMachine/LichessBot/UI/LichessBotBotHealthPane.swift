@@ -12,7 +12,7 @@ struct LichessBotBotHealthPane: View {
             Grid(alignment: .trailing, horizontalSpacing: LichessBotStatsStyle.columnSpacing, verticalSpacing: LichessBotStatsStyle.rowSpacing) {
                 LichessBotHealthRow(label: "Games", value: health.games, help: "Every filed game in the period, scored or not")
                 LichessBotHealthRow(label: "Anomalies", value: health.anomalies, help: "Notes the record builder made (\(health.gamesWithAnomalies) game(s) have any)")
-                LichessBotHealthRow(label: "Rejected moves", value: health.rejectedMoves, help: "Moves Lichess refused")
+                LichessBotHealthRow(label: "Rejected moves", value: health.rejectedMoves, help: "Moves Lichess refused while the game went on (a move that arrived after the game ended is not counted)")
                 LichessBotHealthRow(label: "Stream reconnects", value: health.streamReconnects, help: "Game-stream connections after the first")
                 LichessBotHealthRow(label: "Corrected by the export", value: health.reconciliationCorrected, help: "Games whose journal disagreed with Lichess' export; the export's values were used")
                 LichessBotHealthRow(label: "Filed without an export", value: health.exportUnavailable, help: "Games Lichess kept no export for; the journal is the only source")

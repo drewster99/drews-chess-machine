@@ -177,7 +177,7 @@ struct LichessBotGameHeaderView: View {
                 .font(.callout)
                 .foregroundStyle(.red)
                 .shown(!game.anomalies.isEmpty)
-                .help(game.anomalies.joined(separator: "\n"))
+                .help(game.anomalies.map(\.text).joined(separator: "\n"))
             Spacer()
             Button(
                 action: { LichessBotLinks.openGame(game.id) },

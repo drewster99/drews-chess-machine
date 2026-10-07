@@ -32,6 +32,8 @@ enum LichessBotJournalEvent: Sendable, Codable, Equatable {
     case moveDecided(ply: Int, decision: LichessBotMoveDecision, generation: LichessBotGenerationInfo)
     case movePosted(ply: Int, uci: String, offeringDraw: Bool, milliseconds: Double)
     case moveRejected(ply: Int, uci: String, error: String)
+    /// See `LichessBotGameEvent.moveRefusedAfterGameEnded`.
+    case moveRefusedAfterGameEnded(ply: Int, uci: String, status: String)
     case action(String)
     /// A chat message DCM posted successfully (see `LichessBotGameEvent.chatSent`).
     case chatSent(room: String, text: String, origin: String)
@@ -100,6 +102,8 @@ enum LichessBotJournal {
             return .movePosted(ply: ply, uci: uci, offeringDraw: offeringDraw, milliseconds: milliseconds)
         case .moveRejected(let ply, let uci, let error):
             return .moveRejected(ply: ply, uci: uci, error: error)
+        case .moveRefusedAfterGameEnded(let ply, let uci, let status):
+            return .moveRefusedAfterGameEnded(ply: ply, uci: uci, status: status.raw)
         case .action(let text):
             return .action(text)
         case .moveHeld(let ply, let uci, _):

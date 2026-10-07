@@ -60,7 +60,7 @@ struct LichessBotGameSessionCarryover: Sendable, Equatable {
                     carryover.farewellSent = true
                 }
             case .header, .streamOpened, .streamLine, .streamLineBytes, .keepAlive, .request, .streamEnded,
-                 .movePosted, .moveRejected, .action, .chatFetched, .anomaly, .finished, .gameOrigin:
+                 .movePosted, .moveRejected, .moveRefusedAfterGameEnded, .action, .chatFetched, .anomaly, .finished, .gameOrigin:
                 break
             }
         }

@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// A compact card for one game in the live grid (plan §14.3a): small board,
-/// players with clocks, W/D/L, and a result badge once finished. Clicking it
+/// players with clocks, W/D/L, an anomaly count when there are any, and a
+/// result badge once finished. Clicking it
 /// opens the game in its own window; the grid keeps no selection. A
 /// finished game's tile is grayed as a whole, so live games stand out.
 struct LichessBotGameTileView: View {
@@ -48,6 +49,7 @@ struct LichessBotGameTileContent: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                 Spacer()
+                LichessBotGameAnomalyBadge(anomalies: game.anomalies)
                 Text(resultText)
                     .font(.system(.callout, design: .monospaced).weight(.bold))
                     .foregroundStyle(resultColor)

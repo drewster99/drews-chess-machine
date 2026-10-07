@@ -26,19 +26,21 @@ struct LichessBotRecordCard: View {
             VStack(spacing: 4) {
                 // Applied here rather than passed in, so dragging the handle
                 // doesn't recompute anything on every frame. The dragged
-                // height is the content's ideal and minimum, not a fixed
-                // height: when the period table, the pickers and the
-                // pane's minimum (`LichessBotStatsStyle.paneMinimumHeight`)
-                // need more, the card grows rather than squeezing the
-                // selected pane out of sight.
+                // height is the content's minimum, not a fixed height: when
+                // the period table, the pickers, the pane's minimum
+                // (`LichessBotStatsStyle.paneMinimumHeight`) and, stacked,
+                // the recent games need more, the card grows rather than
+                // drawing them past its bottom edge
+                // (`LichessBotAtLeastHeightLayout`).
                 let height = LichessBotHeightResizeHandle.clamped(contentHeight, to: Self.contentHeightRange)
-                LichessBotRecordCardContent(controller: controller)
-                    .frame(minHeight: height, idealHeight: height, alignment: .top)
-                    .onGeometryChange(
-                        for: Double.self,
-                        of: { proxy in Double(proxy.size.height) },
-                        action: { measured in displayedContentHeight = measured }
-                    )
+                LichessBotAtLeastHeightLayout(minimumHeight: height) {
+                    LichessBotRecordCardContent(controller: controller)
+                }
+                .onGeometryChange(
+                    for: Double.self,
+                    of: { proxy in Double(proxy.size.height) },
+                    action: { measured in displayedContentHeight = measured }
+                )
                 LichessBotHeightResizeHandle(height: $contentHeight, displayedHeight: displayedContentHeight, range: Self.contentHeightRange)
             }
         }

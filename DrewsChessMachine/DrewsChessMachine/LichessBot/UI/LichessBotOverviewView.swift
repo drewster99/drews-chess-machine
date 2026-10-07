@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The bot's control room (plan §14.3): alarms first while there are any,
-/// then state and controls, the record, account, the model generation in
-/// use, the request gate and the pending challenge.
+/// then state and controls, the account, the record, outgoing challenges,
+/// the model generation in use and the request gate.
 struct LichessBotOverviewView: View {
     let controller: LichessBotController
     @State private var showingChallengeSheet = false
@@ -20,11 +20,14 @@ struct LichessBotOverviewView: View {
                         .padding(.bottom, hasAlarms ? 16 : 0)
                     LichessBotControlsCard(controller: controller, onChallenge: { showingChallengeSheet = true })
                 }
+                // The account's ratings and game counts are what the
+                // operator checks most, so they sit right under the
+                // controls, across the full width (narrower, the speed and
+                // column names were cut off).
+                LichessBotAccountCard(controller: controller)
                 LichessBotRecordCard(controller: controller)
                 LichessBotChallengeOutcomesCard(controller: controller)
                 HStack(alignment: .top, spacing: 16) {
-                    LichessBotAccountCard(controller: controller)
-                        .frame(maxHeight: .infinity, alignment: .top)
                     LichessBotModelCard(controller: controller)
                         .frame(maxHeight: .infinity, alignment: .top)
                     LichessBotGateCard(snapshot: controller.gateSnapshot)
