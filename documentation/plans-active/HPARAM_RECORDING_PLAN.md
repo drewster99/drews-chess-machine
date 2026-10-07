@@ -1,6 +1,6 @@
 # Hyperparameter recording plan: a checkpoint states exactly how it was trained
 
-Status (2026-10-05): **PLAN ONLY.** Nothing here is implemented.
+Status (2026-10-05): written as a plan; implemented since (next line).
 - Implementation (2026-10-06): **P1–P6 implemented** (build identity; CLI resume records what it trains; GUI values in force; lineage schema 3; documentation in CLAUDE.md "File lineage"; the pre-lineage reconstruction report, O-8). Decisions made while implementing are under **Implementation notes** at the end.
 - Independent review: **concurred on 2026-10-05, after five passes.** Every review item (A1–A20, B1–B9, C1–C6, D1–D7; N1–N6, NB1–NB7; P3-1, P3-2, NB-a–NB-c; P4-1 and nits; pass-5 nits) is listed, with what was done about it, in **Review reconciliation** at the end.
 - Second review (code-level, against the source): **concurred on 2026-10-05, after four passes.** Items X1–X13, the later passes' items and every nit are listed in **Second review** at the end.

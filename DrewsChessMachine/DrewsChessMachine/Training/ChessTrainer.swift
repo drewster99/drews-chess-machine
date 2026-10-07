@@ -104,9 +104,10 @@ struct TrainStepTiming: Sendable {
     /// Total loss (policy + value) reported by the graph — what SGD minimizes.
     /// Lets us spot NaNs / explosions at a glance.
     let loss: Float
-    /// Policy-only component of the loss. Outcome-weighted cross-entropy; can
-    /// be negative when the played move already has high probability under a
-    /// winning outcome, so it's unbounded on both sides and expected to be
+    /// Policy-only component of the loss. Signed-advantage policy gradient:
+    /// `max(0, A)·CE(played) + max(0, −A)·complementCE`, with `A` the
+    /// RMS-normalized advantage. Both products are non-negative, so it is
+    /// bounded below by 0 regardless of advantage sign; expected to be
     /// noisier than the value term.
     let policyLoss: Float
     /// Value-only component of the loss. Categorical cross-entropy of the
@@ -117,9 +118,11 @@ struct TrainStepTiming: Sendable {
     /// longer the old MSE scale (~0.1–0.4); a value-loss curve compared
     /// across the scalar→WDL switch is not apples-to-apples.
     let valueLoss: Float
-    /// Mean Shannon entropy (in nats) of the trainee's policy softmax over
-    /// this batch. Diagnostic only — not part of `loss`. Range is
-    /// [0, log(ChessNetwork.policySize)] nats.
+    /// Mean Shannon entropy (in nats) of the trainee's legal-move (masked)
+    /// policy softmax over this batch. Range per position is
+    /// [0, log(legal-move count)] nats (≈ 3.4 at 30 legal moves), not
+    /// log(policySize): illegal cells are masked out. It also feeds `loss`
+    /// through the entropy-bonus term.
     /// Random init sits near the ceiling; a collapsed policy heads toward 0.
     /// Watch for monotonic drift to either extreme — that's the signature
     /// of policy collapse or a stuck-at-uniform learning failure.
@@ -3496,10 +3499,11 @@ final class ChessTrainer: @unchecked Sendable {
 
         // --- Policy entropy ---
         //
-        // H(p) = −Σ p · log p, per position, then mean across batch.
-        // Range is [0, log(policySize)] ≈ [0, 8.49] nats for the current
-        // 4864-logit head; random init sits near the ceiling, a collapsed
-        // policy heads toward 0.
+        // H(p) = −Σ p · log p over the legal-move (masked) softmax, per
+        // position, then mean across batch. Range per position is
+        // [0, log(legal-move count)] nats — illegal cells carry no mass, so
+        // the 4864-cell log(policySize) ≈ 8.49 is not the ceiling. Random
+        // init sits near the ceiling, a collapsed policy heads toward 0.
         //
         // This tensor serves two roles: a diagnostic read via run-time
         // fetch AND a predecessor of totalLoss via the entropy

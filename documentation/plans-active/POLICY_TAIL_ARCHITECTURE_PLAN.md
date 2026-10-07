@@ -1,6 +1,6 @@
 # Policy tail precision as an architecture field
 
-Status: **phases 1–4 implemented 2026-10-07 (awaiting build, tests and commit); phase 5 audit tool written and run** — report `documentation/plans-active/POLICY_TAIL_AUDIT_2026-10-07.md` (+ `.json`), produced read-only by `scripts/policy_tail_audit.py`. No header has been rewritten; rule 3's edit waits for the owner's review of the audit. All owner decisions recorded (PT-D3 rules 3 and 4 decided 2026-10-07).
+Status: **phases 1–4 implemented and committed 2026-10-07 (`5d192c0a`); phase 5 audit tool written and run** — report `documentation/plans-active/POLICY_TAIL_AUDIT_2026-10-07.md` (+ `.json`), produced read-only by `scripts/policy_tail_audit.py`. No header has been rewritten; rule 3's edit waits for the owner's review of the audit. All owner decisions recorded (PT-D3 rules 3 and 4 decided 2026-10-07).
 
 **Implementation notes (2026-10-07)** — where the code differs from the text below, and why:
 - One enum, `PolicyTailPrecisionSetting` (in `NetworkArchitecture.swift`), replaces `ChessNetwork.PolicyTailPrecision` everywhere; its bf16 case keeps the Swift name `float32FromPreBatchNorm` (raw value `fp32_from_pre_bn` as planned), matching `ComputeDataType.float32` and the existing tests. `does_not_apply` builds the `mixed_final_projection` branch of `policyHead` (the graph fp32 models were built as under the default since `de0f22be`; the pinned fp32 forward hash is unchanged).

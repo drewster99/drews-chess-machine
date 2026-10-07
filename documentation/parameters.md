@@ -52,6 +52,36 @@ Global L2 norm cap for gradient clipping. Above this, gradients are scaled down 
 
 **Type:** Double · **Range:** 0.1..1000.0 · **Default:** 15.0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
+### relative_grad_clip_mode
+
+Relative gradient-norm cap: 0 = off (only Gradient Clip Max Norm clips), 1 = log only (the relative cap is computed and every step it would clip is logged as [GRAD-CLIP] … applied=false, but the hard max is what is fed), 2 = clip (the step's cap is min(Gradient Clip Max Norm, max(Relative Gradient Cap Floor, k × median)), where the median is of the pre-clip global gradient norms of the last N real-data SGD steps; applied once the window holds at least W entries).
+
+**Type:** Int · **Range:** 0..2 · **Default:** 1 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### relative_grad_clip_multiple
+
+Multiple k of the trailing median pre-clip gradient norm in the relative cap min(Gradient Clip Max Norm, max(floor, k × median)). Read only when Relative Gradient Cap Mode is log only or clip.
+
+**Type:** Double · **Range:** 1.0..20.0 · **Default:** 3.0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### relative_grad_clip_window_steps
+
+Number of most recent real-data SGD steps N whose pre-clip global gradient norms the relative cap takes the median of. Must be ≥ Relative Gradient Cap Min History W.
+
+**Type:** Int · **Range:** 100..10000 · **Default:** 1000 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### relative_grad_clip_min_history_steps
+
+Warm-up: the relative cap applies only once the window holds at least W recorded steps (until then only Gradient Clip Max Norm clips); until the window fills it takes the median of the steps it has. Must be ≤ Relative Gradient Cap Window N.
+
+**Type:** Int · **Range:** 10..10000 · **Default:** 100 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### relative_grad_clip_floor
+
+Lower bound on the relative term: cap = min(Gradient Clip Max Norm, max(floor, k × median)). Keeps a run whose gradients have shrunk (a nearly dead network) from being clipped at a tiny multiple of its tiny norms. A floor at or above Gradient Clip Max Norm makes the relative term inert.
+
+**Type:** Double · **Range:** 0.01..100.0 · **Default:** 0.5 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
 ### weight_decay
 
 L2 weight decay coefficient. Couples with batch size and the number of update steps per epoch.
@@ -523,6 +553,110 @@ Turns on the automatic-save retention pool: after each successful periodic or po
 Whether automatic session saves write the replay buffer (`replay_buffer.bin`, several GB at the usual capacities) into the session folder: the GUI's periodic, post-promotion and SIGUSR2 saves. A manual File > Save Session asks each time, starting from this setting. Off by default: a save holds the weights, optimizer state and run state, and a resume from it refills the buffer from new games before training continues, reported as `[RESUME] NOT EXACT: buffer`. On: the buffer is saved and a resume restores it. Read at each save.
 
 **Type:** Bool · **Range:** — · **Default:** false · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+## Health
+
+### training_health_alarms_enabled
+
+Run the training-health checks on every training path (GUI Play-and-Train, corpus replay, train-vs-UCI): fourteen rules over every SGD step and the layer-health reads, logged as [ALARM] health lines and a [HEALTH] check line every Training Health Check Interval steps. Off: no evaluation at all, and one [HEALTH] alarms disabled line at run start. The checks only observe: no random draws, no change to the trainer, optimizer or replay buffer.
+
+**Type:** Bool · **Range:** — · **Default:** true · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_check_interval_steps
+
+Trainer steps between [HEALTH] check lines (counters, cost, active alarms), the reminder line of every active alarm, and the rate limit of the worsen lines. The rules themselves are evaluated every 50 trainer steps whatever this is.
+
+**Type:** Int · **Range:** 50..100000 · **Default:** 1000 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_learning_grace_steps
+
+Trainer steps added to LR Warmup Steps before the illegal_mass rule's not-learned form applies (window median illegal mass still at or above 0.5). Its regression form and every damage rule apply from the first evaluation.
+
+**Type:** Int · **Range:** 0..100000 · **Default:** 1000 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_non_finite
+
+What the non_finite alarm (a NaN or infinite value in the batch-norm state, ReZero α, any checkpointed tensor, or a step's loss, illegal mass or gradient norm. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_dead_channels
+
+What the dead_channels alarm (parked batch-norm channels (dead for ReLU / leaky ReLU, the pass-through equivalent for SiLU / GELU). Warning on any; critical at 5% of all such channels or 20% of one site's) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_value_fc1_zero_velocity
+
+What the value_fc1_zero_velocity alarm (value-head FC1 units whose optimizer velocity is exactly zero (dead ReLU units). Warning at 5% of the units, critical at 50%; checked every 1000 trainer steps; applies only to a ReLU value hidden layer) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_illegal_mass
+
+What the illegal_mass alarm (the window median of the illegal-move probability mass regressing after it was learned, or not learned past warmup plus the learning grace. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_gradient_collapse
+
+What the gradient_collapse alarm (the window median of the pre-clip gradient norm below 0.1. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_loss_spike
+
+What the loss_spike alarm (the window's loss against the median loss of the 1000 trainer steps before it (median 1.5x or maximum 3x). Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_policy_offset_drift
+
+What the policy_offset_drift alarm (the window median of |policy logit mean| at or above 3. Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_bn_running_variance_runaway
+
+What the bn_running_variance_runaway alarm (the largest batch-norm running-variance max/median ratio at or above 1000. Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_gradient_spike
+
+What the gradient_spike alarm (the window's largest pre-clip gradient norm at or above 5x the median of the 1000 trainer steps before it. Warning only, so 1 (stop on critical) never stops) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_divergence
+
+What the divergence alarm (the window medians of policy entropy and gradient norm: critical when entropy < 0.5 or gNorm > 500, warning when entropy < 1.0 together with gNorm > 50 — the GUI banner's divergence condition) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_value_saturation
+
+What the value_saturation alarm (the window median of the value head's mean |p_win − p_loss|: warning at 0.97, critical at 0.995 — the GUI banner's value-saturation condition) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_value_draw_saturation
+
+What the value_draw_saturation alarm (the window median of the value head's mean p_draw: warning at 0.92, critical at 0.97 (a fresh head starts at 0.75) — the GUI banner's draw condition) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_legal_mass_stall
+
+What the legal_mass_stall alarm (window median illegal mass above Legal-Mass Collapse Threshold on Legal-Mass Collapse No-Improvement Probes consecutive evaluations with no improvement, past warmup plus the learning grace — the GUI legal-mass probe's condition. Critical only) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+
+### training_health_action_bn_running_variance_jump
+
+What the bn_running_variance_jump alarm (a batch-norm channel's running variance at ≥ 10× its site's median that rose ≥ 10× above its lowest value in the previous 1,000 trainer steps — critical when the channel is at ≥ 100× — or the number of channels at ≥ 10× rising to at least twice, and at least 5 more than, its lowest in the previous 1,000 trainer steps; judged from the learning gate on) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.
+
+**Type:** Int · **Range:** 0..2 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ## Reproducibility
 

@@ -24,8 +24,8 @@
 //
 //  Gate a suite by calling `try SlowTestGate.requireEnabled("<label>")` from
 //  its `setUpWithError()` — that skips the whole class cleanly (the skip
-//  reason names the env var). See `DrewsChessMachine/CLAUDE.md` ("Running the
-//  tests") for the suite-by-suite cost table and which suites are gated.
+//  reason names the env var). See the repository root `CLAUDE.md` ("Running
+//  the tests") for the suite-by-suite cost table and which suites are gated.
 //
 
 import XCTest

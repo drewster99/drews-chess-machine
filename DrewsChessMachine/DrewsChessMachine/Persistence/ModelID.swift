@@ -15,10 +15,12 @@ import Foundation
 ///   minted on the same day with the same counter across multiple
 ///   machines or concurrent processes.
 ///
-/// IDs are minted at well-defined events — Build Network, Play and
-/// Train start, and arena snapshots — and inherited verbatim for
-/// most weight copies. See `sampling-parameters.md` and
-/// `MODEL_IDS.md` for the full mint / inherit rule set.
+/// IDs are minted at well-defined events — Build Network, a fresh
+/// Play-and-Train start (the trainer's next generation), and a
+/// promotion (the trainer forks a next generation from the promoted
+/// champion) — and inherited verbatim by every other weight copy,
+/// arena-start snapshots included. See `documentation/sampling-parameters.md`
+/// ("Model identity") for the full mint / inherit rule set.
 struct ModelID: Sendable, Equatable, Hashable, CustomStringConvertible {
     let value: String
 
