@@ -408,9 +408,25 @@ extension LineageRecord {
             committedAtTrainerStep = try c.decode(Int.self, forKey: .committedAtTrainerStep)
             recordedUnix = try c.decode(Int64.self, forKey: .recordedUnix)
             id = try c.decode(String.self, forKey: .id)
-            old = try c.decode(ParameterValue.self, forKey: .old)
-            new = try c.decode(ParameterValue.self, forKey: .new)
+            let oldRaw = try c.decode(ParameterValue.self, forKey: .old)
+            let newRaw = try c.decode(ParameterValue.self, forKey: .new)
+            // JSON does not keep a whole `Double`'s kind (`180.0` is written
+            // `180` and reads back as `.int`), so a known key's values are
+            // read as its declared type and re-encoded canonically — the
+            // record decodes equal to the one written. A key this build
+            // does not know keeps the value as the file states it.
+            if let key = TrainingParameters.keysByID[id] {
+                old = try Self.canonical(key, oldRaw)
+                new = try Self.canonical(key, newRaw)
+            } else {
+                old = oldRaw
+                new = newRaw
+            }
             restampedFrom = try c.decode(Int?.self, forKey: .restampedFrom)
+        }
+
+        private static func canonical<K: TrainingParameterKey>(_ key: K.Type, _ raw: ParameterValue) throws -> ParameterValue {
+            K.encode(try K.decode(raw))
         }
 
         func encode(to encoder: Encoder) throws {

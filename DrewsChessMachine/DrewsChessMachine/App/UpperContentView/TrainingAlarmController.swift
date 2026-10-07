@@ -115,6 +115,14 @@ final class TrainingAlarmController {
     /// row; nil when training is not suspended by a health alarm.
     private(set) var healthSuspendedRule: TrainingHealthRule?
 
+    /// True from Stop (`endHealthRun()`) until the next start
+    /// (`beginHealthRun()`): `healthAlarms` then describe a run that has
+    /// ended. Nothing evaluates after Stop, so they can no longer clear by
+    /// recovery; they stay listed for review but never sound — otherwise
+    /// Stop's `clear()` (which un-silences) would restart the beep loop for
+    /// as long as the app sits stopped.
+    private(set) var healthAlarmsAreFromAnEndedRun = false
+
     // MARK: - Private detector / sound state
 
     private var divergenceWarningStreak = 0
@@ -385,9 +393,18 @@ final class TrainingAlarmController {
         refreshHealth(monitor.activeAlarmsSnapshot())
     }
 
-    /// Core of `refreshHealth(from:)`, for tests.
+    /// Core of `refreshHealth(from:)`, for tests. A silence covers what was
+    /// sounding when it was given: a rule that becomes critical now (newly
+    /// raised, or escalated from a warning) un-silences, so it beeps (OD-8).
     func refreshHealth(_ alarms: [TrainingHealthActiveAlarm]) {
+        let criticalBefore = Set(healthAlarms.filter { $0.severity == .critical }.map(\.rule))
+        let newlyCritical = alarms.filter { $0.severity == .critical && !criticalBefore.contains($0.rule) }
         healthAlarms = alarms
+        if silenced && !newlyCritical.isEmpty {
+            SessionLogger.shared.log("[ALARM] silence ended: newly critical training health alarms "
+                + newlyCritical.map(\.rule.rawValue).joined(separator: ","))
+            silenced = false
+        }
         reconcileSound()
     }
 
@@ -395,12 +412,30 @@ final class TrainingAlarmController {
         healthSuspendedRule = rule
     }
 
+    /// A Play-and-Train start: its monitor's alarms are live and may sound,
+    /// and no health stop has suspended it yet.
+    func beginHealthRun() {
+        healthAlarmsAreFromAnEndedRun = false
+        healthSuspendedRule = nil
+        reconcileSound()
+    }
+
+    /// Stop: the run's alarms stay listed for review, but quiet
+    /// (`healthAlarmsAreFromAnEndedRun`), and the suspension header ends
+    /// with the run.
+    func endHealthRun() {
+        healthAlarmsAreFromAnEndedRun = true
+        healthSuspendedRule = nil
+        reconcileSound()
+    }
+
     /// Whether the beep loop should run: the banner shows an alarm or a
-    /// critical health alarm is active, and the user has not silenced it.
-    /// Warnings alone never beep (OD-8).
+    /// critical health alarm of the running start is active, and the user
+    /// has not silenced it. Warnings alone never beep (OD-8).
     var shouldSound: Bool {
         guard !silenced else { return false }
-        return active != nil || healthAlarms.contains { $0.severity == .critical }
+        if active != nil { return true }
+        return !healthAlarmsAreFromAnEndedRun && healthAlarms.contains { $0.severity == .critical }
     }
 
     /// Clear the banner AND reset the divergence streak counters so the alarm

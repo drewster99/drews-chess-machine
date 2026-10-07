@@ -180,7 +180,7 @@ See `documentation/sampling-parameters.md` for rationale.
 
 The `[STATS]` line carries a dense set of counters. A few that matter for diagnosing training health:
 - `pLoss` — outcome-weighted policy cross-entropy. **Unbounded on both sides** (negative is fine when well-predicted winning plays dominate). Read alongside `pEnt`, not in isolation.
-- `pEnt` — mean Shannon entropy of the policy softmax, in nats. `log(4864) ≈ 8.49` at uniform init for the current 4864-cell policy head. Below `policyEntropyAlarmThreshold` (1.0 in-repo, in `TrainingAlarmController.swift`) triggers `[ALARM] policy may be collapsing`.
+- `pEnt` — mean Shannon entropy of the policy softmax, in nats. `log(4864) ≈ 8.49` at uniform init for the current 4864-cell policy head. Below `TrainingHealthThresholds.policyEntropyAlarm` (1.0 in-repo, in `Training/TrainingHealth.swift`) triggers `[ALARM] policy may be collapsing`.
 - `vMean` / `vAbs` — mean / mean-abs of the derived value scalar `p_win − p_loss` (no tanh). `pW` / `pD` / `pL` — the W/D/L softmax batch-means (sum ≈ 1). The value-head collapse signature is `pD → 1.0` (equivalently `vAbs → 0` and staying there) — the post-WDL "everything is a draw"; watch `pD` falling off its `0.75` bias-init prior as the sign training is working. `vLoss` is now categorical-CE-scale (≈ `[0, ln 3]` at convergence), not the old MSE scale.
 - `gNorm` — pre-clip global gradient L2 norm, reported every step. Compare against `ChessTrainer.gradClipMaxNorm`; values above it are clip events, not bugs.
 - `diversity=unique=X/Y(%) diverge=N.N` — rolling `GameDiversityTracker` snapshot over the last 200 games; `diverge` is the avg ply at which pairs of games first differ. Steady-state healthy is `[0-5]`-heavy in the histogram tile.

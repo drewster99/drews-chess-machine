@@ -71,6 +71,63 @@ final class ParameterChangeJournalTests: XCTestCase {
         XCTAssertNotEqual(params.entropyBonus, -1, "the rejected assignment was reverted")
     }
 
+    /// An edit away from a resume's held out-of-range value is journalled
+    /// (final review M2): the old value being outside today's range is no
+    /// reason to drop a committed change.
+    func testAnEditAwayFromAHeldOutOfRangeValueIsReported() {
+        let params = TrainingParameters.shared
+        let outOfRange = -1.0
+        XCTAssertFalse(EntropyBonus.isWithinDeclaration(outOfRange))
+        params.restoreFromSession(EntropyBonus.self, outOfRange, into: \.entropyBonus)
+        XCTAssertEqual(params.entropyBonus, outOfRange, "the session's value is held")
+        observe()
+        params.entropyBonus = 0.002
+        let events = seen.value
+        XCTAssertEqual(events.count, 1, "\(events.map(\.0))")
+        XCTAssertEqual(events.first?.0, EntropyBonus.id)
+        XCTAssertEqual(events.first?.1, EntropyBonus.encode(outOfRange))
+        XCTAssertEqual(events.first?.2, EntropyBonus.encode(0.002))
+    }
+
+    /// A rejected assignment while a resume's held out-of-range value is in
+    /// force puts that value back without validating it, journals nothing
+    /// and keeps the hold (the revert is recognised, not re-validated; it
+    /// used to be rejected in turn, reverting back and forth).
+    func testARejectedAssignmentOverAHeldOutOfRangeValueRestoresIt() {
+        let params = TrainingParameters.shared
+        params.restoreFromSession(EntropyBonus.self, -1.0, into: \.entropyBonus)
+        XCTAssertNotNil(TrainingParameters.runHeldPriorValues[EntropyBonus.id])
+        observe()
+        params.entropyBonus = -2.0
+        XCTAssertEqual(params.entropyBonus, -1.0, "the held value is back")
+        XCTAssertTrue(seen.value.isEmpty, "\(seen.value.map(\.0))")
+        XCTAssertNotNil(TrainingParameters.runHeldPriorValues[EntropyBonus.id], "the hold is kept")
+        params.entropyBonus = 0.002
+        XCTAssertEqual(seen.value.count, 1, "the next real edit is journalled")
+    }
+
+    /// The results row's lineage (final review m3) is built at the trainer
+    /// clock of its own configuration cut, so a change journalled after an
+    /// earlier read of the clock cannot sit above the record's clock.
+    func testTheResultsLineageIsAtTheCutsClockAfterALaterChange() throws {
+        let harness = try GuiSaveHarness()
+        defer {
+            do { try harness.removeSessionsDirectory() } catch { XCTFail("\(error)") }
+        }
+        let controller = harness.controller
+        let tracker = try XCTUnwrap(controller.lineageTracker)
+        controller.installParameterChangeJournal(tracker: tracker, trainer: harness.trainer)
+        let earlierRead = harness.trainer.completedTrainSteps
+        harness.trainer.completedTrainSteps = earlierRead + 3
+        let params = TrainingParameters.shared
+        params.entropyBonus = params.entropyBonus == 0.002 ? 0.003 : 0.002
+
+        let lineage = try controller.lineageForResults()
+
+        XCTAssertEqual(lineage.record.steps.cumTrainerStep, earlierRead + 3)
+        XCTAssertEqual(lineage.record.configuration.value?.parameterChanges.count, 1)
+    }
+
     /// A GUI segment's journal: the change lands in the next save's record
     /// at the trainer step it takes effect from.
     func testAJournalledChangeIsInTheNextRecordAtTheTrainersClock() throws {
