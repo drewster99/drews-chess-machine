@@ -592,3 +592,6 @@ Decisions taken while implementing, where the plan left a choice open or the cod
 - **The reliability chart** draws the calibrated diagonal and one point per non-empty bucket at (mean predicted, mean actual), sized by positions (symbol sizes 16…160).
 - **The figures are sentences, not table cells,** in `LichessBotStatsStyle.figureFont` (the body font with monospaced digits); the decisive-ply line reads "Won: settled at ply 37.7 on average (median 25.5), 29.4 plies before the end; n 46, never 7, no data 0".
 - **A held game's row** shows the result chip, the opponent (Lichess AI when it has no account), "from ply N", the date and an Open button (`LichessBotLinks.openGame`).
+
+**P7**
+- **The Endings matrix has a fifth column, "Not counted",** so the "Not counted" row's games have a cell of their own; that row shows "–" under the result columns, and every other row "–" under it. A result cell reads "42 (24.1%)", its share of the column; "0" for an empty cell of a non-empty column, "–" when the whole column is empty (`LichessBotStatsFormat.countWithShare`).

@@ -136,6 +136,15 @@ enum LichessBotStatsFormat {
         return String(format: "%.2f/%.2f/%.2f", triple.win, triple.draw, triple.loss)
     }
 
+    /// "42 (24.1%)": a count and its share of `total`; "–" when the column
+    /// is empty (no share to give), "0" for an empty cell of a non-empty
+    /// column.
+    static func countWithShare(_ count: Int, of total: Int) -> String {
+        guard total > 0 else { return missing }
+        guard count > 0 else { return "0" }
+        return "\(count) (\(percent(Double(count) / Double(total))))"
+    }
+
     /// "x blown of y held wins (z%)".
     static func held(turned: Int, held: Int, verb: String, noun: String) -> String {
         guard held > 0 else { return "No \(noun)" }

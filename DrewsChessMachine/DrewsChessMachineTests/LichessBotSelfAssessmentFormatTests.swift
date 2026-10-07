@@ -15,6 +15,12 @@ final class LichessBotSelfAssessmentFormatTests: XCTestCase {
         XCTAssertEqual(LichessBotStatsFormat.decisive(none, result: "Lost"), "Lost: no game settled (never 3, no data 2)")
     }
 
+    func testEndingCellsGiveTheShareOfTheirColumn() {
+        XCTAssertEqual(LichessBotStatsFormat.countWithShare(42, of: 174), "42 (24.1%)")
+        XCTAssertEqual(LichessBotStatsFormat.countWithShare(0, of: 174), "0")
+        XCTAssertEqual(LichessBotStatsFormat.countWithShare(0, of: 0), "–", "an empty column has no share")
+    }
+
     func testTriplesAndHeldCounts() {
         XCTAssertEqual(LichessBotStatsFormat.triple(LichessBotOutcomeTriple(win: 0.4123, draw: 0.2, loss: 0.3877)), "0.41/0.20/0.39")
         XCTAssertEqual(LichessBotStatsFormat.triple(nil), "–")

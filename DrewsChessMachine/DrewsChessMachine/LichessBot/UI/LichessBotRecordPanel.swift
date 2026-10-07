@@ -31,6 +31,10 @@ struct LichessBotRecordPanel: View {
                     .shown(pane == .models)
                 LichessBotSelfAssessmentPane(assessment: breakdowns.selfAssessment)
                     .shown(pane == .selfAssessment)
+                ScrollView(.horizontal) {
+                    LichessBotEndingsTable(endings: breakdowns.endings)
+                }
+                .shown(pane == .endings)
             }
         }
     }
