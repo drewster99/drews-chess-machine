@@ -227,7 +227,9 @@ final class ReplayResumeRecordedParametersTests: XCTestCase {
 
     func testAnAdoptedScheduleIsNotADifference() throws {
         let parentSnapshot = try params(warmup: 5, cyclePeriod: 40).parameters
-        let parent = try LineageRecord.Parameters(values: parentSnapshot.rawValueMap())
+        // What a schema-3 writer records: every parameter but the seed
+        // settings (plan O-9).
+        let parent = try LineageRecord.Parameters(values: parentSnapshot.lineageValues())
         let schedule = TrainerScheduleState(completedTrainSteps: 3, lrWarmupSteps: parentSnapshot.lrWarmupSteps,
                                             lrMomentumCycle: parentSnapshot.lrMomentumCycle)
         let configured = try params(warmup: 7, cyclePeriod: 80)
