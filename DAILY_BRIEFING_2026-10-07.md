@@ -1,6 +1,6 @@
 # Daily briefing — 2026-10-07
 
-Work from 2026-10-06 ~09:00 to 2026-10-07 ~06:55 (the 06:00 target slipped ~55 min: the relative cap was approved at ~04:00 and its review, fixes and final full suite needed the time). Everything below is merged on `main` and pushed unless it says otherwise. One item needs your go: switching the relative cap's default from log only to clip (plan P5) — both validation runs passed, but the session's permission check refused the edit (see "Needs you" at the end). The last section lists optional follow-ups.
+Work from 2026-10-06 ~09:00 to 2026-10-07 ~06:55 (the 06:00 target slipped ~55 min: the relative cap was approved at ~04:00 and its review, fixes and final full suite needed the time). Everything below is merged on `main` and pushed unless it says otherwise. Nothing needs a decision from you: the relative cap's default stays log only (decision D-15 at the end, after the permission check refused the switch to clip); the optional follow-ups section lists what you could ask for next.
 
 ## Headlines
 
