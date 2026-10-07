@@ -387,11 +387,13 @@ struct TrainingSettingsPopover: View {
                     sessionSaveIncludeReplayBuffer: $model.sessionSaveIncludeReplayBufferValue,
                     replayBufferSaveSizeText: replayBufferSaveSizeText,
                     klProbeIntervalText: $model.klProbeIntervalText,
+                    stepLineIntervalText: $model.stepLineIntervalText,
                     randomSeedMode: $model.randomSeedModeValue,
                     randomSeedText: $model.randomSeedText,
                     periodicAutosaveIntervalError: model.periodicAutosaveIntervalError,
                     maxPeriodicAutosavesKeptError: model.maxPeriodicAutosavesKeptError,
                     klProbeIntervalError: model.klProbeIntervalError,
+                    stepLineIntervalError: model.stepLineIntervalError,
                     randomSeedError: model.randomSeedError,
                     currentRunSeed: currentRunSeed,
                     onUseRunSeed: { model.useRunSeed($0) }
@@ -1257,11 +1259,13 @@ private struct SessionsTab: View {
     /// Disk size of the buffer a save would include, shown beside the toggle.
     let replayBufferSaveSizeText: String
     @Binding var klProbeIntervalText: String
+    @Binding var stepLineIntervalText: String
     @Binding var randomSeedMode: RandomSeedMode
     @Binding var randomSeedText: String
     let periodicAutosaveIntervalError: Bool
     let maxPeriodicAutosavesKeptError: Bool
     let klProbeIntervalError: Bool
+    let stepLineIntervalError: Bool
     let randomSeedError: Bool
     let currentRunSeed: RunRandomSeed?
     let onUseRunSeed: (RunRandomSeed) -> Void
@@ -1355,7 +1359,30 @@ private struct SessionsTab: View {
                         step: 5
                     )
                 }
+                PopoverRow(
+                    label: "Step line every (s):",
+                    text: $stepLineIntervalText,
+                    error: stepLineIntervalError,
+                    placeholder: StepLineIntervalSec.declaredDefaultText(
+                        format: TrainingSettingsPopoverModel.stepLineIntervalFormat),
+                    hint: stepLineHint
+                ) {
+                    Stepper(
+                        "",
+                        value: PopoverBindings.doubleBinding(
+                            text: $stepLineIntervalText,
+                            fallback: StepLineIntervalSec.declaredDefault,
+                            format: TrainingSettingsPopoverModel.stepLineIntervalFormat
+                        ),
+                        in: StepLineIntervalSec.declaredClosedRange,
+                        step: 30
+                    )
+                }
                 Text("Measures KL(policy before the step ‖ policy after) on the training minibatch, charted with its across-batch spread. It is the only view of how far a step moves the policy in function space — gNorm measures the step in parameter space, and the two come apart. Costs one extra forward pass on probe steps only, so roughly 1% of training throughput at interval 10. 0 disables it. The probe holds the dropout RNG steady across both of its forward passes, so the reading isolates the weight update at any dropout rate.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("[STATS] is written at the first step, every 50 trainer steps through 1000, at every multiple of 1000, and on the first step with diagnostics this many seconds after the previous line. [BATCH-STATS] and the live [LAYER-HEALTH] readout ride it. A change takes effect at the next deadline.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1387,6 +1414,14 @@ private struct SessionsTab: View {
         let trimmed = periodicAutosaveIntervalMinutesText.trimmingCharacters(in: .whitespaces)
         guard let mins = Int(trimmed), mins > 0 else { return "" }
         return String(format: "= %.2g h", Double(mins) / 60.0)
+    }
+
+    /// "= X min" readout of the step-line interval, recomputed as the user
+    /// types. Empty when the text doesn't parse to a positive number.
+    private var stepLineHint: String {
+        let trimmed = stepLineIntervalText.trimmingCharacters(in: .whitespaces)
+        guard let seconds = Double(trimmed), seconds > 0 else { return "" }
+        return String(format: "= %.3g min", seconds / 60.0)
     }
 
     /// Clarifies that 0 disables pruning; blank otherwise.
