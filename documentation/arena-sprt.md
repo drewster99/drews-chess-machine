@@ -320,8 +320,12 @@ too close together rather than a normal outcome.
    **The verdict must be latched at the crossing, not recomputed at the end.**
    This is the one place the drain behaviour is not free. With `concurrency`
    games in flight, the tally when the LLR crosses a bound is not the tally the
-   driver returns: up to `K − 1` further games finish while the slots retire,
-   and `TournamentStats` reports all of them. Re-running `decide` on that final
+   driver returns: `K − 1` games are still in flight and finish while the
+   slots retire, and — because the test is fed in start order (below) — other
+   later-started games had already finished ahead of its sample when it
+   decided. `TournamentStats` reports all of them, and its
+   `sprtGamesFinishedAtDecision` (the driver's finished count at the crossing)
+   tells the two groups apart. Re-running `decide` on that final
    tally would be wrong in both directions — the extra games are a variable
    number of observations admitted *because* the test already stopped, which is
    precisely the optional-stopping bias SPRT's calibration assumes away, and a
@@ -330,9 +334,11 @@ too close together rather than a normal outcome.
    together with the `(W, D, L)` it was made on, and that is what the gate and
    the record read; the drained games are still reported, in the Elo summary and
    as `gamesPlayed`, as description rather than as evidence. The same applies to
-   the runaway guard: `n >= maxGames` is evaluated per completed game, so the
-   returned `gamesPlayed` can exceed `maxGames` by up to `K − 1` without that
-   being a violation.
+   the runaway guard: `n >= maxGames` is evaluated on the start-order sample,
+   so (barring a cancel during the drain) the returned `gamesPlayed` exceeds
+   `maxGames` by the `K − 1` in-flight games plus every game that had finished
+   ahead of the sample — a count `K` does not bound, since it grows with how
+   long the slowest game of the sample runs — without that being a violation.
 
    Tests should pin this directly — a driver run at `concurrency > 1` whose
    latched decision disagrees with `decide(...)` applied to the final tally.
@@ -353,7 +359,8 @@ too close together rather than a normal outcome.
    that prefix; more games are played meanwhile, and they count in the
    description, not the evidence. `verdict.gamesAtDecision` is the size of
    the start-order prefix the test decided on. Tests:
-   `ArenaSPRTStartOrderFeedTests`.
+   `ArenaSPRTStartOrderFeedTests`, and at the driver
+   `TickTournamentDriverTests.test_sprtMode_verdictTalliesTheStartOrderPrefix`.
 
 4. **`App/SessionController+Arena.swift`** — snapshot all arena config into a
    value struct at run start (it already reads from `TrainingParameters.shared`

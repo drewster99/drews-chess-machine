@@ -264,6 +264,17 @@ enum RandomTensorRole: String, Sendable, Equatable {
         case .glorotNormal: self = .glorotNormal
         }
     }
+
+    /// Whether the tensor's values come from the init seed (a draw) rather
+    /// than an init option's constant. The analyzers' init reference
+    /// (`AnalysisInitReference`) reads it to tell which tensors it knows
+    /// exactly without the model's own seed, so a new role must decide here.
+    var isDrawnFromInitSeed: Bool {
+        switch self {
+        case .heNormal, .glorotNormal, .glorotNormalZeroBeta: return true
+        case .identityLike, .zero: return false
+        }
+    }
 }
 
 /// Hands the graph builder each random tensor's initial data during one

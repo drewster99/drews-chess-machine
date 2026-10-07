@@ -4,9 +4,18 @@ import Foundation
 /// `SessionController`'s combined-analyzer hook — wired to the
 /// `Run All Analyses…` Debug menu item. Runs every analyzer the
 /// session has prerequisites for, in sequence, writes each to disk
-/// under `CheckpointPaths.analysesDir`, logs a per-analyzer block
-/// to the session log, and surfaces a single final NSAlert
-/// summarizing the results.
+/// under `CheckpointPaths.analysesDir` (`AnalysisJSONExport`), logs a
+/// per-analyzer block to the session log, and surfaces a single final
+/// NSAlert summarizing the results.
+///
+/// The champion and the trainer are each exported once, before any
+/// analysis runs (`analysisSnapshot(of:initReferences:)`, identity checked
+/// across the export); every analysis of a network — the numerics audit's
+/// masters and velocity, and the replay analyzer's entropy probe, which runs
+/// on an inference network carrying the trainer's snapshot — reads that one
+/// cut, so the files describe the same weights at the same step. Both
+/// snapshots share one init-reference cache, so a champion and trainer of
+/// one architecture and seed cost one reference build.
 ///
 /// Analyses run, in order:
 ///   1. Replay buffer  (skipped if no `replayBuffer` is loaded)
@@ -14,10 +23,6 @@ import Foundation
 ///   3. Network weights (against champion; skipped if no network)
 ///   4. Network weights (against trainer; skipped if no trainer)
 ///   5. Numerics audit (champion, then trainer)
-///
-/// The champion and the trainer are each exported once
-/// (`AnalyzedNetworkSnapshot`); every analysis of a network reads that one
-/// snapshot, so the files describe the same weights at the same step.
 ///
 /// Each sub-analysis is independent: a failure in one doesn't stop
 /// the others. Successes log their JSON path; failures log the
@@ -39,12 +44,16 @@ extension SessionController {
 
         let bufferRef = replayBuffer
         let championRef = network
-        let trainerRef = trainer
-        let championTarget = championAnalysisTarget()
-        let trainerTarget = trainerAnalysisTarget()
-        // Masters are read for the numerics audit only while training is
-        // stopped; snapshot that on the main actor.
-        let trainingIsRunning = realTraining
+        // Which networks are analyzed is decided at the press; each is
+        // exported, identity checked across the export, before any analysis
+        // runs (`analysisSnapshot(of:initReferences:)`), so every file — and
+        // the replay step's trainer entropy probe — describes those captured
+        // weights.
+        let analyzesChampion = championRef != nil
+        let analyzesTrainer = trainer != nil
+        // One init-reference cache for the request: the champion and trainer
+        // of one architecture and seed share one build.
+        let initReferences = AnalysisInitReferenceCache()
         // Snapshot training-progress context once, on the main actor,
         // before the detached work begins. Every file written in this
         // pass shares this snapshot, so step/elapsed values line up
@@ -56,7 +65,7 @@ extension SessionController {
             trainerStep: trainingBox?.snapshot().stats.steps
         )
 
-        if bufferRef == nil && championRef == nil && trainerRef == nil {
+        if bufferRef == nil && !analyzesChampion && !analyzesTrainer {
             Self.presentRunAllAlert(
                 title: "Run All Analyses",
                 message: "Nothing to analyze. No replay buffer, no network, and no trainer is loaded.",
@@ -71,59 +80,65 @@ extension SessionController {
             var summaryLines: [String] = []
             var firstSuccessURL: URL?
 
-            // 1. Replay buffer (champion is what generates self-play,
-            //    so the buffer is "champion's" data and its label
-            //    reflects that). The per-bucket policy-entropy probe,
-            //    however, is most useful against the *trainer* — the
-            //    champion's policy is frozen between promotions, so
-            //    probing it produces bit-identical entropy stats
-            //    across snapshots and obscures the "is illegal mass
-            //    falling?" signal that's the whole point of the
-            //    probe. When a trainer is available, snapshot its
-            //    current weights into a fresh inference-mode network
-            //    and probe that.
+            // One capture of each network, taken first and shared by every
+            // analysis below.
+            var championCapture: Swift.Result<AnalysisCapture, Error>?
+            if analyzesChampion {
+                do {
+                    championCapture = .success(try await self.analysisSnapshot(
+                        of: .champion, initReferences: initReferences))
+                } catch {
+                    SessionLogger.shared.log("[ANALYSES] champion snapshot failed: \(error)")
+                    championCapture = .failure(error)
+                }
+            }
+            var trainerCapture: Swift.Result<AnalysisCapture, Error>?
+            if analyzesTrainer {
+                do {
+                    trainerCapture = .success(try await self.analysisSnapshot(
+                        of: .trainer, initReferences: initReferences))
+                } catch {
+                    SessionLogger.shared.log("[ANALYSES] trainer snapshot failed: \(error)")
+                    trainerCapture = .failure(error)
+                }
+            }
+
+            // 1. Replay buffer, after both captures: its entropy probe is the
+            //    trainer capture's weights, so it describes the same step as
+            //    the trainer's other files. The champion is what generates
+            //    self-play, so the buffer is "champion's" data and its label
+            //    reflects that. The probe runs on the trainer because the
+            //    champion's policy is frozen between promotions, so probing it
+            //    gives bit-identical entropy stats across snapshots and hides
+            //    the "is illegal mass falling?" signal that is the whole point
+            //    of the probe.
             if let buf = bufferRef {
                 let modelLabel = "champion:\(championRef?.identifier?.description ?? "<no-id>")"
-                let entropyProbe = await Self.buildTrainerEntropyProbeNetwork(trainer: trainerRef)
                 SessionLogger.shared.log("[ANALYSIS] replay-buffer entropy probe positions: \(entropySample.description)")
+                let entropyProbe: (network: ChessMPSNetwork, label: String)?
+                switch trainerCapture {
+                case .success(let capture)?:
+                    entropyProbe = await Self.buildEntropyProbe(from: capture.snapshot)
+                case .failure?:
+                    SessionLogger.shared.log("[ANALYSIS] Entropy probe: the trainer snapshot failed — replay analyzer will fall back to champion for the entropy probe.")
+                    entropyProbe = nil
+                case nil:
+                    entropyProbe = nil
+                }
                 let step = await Self.runReplayBufferStep(
-                    buffer: buf,
-                    network: championRef,
-                    modelLabel: modelLabel,
-                    entropyProbe: entropyProbe,
-                    sampleRandom: entropySample.random,
-                    metadata: exportMetadata
-                )
+                    buffer: buf, champion: championRef, modelLabel: modelLabel,
+                    entropyProbe: entropyProbe, sampleRandom: entropySample.random, metadata: exportMetadata)
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
             } else {
                 summaryLines.append("• Replay buffer:           SKIPPED — no buffer loaded")
             }
 
-            // One snapshot of each network, shared by its analyses below.
-            var championSnapshot: Swift.Result<AnalyzedNetworkSnapshot, Error>?
-            if let championTarget {
-                do {
-                    championSnapshot = .success(try await self.analysisSnapshot(of: championTarget))
-                } catch {
-                    SessionLogger.shared.log("[ANALYSES] champion snapshot failed: \(error)")
-                    championSnapshot = .failure(error)
-                }
-            }
-            var trainerSnapshot: Swift.Result<AnalyzedNetworkSnapshot, Error>?
-            if let trainerTarget {
-                do {
-                    trainerSnapshot = .success(try await self.analysisSnapshot(of: trainerTarget))
-                } catch {
-                    SessionLogger.shared.log("[ANALYSES] trainer snapshot failed: \(error)")
-                    trainerSnapshot = .failure(error)
-                }
-            }
-
             // 2. Value head (champion).
-            switch championSnapshot {
-            case .success(let snapshot)?:
-                let step = await Self.runValueHeadStep(snapshot: snapshot, modelLabel: snapshot.modelLabel, metadata: exportMetadata)
+            switch championCapture {
+            case .success(let capture)?:
+                let step = await Self.runValueHeadStep(
+                    snapshot: capture.snapshot, modelLabel: capture.snapshot.modelLabel, metadata: exportMetadata)
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
             case .failure(let error)?:
@@ -133,9 +148,10 @@ extension SessionController {
             }
 
             // 3. Network weights (champion).
-            switch championSnapshot {
-            case .success(let snapshot)?:
-                let step = await Self.runNetworkWeightsStep(snapshot: snapshot, modelLabel: snapshot.modelLabel, tag: "Champion", metadata: exportMetadata)
+            switch championCapture {
+            case .success(let capture)?:
+                let step = await Self.runNetworkWeightsStep(
+                    snapshot: capture.snapshot, modelLabel: capture.snapshot.modelLabel, tag: "Champion", metadata: exportMetadata)
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
             case .failure(let error)?:
@@ -145,9 +161,10 @@ extension SessionController {
             }
 
             // 4. Network weights (trainer).
-            switch trainerSnapshot {
-            case .success(let snapshot)?:
-                let step = await Self.runNetworkWeightsStep(snapshot: snapshot, modelLabel: snapshot.modelLabel, tag: "Trainer", metadata: exportMetadata)
+            switch trainerCapture {
+            case .success(let capture)?:
+                let step = await Self.runNetworkWeightsStep(
+                    snapshot: capture.snapshot, modelLabel: capture.snapshot.modelLabel, tag: "Trainer", metadata: exportMetadata)
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
             case .failure(let error)?:
@@ -157,15 +174,9 @@ extension SessionController {
             }
 
             // 5. Numerics audit (champion, then trainer).
-            switch championSnapshot {
-            case .success(let snapshot)?:
-                let outcome = await Self.runNumericsAuditStep(
-                    snapshot: snapshot,
-                    modelLabel: snapshot.modelLabel,
-                    mastersSource: .unavailable(NumericsAudit.championMastersNote),
-                    metadata: exportMetadata,
-                    tag: "RunAll Champion"
-                )
+            switch championCapture {
+            case .success(let capture)?:
+                let outcome = await Self.runNumericsAuditStep(capture: capture, metadata: exportMetadata, tag: "RunAll Champion")
                 summaryLines.append(Self.numericsSummaryLine(outcome, tag: "champion"))
                 if firstSuccessURL == nil, case .saved(let url) = outcome { firstSuccessURL = url }
             case .failure(let error)?:
@@ -173,18 +184,9 @@ extension SessionController {
             case nil:
                 summaryLines.append("• Numerics audit (champion): SKIPPED — no champion loaded")
             }
-            switch trainerSnapshot {
-            case .success(let snapshot)?:
-                guard case .trainer(let trainer)? = trainerTarget?.source else {
-                    preconditionFailure("a trainer snapshot was taken without a trainer target")
-                }
-                let outcome = await Self.runNumericsAuditStep(
-                    snapshot: snapshot,
-                    modelLabel: snapshot.modelLabel,
-                    mastersSource: .trainer(trainer, trainingIsRunning: trainingIsRunning),
-                    metadata: exportMetadata,
-                    tag: "RunAll Trainer"
-                )
+            switch trainerCapture {
+            case .success(let capture)?:
+                let outcome = await Self.runNumericsAuditStep(capture: capture, metadata: exportMetadata, tag: "RunAll Trainer")
                 summaryLines.append(Self.numericsSummaryLine(outcome, tag: "trainer"))
                 if firstSuccessURL == nil, case .saved(let url) = outcome { firstSuccessURL = url }
             case .failure(let error)?:
@@ -193,18 +195,18 @@ extension SessionController {
                 summaryLines.append("• Numerics audit (trainer):  SKIPPED — no trainer initialized")
             }
 
-            await MainActor.run {
-                SessionLogger.shared.log("[ANALYSES] === Run All Analyses summary ===")
-                for line in summaryLines {
-                    SessionLogger.shared.log("[ANALYSES] \(line)")
-                }
-                Self.presentRunAllAlert(
-                    title: "Run All Analyses Complete",
-                    message: "Results:\n\n" + summaryLines.joined(separator: "\n")
-                        + (firstSuccessURL == nil ? "" : "\n\nClick Reveal in Finder to open the Analyses folder."),
-                    revealURL: firstSuccessURL
-                )
+            SessionLogger.shared.log("[ANALYSES] === Run All Analyses summary ===")
+            for line in summaryLines {
+                SessionLogger.shared.log("[ANALYSES] \(line)")
             }
+            let revealURL = firstSuccessURL
+            let message = "Results:\n\n" + summaryLines.joined(separator: "\n")
+                + (revealURL == nil ? "" : "\n\nClick Reveal in Finder to open the Analyses folder.")
+            await Self.presentRunAllAlert(
+                title: "Run All Analyses Complete",
+                message: message,
+                revealURL: revealURL
+            )
         }
     }
 
@@ -279,85 +281,22 @@ extension SessionController {
 
     // MARK: - Per-analysis runners
 
-    /// Build a fresh inference-mode `ChessMPSNetwork`, load the
-    /// trainer's current weights into it, and return it paired with a
-    /// "trainer:<id>" label, for use as the replay analyzer's entropy
-    /// probe. Returns `nil` if no trainer is available, or if the
-    /// snapshot path fails (logged; falls through to "no entropy
-    /// probe" in the caller — the analyzer's own fallback then picks
-    /// the champion).
-    ///
-    /// The network is short-lived — allocated for one Run All
-    /// Analyses pass and dropped when the closure exits. The build
-    /// includes the `.randomWeights` BN warmup whose stats are then
-    /// overwritten by `loadWeights`; that's wasted work but ~10s of
-    /// ms, negligible for a manual menu action.
-    nonisolated static func buildTrainerEntropyProbeNetwork(
-        trainer: ChessTrainer?
-    ) async -> (network: ChessMPSNetwork, label: String)? {
-        guard let trainer else { return nil }
-        do {
-            let weights = try await trainer.network.exportWeights()
-            let probe = try ChessMPSNetwork(.overwrittenByLoad, arch: trainer.arch)
-            try await probe.loadWeights(weights)
-            // Inherit the trainer's id so logs / JSON record exactly
-            // whose weights are being probed — same pattern as
-            // `fireCandidateProbeIfNeeded` uses for the candidate-test
-            // probe inference network.
-            probe.identifier = trainer.identifier
-            let label = "trainer:\(trainer.identifier?.description ?? "<no-id>")"
-            return (probe, label)
-        } catch {
-            SessionLogger.shared.log(
-                "[ANALYSIS] Trainer entropy-probe snapshot failed: \(error.localizedDescription)"
-                + " — replay analyzer will fall back to champion for the entropy probe."
-            )
-            return nil
-        }
-    }
-
-    /// Runs the replay-buffer analyzer (with the optional live-network
-    /// entropy probe when a network is available), writes the JSON,
-    /// logs an `[ANALYSIS]` block. Returns the summary line + first
-    /// success URL.
-    ///
-    /// `entropyProbe`, when non-nil, is the network the analyzer should
-    /// probe for per-bucket policy entropy / illegal mass. **It is
-    /// deliberately distinct from the champion** — the champion's
-    /// policy is frozen between promotions, so probing it produces
-    /// bit-identical entropy stats across snapshots and the "is
-    /// illegal mass falling?" training-progress signal is invisible.
-    /// Run All Analyses passes a fresh inference network freshly
-    /// loaded with the trainer's current weights so the entropy
-    /// section reflects the trainee's actual learning trajectory.
+    /// Runs the replay-buffer analyzer (`analyzeReplayBuffer`; the entropy
+    /// probe on `entropyProbe`, else the champion), writes the JSON and logs
+    /// an `[ANALYSIS]` block. A failed probe fails this step.
     nonisolated private static func runReplayBufferStep(
         buffer: ReplayBuffer,
-        network: ChessMPSNetwork?,
+        champion: ChessMPSNetwork?,
         modelLabel: String,
-        entropyProbe: (network: ChessMPSNetwork, label: String)? = nil,
+        entropyProbe: (network: ChessMPSNetwork, label: String)?,
         sampleRandom: DCMRandom,
         metadata: AnalysisExportMetadata
     ) async -> AnalysisStepResult {
         var result: ReplayBufferAnalyzer.Result
         do {
-            if let probe = entropyProbe {
-                result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
-                    buffer: buffer,
-                    network: probe.network,
-                    modelLabel: modelLabel,
-                    entropyModelLabel: probe.label,
-                    sampleRandom: sampleRandom
-                )
-            } else if let net = network {
-                result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
-                    buffer: buffer,
-                    network: net,
-                    modelLabel: modelLabel,
-                    sampleRandom: sampleRandom
-                )
-            } else {
-                result = ReplayBufferAnalyzer.run(buffer: buffer, modelLabel: modelLabel)
-            }
+            result = try await analyzeReplayBuffer(
+                buffer: buffer, champion: champion, modelLabel: modelLabel,
+                entropyProbe: entropyProbe, sampleRandom: sampleRandom)
         } catch {
             SessionLogger.shared.log("[ANALYSIS] (RunAll) failed: \(error)")
             return AnalysisStepResult(
@@ -367,20 +306,10 @@ extension SessionController {
         }
 
         result.exportMetadata = metadata
-        let outcome = writeJSON(
-            encodable: result,
-            filenameStem: "replay_analysis",
-            modelLabel: modelLabel
-        )
-        let summary = result.textSummary()
-        await MainActor.run {
-            SessionLogger.shared.log("[ANALYSIS] === Replay buffer analysis begin (RunAll) ===")
-            for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {
-                SessionLogger.shared.log("[ANALYSIS] \(line)")
-            }
-            SessionLogger.shared.log("[ANALYSIS] === Replay buffer analysis end (RunAll) ===")
-        }
-        switch outcome {
+        let outcome = await AnalysisJSONExport.summarizeAndPublishOffPool(
+            result, modelLabel: modelLabel, directory: CheckpointPaths.analysesDir)
+        AnalysisJSONExport.logSummary(outcome.summary, family: .replayBuffer, context: "RunAll")
+        switch outcome.written {
         case .success(let url):
             return AnalysisStepResult(
                 summaryLine: "• Replay buffer:           OK — \(url.lastPathComponent)",
@@ -403,7 +332,7 @@ extension SessionController {
     ) async -> AnalysisStepResult {
         var result: ValueHeadAnalyzer.Result
         do {
-            result = try ValueHeadAnalyzer.run(snapshot: snapshot, modelLabel: modelLabel)
+            result = try await ValueHeadAnalyzer.runOffPool(snapshot: snapshot, modelLabel: modelLabel)
         } catch {
             SessionLogger.shared.log("[VALHEAD] (RunAll) failed: \(error)")
             return AnalysisStepResult(
@@ -413,20 +342,10 @@ extension SessionController {
         }
 
         result.exportMetadata = metadata.describing(snapshot)
-        let outcome = writeJSON(
-            encodable: result,
-            filenameStem: "valuehead_analysis",
-            modelLabel: modelLabel
-        )
-        let summary = result.textSummary()
-        await MainActor.run {
-            SessionLogger.shared.log("[VALHEAD] === Value head analysis begin (RunAll) ===")
-            for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {
-                SessionLogger.shared.log("[VALHEAD] \(line)")
-            }
-            SessionLogger.shared.log("[VALHEAD] === Value head analysis end (RunAll) ===")
-        }
-        switch outcome {
+        let outcome = await AnalysisJSONExport.summarizeAndPublishOffPool(
+            result, modelLabel: modelLabel, directory: CheckpointPaths.analysesDir)
+        AnalysisJSONExport.logSummary(outcome.summary, family: .valueHead, context: "RunAll")
+        switch outcome.written {
         case .success(let url):
             return AnalysisStepResult(
                 summaryLine: "• Value head (champion):    OK — \(url.lastPathComponent)",
@@ -469,20 +388,10 @@ extension SessionController {
         }
 
         result.exportMetadata = metadata.describing(snapshot)
-        let outcome = writeJSON(
-            encodable: result,
-            filenameStem: "network_weights",
-            modelLabel: modelLabel
-        )
-        let summary = result.textSummary()
-        await MainActor.run {
-            SessionLogger.shared.log("[NETW] === Network weight analysis begin (RunAll \(tag)) ===")
-            for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {
-                SessionLogger.shared.log("[NETW] \(line)")
-            }
-            SessionLogger.shared.log("[NETW] === Network weight analysis end (RunAll \(tag)) ===")
-        }
-        switch outcome {
+        let outcome = await AnalysisJSONExport.summarizeAndPublishOffPool(
+            result, modelLabel: modelLabel, directory: CheckpointPaths.analysesDir)
+        AnalysisJSONExport.logSummary(outcome.summary, family: .networkWeights, context: "RunAll \(tag)")
+        switch outcome.written {
         case .success(let url):
             return AnalysisStepResult(
                 summaryLine: "• Network weights (\(tag.lowercased())):  OK — \(url.lastPathComponent)",
@@ -494,50 +403,6 @@ extension SessionController {
                 firstSuccessURL: nil
             )
         }
-    }
-
-    // MARK: - Shared JSON write
-
-    /// Generic JSON writer used by every sub-step. Same encoder
-    /// options the individual analyzer extensions use; filename stem
-    /// distinguishes the artifact families inside the same
-    /// `Analyses/` folder.
-    nonisolated private static func writeJSON<T: Encodable>(
-        encodable: T,
-        filenameStem: String,
-        modelLabel: String
-    ) -> Result<URL, Error> {
-        let fm = FileManager.default
-        let dir = CheckpointPaths.analysesDir
-        do {
-            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        } catch {
-            return .failure(error)
-        }
-
-        let stamp = filenameTimestamp()
-        let safeModel = modelLabel
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: " ", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
-        let url = dir.appendingPathComponent("\(filenameStem)_\(stamp)_\(safeModel).json")
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
-        do {
-            let data = try encoder.encode(encodable)
-            try data.write(to: url, options: [.atomic])
-            return .success(url)
-        } catch {
-            return .failure(error)
-        }
-    }
-
-    nonisolated private static func filenameTimestamp() -> String {
-        let df = DateFormatter()
-        df.dateFormat = "yyyyMMdd-HHmmss"
-        df.locale = Locale(identifier: "en_US_POSIX")
-        return df.string(from: Date())
     }
 
     // MARK: - Alert

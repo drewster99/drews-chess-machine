@@ -44,9 +44,14 @@ enum LichessBotMatchmaking {
         /// The operator's challenge queue still has entries to send; its
         /// picks go first.
         var queueHasEntriesToSend: Bool
-        /// Lichess' bot-game window as DCM's records show it; nil until
+        /// Lichess' bot-game count as DCM's records show it; nil until
         /// those records have loaded.
         var botGameWindow: LichessBotBotGameWindow?
+        /// Games that may still start against bots and count
+        /// (`LichessBotBotGameBudget.block`).
+        var prospectiveBotGames: Int
+        /// The instant the count is read at.
+        var now: Date
         /// The reserves matchmaking leaves short of Lichess' bot-game limit.
         var challengeSettings: LichessBotChallengeSettings
     }
@@ -71,10 +76,7 @@ enum LichessBotMatchmaking {
         if conditions.queueHasEntriesToSend {
             return "the challenge queue goes first"
         }
-        guard let window = conditions.botGameWindow else {
-            return "DCM's game records have not loaded"
-        }
-        return LichessBotBotGameBudget.blockedReason(window: window, sender: .matchmaking, settings: conditions.challengeSettings)
+        return LichessBotBotGameBudget.block(window: conditions.botGameWindow, prospectiveBotGames: conditions.prospectiveBotGames, sender: .matchmaking, settings: conditions.challengeSettings, now: conditions.now)?.reason
     }
 
     // MARK: - Slots
@@ -238,6 +240,10 @@ enum LichessBotMatchmaking {
         let fromFavorites: Bool
         /// Bots that fitted every rule.
         let candidateCount: Int
+        /// The bots the pick was drawn from uniformly: every candidate, or
+        /// the favorites among them and then those not contacted recently,
+        /// when those preferences narrowed them.
+        let drawnFromCount: Int
         /// How "prefer bots not contacted recently" chose, or nil when it
         /// is off.
         let recency: RecencyChoice?
@@ -318,13 +324,35 @@ enum LichessBotMatchmaking {
         guard let chosen = pool.randomElement(using: &generator) else {
             return .noCandidate(clock: clock, bounds: bounds, listed: seen.count, exclusions: exclusions)
         }
-        return .picked(Pick(bot: chosen.bot, rating: chosen.rating, clock: clock, bounds: bounds, fromFavorites: !favorites.isEmpty, candidateCount: candidates.count, recency: recency, exclusions: exclusions))
+        return .picked(Pick(bot: chosen.bot, rating: chosen.rating, clock: clock, bounds: bounds, fromFavorites: !favorites.isEmpty, candidateCount: candidates.count, drawnFromCount: pool.count, recency: recency, exclusions: exclusions))
     }
 
     /// Exclusion counts for a log line, in rule order.
     static func describe(_ exclusions: [Exclusion: Int]) -> String {
         guard !exclusions.isEmpty else { return "none excluded" }
         return exclusions.sorted { $0.key < $1.key }.map { "\($0.key.rawValue) \($0.value)" }.joined(separator: ", ")
+    }
+
+    /// The pick line's account of what the bot was drawn from: every
+    /// candidate, or the part "prefer favorites" and "prefer bots not
+    /// contacted recently" narrowed them to, and why.
+    static func describeSelection(_ pick: Pick) -> String {
+        let pool = pick.drawnFromCount == pick.candidateCount
+            ? "\(pick.candidateCount) candidate(s)"
+            : "\(pick.drawnFromCount) of \(pick.candidateCount) candidate(s)"
+        var narrowing: [String] = []
+        if pick.fromFavorites {
+            narrowing.append("favorites")
+        }
+        switch pick.recency {
+        case nil:
+            break
+        case .notContactedRecently?:
+            narrowing.append("not contacted recently")
+        case .contactedLongestAgo(let lastContact)?:
+            narrowing.append("every one contacted recently, so those contacted longest ago, at \(lastContact.formatted(date: .abbreviated, time: .standard))")
+        }
+        return narrowing.isEmpty ? "uniformly from \(pool)" : "uniformly from \(pool) (\(narrowing.joined(separator: "; ")))"
     }
 }
 

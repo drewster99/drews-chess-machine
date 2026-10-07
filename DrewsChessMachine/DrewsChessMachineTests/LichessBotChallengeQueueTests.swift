@@ -154,6 +154,7 @@ final class LichessBotChallengeQueueTests: XCTestCase {
             return XCTFail("a bot-limit refusal skips the player")
         }
         XCTAssertTrue(reason.hasPrefix("at its bot-game limit until"), reason)
+        XCTAssertEqual(LichessBotController.queueOutcome(for: LichessBotControllerError.botGameBudget(.allowanceUsed(reason: "used"))), .skipped(reason: "used"))
     }
 
     func testStateChangesAndRateLimitsStopTheQueue() {
@@ -163,6 +164,8 @@ final class LichessBotChallengeQueueTests: XCTestCase {
             LichessBotControllerError.notOnline,
             LichessBotControllerError.concurrentGameLimit(limit: 2, committed: 2),
             LichessBotControllerError.missingChallengeScope,
+            LichessBotControllerError.botGameBudget(.recordsNotLoaded),
+            LichessBotControllerError.botGameBudget(.awaitingGamesThatMayStart(reason: "waiting")),
             CancellationError(),
         ] {
             guard case .stopped = LichessBotController.queueOutcome(for: error) else {

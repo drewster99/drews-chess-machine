@@ -763,3 +763,51 @@ final class ArenaLogFormatterSPRTTests: XCTestCase {
         XCTAssertEqual(ArenaLogFormatter.formatElo(-2.5), "-2.5")
     }
 }
+
+extension ArenaLogFormatterSPRTTests {
+    /// Fed in start order, the test decides on games 0..<n while later-started
+    /// games have already finished; only the in-flight remainder drains after
+    /// the verdict. Calling every further game "drained" misstated when they
+    /// finished, so with the count recorded the two groups are reported apart.
+    func testGamesOutsideTheSampleAreSplitIntoFinishedBeforeAndDrainedAfter() throws {
+        var record = makeRecord(
+            criterion: .sprt,
+            verdict: verdict(.accept, llr: 3.1, wins: 20, draws: 12, losses: 10, config: try makeConfig()),
+            promoted: true,
+            gamesPlayed: 60
+        )
+        record.sprtGamesFinishedAtDecision = 47
+        let block = ArenaLogFormatter.formatSPRTBlock(record: record)
+        let line = try XCTUnwrap(block.first { $0.contains("decided at game 42") }, "\(block)")
+        XCTAssertTrue(line.contains("games 0..<42 in start order"), line)
+        XCTAssertTrue(line.contains("18 further game(s) counted but not evidence"), line)
+        XCTAssertTrue(line.contains("5 finished before the verdict outside that sample"), "47 − 42 = 5: \(line)")
+        XCTAssertTrue(line.contains("13 in flight and drained after it"), "60 − 47 = 13: \(line)")
+        XCTAssertFalse(line.contains("18 further game(s) drained"), "only 13 drained: \(line)")
+
+        let kv = ArenaLogFormatter.formatKVLine(
+            record: record, index: 1,
+            candidateID: "C", championID: "M", trainerID: "T", buildNumber: 2400
+        )
+        XCTAssertTrue(kv.contains("sprt_finished_at_decision=47 "), kv)
+    }
+
+    /// A record from a session saved before the count was stored cannot say
+    /// how many further games finished before the verdict; the block must say
+    /// so rather than call them all drained.
+    func testUnrecordedSplitIsSaidToBeUnrecorded() throws {
+        let record = makeRecord(
+            criterion: .sprt,
+            verdict: verdict(.reject, llr: -3.2, config: try makeConfig()),
+            gamesPlayed: 60
+        )
+        XCTAssertTrue(
+            ArenaLogFormatter.formatSPRTBlock(record: record).contains { $0.contains("split not recorded") }
+        )
+        let kv = ArenaLogFormatter.formatKVLine(
+            record: record, index: 1,
+            candidateID: "C", championID: "M", trainerID: "T", buildNumber: 2400
+        )
+        XCTAssertTrue(kv.contains("sprt_finished_at_decision=nan "), kv)
+    }
+}

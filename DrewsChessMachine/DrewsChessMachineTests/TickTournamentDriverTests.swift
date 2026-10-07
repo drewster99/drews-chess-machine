@@ -321,3 +321,91 @@ private final class ManagedAtomicFlag: @unchecked Sendable {
     var isSet: Bool { box.value }
     func signal() { box.value = true }
 }
+
+/// Candidate-perspective W/D/L of a set of finished games, computed straight
+/// from each record's result — independent of the driver's own tally and of
+/// `ArenaSPRTStartOrderFeed`.
+private struct CandidateTally: Equatable {
+    var wins = 0
+    var draws = 0
+    var losses = 0
+
+    init<Records: Sequence>(_ records: Records) where Records.Element == TournamentGameRecord {
+        for record in records {
+            switch record.result {
+            case .checkmate(let winner):
+                if (winner == .white) == record.aIsWhite { wins += 1 } else { losses += 1 }
+            case .stalemate, .drawByFiftyMoveRule, .drawByInsufficientMaterial, .drawByThreefoldRepetition:
+                draws += 1
+            }
+        }
+    }
+}
+
+extension TickTournamentDriverTests {
+    /// The sequential test must decide on the games in the order they
+    /// *started*: the verdict's tally is games `0..<n` by game index, never
+    /// the first `n` games to finish (`ArenaSPRTStartOrderFeed` documents the
+    /// bias finishing order caused). This runs the driver itself, so it pins
+    /// the feed's wiring, not only the feed.
+    ///
+    /// `elo1 = 0.1` puts the hypotheses so close together that no tally of 24
+    /// or fewer games reaches a Wald bound — the largest |LLR| over every
+    /// W/D/L with n ≤ 24 is about 0.166, against bounds of ±2.944 — so the
+    /// runaway guard decides at exactly 24 games in start order whatever the
+    /// results. With 96 games started at once the first 24 to finish are the
+    /// shortest; the fixture check fails, asking for another seed, if their
+    /// tally ever matches games 0..<24's, since the test could then not tell
+    /// the two orders apart.
+    func test_sprtMode_verdictTalliesTheStartOrderPrefix() async throws {
+        let sampleSize = 24
+        let concurrency = 96
+        let config = try ArenaSPRT.SPRTConfig(
+            elo0: 0, elo1: 0.1, alpha: 0.05, beta: 0.05,
+            minGames: 2, maxGames: sampleSize
+        )
+        // Finishing order: the driver reports each game from its serial
+        // game-end pass, in the order the games finish.
+        let finishOrder = OSAllocatedUnfairLock(initialState: [TournamentGameRecord]())
+        let driver = TickTournamentDriver()
+        let stats = try await driver.run(
+            randomStreams: DCMRandomStreams(masterSeed: 1),
+            arenaIndex: 0,
+            candidateNetwork: Self.networkPair.cand,
+            championNetwork: Self.networkPair.champ,
+            arenaSchedule: .arena,
+            games: 0,
+            sprt: config,
+            concurrency: concurrency,
+            onGameRecorded: { record in finishOrder.withLock { $0.append(record) } }
+        )
+        let finished = finishOrder.withLock { $0 }
+        XCTAssertEqual(finished.count, stats.gamesPlayed, "one record per tallied game")
+
+        let verdict = try XCTUnwrap(stats.sprtVerdict, "an uncancelled SPRT run must reach a verdict")
+        XCTAssertEqual(verdict.decision, .inconclusive, "no tally of \(sampleSize) games can cross a bound at elo1 = 0.1")
+        XCTAssertEqual(verdict.gamesAtDecision, sampleSize)
+
+        let startOrderSample = finished.filter { $0.gameIndex < sampleSize }
+        XCTAssertEqual(startOrderSample.count, sampleSize, "every game of the sample finished")
+        let startOrder = CandidateTally(startOrderSample)
+        let firstFinishers = CandidateTally(finished.prefix(sampleSize))
+        XCTAssertNotEqual(
+            firstFinishers, startOrder,
+            "fixture: the first \(sampleSize) finishers tally the same as games 0..<\(sampleSize), "
+                + "so this run cannot tell start order from finishing order — pick another masterSeed"
+        )
+
+        XCTAssertEqual(verdict.wins, startOrder.wins, "verdict wins must be games 0..<\(sampleSize)'s")
+        XCTAssertEqual(verdict.draws, startOrder.draws, "verdict draws must be games 0..<\(sampleSize)'s")
+        XCTAssertEqual(verdict.losses, startOrder.losses, "verdict losses must be games 0..<\(sampleSize)'s")
+
+        // The verdict latched as the last game of the sample finished: the
+        // games counted by then are every record up to and including it, and
+        // the K − 1 games still in flight are the ones drained after it.
+        let lastSampleGame = try XCTUnwrap(finished.lastIndex { $0.gameIndex < sampleSize })
+        XCTAssertEqual(stats.sprtGamesFinishedAtDecision, lastSampleGame + 1)
+        XCTAssertEqual(stats.gamesPlayed - (lastSampleGame + 1), concurrency - 1,
+                       "the games drained after the verdict are the K − 1 in flight at it")
+    }
+}

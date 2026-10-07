@@ -202,11 +202,14 @@ enum NumericsAudit {
     /// matching graph variable names). `positions` nil skips the dynamic
     /// checks and `dynamicSkippedReason` says why. `velocity` feeds the
     /// layer-health velocity checks (a trainer-state file carries it; a
-    /// model file or a live network does not, and says why).
+    /// model file or a live network does not, and says why). `initReference`
+    /// is `arch`'s (`AnalysisInitReference`): the head-bias init means come
+    /// from it.
     static func run(
         names: [String],
         weights: [[Float]],
         arch: NetworkArchitecture,
+        initReference: AnalysisInitReference,
         masters: [[Float]]?,
         mastersNote: String?,
         velocity: LayerHealth.VelocitySource,
@@ -217,8 +220,12 @@ enum NumericsAudit {
         modelID: String?,
         trainingStep: Int?
     ) async throws -> Result {
+        // The head-bias init means come from the reference; one built for
+        // another architecture would describe another model's start.
+        guard initReference.architecture == arch else { throw NumericsAuditError.initReferenceArchitectureMismatch }
         let (staticResult, layerHealth) = try await runStaticAndLayerHealthOffPool(
-            names: names, weights: weights, arch: arch, masters: masters, mastersNote: mastersNote, velocity: velocity)
+            names: names, weights: weights, arch: arch, initReference: initReference,
+            masters: masters, mastersNote: mastersNote, velocity: velocity)
         var dynamicResult: DynamicResult?
         if let positions {
             dynamicResult = try await runDynamic(
@@ -255,6 +262,7 @@ enum NumericsAudit {
         names: [String],
         weights: [[Float]],
         arch: NetworkArchitecture,
+        initReference: AnalysisInitReference,
         masters: [[Float]]?,
         mastersNote: String?,
         velocity: LayerHealth.VelocitySource
@@ -263,7 +271,8 @@ enum NumericsAudit {
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let staticResult = try runStatic(
-                        names: names, weights: weights, arch: arch, masters: masters, mastersNote: mastersNote)
+                        names: names, weights: weights, arch: arch, masters: masters, mastersNote: mastersNote,
+                        biasInitialMean: initReference.exactInitialMean(of:))
                     let layerHealth = try LayerHealth.summarizePlanAligned(
                         arch: arch, baseWeights: weights, velocity: velocity)
                     continuation.resume(returning: (staticResult, layerHealth))
@@ -276,13 +285,17 @@ enum NumericsAudit {
 
     // MARK: - Static checks
 
-    /// Weights-only checks. Pure: no GPU, no files.
+    /// Weights-only checks. Pure: no GPU, no files. `biasInitialMean` gives
+    /// a head-final bias's mean at init by variable name — in production the
+    /// init reference's `exactInitialMean(of:)`, never a copy of the
+    /// builder's rules.
     static func runStatic(
         names: [String],
         weights: [[Float]],
         arch: NetworkArchitecture,
         masters: [[Float]]?,
-        mastersNote: String?
+        mastersNote: String?,
+        biasInitialMean: (_ biasName: String) throws -> Double
     ) throws -> StaticResult {
         guard names.count == weights.count else {
             throw NumericsAuditError.weightCountMismatch(names: names.count, weights: weights.count)
@@ -297,10 +310,11 @@ enum NumericsAudit {
         let valueOffset: SharedOffsetReport?
         if arch.valueHeadStyle == .wdlSoftmax,
            let w = byName["value_wdl_fc2_weights"], let b = byName["value_wdl_fc2_bias"] {
+            let biasInitMean = try biasInitialMean("value_wdl_fc2_bias")
             valueOffset = sharedOffset(
                 weightName: "value_wdl_fc2_weights", weights: w, layout: .inputMajor(outputs: b.count),
                 biasName: "value_wdl_fc2_bias", bias: b,
-                biasInitMean: initMean(of: "value_wdl_fc2_bias", count: b.count, arch: arch)
+                biasInitMean: biasInitMean
             )
         } else {
             valueOffset = nil
@@ -308,16 +322,18 @@ enum NumericsAudit {
 
         let policyOffset: SharedOffsetReport?
         if let w = byName["policy_conv_weights"], let b = byName["policy_conv_bias"] {
+            let biasInitMean = try biasInitialMean("policy_conv_bias")
             policyOffset = sharedOffset(
                 weightName: "policy_conv_weights", weights: w, layout: .outputMajor(outputs: b.count),
                 biasName: "policy_conv_bias", bias: b,
-                biasInitMean: initMean(of: "policy_conv_bias", count: b.count, arch: arch)
+                biasInitMean: biasInitMean
             )
         } else if let w = byName["policy_fc_weights"], let b = byName["policy_fc_bias"] {
+            let biasInitMean = try biasInitialMean("policy_fc_bias")
             policyOffset = sharedOffset(
                 weightName: "policy_fc_weights", weights: w, layout: .inputMajor(outputs: b.count),
                 biasName: "policy_fc_bias", bias: b,
-                biasInitMean: initMean(of: "policy_fc_bias", count: b.count, arch: arch)
+                biasInitMean: biasInitMean
             )
         } else {
             policyOffset = nil
@@ -355,21 +371,6 @@ enum NumericsAudit {
             mastersNote: masters == nil ? mastersNote : nil,
             fitnessNote: storedInComputeDtypeNote(weights: weights, dataType: arch.computeDataType)
         )
-    }
-
-    /// The mean of a head-final bias at init, from the values the network
-    /// builder itself uses: the W/D/L bias is
-    /// `NetworkArchitecture.wdlBiasPrior(drawProbability:)` of the model's
-    /// `value_head_draw_prior` (`ChessNetwork.valueHead`); the policy head's
-    /// final bias starts at zero (`ChessNetwork.policyHead`).
-    private static func initMean(of name: String, count: Int, arch: NetworkArchitecture) -> Double {
-        switch name {
-        case "value_wdl_fc2_bias":
-            let prior = NetworkArchitecture.wdlBiasPrior(drawProbability: arch.valueHeadDrawPrior)
-            return prior.reduce(0.0) { $0 + Double($1) } / Double(prior.count)
-        default:
-            return 0
-        }
     }
 
     /// `StaticResult.fitnessNote` for `weights` under `dataType`, or nil when
@@ -703,14 +704,13 @@ enum NumericsAuditError: LocalizedError {
     case positionSetEmpty
     case recordReplayFailed(String)
     case formatBuildFailed(format: NumericFormat, error: String)
-    /// A trainer-state export without exactly one velocity tensor per
-    /// trainable after the network's tensors.
-    case trainerStateCountMismatch(tensors: Int, expected: Int)
+    /// The init reference was built for another architecture.
+    case initReferenceArchitectureMismatch
 
     var errorDescription: String? {
         switch self {
-        case .trainerStateCountMismatch(let tensors, let expected):
-            return "numerics audit: the trainer-state export has \(tensors) tensors, expected \(expected) (network tensors plus one velocity per trainable)"
+        case .initReferenceArchitectureMismatch:
+            return "numerics audit: the init reference describes another architecture than the audited weights"
         case .weightCountMismatch(let names, let weights):
             return "numerics audit: \(names) variable names for \(weights) weight tensors"
         case .masterCountMismatch(let masters, let weights):

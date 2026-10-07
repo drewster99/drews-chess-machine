@@ -11,8 +11,14 @@ import Foundation
 /// filename, and audited on its own embedded architecture.
 ///
 /// For each checkpoint: the full result goes to a JSON file (under the
-/// analyses folder, or `--numerics-out <dir>`), one compact JSON line to
-/// stdout, and the text summary to stderr.
+/// analyses folder, or `--numerics-out <dir>`; `AnalysisJSONExport`), one
+/// compact JSON line to stdout, and the text summary to stderr. A checkpoint
+/// whose JSON name (model ID, second) is already taken — a run's checkpoints
+/// share one model ID — gets -2, -3, … rather than replacing the earlier file.
+///
+/// Init figures (the head-bias init means) come from `AnalysisInitReference`,
+/// under the file's recorded init seed when it has one; checkpoints of one
+/// architecture and seed share one build.
 enum NumericsAuditCLI {
 
     static func runAndExit(
@@ -42,6 +48,7 @@ enum NumericsAuditCLI {
 
         var failures = 0
         var positionSets: [InputEncoding: NumericsAudit.PositionSet] = [:]
+        let initReferences = AnalysisInitReferenceCache()
         for target in targets {
             do {
                 // As stored: the audit measures the offset the file holds,
@@ -79,12 +86,16 @@ enum NumericsAuditCLI {
                 let modelID = file.modelID.isEmpty ? nil : file.modelID
                 let label = "file:\(target.lastPathComponent)"
                 let auditPositions = positions
+                let initialization = file.safetensorsProvenance?.lineage.record?.rng.initialization
                 let result = try syncWait {
-                    let names = try await variableNames(arch: arch)
+                    // The reference's names are the builder's, in export
+                    // (= plan) order, which is how `weights` is laid out.
+                    let reference = try await initReferences.reference(architecture: arch, initialization: initialization)
                     return try await NumericsAudit.run(
-                        names: names,
+                        names: reference.variableNames,
                         weights: weights,
                         arch: arch,
+                        initReference: reference,
                         masters: nil,
                         mastersNote: "a saved model file holds one set of weights",
                         velocity: velocity,
@@ -96,11 +107,9 @@ enum NumericsAuditCLI {
                         trainingStep: stepValue
                     )
                 }
-                let jsonURL: URL
-                switch SessionController.writeNumericsAuditJSON(result: result, modelLabel: modelID ?? label, directory: outURL) {
-                case .success(let url): jsonURL = url
-                case .failure(let error): throw error
-                }
+                // Headless: this thread is the CLI's own and waits on each
+                // audit anyway, so the encode and write run here directly.
+                let jsonURL = try AnalysisJSONExport.publish(result, modelLabel: modelID ?? label, directory: outURL)
                 FileHandle.standardError.write(Data("[NUMERICS] \(target.path)\n\(result.textSummary())\n\n".utf8))
                 emit(compactLine(result: result, target: target, jsonURL: jsonURL, stepReading: stepReading))
             } catch {
@@ -111,21 +120,6 @@ enum NumericsAuditCLI {
 
         SessionLogger.shared.shutdown()
         Darwin.exit(failures == 0 ? 0 : 85)
-    }
-
-    /// Graph variable names for `arch`, from a plain network build (the
-    /// names the analyzers key on).
-    private static func variableNames(arch: NetworkArchitecture) async throws -> [String] {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    let network = try ChessNetwork(arch: arch, bnMode: .inference, initialization: .overwrittenByLoad)
-                    continuation.resume(returning: (network.trainableVariables + network.bnRunningStatsVariables).map { $0.operation.name })
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
     }
 
     private static func resolveTargets(rootURL: URL) throws -> [URL] {

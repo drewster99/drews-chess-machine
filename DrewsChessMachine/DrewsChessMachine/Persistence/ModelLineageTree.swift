@@ -57,6 +57,18 @@ struct ModelLineageNode: Identifiable, Sendable, Equatable {
         self.trainedBelow = below
     }
 
+    /// An untrained segment with nothing trained anywhere below it: what the
+    /// tree sorts after the trained roots and the picker tags orange. The one
+    /// rule for both.
+    static func isSeedOnly(isUntrained: Bool, trainedBelow: TrainedBelow) -> Bool {
+        isUntrained && trainedBelow.isEmpty
+    }
+
+    var isSeedOnly: Bool {
+        guard case .segment(_, _, let isUntrained, _) = kind else { return false }
+        return Self.isSeedOnly(isUntrained: isUntrained, trainedBelow: trainedBelow)
+    }
+
     /// The file selecting this row chooses, if any.
     var selectableEntry: ModelFileEntry? {
         switch kind {
@@ -165,9 +177,7 @@ enum ModelLineageTree {
         let unplaced = lines.map(\.modelID).filter { !visited.contains($0) }.compactMap { segmentNode($0, path: []) }
 
         let trainedFirst = (rootNodes + unplaced).sorted { lhs, rhs in
-            let lhsSeedOnly = isSeedOnly(lhs)
-            let rhsSeedOnly = isSeedOnly(rhs)
-            if lhsSeedOnly != rhsSeedOnly { return !lhsSeedOnly }
+            if lhs.isSeedOnly != rhs.isSeedOnly { return !lhs.isSeedOnly }
             return lhs.newestActivity > rhs.newestActivity
         }
         return conflictNodes + trainedFirst + orphanChampions.map(championNode)
@@ -183,18 +193,5 @@ enum ModelLineageTree {
 
     private static func championNode(_ champion: SessionChampion) -> ModelLineageNode {
         ModelLineageNode(id: "session:\(champion.entry.url.path)", kind: .sessionChampion(champion), children: nil)
-    }
-
-    /// An untrained seed with nothing trained under it.
-    private static func isSeedOnly(_ node: ModelLineageNode) -> Bool {
-        guard case .segment(_, _, let isUntrained, _) = node.kind else { return false }
-        let hasTrainedDescendant = (node.children ?? []).contains { child in
-            switch child.kind {
-            case .segment, .sessionChampion: return true
-            case .file(let entry): return entry.trainingStep != nil
-            case .conflict: return false
-            }
-        }
-        return isUntrained && !hasTrainedDescendant
     }
 }

@@ -175,6 +175,9 @@ final class LichessBotController {
         /// adjusted.
         let request: LichessBotOutgoingChallenge
         let origin: ChallengeOrigin
+        /// Bot or human, from the online check before the send: only a
+        /// challenge to a bot can add to Lichess' bot-game count.
+        let opponentKind: LichessBotChallengeOpponentKind
     }
 
     /// A rated challenge the player declined with Lichess's `casual` reason
@@ -239,6 +242,26 @@ final class LichessBotController {
     /// Challenge POSTs under way, counted against the concurrent-game limit.
     /// (The per-opponent limit counts them in the manager, as reservations.)
     private var challengeSendsInFlight = 0
+    /// Challenge POSTs to bots under way, from the bot-game budget check
+    /// until the challenge is pending or the send fails: counted as games
+    /// that may start (`prospectiveBotGames`).
+    private var botChallengeSendsInFlight = 0
+    /// Lichess' bot-game count for DCM (`LichessBotBotGameWindow`), from
+    /// every game start (`gameStarts(filedRows:)`); nil until the games
+    /// index loads. Stored so the Challenge sheet and every send decision
+    /// read one value instead of replaying the records;
+    /// `refreshBotGameWindow` keeps it current.
+    private(set) var botGameWindow: LichessBotBotGameWindow?
+    /// Listed games not yet filed whose opponent is not known yet (no
+    /// `gameFull` so far): each may be a bot game. Set with `botGameWindow`.
+    @ObservationIgnored private var liveGamesWithUnknownOpponent = 0
+    /// What `botGameWindow` was last built from among the listed games, so
+    /// a rebuild happens only when one of them changed.
+    @ObservationIgnored private var botGameWindowLiveInputs: [BotGameWindowLiveInput]?
+    private struct BotGameWindowLiveInput: Equatable {
+        let gameID: String
+        let opponent: LichessBotLiveGame.Player?
+    }
     /// Withdrawals of our unanswered challenges under way, by challenge id.
     /// Each removes its own entry when its request ends; shutdown waits for
     /// the rest.
@@ -263,6 +286,7 @@ final class LichessBotController {
             recordsByOpponent = LichessBotRecordSummary.byOpponent(rows: index?.rows ?? [])
             pastOpponents = LichessBotRecordSummary.pastOpponents(rows: index?.rows ?? [])
             indexedGameIDs = Set(index?.rows.map(\.gameID) ?? [])
+            refreshBotGameWindow(indexChanged: true)
             // The statistics take the new rows and their origins together
             // and compute once; `originsByGameID`'s own report is then a
             // no-op, its categories already taken.
@@ -1892,17 +1916,64 @@ final class LichessBotController {
         }
     }
 
-    /// Lichess' bot-game window open at `now` (`LichessBotBotGameWindow`),
-    /// from every game against a bot: filed games plus live ones not yet
-    /// filed; nil until the games index is loaded.
-    func botGameWindow(now: Date) -> LichessBotBotGameWindow? {
-        guard let rows = index?.rows else { return nil }
-        let filedIDs = Set(rows.map(\.gameID))
-        let filedStarts = rows.filter { $0.opponentKind == .bot }.map(\.createdAt)
-        let liveStarts = games.filter { game in
-            !filedIDs.contains(game.id) && game.opponent?.title == "BOT"
-        }.map(\.startedAt)
-        return LichessBotBotGameWindow(botGameStarts: filedStarts + liveStarts, now: now)
+    /// Every game's start (`LichessBotGameStart`): `filedRows`, then live
+    /// games not filed yet. The one merge of the two that the bot-game
+    /// window, the account grid's counts and matchmaking's contact memory
+    /// read.
+    private func gameStarts(filedRows: [LichessBotGameSummary]) -> [LichessBotGameStart] {
+        LichessBotGameStart.all(filedRows: filedRows, liveGames: games)
+    }
+
+    /// Rebuild `botGameWindow` when its inputs changed: the games index, a
+    /// listed game, or what one knows of its opponent. The check is one
+    /// pass over the listed games, so the poll loop and every send decision
+    /// call this freely. Never called from a property a view reads.
+    private func refreshBotGameWindow(indexChanged: Bool) {
+        // The index is only ever replaced by a loaded one, so until it loads
+        // `botGameWindow` stays nil.
+        guard let rows = index?.rows else { return }
+        let liveInputs = games.map { BotGameWindowLiveInput(gameID: $0.id, opponent: $0.opponent) }
+        guard indexChanged || liveInputs != botGameWindowLiveInputs else { return }
+        botGameWindowLiveInputs = liveInputs
+        var botGameStarts: [Date] = []
+        var unknownOpponents = 0
+        for start in gameStarts(filedRows: rows) {
+            switch start.opponentIsBot {
+            case true?: botGameStarts.append(start.startedAt)
+            case false?: break
+            case nil: unknownOpponents += 1
+            }
+        }
+        liveGamesWithUnknownOpponent = unknownOpponents
+        let window = LichessBotBotGameWindow(botGameStarts: botGameStarts)
+        if window != botGameWindow {
+            botGameWindow = window
+        }
+    }
+
+    /// Games Lichess has not counted but may, if they start against a bot:
+    /// DCM's challenges to bots awaiting an answer or being sent, accepted
+    /// challenges whose game is not listed yet, and listed games whose
+    /// opponent is not known yet. An accepted challenge's opponent is not
+    /// known here, so each counts. The reserves must hold if all start.
+    private var prospectiveBotGames: Int {
+        let listedGameIDs = Set(games.map(\.id))
+        return pendingChallenges.filter { $0.opponentKind == .bot }.count
+            + botChallengeSendsInFlight
+            + acceptedAwaitingStartIDs.subtracting(listedGameIDs).count
+            + liveGamesWithUnknownOpponent
+    }
+
+    /// The account grid's per-speed counts at `now`
+    /// (`LichessBotAccountGameCounts`): loading until the games index has
+    /// loaded, live games included.
+    func accountGameCounts(now: Date, calendar: Calendar) -> LichessBotAccountGameCounts.Reading {
+        guard let rows = index?.rows else { return .loading }
+        do {
+            return .counted(try LichessBotAccountGameCounts(filedRows: rows, gameStarts: gameStarts(filedRows: rows), now: now, calendar: calendar))
+        } catch {
+            return .failed(Self.safeDescription(error))
+        }
     }
 
     /// A speed's leaderboard, fetched when asked for and kept for
@@ -2000,6 +2071,10 @@ final class LichessBotController {
         guard committed < limit else {
             throw LichessBotControllerError.concurrentGameLimit(limit: limit, committed: committed)
         }
+        var holdsBotChallengeSend = false
+        defer {
+            if holdsBotChallengeSend { botChallengeSendsInFlight -= 1 }
+        }
         // Held for the POST, so a second send started meanwhile counts it.
         challengeSendsInFlight += 1
         defer { challengeSendsInFlight -= 1 }
@@ -2017,6 +2092,7 @@ final class LichessBotController {
             throw LichessBotControllerError.perOpponentGameLimit(username: username, limit: perOpponentLimit, committed: reservation.committedBefore)
         }
         let created: LichessBotChallenge
+        let opponentKind: LichessBotChallengeOpponentKind
         do {
             guard self.runtime?.manager === manager else {
                 throw LichessBotControllerError.notOnline
@@ -2042,17 +2118,22 @@ final class LichessBotController {
             guard self.runtime?.manager === manager else {
                 throw LichessBotControllerError.notOnline
             }
-            let opponentKind = Self.challengeOpponentKind(title: status.title)
-            // Only here is the opponent known to be a bot. The operator's
-            // own challenge may use the whole limit, which Lichess enforces
-            // itself; matchmaking and the queue stop short of the reserves.
-            if opponentKind == .bot, origin.botGameBudgetSender != .operatorChallenge {
-                guard let window = botGameWindow(now: Date()) else {
-                    throw LichessBotControllerError.botGameBudget("DCM's game records have not loaded")
+            opponentKind = Self.challengeOpponentKind(title: status.title)
+            if opponentKind == .bot {
+                // Only here is the opponent known to be a bot. The operator's
+                // own challenge may use the whole limit, which Lichess enforces
+                // itself; matchmaking and the queue stop short of the reserves,
+                // counting every bot game that may still start.
+                if origin.botGameBudgetSender != .operatorChallenge {
+                    refreshBotGameWindow(indexChanged: false)
+                    if let block = LichessBotBotGameBudget.block(window: botGameWindow, prospectiveBotGames: prospectiveBotGames, sender: origin.botGameBudgetSender, settings: settings.challenge, now: Date()) {
+                        throw LichessBotControllerError.botGameBudget(block)
+                    }
                 }
-                if let reason = LichessBotBotGameBudget.blockedReason(window: window, sender: origin.botGameBudgetSender, settings: settings.challenge) {
-                    throw LichessBotControllerError.botGameBudget(reason)
-                }
+                // No suspension since the check, so a send deciding while
+                // this one is posted counts it.
+                botChallengeSendsInFlight += 1
+                holdsBotChallengeSend = true
             }
             do {
                 created = try await client.challenge(username: username, request: request)
@@ -2099,7 +2180,13 @@ final class LichessBotController {
             await manager.releaseOutgoingChallengeReservation(against: opponentID)
             throw error
         }
-        pendingChallenges.append(PendingChallenge(id: created.id, username: username, sentAt: Date(), request: request, origin: origin))
+        // From here the pending challenge counts it; counting the send as
+        // well across the `noteSentChallenge` await would count it twice.
+        if holdsBotChallengeSend {
+            botChallengeSendsInFlight -= 1
+            holdsBotChallengeSend = false
+        }
+        pendingChallenges.append(PendingChallenge(id: created.id, username: username, sentAt: Date(), request: request, origin: origin, opponentKind: opponentKind))
         casualResendOffer = nil
         loadOpponentProfile(username)
         lastChallengeOutcome = nil
@@ -2261,12 +2348,30 @@ final class LichessBotController {
         }
     }
 
+    /// Why the queue may not send now, without a request: every reason any
+    /// send has, plus Lichess' bot-game budget when it waits on something
+    /// that resolves by itself (the records loading, games that may still
+    /// start). A send would only stop there and be retried every poll, an
+    /// online check each time. A budget used by games already counted is not
+    /// a wait: it skips the entries that turn out to be bots, so a human
+    /// further down still goes out.
+    private var challengeQueueSendBlockedReason: String? {
+        if let reason = outgoingSendBlockedReason { return reason }
+        let block = LichessBotBotGameBudget.block(window: botGameWindow, prospectiveBotGames: prospectiveBotGames, sender: .challengeQueue, settings: settings.challenge, now: Date())
+        switch block {
+        case .recordsNotLoaded?, .awaitingGamesThatMayStart?:
+            return block?.reason
+        case .allowanceUsed?, nil:
+            return nil
+        }
+    }
+
     // MARK: - Challenge queue (plan §7.3 A)
 
     /// Why the queue's waiting entries wait, for the Overview; nil when
     /// nothing waits.
     var challengeQueueWaitReason: String? {
-        switch challengeQueue.nextStep(sendingBlockedReason: outgoingSendBlockedReason, freeSlots: freeChallengeSlots) {
+        switch challengeQueue.nextStep(sendingBlockedReason: challengeQueueSendBlockedReason, freeSlots: freeChallengeSlots) {
         case .idle:
             return nil
         case .wait(let reason):
@@ -2331,7 +2436,7 @@ final class LichessBotController {
     /// event that frees a slot calls it at once.
     private func scheduleChallengeQueuePump() {
         guard !challengeQueuePumpRunning,
-              case .send = challengeQueue.nextStep(sendingBlockedReason: outgoingSendBlockedReason, freeSlots: freeChallengeSlots) else { return }
+              case .send = challengeQueue.nextStep(sendingBlockedReason: challengeQueueSendBlockedReason, freeSlots: freeChallengeSlots) else { return }
         challengeQueuePumpRunning = true
         let generation = runtimeGeneration
         Task {
@@ -2358,7 +2463,8 @@ final class LichessBotController {
             // moment ago must stop the queue before the hold is in place.
             let phase = await gate.snapshot().phase
             guard current() else { return }
-            let blocked = outgoingSendBlockedReason ?? Self.gateBlockedReason(phase)
+            refreshBotGameWindow(indexChanged: false)
+            let blocked = challengeQueueSendBlockedReason ?? Self.gateBlockedReason(phase)
             guard case .send(let entry) = challengeQueue.nextStep(sendingBlockedReason: blocked, freeSlots: freeChallengeSlots) else { return }
             if let until = botLimitEnds(entry.userID, now: Date()) {
                 let reason = "at its bot-game limit until \(until.formatted(date: .omitted, time: .shortened))"
@@ -2405,10 +2511,17 @@ final class LichessBotController {
                 return .skipped(reason: "offline")
             case .notOnline, .concurrentGameLimit, .missingChallengeScope, .noToken, .tokenInvalid, .tokenForWrongAccount, .notABot, .goingOnlineCancelled, .shutDownWhileGoingOnline:
                 return .stopped(reason: text)
-            case .botGameBudget(let reason):
-                // Tied to this player being a bot: a human further down the
-                // queue can still be challenged.
-                return .skipped(reason: reason)
+            case .botGameBudget(let block):
+                switch block {
+                case .allowanceUsed(let reason):
+                    // Tied to this player being a bot: a human further down
+                    // the queue can still be challenged.
+                    return .skipped(reason: reason)
+                case .recordsNotLoaded, .awaitingGamesThatMayStart:
+                    // Passes by itself; `challengeQueueSendBlockedReason`
+                    // holds the queue until then.
+                    return .stopped(reason: block.reason)
+                }
             case .noSuchPlayer, .chatNotSendable:
                 return .dropped(reason: text)
             }
@@ -2620,7 +2733,7 @@ final class LichessBotController {
         }
         let speed = pick.clock.speed
         let rating = pick.rating
-        protocolLog.record(.challenge, "matchmaking pick: \(pick.bot.username) (\(speed.rawValue) \(rating)) at \(pick.clock.rawValue), uniformly from \(pick.candidateCount) candidate(s)\(pick.fromFavorites ? ", favorites first" : ""); rating window \(pick.bounds.description(speed: speed)); excluded: \(LichessBotMatchmaking.describe(pick.exclusions))\(Self.describe(pick.recency))")
+        protocolLog.record(.challenge, "matchmaking pick: \(pick.bot.username) (\(speed.rawValue) \(rating)) at \(pick.clock.rawValue), \(LichessBotMatchmaking.describeSelection(pick)); rating window \(pick.bounds.description(speed: speed)); excluded: \(LichessBotMatchmaking.describe(pick.exclusions))")
         let request = pick.clock.challenge(rated: matchmaking.rated, color: .random)
         let outcome = await sendMatchmakingChallenge(
             to: pick.bot.username, request: request, origin: .matchmaking(trigger: trigger, fillMode: fillMode, opponent: pick.bot))
@@ -2682,6 +2795,7 @@ final class LichessBotController {
     /// the gate's live phase.
     private func matchmakingSendConditionsBlock(fillMode: LichessBotMatchmakingSettings.FillMode) async -> MatchmakingPassOutcome? {
         let phase = await gate.snapshot().phase
+        refreshBotGameWindow(indexChanged: false)
         let conditions = LichessBotMatchmaking.PassConditions(
             isOnline: runtime != nil && connection == .online,
             rateLimitHoldActive: rateLimitHoldUntil != nil,
@@ -2689,7 +2803,9 @@ final class LichessBotController {
             hasChallengeScope: hasChallengeScope,
             playOneGameActive: oneGameRequested,
             queueHasEntriesToSend: challengeQueue.hasEntriesToSend,
-            botGameWindow: botGameWindow(now: Date()),
+            botGameWindow: botGameWindow,
+            prospectiveBotGames: prospectiveBotGames,
+            now: Date(),
             challengeSettings: settings.challenge
         )
         if let reason = LichessBotMatchmaking.passBlockedReason(conditions) {
@@ -2735,29 +2851,10 @@ final class LichessBotController {
     /// drift from the records it reads.
     private func opponentHistory(now: Date) -> LichessBotOpponentHistory {
         let challengeRows = LichessBotChallengeLogRow.rows(ledger: challengeLedger, reconstruction: challengeHistory, pendingChallengeIDs: [])
-        let filedRows = index?.rows ?? []
-        let filedIDs = Set(filedRows.map(\.gameID))
-        var gameStarts = filedRows.compactMap { row in
-            row.opponentID.map { LichessBotOpponentHistory.GameStart(opponentID: $0, at: row.createdAt) }
+        let contacts = gameStarts(filedRows: index?.rows ?? []).compactMap { start in
+            start.opponentID.map { LichessBotOpponentHistory.GameStart(opponentID: $0, at: start.startedAt) }
         }
-        for game in games where !filedIDs.contains(game.id) {
-            if let opponentID = game.opponent?.id {
-                gameStarts.append(LichessBotOpponentHistory.GameStart(opponentID: opponentID, at: game.startedAt))
-            }
-        }
-        return LichessBotOpponentHistory(challengeRows: challengeRows, gameStarts: gameStarts, now: now, settings: settings.matchmaking)
-    }
-
-    /// The pick line's account of the recency preference.
-    nonisolated static func describe(_ recency: LichessBotMatchmaking.RecencyChoice?) -> String {
-        switch recency {
-        case nil:
-            return ""
-        case .notContactedRecently(let count)?:
-            return "; among \(count) not contacted recently"
-        case .contactedLongestAgo(let lastContact)?:
-            return "; every candidate contacted recently, so the one contacted longest ago (\(lastContact.formatted(date: .abbreviated, time: .standard)))"
-        }
+        return LichessBotOpponentHistory(challengeRows: challengeRows, gameStarts: contacts, now: now, settings: settings.matchmaking)
     }
 
     /// No fetch is under way, the online-bots list is older than
@@ -3480,6 +3577,7 @@ final class LichessBotController {
                 }
             }
             pruneFinishedGames()
+            refreshBotGameWindow(indexChanged: false)
             // Each starts its own task when due, so a send or a fetch never
             // holds up this loop.
             scheduleChallengeQueuePump()
@@ -4147,9 +4245,8 @@ enum LichessBotControllerError: LocalizedError, Equatable {
     /// The bot shut down (the app is quitting) while going online.
     case shutDownWhileGoingOnline
     /// Matchmaking's or the queue's share of Lichess' daily bot-game limit
-    /// is used up (`LichessBotBotGameBudget`); the reason says how far and
-    /// when it clears.
-    case botGameBudget(String)
+    /// is used, or can't be known yet (`LichessBotBotGameBudget.Block`).
+    case botGameBudget(LichessBotBotGameBudget.Block)
 
     var errorDescription: String? {
         switch self {
@@ -4179,8 +4276,8 @@ enum LichessBotControllerError: LocalizedError, Equatable {
             return "Going online was cancelled by the operator (\(step.logText))"
         case .shutDownWhileGoingOnline:
             return "The bot has shut down"
-        case .botGameBudget(let reason):
-            return reason
+        case .botGameBudget(let block):
+            return block.reason
         }
     }
 }

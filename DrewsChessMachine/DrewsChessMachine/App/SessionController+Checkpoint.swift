@@ -854,6 +854,10 @@ extension SessionController {
             }
 
             // 3. Apply weights.
+            // `adoptLoadedChampionOrigin` closes this; a failed load leaves it
+            // open, since the champion's weights are then not known to match
+            // its recorded origin.
+            noteChampionWeightsReplaced()
             let applyResult: Result<Void, Error> = await Task.detached(priority: .userInitiated) {
                 do {
                     try await champion.loadWeights(file.networkWeights)
@@ -1045,6 +1049,10 @@ extension SessionController {
 
             // 3. Apply champion weights; trainer weights are held for the next
             //    startRealTraining via `pendingLoadedSession`.
+            // `adoptLoadedChampionOrigin` closes this; a failed load leaves it
+            // open, since the champion's weights are then not known to match
+            // its recorded origin.
+            noteChampionWeightsReplaced()
             let applyResult: Result<Void, Error> = await Task.detached(priority: .userInitiated) {
                 do {
                     try await champion.loadWeights(loaded.championFile.weights)
@@ -1264,7 +1272,8 @@ extension SessionController {
                 championID: record.championID?.description,
                 extendedSummary: record.extendedSummary,
                 promotionCriterion: record.promotionCriterion?.logToken,
-                sprt: record.sprtVerdict.map(ArenaSPRTVerdictCodable.init)
+                sprt: record.sprtVerdict.map(ArenaSPRTVerdictCodable.init),
+                sprtGamesFinishedAtDecision: record.sprtGamesFinishedAtDecision
             )
         }
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault

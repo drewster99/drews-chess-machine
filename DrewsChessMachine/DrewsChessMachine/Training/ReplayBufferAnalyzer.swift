@@ -294,6 +294,17 @@ enum ReplayBufferAnalyzer {
 
     // MARK: - Public entry point
 
+    /// `run(buffer:modelLabel:)` on a GCD queue: it walks every stored
+    /// position under the buffer's lock, synchronous work that must not hold
+    /// a cooperative thread or the main actor.
+    static func runOffPool(buffer: ReplayBuffer, modelLabel: String) async -> Result {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: run(buffer: buffer, modelLabel: modelLabel))
+            }
+        }
+    }
+
     /// Walk every slot of `buffer` under its lock and produce a single
     /// `Result`. `modelLabel` is treated as opaque telemetry — the analyzer
     /// never inspects it, just round-trips it into the result header so
@@ -541,7 +552,7 @@ enum ReplayBufferAnalyzer {
         perBucketTarget: Int = defaultPolicyEntropyPerBucketTarget,
         sampleRandom: DCMRandom
     ) async throws -> Result {
-        let base = run(buffer: buffer, modelLabel: modelLabel)
+        let base = await runOffPool(buffer: buffer, modelLabel: modelLabel)
         let entropyStats = try await samplePolicyEntropyByMaterialBucket(
             buffer: buffer,
             network: network,
@@ -659,6 +670,22 @@ enum ReplayBufferAnalyzer {
         }
     }
 
+    /// `entropyProbeSamples` on a GCD queue: it buckets every stored position
+    /// under the buffer's lock before sampling — the same full-buffer walk as
+    /// `run`.
+    static func entropyProbeSamplesOffPool(
+        buffer: ReplayBuffer,
+        perBucketTarget: Int,
+        sampleRandom: DCMRandom
+    ) async -> [EntropyProbeBucketSamples] {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: entropyProbeSamples(
+                    buffer: buffer, perBucketTarget: perBucketTarget, sampleRandom: sampleRandom))
+            }
+        }
+    }
+
     /// Stratified random sample of `perBucketTarget` positions per
     /// material bucket. Returns one entry per non-empty bucket; empty
     /// buckets are dropped from the result list.
@@ -673,7 +700,7 @@ enum ReplayBufferAnalyzer {
         perBucketTarget: Int,
         sampleRandom: DCMRandom
     ) async throws -> [Result.PolicyEntropyBucketStat] {
-        let allSamples = entropyProbeSamples(
+        let allSamples = await entropyProbeSamplesOffPool(
             buffer: buffer, perBucketTarget: perBucketTarget, sampleRandom: sampleRandom
         )
 

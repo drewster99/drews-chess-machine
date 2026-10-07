@@ -1,8 +1,8 @@
 import Foundation
 
-/// Builds stand-alone inference `ChessMPSNetwork`s for callers that play
-/// moves on a private copy of some weights — human play's opponent slots and
-/// the Lichess bot's model slots.
+/// Builds stand-alone inference `ChessMPSNetwork`s for callers that run a
+/// private copy of some weights — human play's opponent slots, the Lichess
+/// bot's model slots, and the replay analyzer's entropy probe.
 ///
 /// Building a network constructs a full MPSGraph, which is long synchronous
 /// work. It runs on a GCD global queue and re-enters Swift concurrency

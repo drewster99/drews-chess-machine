@@ -263,12 +263,12 @@ final class LichessBotMatchmakingTests: XCTestCase {
     // MARK: - When a pass runs
 
     private func conditions() -> LichessBotMatchmaking.PassConditions {
-        LichessBotMatchmaking.PassConditions(isOnline: true, rateLimitHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, botGameWindow: window(games: 10), challengeSettings: LichessBotChallengeSettings())
+        LichessBotMatchmaking.PassConditions(isOnline: true, rateLimitHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, botGameWindow: window(games: 10), prospectiveBotGames: 0, now: now, challengeSettings: LichessBotChallengeSettings())
     }
 
-    /// A bot-game window opened an hour before `now` holding `games` games.
+    /// `games` bot games from an hour before `now`, a second apart.
     private func window(games: Int) -> LichessBotBotGameWindow {
-        LichessBotBotGameWindow(botGameStarts: (0..<games).map { now.addingTimeInterval(-3600 + Double($0)) }, now: now)
+        LichessBotBotGameWindow(botGameStarts: (0..<games).map { now.addingTimeInterval(-3600 + Double($0)) })
     }
 
     func testAPassRunsOnlyWhileOnlineWithNoHoldAndAnEmptyQueue() {
@@ -317,6 +317,42 @@ final class LichessBotMatchmakingTests: XCTestCase {
         let reason = try XCTUnwrap(LichessBotMatchmaking.passBlockedReason(reserving))
         XCTAssertTrue(reason.contains("85 of Lichess' 100 daily bot games (10 held for incoming challenges, 5 for the challenge queue)"), reason)
         XCTAssertTrue(reason.contains("; resumes about "), reason)
+    }
+
+    func testAPassCountsGamesThatMayStart() throws {
+        var reserving = conditions()
+        reserving.challengeSettings.botGamesReservedForIncoming = 10
+        reserving.challengeSettings.botGamesReservedForChallengeQueue = 5
+        reserving.botGameWindow = window(games: 83)
+        reserving.prospectiveBotGames = 1
+        XCTAssertNil(LichessBotMatchmaking.passBlockedReason(reserving))
+        reserving.prospectiveBotGames = 2
+        let reason = try XCTUnwrap(LichessBotMatchmaking.passBlockedReason(reserving))
+        XCTAssertTrue(reason.contains("83 of Lichess' 100 daily bot games and 2 more may start"), reason)
+    }
+
+    func testThePickLineNamesThePoolTheBotWasDrawnFrom() {
+        var notes = LichessBotPlayerNotes()
+        notes.toggleFavorite("b")
+        notes.toggleFavorite("c")
+        let bots = [bot("a", blitz: 1400), bot("b", blitz: 1500), bot("c", blitz: 1600), bot("far", blitz: 2500)]
+        var generator = LichessBotSeededGenerator(seed: 13)
+        guard case .picked(let everyone) = LichessBotMatchmaking.pick(from: bots, settings: pickSettings(), ourPerfs: ourPerfs, context: context(), using: &generator) else {
+            return XCTFail("three bots fit")
+        }
+        XCTAssertEqual(everyone.drawnFromCount, 3)
+        XCTAssertEqual(LichessBotMatchmaking.describeSelection(everyone), "uniformly from 3 candidate(s) (not contacted recently)")
+        guard case .picked(let favorite) = LichessBotMatchmaking.pick(from: bots, settings: pickSettings(preferFavorites: true), ourPerfs: ourPerfs, context: context(notes: notes), using: &generator) else {
+            return XCTFail("two favorites fit")
+        }
+        XCTAssertEqual(favorite.drawnFromCount, 2)
+        XCTAssertEqual(LichessBotMatchmaking.describeSelection(favorite), "uniformly from 2 of 3 candidate(s) (favorites; not contacted recently)")
+        var unnarrowed = pickSettings()
+        unnarrowed.preferNotRecentlyContacted = false
+        guard case .picked(let plain) = LichessBotMatchmaking.pick(from: bots, settings: unnarrowed, ourPerfs: ourPerfs, context: context(), using: &generator) else {
+            return XCTFail("three bots fit")
+        }
+        XCTAssertEqual(LichessBotMatchmaking.describeSelection(plain), "uniformly from 3 candidate(s)")
     }
 
     func testTheNextAutomaticPassWaitsAfterAnUnproductiveOne() {

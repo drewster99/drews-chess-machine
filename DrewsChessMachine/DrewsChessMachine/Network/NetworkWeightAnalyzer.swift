@@ -11,14 +11,17 @@ import Foundation
 // Per-variable stats: count, L1/L2 norm, mean|w|, min/max, mean,
 // stdev, p10/p50/p90 percentiles, the tensor's initial L2 norm and the
 // ratio to it, and drift from init where the initial values are known
-// exactly.
+// exactly. BN running statistics get no init figures (their start depends
+// on how the model was built).
 //
 // Every "init" figure comes from the snapshot's init reference
-// (`AnalysisInitReference`): the same architecture built by the network
-// builder itself, under the model's own init seed when it is recorded. So a
-// model built with another final init, draw prior, branch or skip init, or
-// SE bias init is compared with its own starting point, and no init rule is
-// copied here.
+// (`AnalysisInitReference`): the architecture built by the network builder
+// itself, under the model's own init seed when it is recorded. So a model
+// built with another final init, draw prior, branch or skip init, or SE bias
+// init is compared with its own starting point, and no init rule is copied
+// here. A figure that includes a same-distribution draw rather than the
+// model's own initial values is flagged (`initExact` false; "~" in the text
+// summary).
 //
 // Per-section aggregates: stem / tower blocks / policy / value
 // each get totalElementCount (every element, BN running statistics
@@ -145,13 +148,18 @@ enum NetworkWeightAnalyzer {
             let mean: Double
             let stdev: Double
             let percentiles: [Double]
+            /// A BN running statistic: no init figures (`AnalysisInitReference`).
+            let isRunningStatistic: Bool
             /// The tensor's L2 norm at init, from the init reference: exact
-            /// when `initExact`, else a draw of the same distribution.
-            let initL2Norm: Double
-            /// `l2Norm / initL2Norm`; nil when the tensor started at zero.
+            /// when `initExact`, else a draw of the same distribution; nil
+            /// for a BN running statistic.
+            let initL2Norm: Double?
+            /// `l2Norm / initL2Norm`; nil when the tensor started at zero or
+            /// is a BN running statistic.
             let l2NormRatioToInit: Double?
             /// Whether the initial values are known exactly (the model's own
-            /// init seed, or a tensor whose init does not depend on it).
+            /// init seed, or a tensor the build does not draw from the seed);
+            /// false for a BN running statistic.
             let initExact: Bool
             /// L2 norm of `current - initial` when `initExact`; nil
             /// otherwise. Directly answers "has this parameter moved from
@@ -174,6 +182,10 @@ enum NetworkWeightAnalyzer {
             /// `totalL2Norm / totalInitL2Norm`; nil when everything started
             /// at zero.
             let totalL2RatioToInit: Double?
+            /// Whether every trainable's initial values are known exactly;
+            /// false means `totalInitL2Norm` and its ratio include
+            /// same-distribution draws.
+            let initExact: Bool
             let variables: [WeightStats]
         }
 
@@ -182,6 +194,9 @@ enum NetworkWeightAnalyzer {
             let planeLabels: [String]
             /// Each input plane's L2 at init (init reference).
             let initPerInputChannelL2: [Double]
+            /// Whether `initPerInputChannelL2` is the model's own start (else
+            /// a draw of the same distribution).
+            let initExact: Bool
         }
 
         /// Per-output-channel L2 norm for one conv weight tensor.
@@ -196,6 +211,9 @@ enum NetworkWeightAnalyzer {
             /// for a He-normal conv, 0 for a zero-initialized head, 1 or 0
             /// per channel for an identity-like skip projection.
             let initPerOutputChannelL2: [Double]
+            /// Whether `initPerOutputChannelL2` is the model's own start
+            /// (else a draw of the same distribution).
+            let initExact: Bool
         }
 
         /// Dead-channel summary for one BN layer. Genuinely single-channel
@@ -288,24 +306,19 @@ enum NetworkWeightAnalyzer {
     /// caller chooses and is round-tripped into the result header.
     static func run(snapshot: AnalyzedNetworkSnapshot, modelLabel: String) throws -> Result {
         let arch = snapshot.architecture
-        let reference = snapshot.initReference
 
-        // Pair (name, values, initial values) in build order for
-        // downstream lookups.
+        // Pair (name, values, start) in build order for downstream lookups.
         var perSection: [String: [VariableValues]] = [:]
         var allByName: [String: [Float]] = [:]
-        var initialByName: [String: [Float]] = [:]
+        var trainableStartByName: [String: (initial: [Float], exact: Bool)] = [:]
         for (i, name) in snapshot.names.enumerated() {
-            guard let initial = reference.initialValues[name], initial.count == snapshot.weights[i].count else {
-                throw NetworkWeightAnalyzerError.noInitialValues(name)
+            let start = try snapshot.start(ofVariableAt: i)
+            if case .trainable(let initial, let exact) = start {
+                trainableStartByName[name] = (initial, exact)
             }
-            let sec = section(forVariableNamed: name)
-            perSection[sec, default: []].append(VariableValues(
-                name: name, values: snapshot.weights[i], initial: initial,
-                initExact: reference.exactNames.contains(name),
-                isRunningStatistic: snapshot.isRunningStatistic(at: i)))
+            perSection[section(forVariableNamed: name), default: []].append(
+                VariableValues(name: name, values: snapshot.weights[i], start: start))
             allByName[name] = snapshot.weights[i]
-            initialByName[name] = initial
         }
 
         // Per-section summaries.
@@ -317,11 +330,10 @@ enum NetworkWeightAnalyzer {
 
         // Stem per-input-channel detail.
         let stemInputDetail: Result.StemInputChannelDetail? = {
-            guard let stemVars = perSection["stem"],
-                  let stem = stemVars.first(where: { $0.name == "stem_conv_weights" }) else {
-                return nil
-            }
-            return makeStemInputChannelDetail(stemConvValues: stem.values, initialValues: stem.initial, arch: arch)
+            guard let values = allByName["stem_conv_weights"],
+                  let start = trainableStartByName["stem_conv_weights"] else { return nil }
+            return makeStemInputChannelDetail(stemConvValues: values, initialValues: start.initial,
+                                              initExact: start.exact, arch: arch)
         }()
 
         // Per-output-channel L2 for every conv weight tensor — stem,
@@ -329,12 +341,13 @@ enum NetworkWeightAnalyzer {
         // the output list matches graph build order.
         var convDetails: [Result.ConvOutputChannelDetail] = []
         for name in snapshot.names {
-            guard let values = allByName[name], let initial = initialByName[name] else { continue }
+            guard let values = allByName[name], let start = trainableStartByName[name] else { continue }
             guard let shape = convShape(forVariableNamed: name, arch: arch) else { continue }
             if let detail = makeConvOutputChannelDetail(
                 variableName: name,
                 values: values,
-                initialValues: initial,
+                initialValues: start.initial,
+                initExact: start.exact,
                 outC: shape.outC,
                 inC: shape.inC,
                 kH: shape.kH,
@@ -400,13 +413,15 @@ enum NetworkWeightAnalyzer {
 
     static let percentileLabels: [Int] = [10, 50, 90]
 
-    /// One variable's current and initial values.
+    /// One variable's current values and where it started.
     private struct VariableValues {
         let name: String
         let values: [Float]
-        let initial: [Float]
-        let initExact: Bool
-        let isRunningStatistic: Bool
+        let start: AnalysisInitReference.Start
+    }
+
+    private static func sumOfSquares(_ values: [Float]) -> Double {
+        values.reduce(0.0) { $0 + Double($1) * Double($1) }
     }
 
     private static func makeSectionSummary(
@@ -420,17 +435,20 @@ enum NetworkWeightAnalyzer {
         var trainableInitSumSq: Double = 0
         var runningSumSq: Double = 0
         var anyRunningStatistic = false
+        var allTrainablesExact = true
 
         for variable in variables {
             let stats = makeWeightStats(variable)
             perVarStats.append(stats)
             totalElements += stats.elementCount
-            if variable.isRunningStatistic {
+            switch variable.start {
+            case .runningStatistic:
                 anyRunningStatistic = true
                 runningSumSq += stats.l2Norm * stats.l2Norm
-            } else {
+            case .trainable(let initial, let exact):
                 trainableSumSq += stats.l2Norm * stats.l2Norm
-                trainableInitSumSq += stats.initL2Norm * stats.initL2Norm
+                trainableInitSumSq += sumOfSquares(initial)
+                allTrainablesExact = allTrainablesExact && exact
             }
         }
 
@@ -443,6 +461,7 @@ enum NetworkWeightAnalyzer {
             runningStatsL2Norm: anyRunningStatistic ? sqrt(runningSumSq) : nil,
             totalInitL2Norm: totalInitL2,
             totalL2RatioToInit: totalInitL2 > 0 ? totalL2 / totalInitL2 : nil,
+            initExact: allTrainablesExact,
             variables: perVarStats
         )
     }
@@ -453,13 +472,26 @@ enum NetworkWeightAnalyzer {
         let name = variable.name
         let values = variable.values
         let n = values.count
+        let initial: [Float]?
+        let initExact: Bool
+        switch variable.start {
+        case .trainable(let startValues, let exact):
+            initial = startValues
+            initExact = exact
+        case .runningStatistic:
+            initial = nil
+            initExact = false
+        }
+        let isRunningStatistic = initial == nil
+        let initL2: Double? = initial.map { sqrt(sumOfSquares($0)) }
         guard n > 0 else {
             return Result.WeightStats(
                 name: name, elementCount: 0,
                 l1Norm: 0, l2Norm: 0, meanAbs: 0,
                 min: 0, max: 0, mean: 0, stdev: 0,
                 percentiles: Array(repeating: 0, count: percentileLabels.count),
-                initL2Norm: 0, l2NormRatioToInit: nil, initExact: variable.initExact, driftFromInit: variable.initExact ? 0 : nil
+                isRunningStatistic: isRunningStatistic, initL2Norm: initL2, l2NormRatioToInit: nil,
+                initExact: initExact, driftFromInit: initExact ? 0 : nil
             )
         }
 
@@ -488,13 +520,11 @@ enum NetworkWeightAnalyzer {
             percentile(p: Double(p), sortedAscending: sorted)
         }
 
-        let initial = variable.initial
-        let initL2 = sqrt(initial.reduce(0.0) { $0 + Double($1) * Double($1) })
-        let ratio: Double? = initL2 > 0 ? l2 / initL2 : nil
+        let ratio: Double? = initL2.flatMap { $0 > 0 ? l2 / $0 : nil }
 
         // Drift from init — only where the initial values are known exactly.
         let drift: Double? = {
-            guard variable.initExact else { return nil }
+            guard initExact, let initial else { return nil }
             var driftSq: Double = 0
             for i in 0..<n {
                 let d = Double(values[i]) - Double(initial[i])
@@ -514,9 +544,10 @@ enum NetworkWeightAnalyzer {
             mean: mean,
             stdev: stdev,
             percentiles: percentiles,
+            isRunningStatistic: isRunningStatistic,
             initL2Norm: initL2,
             l2NormRatioToInit: ratio,
-            initExact: variable.initExact,
+            initExact: initExact,
             driftFromInit: drift
         )
     }
@@ -562,6 +593,7 @@ enum NetworkWeightAnalyzer {
     private static func makeStemInputChannelDetail(
         stemConvValues: [Float],
         initialValues: [Float],
+        initExact: Bool,
         arch: NetworkArchitecture
     ) -> Result.StemInputChannelDetail? {
         let outC = arch.stemOutputChannels, inC = arch.inputPlanes
@@ -571,7 +603,8 @@ enum NetworkWeightAnalyzer {
         return Result.StemInputChannelDetail(
             perInputChannelL2: perInputPlaneL2(stemConvValues, outC: outC, inC: inC, kH: kH, kW: kW),
             planeLabels: Array(arch.inputEncoding.analyzerPlaneLabels.prefix(inC)),
-            initPerInputChannelL2: perInputPlaneL2(initialValues, outC: outC, inC: inC, kH: kH, kW: kW)
+            initPerInputChannelL2: perInputPlaneL2(initialValues, outC: outC, inC: inC, kH: kH, kW: kW),
+            initExact: initExact
         )
     }
 
@@ -596,6 +629,7 @@ enum NetworkWeightAnalyzer {
         variableName: String,
         values: [Float],
         initialValues: [Float],
+        initExact: Bool,
         outC: Int,
         inC: Int,
         kH: Int,
@@ -606,7 +640,8 @@ enum NetworkWeightAnalyzer {
         return Result.ConvOutputChannelDetail(
             variableName: variableName,
             perOutputChannelL2: perOutputChannelL2(values, outC: outC, perOutSize: inC * kH * kW),
-            initPerOutputChannelL2: perOutputChannelL2(initialValues, outC: outC, perOutSize: inC * kH * kW)
+            initPerOutputChannelL2: perOutputChannelL2(initialValues, outC: outC, perOutSize: inC * kH * kW),
+            initExact: initExact
         )
     }
 
@@ -716,20 +751,6 @@ enum NetworkWeightAnalyzer {
     }
 }
 
-// MARK: - Error type
-
-enum NetworkWeightAnalyzerError: LocalizedError {
-    /// The init reference has no initial values of this variable's size.
-    case noInitialValues(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .noInitialValues(let name):
-            return "NetworkWeightAnalyzer: the init reference has no initial values for \(name)"
-        }
-    }
-}
-
 // MARK: - Text summary
 
 extension NetworkWeightAnalyzer.Result {
@@ -745,9 +766,11 @@ extension NetworkWeightAnalyzer.Result {
 
         // Section-level summary table.
         out += "Per-section summary (L2 over trainable tensors; running stats apart):\n"
+        out += "  (~ = init figure includes draws of the same distribution, not the model's own initial values; "
+            + "-- = none: started at zero, or a BN running statistic, whose start depends on how the model was built)\n"
         out += "  section         params      L2          init_L2     ratio\n"
         for s in sections {
-            let initStr = String(format: "%9.3f", s.totalInitL2Norm)
+            let initStr = String(format: "%9.3f", s.totalInitL2Norm) + (s.initExact ? "" : "~")
             let ratioStr = s.totalL2RatioToInit.map { String(format: "%6.3f", $0) } ?? "  --  "
             out += String(
                 format: "  %@  %@  %@  %@  %@\n",
@@ -765,7 +788,7 @@ extension NetworkWeightAnalyzer.Result {
             out += "Section: \(s.sectionName) (\(formatInt(s.totalElementCount)) params)\n"
             out += "  variable                              count      L2       init_L2  ratio   drift   mean|w|   min       max\n"
             for v in s.variables {
-                let initStr = String(format: "%7.3f", v.initL2Norm) + (v.initExact ? "" : "~")
+                let initStr = v.initL2Norm.map { String(format: "%7.3f", $0) + (v.initExact ? "" : "~") } ?? "  --  "
                 let ratioStr = v.l2NormRatioToInit.map { String(format: "%6.3f", $0) } ?? "  --  "
                 let driftStr = v.driftFromInit.map { String(format: "%6.3f", $0) } ?? "  --  "
                 out += String(
@@ -792,11 +815,11 @@ extension NetworkWeightAnalyzer.Result {
                 let initL2 = i < stem.initPerInputChannelL2.count ? stem.initPerInputChannelL2[i] : 0
                 let ratioStr = initL2 > 0 ? String(format: "%6.3f", l2 / initL2) : "  --  "
                 out += String(
-                    format: "  %@ %@   L2=%6.3f   init=%6.3f   ratio=%@\n",
+                    format: "  %@ %@   L2=%6.3f   init=%@   ratio=%@\n",
                     String(format: "%2d", i),
                     label.padded(26),
                     l2,
-                    initL2,
+                    String(format: "%6.3f", initL2) + (stem.initExact ? "" : "~"),
                     ratioStr
                 )
             }
@@ -831,7 +854,7 @@ extension NetworkWeightAnalyzer.Result {
                     String(format: "%6.3f", p10).leftPadded(toLength: 8),
                     String(format: "%6.3f", p50).leftPadded(toLength: 8),
                     String(format: "%6.3f", p90).leftPadded(toLength: 8),
-                    String(format: "%6.3f", initialMean).leftPadded(toLength: 8)
+                    (String(format: "%6.3f", initialMean) + (c.initExact ? "" : "~")).leftPadded(toLength: 8)
                 )
             }
             out += "\n"

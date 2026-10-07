@@ -101,6 +101,42 @@ final class FileSafetyPublishAndReplaceTests: XCTestCase {
         XCTAssertEqual(try allEntryNames(), ["folder.bin", "link.bin", "target.bin"])
     }
 
+    // MARK: publishNewFileWithNumericSuffix
+
+    func testNumericSuffixPublishUsesThePlainNameWhenFree() throws {
+        let url = try FileSafety.publishNewFileWithNumericSuffix(
+            Data("a".utf8), in: root, stem: "report", pathExtension: "json", maxAttempts: 3)
+        XCTAssertEqual(url.lastPathComponent, "report.json")
+        XCTAssertEqual(try Data(contentsOf: url), Data("a".utf8))
+        XCTAssertEqual(try allEntryNames(), ["report.json"], "the staging file must be gone")
+    }
+
+    func testNumericSuffixPublishNeverOverwritesAndTakesTheNextFreeName() throws {
+        let plain = root.appendingPathComponent("report.json")
+        try Data("original".utf8).write(to: plain)
+        let folder = root.appendingPathComponent("report-2.json", isDirectory: true)
+        try makeFolder(at: folder)
+        let url = try FileSafety.publishNewFileWithNumericSuffix(
+            Data("new".utf8), in: root, stem: "report", pathExtension: "json", maxAttempts: 5)
+        XCTAssertEqual(url.lastPathComponent, "report-3.json")
+        XCTAssertEqual(try Data(contentsOf: url), Data("new".utf8))
+        XCTAssertEqual(try Data(contentsOf: plain), Data("original".utf8))
+        assertFolderSurvived(folder)
+        XCTAssertEqual(try allEntryNames(), ["report-2.json", "report-3.json", "report.json"])
+    }
+
+    func testNumericSuffixPublishThrowsWhenEveryNameIsTakenAndLeavesNoStaging() throws {
+        try Data("1".utf8).write(to: root.appendingPathComponent("report.json"))
+        try Data("2".utf8).write(to: root.appendingPathComponent("report-2.json"))
+        XCTAssertThrowsError(try FileSafety.publishNewFileWithNumericSuffix(
+            Data("new".utf8), in: root, stem: "report", pathExtension: "json", maxAttempts: 2)) { error in
+            XCTAssertEqual(error as? FileSafetyError,
+                           .noFreeNumericSuffix(directory: self.root.path, stem: "report", pathExtension: "json", maxAttempts: 2))
+        }
+        XCTAssertEqual(try allEntryNames(), ["report-2.json", "report.json"], "the staging file must be removed")
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("report.json")), Data("1".utf8))
+    }
+
     // MARK: replaceRegularFile
 
     func testReplaceGoesOverARegularFile() throws {

@@ -126,6 +126,31 @@ struct ArenaHistoryEntryCodable: Codable, Equatable {
     /// The sequential test's latched verdict. Nil under the score threshold,
     /// and nil for an SPRT arena that was cut short before deciding.
     var sprt: ArenaSPRTVerdictCodable?
+    /// Games the arena's driver had counted as finished, in any order, when
+    /// the sequential test's verdict latched
+    /// (`TournamentStats.sprtGamesFinishedAtDecision`). Splits the games past
+    /// the verdict's start-order sample into those that had already finished
+    /// and the in-flight remainder drained afterwards. Optional for
+    /// back-compat: nil without a verdict, and absent from sessions saved
+    /// before it was stored, where the `[ARENA]` block says the split was not
+    /// recorded.
+    var sprtGamesFinishedAtDecision: Int?
+}
+
+extension ArenaHistoryEntryCodable {
+    /// The stored finished count at the verdict, when it can belong to
+    /// `verdict` in an arena of `gamesPlayed` games: at least the verdict's
+    /// sample, at most every game played. Nil otherwise — without a verdict
+    /// there is nothing for it to describe, and a value outside those limits
+    /// (a hand-edited or corrupt file) loses the split rather than being
+    /// repaired into one the arena never had, the rule
+    /// `ArenaSPRTVerdictCodable.verdict()` applies to the verdict itself.
+    func validSPRTGamesFinishedAtDecision(verdict: ArenaSPRT.Verdict?, gamesPlayed: Int) -> Int? {
+        guard let verdict, let finished = sprtGamesFinishedAtDecision,
+              finished >= verdict.gamesAtDecision, finished <= gamesPlayed
+        else { return nil }
+        return finished
+    }
 }
 
 /// Codable mirror of `ArenaSPRT.Verdict`, including the configuration it was

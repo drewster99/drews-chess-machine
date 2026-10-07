@@ -468,3 +468,87 @@ final class ArenaHistoryCriterionCodableTests: XCTestCase {
         }
     }
 }
+
+// MARK: - Finished count at the SPRT verdict
+
+final class ArenaHistorySPRTFinishedAtDecisionCodableTests: XCTestCase {
+
+    /// 20W/12D/10L: decided on 42 games.
+    private func makeVerdict() throws -> ArenaSPRT.Verdict {
+        ArenaSPRT.Verdict(
+            decision: .accept, llr: 3.1, wins: 20, draws: 12, losses: 10,
+            config: try ArenaSPRT.SPRTConfig(
+                elo0: 0, elo1: 10, alpha: 0.05, beta: 0.05, minGames: 32, maxGames: 20000)
+        )
+    }
+
+    private func makeEntry(finishedAtDecision: Int?) throws -> ArenaHistoryEntryCodable {
+        ArenaHistoryEntryCodable(
+            finishedAtStep: 5000,
+            candidateWins: 30, championWins: 12, draws: 18,
+            score: 0.65,
+            promoted: true,
+            promotedID: "20260420-3-ABCD",
+            durationSec: 120,
+            gamesPlayed: 60,
+            promotionKind: "automatic",
+            promotionCriterion: "sprt",
+            sprt: ArenaSPRTVerdictCodable(try makeVerdict()),
+            sprtGamesFinishedAtDecision: finishedAtDecision
+        )
+    }
+
+    func testFinishedAtDecisionRoundTrips() throws {
+        let original = try makeEntry(finishedAtDecision: 47)
+        let decoded = try JSONDecoder().decode(
+            ArenaHistoryEntryCodable.self, from: try JSONEncoder().encode(original))
+        XCTAssertEqual(decoded, original)
+        XCTAssertEqual(decoded.sprtGamesFinishedAtDecision, 47)
+    }
+
+    /// Sessions saved before the count was stored carry a verdict but no
+    /// count. They must decode, with the count absent — not defaulted to a
+    /// split the arena never recorded.
+    func testSessionSavedBeforeTheCountStillDecodes() throws {
+        let legacy = Data("""
+        {
+          "finishedAtStep": 5000,
+          "candidateWins": 30, "championWins": 12, "draws": 18,
+          "score": 0.65, "promoted": true, "promotedID": "20260420-3-ABCD",
+          "durationSec": 120, "gamesPlayed": 60, "promotionKind": "automatic",
+          "promotionCriterion": "sprt",
+          "sprt": {
+            "decision": "accept", "llr": 3.1, "wins": 20, "draws": 12, "losses": 10,
+            "elo0": 0, "elo1": 10, "alpha": 0.05, "beta": 0.05, "minGames": 32, "maxGames": 20000
+          }
+        }
+        """.utf8)
+        let decoded = try JSONDecoder().decode(ArenaHistoryEntryCodable.self, from: legacy)
+        XCTAssertNotNil(decoded.sprt?.verdict())
+        XCTAssertNil(decoded.sprtGamesFinishedAtDecision)
+        XCTAssertNil(decoded.validSPRTGamesFinishedAtDecision(verdict: decoded.sprt?.verdict(), gamesPlayed: 60))
+    }
+
+    func testCountWithinTheVerdictAndTheArenaIsKept() throws {
+        let verdict = try makeVerdict()
+        for count in [42, 47, 60] {
+            XCTAssertEqual(
+                try makeEntry(finishedAtDecision: count)
+                    .validSPRTGamesFinishedAtDecision(verdict: verdict, gamesPlayed: 60),
+                count
+            )
+        }
+    }
+
+    /// Below the verdict's own sample or above every game played, the count
+    /// cannot be the verdict's moment: the split is lost, not repaired.
+    func testCountOutsideItsLimitsOrWithoutAVerdictIsRefused() throws {
+        let verdict = try makeVerdict()
+        XCTAssertNil(try makeEntry(finishedAtDecision: 41)
+            .validSPRTGamesFinishedAtDecision(verdict: verdict, gamesPlayed: 60))
+        XCTAssertNil(try makeEntry(finishedAtDecision: 61)
+            .validSPRTGamesFinishedAtDecision(verdict: verdict, gamesPlayed: 60))
+        XCTAssertNil(try makeEntry(finishedAtDecision: 47)
+            .validSPRTGamesFinishedAtDecision(verdict: nil, gamesPlayed: 60))
+    }
+}

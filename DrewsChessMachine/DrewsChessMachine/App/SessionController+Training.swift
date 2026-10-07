@@ -336,6 +336,8 @@ extension SessionController {
                     rec.promotionCriterion = .scoreThreshold
                 }
                 rec.sprtVerdict = entry.sprt?.verdict()
+                rec.sprtGamesFinishedAtDecision = entry.validSPRTGamesFinishedAtDecision(
+                    verdict: rec.sprtVerdict, gamesPlayed: gp)
                 return rec
             }
         } else {

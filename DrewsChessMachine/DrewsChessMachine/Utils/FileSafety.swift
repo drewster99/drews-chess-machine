@@ -81,8 +81,8 @@ import Foundation
 /// process's write in flight. The app's launch sweep
 /// (`CheckpointPaths.cleanupOrphans`) removes aged staging *files* of exactly
 /// this shape from `Models/` and `Sessions/`; `CorpusValidator` reports any
-/// `.tmp` in a corpus folder; anywhere else (Presets, a CLI's output
-/// folder) a leftover stays until removed by hand.
+/// `.tmp` in a corpus folder; anywhere else (Presets, Analyses, a CLI's
+/// output folder) a leftover stays until removed by hand.
 ///
 /// Every refusal and every failed system call is a thrown `FileSafetyError`
 /// naming the path and the reason; nothing returns an optional handle and
@@ -472,8 +472,7 @@ enum FileSafety {
     ) throws -> (handle: FileHandle, url: URL) {
         precondition(maxAttempts >= 1, "createNewFileWithNumericSuffix needs at least one attempt")
         for attempt in 1...maxAttempts {
-            let name = attempt == 1 ? "\(stem).\(pathExtension)" : "\(stem)-\(attempt).\(pathExtension)"
-            let url = directory.appendingPathComponent(name, isDirectory: false)
+            let url = numericSuffixCandidate(in: directory, stem: stem, pathExtension: pathExtension, attempt: attempt)
             do {
                 return (try createNewFile(at: url).handle, url)
             } catch FileSafetyError.alreadyExists {
@@ -482,6 +481,57 @@ enum FileSafety {
         }
         throw FileSafetyError.noFreeNumericSuffix(
             directory: directory.path, stem: stem, pathExtension: pathExtension, maxAttempts: maxAttempts)
+    }
+
+    /// `publishNewFile` under the first free name of the same candidates as
+    /// `createNewFileWithNumericSuffix`: `data` is staged once, durably, in a
+    /// temporary sibling, then moved with `renameWithoutReplacing` to the plain
+    /// name, then `-2`, `-3`, … until one is free. Nothing already there is
+    /// opened, replaced or modified; a partial file never appears under a
+    /// final name; two writers choosing the same stem in the same instant each
+    /// get their own file. For writers whose names come from a 1-second
+    /// timestamp and a label that repeats (analysis exports: several
+    /// checkpoints of one run share a model ID), where `.atomic` silently
+    /// replaced the earlier file. The staged file is removed on every failure.
+    /// Returns the URL published.
+    static func publishNewFileWithNumericSuffix(
+        _ data: Data,
+        in directory: URL,
+        stem: String,
+        pathExtension: String,
+        maxAttempts: Int
+    ) throws -> URL {
+        precondition(maxAttempts >= 1, "publishNewFileWithNumericSuffix needs at least one attempt")
+        let plainName = numericSuffixCandidate(in: directory, stem: stem, pathExtension: pathExtension, attempt: 1)
+        // The staging sibling is named after the plain name, so checking it
+        // covers the staging name's length (its overhead dwarfs any `-N`);
+        // the suffixed candidates are only rename targets.
+        try requireStageableDestination(plainName)
+        let temporary = temporarySibling(of: plainName)
+        let identity = try writeNewFile(data, at: temporary)
+        for attempt in 1...maxAttempts {
+            let destination = numericSuffixCandidate(in: directory, stem: stem, pathExtension: pathExtension, attempt: attempt)
+            do {
+                try renameWithoutReplacing(from: temporary, to: destination)
+                return destination
+            } catch FileSafetyError.alreadyExists {
+                continue
+            } catch {
+                removeOwnedItemAfterFailure(at: temporary, identity: identity)
+                throw error
+            }
+        }
+        removeOwnedItemAfterFailure(at: temporary, identity: identity)
+        throw FileSafetyError.noFreeNumericSuffix(
+            directory: directory.path, stem: stem, pathExtension: pathExtension, maxAttempts: maxAttempts)
+    }
+
+    /// The `attempt`th numeric-suffix candidate: `<stem>.<ext>` first, then
+    /// `<stem>-<attempt>.<ext>`. One definition, so both numeric-suffix
+    /// writers name their files alike.
+    private static func numericSuffixCandidate(in directory: URL, stem: String, pathExtension: String, attempt: Int) -> URL {
+        let name = attempt == 1 ? "\(stem).\(pathExtension)" : "\(stem)-\(attempt).\(pathExtension)"
+        return directory.appendingPathComponent(name, isDirectory: false)
     }
 
     // MARK: - Exclusively locked files (a writer's file that others must leave alone)

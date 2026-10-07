@@ -116,18 +116,20 @@ final class LichessBotStatsPeriodsTests: XCTestCase {
     func testPeriodIdentifiersAreStable() {
         // Persisted in the defaults: renaming one silently resets the
         // operator's choice.
-        XCTAssertEqual(LichessBotStatsPeriod.allCases.map(\.rawValue), ["lastHour", "today", "thisWeek", "thisMonth", "thisYear", "allTime"])
-        XCTAssertEqual(LichessBotStatsPeriod.allCases.map(\.label), ["Last hour", "Today", "This week", "This month", "This year", "All time"])
+        XCTAssertEqual(LichessBotStatsPeriod.allCases.map(\.rawValue), ["lastHour", "today", "yesterday", "thisWeek", "lastWeek", "thisMonth", "lastMonth", "thisYear", "lastYear", "allTime"])
+        XCTAssertEqual(LichessBotStatsPeriod.allCases.map(\.label), ["Last hour", "Today", "Yesterday", "This week", "Last week", "This month", "Last month", "This year", "Last year", "All time"])
         XCTAssertEqual(LichessBotStatsFilter.allCases.map(\.rawValue), ["all", "rated", "casual"])
     }
 
     func testRecordSummaryFillsEveryPeriod() throws {
         let calendar = try calendar("UTC")
+        // Wednesday 2026-10-07 12:00 UTC; weeks start on Monday.
         let now = try date("2026-10-07T12:00:00Z")
         let rows = [
             try LichessBotStatsFixtures.row(id: "hour", at: now.addingTimeInterval(-600), score: 1),
             try LichessBotStatsFixtures.row(id: "day", at: now.addingTimeInterval(-5 * 3600), score: 0),
             try LichessBotStatsFixtures.row(id: "week", at: try date("2026-10-05T08:00:00Z"), score: 0.5),
+            // Thursday 1 October: this month, and last week (Monday 28 September – Sunday 4 October).
             try LichessBotStatsFixtures.row(id: "month", at: try date("2026-10-01T08:00:00Z"), score: 1),
             try LichessBotStatsFixtures.row(id: "year", at: try date("2026-02-01T08:00:00Z"), score: 1),
             try LichessBotStatsFixtures.row(id: "old", at: try date("2025-02-01T08:00:00Z"), score: nil),
@@ -135,13 +137,24 @@ final class LichessBotStatsPeriodsTests: XCTestCase {
         let records = try LichessBotRecordSummary.compute(rows: rows, now: now, calendar: calendar)
         XCTAssertEqual(records.lastHour.all.games, 1)
         XCTAssertEqual(records.today.all.games, 2)
+        XCTAssertEqual(records.yesterday.all.games, 0)
         XCTAssertEqual(records.thisWeek.all.games, 3)
+        XCTAssertEqual(records.lastWeek.all.games, 1)
         XCTAssertEqual(records.thisMonth.all.games, 4)
+        XCTAssertEqual(records.lastMonth.all.games, 0)
         XCTAssertEqual(records.thisYear.all.games, 5)
+        XCTAssertEqual(records.lastYear.all.games, 1)
         XCTAssertEqual(records.allTime.all.games, 6)
         XCTAssertEqual(records.allTime.all.unscored, 1)
-        for (period, games) in zip(LichessBotStatsPeriod.allCases, [1, 2, 3, 4, 5, 6]) {
+        for (period, games) in zip(LichessBotStatsPeriod.allCases, [1, 2, 0, 3, 1, 4, 0, 5, 1, 6]) {
             XCTAssertEqual(records[period].all.games, games, period.rawValue)
         }
+    }
+
+    func testEachPreviousPeriodsHelpNamesItsOwnUnit() {
+        XCTAssertTrue(LichessBotStatsPeriod.yesterday.help.contains("previous day"))
+        XCTAssertTrue(LichessBotStatsPeriod.lastWeek.help.contains("previous week"))
+        XCTAssertTrue(LichessBotStatsPeriod.lastMonth.help.contains("previous month"))
+        XCTAssertTrue(LichessBotStatsPeriod.lastYear.help.contains("previous year"))
     }
 }

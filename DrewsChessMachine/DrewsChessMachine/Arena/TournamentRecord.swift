@@ -74,10 +74,20 @@ struct TournamentRecord: Sendable, Identifiable {
     /// different thing from a rejection, and must not be rendered as one.
     ///
     /// `sprtVerdict?.gamesAtDecision` is generally **less** than
-    /// `gamesPlayed`: the games still in flight when the ratio crossed its
-    /// bound were finished and tallied, but they are not evidence. See
-    /// `ArenaSPRT.Monitor`.
+    /// `gamesPlayed`: the later-started games — some finished before the
+    /// verdict, the in-flight rest after it — were tallied too, but they are
+    /// not evidence. See `ArenaSPRT.Monitor` and `sprtGamesFinishedAtDecision`.
     var sprtVerdict: ArenaSPRT.Verdict? = nil
+
+    /// Games the driver had counted as finished, in any order, when the
+    /// verdict latched (`TournamentStats.sprtGamesFinishedAtDecision`). Splits
+    /// the `gamesPlayed − sprtVerdict.gamesAtDecision` games that are counted
+    /// but are not evidence into the
+    /// `sprtGamesFinishedAtDecision − gamesAtDecision` later-started games that
+    /// had already finished and the `gamesPlayed − sprtGamesFinishedAtDecision`
+    /// in flight that drained after the verdict. `nil` without a verdict, and
+    /// on records loaded from sessions saved before it was stored.
+    var sprtGamesFinishedAtDecision: Int? = nil
 
     /// Post-arena breakdown of W/D/L by game length and the
     /// candidate value scalar + arena-style score by absolute ply

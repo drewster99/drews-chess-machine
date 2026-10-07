@@ -62,7 +62,8 @@ struct AnalysisExportMetadata: Codable, Sendable {
         let takenAtISO8601: String
         let architecture: Architecture
         /// What the analyzer's "init" figures are measured against
-        /// (`AnalysisInitReference.basisDescription`).
+        /// (`AnalysisInitReference.basisDescription`): trainables only; BN
+        /// running statistics have none.
         let initReference: String
 
         init(_ snapshot: AnalyzedNetworkSnapshot) {
@@ -112,8 +113,11 @@ struct AnalysisExportMetadata: Codable, Sendable {
         let architectureVersion: Int
         /// Total persistent-tensor element count (`NetworkArchitecture.parameterCount`).
         let parameterCount: Int
+        /// Every block in the tower, all groups summed (`NetworkArchitecture.numBlocks`).
         let numBlocks: Int
+        /// The LAST group's width — the tower's output channels the heads read.
         let channels: Int
+        /// The FIRST group's conv1 kernel.
         let convKernelSize: Int
         let inputPlanes: Int
         let boardSize: Int
@@ -135,8 +139,9 @@ struct AnalysisExportMetadata: Codable, Sendable {
         init(_ arch: NetworkArchitecture) {
             architectureVersion = arch.architectureVersionLabel
             parameterCount = arch.parameterCount
-            // These uniform scalars describe the FIRST block group (mixed
-            // towers carry the full structure in `summary`).
+            // `numBlocks` is the whole tower, `channels` the last group's
+            // width, `convKernelSize` / `seReductionRatio` the first group's;
+            // mixed towers carry the full structure in `summary`.
             numBlocks = arch.numBlocks
             channels = arch.towerOutputChannels
             convKernelSize = arch.blockGroups[0].conv1KernelSize
@@ -204,5 +209,17 @@ struct AnalysisExportMetadata: Codable, Sendable {
     /// hand-written `notes` line) is replaced by `analyzedWeights`, which
     /// describes the weights the file analyzed — their architecture, step and
     /// init reference; `seReductionRatio` is omitted for an SE-less group.
-    static let currentSchemaVersion = 4
+    /// v4 also changed the analyzer bodies: init figures come from the init
+    /// reference (`initExact`, `driftFromInit` exact only); weight-analyzer
+    /// section totals cover trainables, with `runningStatsL2Norm` apart;
+    /// per-channel / per-plane / per-column init norms are per entry; the
+    /// value head's `currentSoftmax` / `initialSoftmax` became
+    /// `biasOnlySoftmax` / `initialBiasOnlySoftmax`. v5: BN running statistics
+    /// have no init figures (`initL2Norm` null, `isRunningStatistic` true);
+    /// `SectionSummary.initExact` and an `initExact` on the stem, conv and
+    /// value-fc2 details flag init figures that include same-distribution
+    /// draws; the value head's fc2 bias `initial` / `initialBiasOnlySoftmax` /
+    /// `delta` are null unless exact; the numerics audit's `biasInitMean` is
+    /// the reference's stored initial mean (in the model's compute dtype).
+    static let currentSchemaVersion = 5
 }

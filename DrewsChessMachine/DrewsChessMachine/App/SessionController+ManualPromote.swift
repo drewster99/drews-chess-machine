@@ -146,6 +146,9 @@ extension SessionController {
             // 2) Copy live trainer weights → champion, on a detached
             //    task so the GPU work doesn't sit on the cooperative
             //    pool. All errors surfaced — never swallowed.
+            // Opens the champion's replacement window; recording the promoted
+            // origin in step 3 closes it. A failed copy leaves it open.
+            noteChampionWeightsReplaced()
             var copyError: Error?
             do {
                 try await Task.detached(priority: .userInitiated) {

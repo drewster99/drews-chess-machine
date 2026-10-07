@@ -407,8 +407,8 @@ enum LichessBotLimits {
     static let autocompleteMinimumCharacters = 3
     /// The most ids `GET /api/users/status` accepts in one request.
     static let userStatusMaximumIDs = 100
-    /// Lichess' limit on a BOT account's games against other bots in one
-    /// 24-hour window (lila `BotLimit`; `LichessBotBotGameWindow` models
-    /// the window).
+    /// Lichess' limit on a BOT account's games against other bots until a
+    /// day after the first one counted (lila `BotLimit`;
+    /// `LichessBotBotGameWindow` models it).
     static let botGamesPerDay = 100
 }

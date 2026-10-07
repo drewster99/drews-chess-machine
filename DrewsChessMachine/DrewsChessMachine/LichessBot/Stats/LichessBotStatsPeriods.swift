@@ -38,20 +38,21 @@ enum LichessBotStatsPeriod: String, CaseIterable, Sendable, Codable, Hashable {
         switch self {
         case .lastHour:
             return "The 60 minutes before now (not the clock hour), so just after midnight it can hold games Today does not"
-        case .yesterday, .lastWeek, .lastMonth, .lastYear:
-            return "Games started in the whole previous \(unitName), in this Mac's calendar and time zone"
+        case .yesterday:
+            return Self.previousPeriodHelp(unit: "day")
+        case .lastWeek:
+            return Self.previousPeriodHelp(unit: "week")
+        case .lastMonth:
+            return Self.previousPeriodHelp(unit: "month")
+        case .lastYear:
+            return Self.previousPeriodHelp(unit: "year")
         case .today, .thisWeek, .thisMonth, .thisYear, .allTime:
             return "Games started since the start of this period, in this Mac's calendar and time zone"
         }
     }
 
-    private var unitName: String {
-        switch self {
-        case .yesterday: return "day"
-        case .lastWeek: return "week"
-        case .lastMonth: return "month"
-        default: return "year"
-        }
+    private static func previousPeriodHelp(unit: String) -> String {
+        "Games started in the whole previous \(unit), in this Mac's calendar and time zone"
     }
 }
 
@@ -129,7 +130,7 @@ enum LichessBotStatsPeriods {
     /// month or a leap year has its true length.
     static func starts(now: Date, calendar: Calendar) throws -> LichessBotStatsPeriodStarts {
         let today = try interval(.day, now: now, calendar: calendar).start
-        let thisWeek = try interval(.weekOfYear, now: now, calendar: calendar).start
+        let thisWeek = try interval(.week, now: now, calendar: calendar).start
         let thisMonth = try interval(.month, now: now, calendar: calendar).start
         let thisYear = try interval(.year, now: now, calendar: calendar).start
         return LichessBotStatsPeriodStarts(
@@ -137,7 +138,7 @@ enum LichessBotStatsPeriods {
             today: today,
             yesterday: try interval(.day, now: today.addingTimeInterval(-1), calendar: calendar).start,
             thisWeek: thisWeek,
-            lastWeek: try interval(.weekOfYear, now: thisWeek.addingTimeInterval(-1), calendar: calendar).start,
+            lastWeek: try interval(.week, now: thisWeek.addingTimeInterval(-1), calendar: calendar).start,
             thisMonth: thisMonth,
             lastMonth: try interval(.month, now: thisMonth.addingTimeInterval(-1), calendar: calendar).start,
             thisYear: thisYear,
@@ -153,7 +154,7 @@ enum LichessBotStatsPeriods {
     static func nextChange(after now: Date, rows: [LichessBotGameSummary], calendar: Calendar) throws -> Date {
         var earliest = min(
             try interval(.day, now: now, calendar: calendar).end,
-            try interval(.weekOfYear, now: now, calendar: calendar).end,
+            try interval(.week, now: now, calendar: calendar).end,
             try interval(.month, now: now, calendar: calendar).end,
             try interval(.year, now: now, calendar: calendar).end
         )
@@ -171,14 +172,33 @@ enum LichessBotStatsPeriods {
         return earliest
     }
 
-    private static func interval(_ component: Calendar.Component, now: Date, calendar: Calendar) throws -> DateInterval {
-        guard let interval = calendar.dateInterval(of: component, for: now) else {
-            switch component {
-            case .day: throw CalendarError.noDayInterval(now)
-            case .weekOfYear: throw CalendarError.noWeekInterval(now)
-            case .month: throw CalendarError.noMonthInterval(now)
-            default: throw CalendarError.noYearInterval(now)
+    /// A calendar unit the periods are built from, with the error for each,
+    /// so no unit's failure is reported as another's.
+    private enum Unit {
+        case day, week, month, year
+
+        var component: Calendar.Component {
+            switch self {
+            case .day: return .day
+            case .week: return .weekOfYear
+            case .month: return .month
+            case .year: return .year
             }
+        }
+
+        func missingInterval(at date: Date) -> CalendarError {
+            switch self {
+            case .day: return .noDayInterval(date)
+            case .week: return .noWeekInterval(date)
+            case .month: return .noMonthInterval(date)
+            case .year: return .noYearInterval(date)
+            }
+        }
+    }
+
+    private static func interval(_ unit: Unit, now: Date, calendar: Calendar) throws -> DateInterval {
+        guard let interval = calendar.dateInterval(of: unit.component, for: now) else {
+            throw unit.missingInterval(at: now)
         }
         return interval
     }

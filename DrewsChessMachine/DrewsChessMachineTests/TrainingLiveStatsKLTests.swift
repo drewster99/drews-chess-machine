@@ -82,3 +82,59 @@ final class TrainingLiveStatsKLTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(snap.rollingKLStdDev), 0.02, accuracy: 1e-12)
     }
 }
+
+extension TrainingLiveStatsKLTests {
+    /// The KL windows span trainer steps, not probes. Probes every 5 steps in
+    /// a 10-step window keep only the last two (steps 16 and 21); a window
+    /// counting entries kept all five, and at the default interval of 100 a
+    /// 512-entry window covered 51,200 trainer steps.
+    func testKLWindowSpansTrainerStepsNotProbes() throws {
+        let box = TrainingLiveStatsBox(rollingWindow: 10)
+        for step in 1...21 {
+            let probed = step % 5 == 1
+            box.recordStep(makeTiming(
+                hasDiagnostics: false,
+                klMean: probed ? Double(step) : nil,
+                klStdDev: probed ? Double(step) / 2 : nil
+            ))
+        }
+        let snap = box.snapshot()
+        XCTAssertEqual(snap.stats.steps, 21)
+        XCTAssertEqual(try XCTUnwrap(snap.rollingKLMean), 18.5, accuracy: 1e-12, "steps 16 and 21 only")
+        XCTAssertEqual(try XCTUnwrap(snap.rollingKLStdDev), 9.25, accuracy: 1e-12)
+    }
+
+    /// The span is counted back from the newest probe, not the current step:
+    /// with an interval longer than the window the latest probe stays in the
+    /// mean until the next one, so `kl=` does not vanish between probes.
+    func testNewestProbeStaysUntilTheNextOneEvenPastTheSpan() throws {
+        let box = TrainingLiveStatsBox(rollingWindow: 10)
+        box.recordStep(makeTiming(hasDiagnostics: false, klMean: 0.007, klStdDev: 0.003))
+        for _ in 0..<30 {
+            box.recordStep(makeTiming(hasDiagnostics: false, klMean: nil, klStdDev: nil))
+        }
+        let snap = box.snapshot()
+        XCTAssertEqual(try XCTUnwrap(snap.rollingKLMean), 0.007, accuracy: 1e-12)
+        XCTAssertEqual(try XCTUnwrap(snap.rollingKLStdDev), 0.003, accuracy: 1e-12)
+    }
+
+    /// A promotion rewinds the step count and resets the windows; a probe
+    /// after that must start a fresh window at the rewound step rather than
+    /// mix with values from the discarded steps.
+    func testResetThenRewoundStepStartsAFreshWindow() throws {
+        let box = TrainingLiveStatsBox(rollingWindow: 10)
+        var ahead = TrainingRunStats()
+        ahead.steps = 100
+        box.seed(ahead)
+        box.recordStep(makeTiming(hasDiagnostics: false, klMean: 5, klStdDev: 5))
+        box.resetRollingWindows()
+        var rewound = TrainingRunStats()
+        rewound.steps = 50
+        box.seed(rewound)
+        box.recordStep(makeTiming(hasDiagnostics: false, klMean: 2, klStdDev: 1))
+        let snap = box.snapshot()
+        XCTAssertEqual(snap.stats.steps, 51)
+        XCTAssertEqual(try XCTUnwrap(snap.rollingKLMean), 2, accuracy: 1e-12)
+        XCTAssertEqual(try XCTUnwrap(snap.rollingKLStdDev), 1, accuracy: 1e-12)
+    }
+}

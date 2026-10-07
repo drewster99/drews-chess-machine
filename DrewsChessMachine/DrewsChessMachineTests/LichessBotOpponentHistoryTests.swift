@@ -205,4 +205,31 @@ final class LichessBotOpponentHistoryTests: XCTestCase {
         }
         XCTAssertNil(unpreferred.recency)
     }
+
+    func testThePickLineNamesThePoolTheRecencyPreferenceLeft() {
+        var settings = LichessBotMatchmakingSettings()
+        settings.timeControls = [.blitz5plus3]
+        settings.rated = false
+        settings.minimumRatingWithoutOwnRating = 1000
+        settings.maximumRatingWithoutOwnRating = 2000
+        settings.preferNotRecentlyContacted = true
+        settings.recentContactHours = 24
+        var generator = LichessBotSeededGenerator(seed: 7)
+        let recent = history([], games: [LichessBotOpponentHistory.GameStart(opponentID: "recent", at: now.addingTimeInterval(-3600))])
+        guard case .picked(let fresh) = LichessBotMatchmaking.pick(from: [bot("recent"), bot("fresh")], settings: settings, ourPerfs: nil, context: context(recent), using: &generator) else {
+            return XCTFail("expected a pick")
+        }
+        XCTAssertEqual(fresh.drawnFromCount, 1)
+        XCTAssertEqual(LichessBotMatchmaking.describeSelection(fresh), "uniformly from 1 of 2 candidate(s) (not contacted recently)")
+        let lastContact = now.addingTimeInterval(-7200)
+        let both = history([], games: [
+            LichessBotOpponentHistory.GameStart(opponentID: "recent", at: now.addingTimeInterval(-600)),
+            LichessBotOpponentHistory.GameStart(opponentID: "older", at: lastContact),
+        ])
+        guard case .picked(let oldest) = LichessBotMatchmaking.pick(from: [bot("recent"), bot("older")], settings: settings, ourPerfs: nil, context: context(both), using: &generator) else {
+            return XCTFail("expected a pick")
+        }
+        XCTAssertEqual(LichessBotMatchmaking.describeSelection(oldest),
+                       "uniformly from 1 of 2 candidate(s) (every one contacted recently, so those contacted longest ago, at \(lastContact.formatted(date: .abbreviated, time: .standard)))")
+    }
 }

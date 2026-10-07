@@ -13,7 +13,7 @@ final class LichessBotWindowController: NSWindowController, NSWindowDelegate {
         let window = NSWindow(contentViewController: hosting)
         window.setContentSize(NSSize(width: 1180, height: 820))
         window.minSize = NSSize(width: 900, height: 600)
-        window.title = "Lichess Bot"
+        window.title = LichessBotWindowTitle.name
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)

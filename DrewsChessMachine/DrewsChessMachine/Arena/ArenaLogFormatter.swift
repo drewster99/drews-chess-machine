@@ -154,8 +154,12 @@ enum ArenaLogFormatter {
     ///     test decided and is not a statistical result.
     ///
     /// The games-at-decision figure is printed next to `gamesPlayed` whenever
-    /// they differ, which they normally do: the in-flight remainder finishes
-    /// after the crossing and is tallied but is not evidence.
+    /// they differ, which they normally do: the test decides on games
+    /// `0..<gamesAtDecision` in start order, and the later-started games —
+    /// some finished before the verdict, the in-flight rest after it — are
+    /// tallied but are not evidence. When the record carries
+    /// `sprtGamesFinishedAtDecision` the two groups are reported separately;
+    /// otherwise the line says the split was not recorded.
     static func formatSPRTBlock(record: TournamentRecord) -> [String] {
         guard record.promotionCriterion == .sprt else { return [] }
 
@@ -183,12 +187,34 @@ enum ArenaLogFormatter {
             lines.append(
                 "[ARENA]       decided at game \(v.gamesAtDecision) on \(v.wins)W/\(v.draws)D/\(v.losses)L"
             )
-        } else {
-            // The drain is the normal case at concurrency > 1, so say plainly
-            // which tally carried the decision and which is just the record.
+        } else if let finishedAtDecision = record.sprtGamesFinishedAtDecision {
+            // The test decides on games 0..<gamesAtDecision in start order
+            // (`ArenaSPRTStartOrderFeed`), so the games past that sample are
+            // of two kinds, and calling them all "drained" misstates when they
+            // finished: later-started games that had finished while an earlier
+            // one was still being played, and the in-flight remainder that
+            // finished after the verdict.
+            let finishedOutsideSample = finishedAtDecision - v.gamesAtDecision
+            let drainedAfterVerdict = record.gamesPlayed - finishedAtDecision
             lines.append(
                 "[ARENA]       decided at game \(v.gamesAtDecision) on \(v.wins)W/\(v.draws)D/\(v.losses)L"
-                + "; \(record.gamesPlayed - v.gamesAtDecision) further game(s) drained and are counted but not evidence"
+                + " (games 0..<\(v.gamesAtDecision) in start order)"
+                + "; \(record.gamesPlayed - v.gamesAtDecision) further game(s) counted but not evidence:"
+                + " \(finishedOutsideSample) finished before the verdict outside that sample,"
+                + " \(drainedAfterVerdict) in flight and drained after it"
+            )
+        } else {
+            // The record does not carry the finished count at the verdict: it
+            // was loaded from a session saved before the count was stored (or
+            // one whose stored count cannot belong to this verdict). Arenas
+            // then fed the test in finishing order, where every further game
+            // drained after the verdict, or — from the start-order fix on — in
+            // start order, where some had finished before it; the record
+            // cannot say which.
+            lines.append(
+                "[ARENA]       decided at game \(v.gamesAtDecision) on \(v.wins)W/\(v.draws)D/\(v.losses)L"
+                + "; \(record.gamesPlayed - v.gamesAtDecision) further game(s) drained or finished outside the test's sample"
+                + " (split not recorded) and are counted but not evidence"
             )
         }
 
@@ -356,6 +382,10 @@ enum ArenaLogFormatter {
     /// SPRT arena ended without deciding, so a parser can tell "ran SPRT, was
     /// cut short" apart from "did not run SPRT", which `crit=` alone cannot
     /// express once a row is filtered.
+    ///
+    /// `sprt_finished_at_decision` is `nan` on a record that does not carry the
+    /// count (one loaded from a session saved before it was stored), so every
+    /// SPRT row keeps the same keys.
     static func formatSPRTKV(record: TournamentRecord) -> String {
         guard record.promotionCriterion == .sprt else { return "" }
         guard let v = record.sprtVerdict else { return "sprt=none " }
@@ -363,9 +393,12 @@ enum ArenaLogFormatter {
         let cfg = v.config
         let (lower, upper) = cfg.bounds
         let llrStr = v.llr.map { String(format: "%.4f", $0) } ?? "nan"
+        let finishedAtDecisionStr = record.sprtGamesFinishedAtDecision.map { String($0) } ?? "nan"
         return "sprt=\(v.decision.rawValue) sprt_llr=\(llrStr) "
             + String(format: "sprt_lower=%.4f sprt_upper=%.4f ", lower, upper)
-            + "sprt_games=\(v.gamesAtDecision) sprt_w=\(v.wins) sprt_d=\(v.draws) sprt_l=\(v.losses) "
+            + "sprt_games=\(v.gamesAtDecision) "
+            + "sprt_finished_at_decision=\(finishedAtDecisionStr) "
+            + "sprt_w=\(v.wins) sprt_d=\(v.draws) sprt_l=\(v.losses) "
             + String(format: "sprt_elo0=%.4f sprt_elo1=%.4f sprt_alpha=%.4f sprt_beta=%.4f ",
                      cfg.elo0, cfg.elo1, cfg.alpha, cfg.beta)
             + "sprt_min_games=\(cfg.minGames) sprt_max_games=\(cfg.maxGames) "

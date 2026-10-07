@@ -10,6 +10,12 @@ struct LichessBotRecordCard: View {
     /// The declared default applies only while the key holds no value, so
     /// an operator who already dragged it keeps their height (OD-19).
     @AppStorage("lichessBot.overview.recordCardHeight") private var contentHeight: Double = 560
+    /// The content's laid-out height: the dragged height, or more when the
+    /// period table, the pickers and the pane's minimum need more. Nil until
+    /// the first layout. The handle drags from it, so the edge moves with the
+    /// pointer from the first point of a drag instead of waiting while the
+    /// stored height catches up with what is shown.
+    @State private var displayedContentHeight: Double?
 
     /// Short enough to keep the card compact, never so short the period
     /// table's rows are cut off.
@@ -25,10 +31,15 @@ struct LichessBotRecordCard: View {
                 // pane's minimum (`LichessBotStatsStyle.paneMinimumHeight`)
                 // need more, the card grows rather than squeezing the
                 // selected pane out of sight.
-                let height = min(max(contentHeight, Self.contentHeightRange.lowerBound), Self.contentHeightRange.upperBound)
+                let height = LichessBotHeightResizeHandle.clamped(contentHeight, to: Self.contentHeightRange)
                 LichessBotRecordCardContent(controller: controller)
                     .frame(minHeight: height, idealHeight: height, alignment: .top)
-                LichessBotHeightResizeHandle(height: $contentHeight, range: Self.contentHeightRange)
+                    .onGeometryChange(
+                        for: Double.self,
+                        of: { proxy in Double(proxy.size.height) },
+                        action: { measured in displayedContentHeight = measured }
+                    )
+                LichessBotHeightResizeHandle(height: $contentHeight, displayedHeight: displayedContentHeight, range: Self.contentHeightRange)
             }
         }
     }

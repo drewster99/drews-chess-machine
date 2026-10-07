@@ -136,6 +136,8 @@ final class NumericsAuditStaticTests: XCTestCase {
 
     // MARK: - Whole static pass
 
+    private struct UnexpectedBiasLookup: Error { let name: String }
+
     func testRunStaticFindsTheHotSpotsByName() throws {
         let names = ["value_wdl_fc2_weights", "value_wdl_fc2_bias", "blk_bn_running_mean", "blk_bn_running_var"]
         let weights: [[Float]] = [
@@ -144,7 +146,14 @@ final class NumericsAuditStaticTests: XCTestCase {
             [100, 0],
             [1, 1],
         ]
-        let result = try NumericsAudit.runStatic(names: names, weights: weights, arch: .current, masters: nil, mastersNote: "none")
+        // The hand-worked tensors' only head bias starts at the standard
+        // W/D/L prior [0, ln 6, 0].
+        let result = try NumericsAudit.runStatic(
+            names: names, weights: weights, arch: .current, masters: nil, mastersNote: "none",
+            biasInitialMean: { name in
+                guard name == "value_wdl_fc2_bias" else { throw UnexpectedBiasLookup(name: name) }
+                return log(6.0) / 3
+            })
         XCTAssertEqual(result.tensors.map(\.name), names)
         XCTAssertEqual(result.valueHeadOffset?.verdict, .bad)
         XCTAssertNil(result.policyHeadOffset)
@@ -159,7 +168,9 @@ final class NumericsAuditStaticTests: XCTestCase {
     }
 
     func testRunStaticRejectsMismatchedNames() {
-        XCTAssertThrowsError(try NumericsAudit.runStatic(names: ["a"], weights: [], arch: .current, masters: nil, mastersNote: nil))
+        XCTAssertThrowsError(try NumericsAudit.runStatic(
+            names: ["a"], weights: [], arch: .current, masters: nil, mastersNote: nil,
+            biasInitialMean: { throw UnexpectedBiasLookup(name: $0) }))
     }
 
     // MARK: - Position set

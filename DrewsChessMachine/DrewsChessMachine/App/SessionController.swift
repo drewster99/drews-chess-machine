@@ -203,8 +203,19 @@ final class SessionController {
     /// recorded by every trainer-state save.
     @ObservationIgnored var runBehaviorFingerprint: BehaviorFingerprint.Record?
     /// Where the champion's current weights came from; nil when there is no
-    /// champion, or its weights are still awaiting a load.
-    @ObservationIgnored var championOrigin: ChampionOrigin?
+    /// champion, or its weights are still awaiting a load. Every assignment
+    /// records the origin of the weights the champion now holds, which ends
+    /// a replacement `noteChampionWeightsReplaced()` began.
+    @ObservationIgnored var championOrigin: ChampionOrigin? {
+        didSet { championWeightIdentity.recordOrigin() }
+    }
+    /// How the champion's weights relate to `championOrigin` and its
+    /// identifier, for readers that must attribute a champion export (the
+    /// analyzers' snapshots): not awaiting an origin before the export and
+    /// unchanged after it means no replacement overlapped it. A model ID
+    /// alone cannot say that, since every checkpoint of a run shares one.
+    /// Main actor only: every replacement begins and ends here.
+    @ObservationIgnored private(set) var championWeightIdentity = ChampionWeightIdentityState()
     /// How the latest Play-and-Train start got its run seed — set where the
     /// seed is resolved, read when the segment's start is noted
     /// (`noteSegmentStart`), so a "New Session, keep trainer" start records
@@ -1274,6 +1285,13 @@ final class SessionController {
         checkpoint?.runResumeExactness = nil
         // The segment's settings journal ends with it.
         TrainingParameters.runChangeObserver.value = nil
+    }
+
+    /// Open a champion weight replacement. Called on the main actor before a
+    /// load into the champion starts; recording the new `championOrigin`
+    /// ends it.
+    func noteChampionWeightsReplaced() {
+        championWeightIdentity.beginReplacement()
     }
 
     /// The actual network construction. Runs on a detached `.userInitiated`

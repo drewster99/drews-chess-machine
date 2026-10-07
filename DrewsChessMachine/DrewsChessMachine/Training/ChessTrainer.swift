@@ -504,11 +504,12 @@ struct TrainingRunStats: Sendable {
 /// metric noise from outcome-weighted CE.
 ///
 /// Marked `@unchecked Sendable` for the same reason as `CancelBox` and
-/// `ReplayBuffer`: a private serial `DispatchQueue` serializes all
-/// state mutation and snapshot reads. Writers (`recordStep`, `seed`,
-/// `recordError`, `resetRollingWindows`) dispatch asynchronously so
-/// the training worker never blocks on the UI heartbeat's snapshot
-/// read, and vice-versa.
+/// `ReplayBuffer`: a private `OSAllocatedUnfairLock` serializes all
+/// state mutation and snapshot reads. Every section under it is short
+/// (no I/O, no GPU work), so writers (`recordStep`, `seed`,
+/// `recordError`, `resetRollingWindows`) take it synchronously and the
+/// training worker waits on the UI heartbeat's snapshot read at most
+/// for that read's own copy, and vice-versa.
 final class TrainingLiveStatsBox: @unchecked Sendable {
     private struct RollingDoubleWindow: Sendable {
         private var storage: [Double]
@@ -557,6 +558,69 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         /// window limit). Useful as the denominator when presenting a
         /// skip count scoped to the live window span.
         var size: Int { count }
+    }
+
+    /// A rolling mean over the values recorded in the last `span` trainer
+    /// steps, counted back from the step of the newest value.
+    ///
+    /// For a metric that is not produced on every step. `RollingDoubleWindow`
+    /// counts entries, which spans `limit` trainer steps only for a value
+    /// appended on every step: the KL probe reports once per
+    /// `kl_probe_interval` steps, so a 512-entry window held 512 probes —
+    /// 51,200 trainer steps at the default interval of 100 — and the KL mean
+    /// lagged the per-step loss and gNorm windows by two orders of magnitude.
+    /// Counting back from the newest value rather than from the current step
+    /// keeps the latest probe in the mean between probes even when the
+    /// interval is longer than the span, so `[STATS]` `kl=` and the KL charts
+    /// do not blank out between two probes.
+    private struct StepSpanDoubleWindow: Sendable {
+        private struct Entry: Sendable {
+            let step: Int
+            let value: Double
+        }
+
+        private let span: Int
+        /// Oldest first; steps strictly increasing.
+        private var entries: [Entry] = []
+
+        init(span: Int) {
+            precondition(span > 0, "Rolling window must be positive")
+            self.span = span
+        }
+
+        /// Append `value`, recorded at trainer step `step`, and drop every
+        /// value from before the `span` steps ending at it.
+        ///
+        /// Steps must strictly increase between resets. The trainer clock goes
+        /// back only at a promotion's rewind, and that path clears the windows
+        /// (`resetRollingWindows`) before the next step records; a step at or
+        /// before the newest one means that ordering broke, and pruning by step
+        /// would then keep or drop the wrong values.
+        mutating func append(_ value: Double, atTrainerStep step: Int) {
+            if let newest = entries.last {
+                precondition(
+                    step > newest.step,
+                    "StepSpanDoubleWindow: step \(step) is not after the newest value's step \(newest.step); "
+                        + "a trainer-clock rewind must reset the rolling windows first"
+                )
+            }
+            entries.append(Entry(step: step, value: value))
+            let oldestKeptStep = step - span + 1
+            if let firstKept = entries.firstIndex(where: { $0.step >= oldestKeptStep }), firstKept > 0 {
+                entries.removeFirst(firstKept)
+            }
+        }
+
+        mutating func removeAll() {
+            entries.removeAll(keepingCapacity: true)
+        }
+
+        /// Summed on read rather than kept as a running sum: at most `span`
+        /// entries, and no rounding accumulates as values leave the window.
+        var mean: Double? {
+            guard !entries.isEmpty else { return nil }
+            return entries.reduce(0.0) { $0 + $1.value } / Double(entries.count)
+        }
     }
 
     /// Immutable snapshot the UI reads. All fields are value types so
@@ -656,10 +720,13 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         /// Rolling-window means of the per-step policy KL and its across-batch
         /// spread (`TrainStepTiming.klMean` / `klStdDev`), in nats.
         ///
-        /// Windowed over *probes*, not steps: the probe runs on an interval,
-        /// so these advance far more slowly than the other rolling values and
-        /// stay `nil` entirely when the probe is disabled. A reader comparing
-        /// them against a per-step metric should keep that cadence in mind.
+        /// Windowed over trainer steps, not probes: the last `rollingWindow`
+        /// trainer steps — the span the per-step windows (losses, gNorm) cover —
+        /// counted back from the newest probe's step. The mean therefore holds
+        /// about `rollingWindow / kl_probe_interval` probes, and only the newest
+        /// one when the interval is longer than the window. `nil` until a probe
+        /// has reported since the box was made or its windows were last reset,
+        /// so always `nil` with the probe disabled from the start.
         let rollingKLMean: Double?
         let rollingKLStdDev: Double?
         /// Rolling-window means of the sampled-minibatch composition —
@@ -732,8 +799,11 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _policyLossWinWindow: RollingDoubleWindow
     private var _policyLossLossWindow: RollingDoubleWindow
     private var _velocityNormWindow: RollingDoubleWindow
-    private var _klMeanWindow: RollingDoubleWindow
-    private var _klStdDevWindow: RollingDoubleWindow
+    /// KL probe windows, spanning trainer steps rather than entries — the
+    /// probe reports only every `kl_probe_interval` steps
+    /// (`StepSpanDoubleWindow`).
+    private var _klMeanWindow: StepSpanDoubleWindow
+    private var _klStdDevWindow: StepSpanDoubleWindow
     /// Realized sampled-minibatch composition windows — appended on EVERY step
     /// (not gated on `hasDiagnostics`, since the sampler tallies these on the
     /// uniform fast path too). NaN entries (the random-data sweep path) are
@@ -821,8 +891,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self._policyLossWinWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyLossLossWindow = RollingDoubleWindow(limit: rollingWindow)
         self._velocityNormWindow = RollingDoubleWindow(limit: rollingWindow)
-        self._klMeanWindow = RollingDoubleWindow(limit: rollingWindow)
-        self._klStdDevWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._klMeanWindow = StepSpanDoubleWindow(span: rollingWindow)
+        self._klStdDevWindow = StepSpanDoubleWindow(span: rollingWindow)
         self._sampledBatchGameLengthWindow = RollingDoubleWindow(limit: rollingWindow)
         self._sampledBatchDrawFractionWindow = RollingDoubleWindow(limit: rollingWindow)
         self._dataPrepMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
@@ -889,14 +959,21 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             // 1, 101, 201, …) and diagnostics on multiples of
             // `batch_stats_interval` (default 10), so under the defaults the
             // two never coincide — gated, every probe value, step 1's
-            // included, was dropped and the KL charts stayed blank. Steps without a probe
-            // carry nil, and a failed readback a non-finite value; neither is
-            // appended, so a sparse metric never looks dense.
+            // included, was dropped and the KL charts stayed blank. A step
+            // without a probe carries nil, and so does a probe that failed:
+            // the trainer throws on a non-finite readback, logs
+            // `[KL-PROBE] skipped this step` and reports nil. Neither is
+            // appended, so a sparse metric never looks dense. No producer
+            // hands over a non-finite value today; the `isFinite` checks keep
+            // one that did from poisoning the mean. Each value is filed under
+            // the completed-step count (`_stats.steps`, already advanced by
+            // `record` above), since the KL windows span trainer steps, not
+            // probes.
             if let klMean = timing.klMean, klMean.isFinite {
-                self._klMeanWindow.append(klMean)
+                self._klMeanWindow.append(klMean, atTrainerStep: self._stats.steps)
             }
             if let klStdDev = timing.klStdDev, klStdDev.isFinite {
-                self._klStdDevWindow.append(klStdDev)
+                self._klStdDevWindow.append(klStdDev, atTrainerStep: self._stats.steps)
             }
 
             // The diagnostic reductions are computed only on stats steps
@@ -4454,6 +4531,76 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
+    // MARK: - Analysis export
+
+    /// Everything the analyzers read from the trainer, taken in one turn of
+    /// `executionQueue` (`exportAnalysisState()`).
+    struct AnalysisState: Sendable {
+        /// Graph variable names in export order: the trainables, then the BN
+        /// running statistics.
+        let names: [String]
+        /// How many leading entries of `names` are trainables.
+        let trainableCount: Int
+        let architecture: NetworkArchitecture
+        let policyTailPrecision: ChessNetwork.PolicyTailPrecision
+        /// Working weights in the compute dtype, parallel to `names`.
+        let weights: [[Float]]
+        /// SGD steps the weights include.
+        let completedSteps: Int
+        /// fp32 masters parallel to `names`; nil when the trainer computes in
+        /// fp32 and keeps none.
+        let masters: [[Float]]?
+        /// Optimizer velocity, one tensor per trainable, in trainable order.
+        let velocity: [[Float]]
+    }
+
+    /// The working weights, the step count, the fp32 masters and the optimizer
+    /// velocity, read in ONE turn of `executionQueue` — the queue every SGD
+    /// step runs on and completes its GPU work in, with its step-count
+    /// increment — so all of them describe the same step.
+    ///
+    /// Why one turn: the analyzers used to read the masters and the velocity
+    /// in later turns than the weights, so SGD steps landed between the reads
+    /// and a numerics audit compared one step's working weights with a later
+    /// step's masters and velocity. Why no pause: nothing read here is written
+    /// off this queue except by a weight replacement (reset, load, promotion
+    /// rewind), which the caller detects through `weightIdentityState`; the
+    /// working-weight export runs on the network's queue under
+    /// `weightAccessLock`, as in `exportWeightsWithCompletedSteps`, and no
+    /// holder of that lock waits on this queue. The variable names, the
+    /// architecture and the tail precision are read in the same turn because
+    /// `internalResetNetwork` replaces `network` on this queue.
+    ///
+    /// Costs two extra GPU readbacks (masters, velocity — each the size of the
+    /// weights), which delay the next SGD step by that much.
+    func exportAnalysisState() async throws -> AnalysisState {
+        try await enqueue { [self] in
+            let network = self.network
+            let weights = try network.exportWeightsBlocking()
+            let completedSteps = _completedTrainSteps.value
+            let masters = try internalReadMasterValues()
+            let velocity = try internalReadVelocityValues()
+            let trainableCount = network.trainableVariables.count
+            let names = (network.trainableVariables + network.bnRunningStatsVariables).map { $0.operation.name }
+            guard weights.count == names.count else {
+                throw ChessTrainerError.trainerWeightCountMismatch(
+                    expected: "\(names.count) network tensors (trainables + BN running statistics)", got: weights.count)
+            }
+            guard masters.isEmpty || masters.count == names.count else {
+                throw ChessTrainerError.trainerWeightCountMismatch(
+                    expected: "\(names.count) fp32 masters (one per network tensor)", got: masters.count)
+            }
+            guard velocity.count == trainableCount else {
+                throw ChessTrainerError.trainerWeightCountMismatch(
+                    expected: "\(trainableCount) velocity tensors (one per trainable)", got: velocity.count)
+            }
+            return AnalysisState(
+                names: names, trainableCount: trainableCount, architecture: network.arch,
+                policyTailPrecision: network.policyTailPrecision, weights: weights,
+                completedSteps: completedSteps, masters: masters.isEmpty ? nil : masters, velocity: velocity)
+        }
+    }
+
     /// Off-main async getter for `completedTrainSteps`. The lock read
     /// runs on a global executor so the awaiter (typically the main
     /// actor) is never synchronously blocked.
@@ -5659,42 +5806,38 @@ final class ChessTrainer: @unchecked Sendable {
         try await writeVelocityValues(snapshot)
     }
 
-    /// Read current velocity values via a single graph.run targeting
-    /// all velocity variables. Internal helper for `exportTrainerWeights`.
-    /// Runs synchronously on the network's command queue (caller must
-    /// have paused training).
+    /// Read current velocity values via a single graph.run targeting all
+    /// velocity variables. Runs on `executionQueue`, between SGD steps; a
+    /// caller pairing it with reads in other turns pauses training.
     private func readVelocityValues() async throws -> [[Float]] {
+        try await enqueue { [self] in try internalReadVelocityValues() }
+    }
+
+    /// Body of `readVelocityValues`; must run on `executionQueue`, where
+    /// `internalResetNetwork` replaces `velocityVariables` and `network`.
+    private func internalReadVelocityValues() throws -> [[Float]] {
         guard !velocityVariables.isEmpty else { return [] }
-        return try await withCheckedThrowingContinuation { continuation in
-            executionQueue.async { [self] in
-                do {
-                    // A trainer built for loaded weights holds zero velocity
-                    // until its load; refuse to export it as trained state.
-                    try network.requireLoadedWeights("readVelocityValues")
-                    let result: [[Float]] = try autoreleasepool {
-                        let results = network.graph.run(
-                            with: network.commandQueue,
-                            feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
-                            targetTensors: velocityVariables,
-                            targetOperations: nil
-                        )
-                        var out: [[Float]] = []
-                        out.reserveCapacity(velocityVariables.count)
-                        for v in velocityVariables {
-                            guard let data = results[v] else {
-                                throw ChessTrainerError.velocityReadbackMissing(v.operation.name)
-                            }
-                            let count = try ChessNetwork.elementCount(of: v)
-                            // Velocity is fp32 (canonical mixed-precision path).
-                            out.append(ChessNetwork.readFloatsFP32(from: data, count: count))
-                        }
-                        return out
-                    }
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
+        // A trainer built for loaded weights holds zero velocity
+        // until its load; refuse to export it as trained state.
+        try network.requireLoadedWeights("readVelocityValues")
+        return try autoreleasepool {
+            let results = network.graph.run(
+                with: network.commandQueue,
+                feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                targetTensors: velocityVariables,
+                targetOperations: nil
+            )
+            var out: [[Float]] = []
+            out.reserveCapacity(velocityVariables.count)
+            for v in velocityVariables {
+                guard let data = results[v] else {
+                    throw ChessTrainerError.velocityReadbackMissing(v.operation.name)
                 }
+                let count = try ChessNetwork.elementCount(of: v)
+                // Velocity is fp32 (canonical mixed-precision path).
+                out.append(ChessNetwork.readFloatsFP32(from: data, count: count))
             }
+            return out
         }
     }
 
@@ -5762,41 +5905,40 @@ final class ChessTrainer: @unchecked Sendable {
 
     /// Read the fp32 master values (weights + running stats), parallel to
     /// `trainableVariables + bnRunningStatsVariables`. Empty under `.float32`
-    /// (no masters). Caller must have paused training.
+    /// (no masters). Runs on `executionQueue`, between SGD steps; a caller
+    /// pairing it with reads in other turns (or the network-queue working
+    /// export) pauses training — `exportAnalysisState()` reads them in one.
     /// Internal (not private) so the macOS-27 NaN-isolation tests can compare
     /// master-vs-working weight norms to localize the bf16 divergence.
     func readMasterValues() async throws -> [[Float]] {
+        try await enqueue { [self] in try internalReadMasterValues() }
+    }
+
+    /// Body of `readMasterValues`; must run on `executionQueue`, where
+    /// `internalResetNetwork` replaces `masterVariables` and `network`.
+    private func internalReadMasterValues() throws -> [[Float]] {
         guard !masterVariables.isEmpty else { return [] }
-        return try await withCheckedThrowingContinuation { continuation in
-            executionQueue.async { [self] in
-                do {
-                    // A trainer built for loaded weights holds zero masters
-                    // until its load; `exportTrainerWeights` would otherwise
-                    // hand them to a save as the trained weights.
-                    try network.requireLoadedWeights("readMasterValues")
-                    let result: [[Float]] = try autoreleasepool {
-                        let results = network.graph.run(
-                            with: network.commandQueue,
-                            feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
-                            targetTensors: masterVariables,
-                            targetOperations: nil
-                        )
-                        var out: [[Float]] = []
-                        out.reserveCapacity(masterVariables.count)
-                        for v in masterVariables {
-                            guard let data = results[v] else {
-                                throw ChessTrainerError.velocityReadbackMissing(v.operation.name)
-                            }
-                            let count = try ChessNetwork.elementCount(of: v)
-                            out.append(ChessNetwork.readFloatsFP32(from: data, count: count))
-                        }
-                        return out
-                    }
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
+        // A trainer built for loaded weights holds zero masters
+        // until its load; `exportTrainerWeights` would otherwise
+        // hand them to a save as the trained weights.
+        try network.requireLoadedWeights("readMasterValues")
+        return try autoreleasepool {
+            let results = network.graph.run(
+                with: network.commandQueue,
+                feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                targetTensors: masterVariables,
+                targetOperations: nil
+            )
+            var out: [[Float]] = []
+            out.reserveCapacity(masterVariables.count)
+            for v in masterVariables {
+                guard let data = results[v] else {
+                    throw ChessTrainerError.velocityReadbackMissing(v.operation.name)
                 }
+                let count = try ChessNetwork.elementCount(of: v)
+                out.append(ChessNetwork.readFloatsFP32(from: data, count: count))
             }
+            return out
         }
     }
 

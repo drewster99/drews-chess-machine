@@ -214,10 +214,13 @@ enum ArenaSPRT {
     /// it was made from.
     ///
     /// This is a distinct type from `Decision` because *when* the test stopped
-    /// is part of the result. A tournament runs `concurrency` games at once,
-    /// so when the log-likelihood ratio crosses a bound there are still up to
-    /// `K − 1` games in flight; they finish, and they are reported. The tally
-    /// here is the one at the crossing, not the one at the end.
+    /// is part of the result. The test is fed games in start order and a
+    /// tournament runs `concurrency` games at once, so when the log-likelihood
+    /// ratio crosses a bound some later-started games have already finished
+    /// (held while an earlier game was still being played) and up to `K − 1`
+    /// are still in flight; all of them finish and are reported. The tally
+    /// here is the start-order sample at the crossing, not the tournament's
+    /// at the end.
     struct Verdict: Equatable, Sendable {
         /// Always a final decision — `.accept`, `.reject` or `.inconclusive`.
         /// `.continueTesting` never reaches a verdict.

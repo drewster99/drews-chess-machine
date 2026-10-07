@@ -37,7 +37,11 @@ import Foundation
 // The BN running stats (`value_bn_running_mean|var`) are also pulled
 // in even though they're not "weights" per se — they're learned
 // statistics that affect inference behavior, and a sanity check on
-// their magnitudes is cheap.
+// their magnitudes is cheap. They are reported without init figures:
+// their start depends on how the model was built (`AnalysisInitReference`).
+// An init figure that includes a same-distribution draw rather than the
+// model's own initial values is flagged (`initExact` false; "~" in the
+// text summary).
 //
 // Pure analysis over an `AnalyzedNetworkSnapshot` (one export, shared with
 // the other analyses of the same request).
@@ -59,13 +63,18 @@ enum ValueHeadAnalyzer {
             let mean: Double
             let stdev: Double
             let percentiles: [Double]
-            /// `l2Norm / initL2Norm`; nil when the tensor started at zero.
-            /// Near 1.0, the tensor is still at roughly its init scale;
-            /// near 0, weight decay has pulled it close to zero.
+            /// A BN running statistic: no init figures (`AnalysisInitReference`).
+            let isRunningStatistic: Bool
+            /// `l2Norm / initL2Norm`; nil when the tensor started at zero or is
+            /// a BN running statistic. Near 1.0, the tensor is still at roughly
+            /// its init scale; near 0, weight decay has pulled it close to zero.
             let l2NormRatioToInit: Double?
             /// The tensor's L2 norm at init (init reference): exact when
-            /// `initExact`, else a draw of the same distribution.
-            let initL2Norm: Double
+            /// `initExact`, else a draw of the same distribution; nil for a BN
+            /// running statistic.
+            let initL2Norm: Double?
+            /// Whether the initial values are known exactly; false for a BN
+            /// running statistic.
             let initExact: Bool
         }
 
@@ -79,15 +88,19 @@ enum ValueHeadAnalyzer {
             /// per-class offset; `pW` / `pD` / `pL` on the `[STATS]` line is
             /// the prediction.
             let biasOnlySoftmax: [Double]
+            /// Whether the bias's start is known exactly. The builder never
+            /// draws it from the seed (it is the draw prior's bias), so it is.
+            let initExact: Bool
             /// The bias this model started with (init reference: the draw
-            /// prior's bias, exactly), so the per-slot delta is computable
-            /// without the network code.
-            let initial: [Double]
+            /// prior's bias as the model stores it), so the per-slot delta is
+            /// computable without the network code; nil unless `initExact`,
+            /// since a delta from a draw means nothing.
+            let initial: [Double]?
             /// Softmax of `initial` alone, read the same way as
-            /// `biasOnlySoftmax`.
-            let initialBiasOnlySoftmax: [Double]
-            /// Per-slot delta `current[i] - initial[i]`.
-            let delta: [Double]
+            /// `biasOnlySoftmax`; nil unless `initExact`.
+            let initialBiasOnlySoftmax: [Double]?
+            /// Per-slot delta `current[i] - initial[i]`; nil unless `initExact`.
+            let delta: [Double]?
         }
 
         struct FC2WeightsDetail: Codable, Sendable {
@@ -104,6 +117,9 @@ enum ValueHeadAnalyzer {
             /// a He-normal fc2, 0 for a zero init (no ratio is then
             /// meaningful).
             let initColumnL2Norms: [Double]
+            /// Whether `initColumnL2Norms` is the model's own start (else a
+            /// draw of the same distribution).
+            let initExact: Bool
         }
 
         let producedAtISO8601: String
@@ -122,17 +138,23 @@ enum ValueHeadAnalyzer {
 
     // MARK: - Entry point
 
-    /// Run the analyzer against `network`. Calls `exportWeights()`,
-    /// filters for `value_*` variables by name, computes stats, and
-    /// returns a single `Result`.
-    ///
-    /// `network` must be the inference or training network of interest;
-    /// the analyzer doesn't care which but the JSON's `modelLabel`
-    /// should reflect the caller's choice so downstream readers know
-    /// what was analyzed.
+    /// `run(snapshot:modelLabel:)` on a GCD queue: it scans and sorts every
+    /// value-head tensor, synchronous work that must hold neither the main
+    /// actor nor a cooperative thread.
+    static func runOffPool(snapshot: AnalyzedNetworkSnapshot, modelLabel: String) async throws -> Result {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(with: Swift.Result(catching: { try run(snapshot: snapshot, modelLabel: modelLabel) }))
+            }
+        }
+    }
+
+    /// Run the analyzer on `snapshot`: the `value_*` variables, by name, with
+    /// their init figures from the snapshot's init reference. `modelLabel` is
+    /// opaque metadata the caller chooses (which network was analyzed) and is
+    /// round-tripped into the result header.
     static func run(snapshot: AnalyzedNetworkSnapshot, modelLabel: String) throws -> Result {
         let arch = snapshot.architecture
-        let reference = snapshot.initReference
 
         var stats: [Result.WeightStats] = []
         var fc2BiasDetail: Result.FC2BiasDetail?
@@ -140,19 +162,17 @@ enum ValueHeadAnalyzer {
 
         for (i, name) in snapshot.names.enumerated() where name.hasPrefix("value_") {
             let values = snapshot.weights[i]
-            guard let initial = reference.initialValues[name], initial.count == values.count else {
-                throw ValueHeadAnalyzerError.noInitialValues(name)
-            }
-            stats.append(makeStats(name: name, values: values, initial: initial,
-                                   initExact: reference.exactNames.contains(name)))
+            let start = try snapshot.start(ofVariableAt: i)
+            stats.append(makeStats(name: name, values: values, start: start))
+            guard case .trainable(let initial, let exact) = start else { continue }
 
             // The W/D/L details describe the three-class head's fc2 (its
             // variables are named for the head style; see
             // `ChessNetwork.valueHead`).
             if name == "value_wdl_fc2_bias" {
-                fc2BiasDetail = makeFC2BiasDetail(values: values, initial: initial)
+                fc2BiasDetail = makeFC2BiasDetail(values: values, initial: initial, initExact: exact)
             } else if name == "value_wdl_fc2_weights" {
-                fc2WeightsDetail = makeFC2WeightsDetail(values: values, initial: initial, arch: arch)
+                fc2WeightsDetail = makeFC2WeightsDetail(values: values, initial: initial, initExact: exact, arch: arch)
             }
         }
 
@@ -179,9 +199,22 @@ enum ValueHeadAnalyzer {
     private static func makeStats(
         name: String,
         values: [Float],
-        initial: [Float],
-        initExact: Bool
+        start: AnalysisInitReference.Start
     ) -> Result.WeightStats {
+        let initial: [Float]?
+        let initExact: Bool
+        switch start {
+        case .trainable(let startValues, let exact):
+            initial = startValues
+            initExact = exact
+        case .runningStatistic:
+            initial = nil
+            initExact = false
+        }
+        let isRunningStatistic = initial == nil
+        let initL2: Double? = initial.map { startValues in
+            sqrt(startValues.reduce(0.0) { $0 + Double($1) * Double($1) })
+        }
         let n = values.count
         guard n > 0 else {
             return Result.WeightStats(
@@ -190,8 +223,9 @@ enum ValueHeadAnalyzer {
                 l1Norm: 0, l2Norm: 0, meanAbs: 0,
                 min: 0, max: 0, mean: 0, stdev: 0,
                 percentiles: Array(repeating: 0, count: percentileLabels.count),
+                isRunningStatistic: isRunningStatistic,
                 l2NormRatioToInit: nil,
-                initL2Norm: 0,
+                initL2Norm: initL2,
                 initExact: initExact
             )
         }
@@ -223,9 +257,9 @@ enum ValueHeadAnalyzer {
             percentile(p: Double(p), sortedAscending: sorted)
         }
 
-        let initL2 = sqrt(initial.reduce(0.0) { $0 + Double($1) * Double($1) })
-        // A tensor that started at zero has no ratio to its start.
-        let ratio: Double? = initL2 > 0 ? l2 / initL2 : nil
+        // A tensor that started at zero, or a BN running statistic, has no
+        // ratio to its start.
+        let ratio: Double? = initL2.flatMap { $0 > 0 ? l2 / $0 : nil }
 
         return Result.WeightStats(
             name: name,
@@ -238,27 +272,30 @@ enum ValueHeadAnalyzer {
             mean: mean,
             stdev: stdev,
             percentiles: percentiles,
+            isRunningStatistic: isRunningStatistic,
             l2NormRatioToInit: ratio,
             initL2Norm: initL2,
             initExact: initExact
         )
     }
 
-    private static func makeFC2BiasDetail(values: [Float], initial initialValues: [Float]) -> Result.FC2BiasDetail? {
+    private static func makeFC2BiasDetail(values: [Float], initial initialValues: [Float], initExact: Bool) -> Result.FC2BiasDetail? {
         guard values.count == 3, initialValues.count == 3 else { return nil }
         let current = values.map { Double($0) }
-        let initial = initialValues.map { Double($0) }
-        let delta = zip(current, initial).map { $0 - $1 }
+        let initial: [Double]? = initExact ? initialValues.map { Double($0) } : nil
         return Result.FC2BiasDetail(
             current: current,
             biasOnlySoftmax: softmax(current),
+            initExact: initExact,
             initial: initial,
-            initialBiasOnlySoftmax: softmax(initial),
-            delta: delta
+            initialBiasOnlySoftmax: initial.map(softmax),
+            delta: initial.map { start in zip(current, start).map { $0 - $1 } }
         )
     }
 
-    private static func makeFC2WeightsDetail(values: [Float], initial: [Float], arch: NetworkArchitecture) -> Result.FC2WeightsDetail? {
+    private static func makeFC2WeightsDetail(
+        values: [Float], initial: [Float], initExact: Bool, arch: NetworkArchitecture
+    ) -> Result.FC2WeightsDetail? {
         // The `value_wdl_fc2_weights` tensor has shape [hidden, 3] (in × out)
         // and is stored row-major (every 3 consecutive floats are the
         // weights from one input neuron to W/D/L). To get the L2 norm
@@ -270,7 +307,8 @@ enum ValueHeadAnalyzer {
         guard values.count == inDim * outDim, initial.count == values.count else { return nil }
         return Result.FC2WeightsDetail(
             columnL2Norms: columnL2Norms(values, inDim: inDim, outDim: outDim),
-            initColumnL2Norms: columnL2Norms(initial, inDim: inDim, outDim: outDim)
+            initColumnL2Norms: columnL2Norms(initial, inDim: inDim, outDim: outDim),
+            initExact: initExact
         )
     }
 
@@ -316,20 +354,6 @@ enum ValueHeadAnalyzer {
     }
 }
 
-// MARK: - Error type
-
-enum ValueHeadAnalyzerError: LocalizedError {
-    /// The init reference has no initial values of this variable's size.
-    case noInitialValues(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .noInitialValues(let name):
-            return "ValueHeadAnalyzer: the init reference has no initial values for \(name)"
-        }
-    }
-}
-
 // MARK: - Text summary
 
 extension ValueHeadAnalyzer.Result {
@@ -348,6 +372,8 @@ extension ValueHeadAnalyzer.Result {
 
         // Per-variable stats table.
         out += "Per-variable stats:\n"
+        out += "  (~ = init figure includes draws of the same distribution, not the model's own initial values; "
+            + "-- = none: started at zero, or a BN running statistic, whose start depends on how the model was built)\n"
         out += String(format: "  %@  %@  %@  %@  %@  %@  %@  %@  %@\n",
                       "name".padding(toLength: 26, withPad: " ", startingAt: 0),
                       "count".padded(7),
@@ -360,7 +386,7 @@ extension ValueHeadAnalyzer.Result {
                       pctHeader.padded(20))
         for s in weightStats {
             let ratioStr = s.l2NormRatioToInit.map { String(format: "%6.3f", $0) } ?? "  --  "
-            let initL2Str = String(format: "%6.3f", s.initL2Norm) + (s.initExact ? "" : "~")
+            let initL2Str = s.initL2Norm.map { String(format: "%6.3f", $0) + (s.initExact ? "" : "~") } ?? "  --  "
             let pctStr = s.percentiles
                 .map { String(format: "%+6.3f", $0) }
                 .joined(separator: "/")
@@ -384,12 +410,16 @@ extension ValueHeadAnalyzer.Result {
                           bias.current.map { String(format: "%+7.4f", $0) }.joined(separator: ", "))
             out += String(format: "  softmax of bias alone (WDL): %@\n",
                           bias.biasOnlySoftmax.map { String(format: "%.4f", $0) }.joined(separator: ", "))
-            out += String(format: "  initial values             : %@\n",
-                          bias.initial.map { String(format: "%+7.4f", $0) }.joined(separator: ", "))
-            out += String(format: "  initial bias softmax (WDL) : %@\n",
-                          bias.initialBiasOnlySoftmax.map { String(format: "%.4f", $0) }.joined(separator: ", "))
-            out += String(format: "  delta from initial         : %@\n",
-                          bias.delta.map { String(format: "%+7.4f", $0) }.joined(separator: ", "))
+            if let initial = bias.initial, let initialSoftmax = bias.initialBiasOnlySoftmax, let delta = bias.delta {
+                out += String(format: "  initial values             : %@\n",
+                              initial.map { String(format: "%+7.4f", $0) }.joined(separator: ", "))
+                out += String(format: "  initial bias softmax (WDL) : %@\n",
+                              initialSoftmax.map { String(format: "%.4f", $0) }.joined(separator: ", "))
+                out += String(format: "  delta from initial         : %@\n",
+                              delta.map { String(format: "%+7.4f", $0) }.joined(separator: ", "))
+            } else {
+                out += "  initial values             : not known exactly (no delta)\n"
+            }
             out += "\n"
         }
 
@@ -401,7 +431,8 @@ extension ValueHeadAnalyzer.Result {
                 let v = fc2w.columnL2Norms[i]
                 let initial = fc2w.initColumnL2Norms[i]
                 let ratioStr = initial > 0 ? String(format: "%6.3f", v / initial) : "  --  "
-                out += String(format: "  %@: L2=%6.3f  init=%6.3f  ratio=%@\n", n.padded(5), v, initial, ratioStr)
+                out += String(format: "  %@: L2=%6.3f  init=%@  ratio=%@\n", n.padded(5), v,
+                              String(format: "%6.3f", initial) + (fc2w.initExact ? "" : "~"), ratioStr)
             }
         }
 

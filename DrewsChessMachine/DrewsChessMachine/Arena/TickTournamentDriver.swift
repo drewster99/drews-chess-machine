@@ -54,18 +54,24 @@ enum TickTournamentDriverError: LocalizedError {
 /// exhausting the schedule already produced.
 ///
 /// Two consequences worth stating plainly, both of which follow from K
-/// games being in flight at the moment the log-likelihood ratio crosses
-/// a bound:
+/// games being in flight while the test is fed in start order
+/// (`ArenaSPRTStartOrderFeed`):
 ///
-///   - **The verdict is latched, not recomputed.** Those in-flight games
-///     finish and are tallied, so `TournamentStats.gamesPlayed` exceeds
-///     `sprtVerdict.gamesAtDecision`. Re-deciding on the final tally
-///     would admit observations the test only saw *because* it had
-///     already stopped — the optional-stopping bias SPRT exists to
-///     remove — so the verdict is fixed when it fires and the drained
-///     games are description, not evidence. Same reason the runaway
-///     guard can be overshot by up to `K − 1` games without that being
-///     a violation.
+///   - **The verdict is latched, not recomputed.** The test decides on
+///     games `0..<gamesAtDecision` in start order. By then other,
+///     later-started games have already finished (held while an earlier
+///     game was still being played), and `K − 1` are still in flight and
+///     finish afterwards. All of them are tallied in
+///     `TournamentStats.gamesPlayed`; none is evidence, and
+///     `TournamentStats.sprtGamesFinishedAtDecision` tells the two groups
+///     apart. Re-deciding on the final tally would admit observations the
+///     test only saw *because* it had already stopped — the
+///     optional-stopping bias SPRT exists to remove — so the verdict is
+///     fixed when it fires. For the same reason the runaway guard is
+///     overshot by the `K − 1` in-flight games plus every game that had
+///     finished ahead of the sample — a count K does not bound, since it
+///     grows with how long the slowest game of the sample runs — without
+///     that being a violation.
 ///   - **K bounds how early the test can stop.** The test cannot decide
 ///     before K games exist, and the remainder drains afterwards, so a
 ///     concurrency far above the expected decision point spends most of
@@ -212,6 +218,11 @@ final class TickTournamentDriver: @unchecked Sendable {
         // remainder. Reported so the drain is visible rather than looking
         // like the test kept playing past its own stopping rule.
         var gamesDrainedAfterVerdict = 0
+        // Games counted as finished when the verdict latched. With the
+        // verdict's start-order sample it splits the games past that sample
+        // into those that finished before the verdict and the in-flight
+        // remainder drained after it (`TournamentStats`).
+        var sprtGamesFinishedAtDecision: Int?
 
         /// Whether a retiring slot should pick up another game.
         ///
@@ -359,6 +370,7 @@ final class TickTournamentDriver: @unchecked Sendable {
                     if alreadyDecided {
                         gamesDrainedAfterVerdict += 1
                     } else if let verdict = sprtMonitor?.verdict {
+                        sprtGamesFinishedAtDecision = completed
                         SessionLogger.shared.log(
                             "[ARENA-TICK] SPRT decided \(verdict.decision.rawValue) on games 0..<\(verdict.gamesAtDecision) in start order "
                             + "W/D/L=\(verdict.wins)/\(verdict.draws)/\(verdict.losses) "
@@ -433,7 +445,8 @@ final class TickTournamentDriver: @unchecked Sendable {
             playerALossesAsBlack: aLossesAsBlack,
             playerADrawsAsWhite: aDrawsAsWhite,
             playerADrawsAsBlack: aDrawsAsBlack,
-            sprtVerdict: sprtMonitor?.verdict
+            sprtVerdict: sprtMonitor?.verdict,
+            sprtGamesFinishedAtDecision: sprtGamesFinishedAtDecision
         )
     }
 

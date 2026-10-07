@@ -3,18 +3,26 @@ import Foundation
 
 /// `SessionController`'s offline replay-buffer analyzer hook — wired to
 /// the `Analyze Replay Buffer…` Debug menu item. Runs
-/// `ReplayBufferAnalyzer.run` on the currently-loaded buffer, writes a
+/// `ReplayBufferAnalyzer` on the currently-loaded buffer, writes a
 /// timestamped JSON file under `~/Library/Application Support/
-/// DrewsChessMachine/Analyses/`, logs an `[ANALYSIS]` text-summary
-/// block to the session log, and surfaces an NSAlert with a
-/// Reveal-in-Finder action so the JSON file is one click away.
+/// DrewsChessMachine/Analyses/` (`AnalysisJSONExport`), logs an
+/// `[ANALYSIS]` text-summary block to the session log, and surfaces an
+/// NSAlert with a Reveal-in-Finder action so the JSON file is one click
+/// away.
 ///
-/// The analyzer's pass is sub-second on a 1 M-position buffer but
-/// holds the buffer's lock for the duration, so it runs in a detached
-/// Task to keep the main actor responsive even if the buffer's lock
-/// has a long-running contender (e.g. an in-flight append from the
-/// self-play emit fan-in). Alert + log surfacing hops back to the
-/// main actor after the heavy work completes.
+/// The buffer walks hold the buffer's lock for their duration; they, the
+/// entropy probe's network build, the summary and the JSON write all run on
+/// GCD (`ReplayBufferAnalyzer.runOffPool` / `entropyProbeSamplesOffPool`,
+/// `InferenceNetworkFactory`, `AnalysisJSONExport`), so neither the main
+/// actor nor a cooperative thread is held through them. Only the alert runs
+/// on the main actor.
+///
+/// The per-bucket policy-entropy probe (analysis #7) runs on the trainer
+/// when there is one: the champion's policy is frozen between promotions,
+/// so probing it gives bit-identical entropy stats across snapshots and
+/// hides the "is illegal mass falling?" signal. The probe network is a
+/// fresh inference network carrying the trainer's analysis snapshot
+/// (`analysisSnapshot(of: .trainer, initReferences:)`, identity checked).
 extension SessionController {
 
     /// Entry point invoked by the Debug menu item. Runs the analyzer
@@ -30,21 +38,15 @@ extension SessionController {
             )
             return
         }
-        // Snapshot the network ref alongside the buffer so the detached
-        // task can run the live-network entropy probe (analysis #7).
-        // The network is `@unchecked Sendable` and the ref captured
-        // here outlives the closure regardless of any concurrent
-        // session changes. The trainer ref is captured for the same
-        // reason — the entropy probe runs against a fresh inference
-        // network loaded with trainer weights when one is available,
-        // since the champion's policy is frozen between promotions
-        // and would produce a misleading bit-stable entropy section.
-        let netForEntropy = network
-        let trainerForEntropy = trainer
-        let modelLabel = netForEntropy?.identifier?.description ?? "<no-id>"
+        // The champion is the entropy probe's fallback when there is no
+        // trainer (or its snapshot fails); the ref captured here outlives the
+        // task regardless of any concurrent session change.
+        let champion = network
+        let modelLabel = champion?.identifier?.description ?? "<no-id>"
+        let hasTrainer = trainer != nil
         guard beginAnalysis("Replay Buffer") else { return }
         // Snapshot training-progress context on the main actor before
-        // the detached heavy walk; stamped onto the result below.
+        // the detached work; stamped onto the result below.
         let exportMetadata = currentAnalysisExportMetadata()
         let entropySample = ReplayBufferAnalyzer.entropyProbeRandom(
             runSeed: runRandomSeed,
@@ -54,146 +56,113 @@ extension SessionController {
 
         Task.detached(priority: .utility) {
             defer { Task { @MainActor in self.endAnalysis() } }
-            // Off-main heavy walk + JSON write. Both the analyzer pass
-            // and the file I/O are bounded — a sub-second analyzer pass
-            // and a ~MB-sized JSON write — but neither belongs on the
-            // main actor while it could be driving UI updates from the
-            // training loop. When a network is available we also run
-            // the stratified policy-entropy probe (a few extra seconds
-            // of forward passes) so analysis #7 lands in the same JSON.
-            let entropyProbe = await Self.buildTrainerEntropyProbeNetwork(
-                trainer: trainerForEntropy
-            )
+            var entropyProbe: (network: ChessMPSNetwork, label: String)?
+            if hasTrainer {
+                do {
+                    let capture = try await self.analysisSnapshot(
+                        of: .trainer, initReferences: AnalysisInitReferenceCache())
+                    entropyProbe = await Self.buildEntropyProbe(from: capture.snapshot)
+                } catch {
+                    SessionLogger.shared.log(
+                        "[ANALYSIS] Trainer entropy-probe snapshot failed: \(error.localizedDescription)"
+                        + " — replay analyzer will fall back to champion for the entropy probe.")
+                }
+            }
             var result: ReplayBufferAnalyzer.Result
             do {
-                if let probe = entropyProbe {
-                    result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
-                        buffer: buf,
-                        network: probe.network,
-                        modelLabel: modelLabel,
-                        entropyModelLabel: probe.label,
-                        sampleRandom: entropySample.random
-                    )
-                } else if let net = netForEntropy {
-                    result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
-                        buffer: buf,
-                        network: net,
-                        modelLabel: modelLabel,
-                        sampleRandom: entropySample.random
-                    )
-                } else {
-                    result = ReplayBufferAnalyzer.run(
-                        buffer: buf,
-                        modelLabel: modelLabel
-                    )
-                }
+                result = try await Self.analyzeReplayBuffer(
+                    buffer: buf, champion: champion, modelLabel: modelLabel,
+                    entropyProbe: entropyProbe, sampleRandom: entropySample.random)
             } catch {
-                // Policy-entropy forward pass failed (e.g., MPSGraph
-                // transient error). Fall back to the pure-buffer
-                // analysis so we still produce a file — the [ANALYSIS]
-                // log will note the entropy failure separately so the
-                // user can see why section (7) is missing.
+                // Only the entropy probe's forward passes throw (e.g. an
+                // MPSGraph transient error). Still produce a file without
+                // section (7); this line says why it is missing.
                 SessionLogger.shared.log("[ANALYSIS] Policy-entropy probe failed: \(error). Falling back to pure-buffer analysis.")
-                result = ReplayBufferAnalyzer.run(
-                    buffer: buf,
-                    modelLabel: modelLabel
-                )
+                result = await ReplayBufferAnalyzer.runOffPool(buffer: buf, modelLabel: modelLabel)
             }
             result.exportMetadata = exportMetadata
-            let summary = result.textSummary()
-            let writeOutcome = Self.writeAnalysisJSON(
-                result: result,
-                modelLabel: modelLabel
-            )
+            let outcome = await AnalysisJSONExport.summarizeAndPublishOffPool(
+                result, modelLabel: modelLabel, directory: CheckpointPaths.analysesDir)
+            AnalysisJSONExport.logSummary(outcome.summary, family: .replayBuffer, context: nil)
 
-            await MainActor.run {
-                // Log the text summary verbatim — each line gets the
-                // SessionLogger's timestamp prefix so the [ANALYSIS]
-                // block is grep-distinct from STATS / ARENA noise.
-                SessionLogger.shared.log("[ANALYSIS] === Replay buffer analysis begin ===")
-                for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {
-                    SessionLogger.shared.log("[ANALYSIS] \(line)")
-                }
-                SessionLogger.shared.log("[ANALYSIS] === Replay buffer analysis end ===")
+            switch outcome.written {
+            case .success(let url):
+                SessionLogger.shared.log("[ANALYSIS] Saved JSON: \(url.path)")
+                await Self.presentAnalyzeAlert(
+                    title: "Replay Buffer Analysis Complete",
+                    message: """
+                        Saved JSON to:
+                        \(url.path)
 
-                switch writeOutcome {
-                case .success(let url):
-                    SessionLogger.shared.log("[ANALYSIS] Saved JSON: \(url.path)")
-                    Self.presentAnalyzeAlert(
-                        title: "Replay Buffer Analysis Complete",
-                        message: """
-                            Saved JSON to:
-                            \(url.path)
+                        A text summary was written to the session log under [ANALYSIS]; \
+                        click Reveal in Finder to open the JSON in the output folder.
+                        """,
+                    revealURL: url
+                )
+            case .failure(let err):
+                SessionLogger.shared.log("[ANALYSIS] JSON write failed: \(err)")
+                await Self.presentAnalyzeAlert(
+                    title: "Replay Buffer Analysis — JSON Write Failed",
+                    message: """
+                        The analyzer ran and a text summary was written to the session \
+                        log, but writing the JSON file failed:
 
-                            A text summary was written to the session log under [ANALYSIS]; \
-                            click Reveal in Finder to open the JSON in the output folder.
-                            """,
-                        revealURL: url
-                    )
-                case .failure(let err):
-                    SessionLogger.shared.log("[ANALYSIS] JSON write failed: \(err)")
-                    Self.presentAnalyzeAlert(
-                        title: "Replay Buffer Analysis — JSON Write Failed",
-                        message: """
-                            The analyzer ran and a text summary was written to the session \
-                            log, but writing the JSON file failed:
-
-                            \(err.localizedDescription)
-                            """,
-                        revealURL: nil
-                    )
-                }
+                        \(err.localizedDescription)
+                        """,
+                    revealURL: nil
+                )
             }
         }
     }
 
-    // MARK: - JSON write
+    // MARK: - Shared with Run All Analyses
 
-    /// Encode `result` and write it to a timestamped JSON file under
-    /// `CheckpointPaths.analysesDir`. Creates the directory on demand.
-    /// The filename embeds both a timestamp and a sanitized form of
-    /// the model label so consecutive analyses don't collide and
-    /// remain attributable to a specific model snapshot.
-    nonisolated private static func writeAnalysisJSON(
-        result: ReplayBufferAnalyzer.Result,
-        modelLabel: String
-    ) -> Result<URL, Error> {
-        let fm = FileManager.default
-        let dir = CheckpointPaths.analysesDir
-        do {
-            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        } catch {
-            return .failure(error)
+    /// The replay analyzer over `buffer`, with the per-bucket policy-entropy
+    /// probe on `entropyProbe` when given (the trainer: the champion's policy
+    /// is frozen between promotions, so probing it shows nothing between
+    /// them), else on the live `champion`, else without the probe. The one
+    /// branch both the single analysis and Run All take; each decides what a
+    /// thrown probe failure costs.
+    nonisolated static func analyzeReplayBuffer(
+        buffer: ReplayBuffer,
+        champion: ChessMPSNetwork?,
+        modelLabel: String,
+        entropyProbe: (network: ChessMPSNetwork, label: String)?,
+        sampleRandom: DCMRandom
+    ) async throws -> ReplayBufferAnalyzer.Result {
+        if let entropyProbe {
+            return try await ReplayBufferAnalyzer.runWithPolicyEntropy(
+                buffer: buffer, network: entropyProbe.network, modelLabel: modelLabel,
+                entropyModelLabel: entropyProbe.label, sampleRandom: sampleRandom)
         }
-
-        let stamp = filenameTimestamp()
-        let safeModel = modelLabel
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: " ", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
-        let filename = "replay_analysis_\(stamp)_\(safeModel).json"
-        let url = dir.appendingPathComponent(filename)
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
-        do {
-            let data = try encoder.encode(result)
-            try data.write(to: url, options: [.atomic])
-            return .success(url)
-        } catch {
-            return .failure(error)
+        if let champion {
+            return try await ReplayBufferAnalyzer.runWithPolicyEntropy(
+                buffer: buffer, network: champion, modelLabel: modelLabel, sampleRandom: sampleRandom)
         }
+        return await ReplayBufferAnalyzer.runOffPool(buffer: buffer, modelLabel: modelLabel)
     }
 
-    /// Filesystem-safe timestamp for analysis output filenames. Format
-    /// matches the project's other timestamped artifacts (session
-    /// checkpoints under `Sessions/`, etc.) so files sort lexicographically
-    /// by time.
-    nonisolated private static func filenameTimestamp() -> String {
-        let df = DateFormatter()
-        df.dateFormat = "yyyyMMdd-HHmmss"
-        df.locale = Locale(identifier: "en_US_POSIX")
-        return df.string(from: Date())
+    /// The entropy probe from a trainer snapshot: an inference network
+    /// carrying `snapshot.weights` (the trainer's weights at
+    /// `snapshot.trainingStep`, the same weights the trainer's other analyses
+    /// read), labelled "trainer:<id> step <N>" — an unknown step is written
+    /// as "unknown", never dropped. Built through `InferenceNetworkFactory`,
+    /// so the MPSGraph construction runs on GCD, never on the cooperative
+    /// pool. Nil — logged — when the build fails; the analyzer then probes the
+    /// champion. Short-lived: dropped with the analysis.
+    nonisolated static func buildEntropyProbe(
+        from snapshot: AnalyzedNetworkSnapshot
+    ) async -> (network: ChessMPSNetwork, label: String)? {
+        let label = "\(snapshot.modelLabel) step \(snapshot.trainingStep.map { String($0) } ?? "unknown")"
+        do {
+            let network = try await InferenceNetworkFactory.build(loading: snapshot.weights, arch: snapshot.architecture)
+            return (network, label)
+        } catch {
+            SessionLogger.shared.log(
+                "[ANALYSIS] Entropy-probe network build for \(label) failed: \(error.localizedDescription)"
+                + " — replay analyzer will fall back to champion for the entropy probe.")
+            return nil
+        }
     }
 
     // MARK: - Alert + Reveal in Finder

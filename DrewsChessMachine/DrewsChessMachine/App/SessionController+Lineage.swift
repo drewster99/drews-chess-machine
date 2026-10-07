@@ -38,6 +38,29 @@ extension SessionController {
         case file(LineageTracker.ParentFile, startWeights: ChampionStartWeights)
     }
 
+    /// How the champion's weights relate to `championOrigin` and its
+    /// identifier (`SessionController.championWeightIdentity`).
+    struct ChampionWeightIdentityState: Sendable, Equatable {
+        /// Replacements begun plus origins recorded so far: any change across
+        /// an export means its weights or their origin moved under it.
+        private(set) var changes = 0
+        /// A replacement began and its origin is not recorded yet:
+        /// `championOrigin` and the identifier may still describe the weights
+        /// being replaced. A failed replacement leaves it set, since the
+        /// champion may then hold the new weights under the old origin.
+        private(set) var awaitingOrigin = false
+
+        mutating func beginReplacement() {
+            changes += 1
+            awaitingOrigin = true
+        }
+
+        mutating func recordOrigin() {
+            changes += 1
+            awaitingOrigin = false
+        }
+    }
+
     /// How a file champion's weights reached this process — what a run that
     /// branches from it records as `start_value_head_recentered` (B9). The
     /// champion's start weights came from its load, not from anything at the
@@ -88,10 +111,15 @@ extension SessionController {
     /// trainer whenever they differ, and a model file that claims the
     /// trainer's step would be read as trained when its weights are fresh.
     static func championFileTrainingStep(origin: ChampionOrigin?) throws -> Int? {
+        guard let origin else { throw LineageSegmentError.noChampionOrigin }
+        return championFileTrainingStep(recordedOrigin: origin)
+    }
+
+    /// `championFileTrainingStep(origin:)` for an origin that is recorded.
+    static func championFileTrainingStep(recordedOrigin origin: ChampionOrigin) -> Int? {
         switch origin {
         case .built: return 0
         case .file(let source, _): return source.trainerCompletedSteps
-        case nil: throw LineageSegmentError.noChampionOrigin
         }
     }
 

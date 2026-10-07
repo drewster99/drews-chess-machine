@@ -33,13 +33,25 @@ struct TournamentStats: Sendable {
     /// the test decided.
     ///
     /// Note that `verdict.gamesAtDecision` is generally *less* than
-    /// `gamesPlayed`: the games still in flight when the ratio crossed its
-    /// bound finish and are tallied here, but they are description, not
-    /// evidence. See `ArenaSPRT.Monitor`.
+    /// `gamesPlayed`: the verdict is on games `0..<gamesAtDecision` in start
+    /// order, and the later-started games — those that had already finished
+    /// when the ratio crossed its bound and those still in flight, which
+    /// finish afterwards — are tallied here too, as description, not
+    /// evidence. `sprtGamesFinishedAtDecision` tells the two apart. See
+    /// `ArenaSPRT.Monitor`.
     let sprtVerdict: ArenaSPRT.Verdict?
 
-    /// Written out rather than relying on the memberwise init so
-    /// `sprtVerdict` can default — every score-threshold construction site,
+    /// Games the driver had counted as finished, in any order, at the moment
+    /// the verdict latched: the verdict's start-order sample plus the
+    /// later-started games that had finished ahead of it. So
+    /// `sprtGamesFinishedAtDecision − verdict.gamesAtDecision` games finished
+    /// before the verdict outside its sample, and
+    /// `gamesPlayed − sprtGamesFinishedAtDecision` were in flight and drained
+    /// after it. Set exactly when `sprtVerdict` is.
+    let sprtGamesFinishedAtDecision: Int?
+
+    /// Written out rather than relying on the memberwise init so the SPRT
+    /// fields can default — every score-threshold construction site,
     /// including the ones in tests, stays as it was.
     init(
         gamesPlayed: Int,
@@ -52,8 +64,23 @@ struct TournamentStats: Sendable {
         playerALossesAsBlack: Int,
         playerADrawsAsWhite: Int,
         playerADrawsAsBlack: Int,
-        sprtVerdict: ArenaSPRT.Verdict? = nil
+        sprtVerdict: ArenaSPRT.Verdict? = nil,
+        sprtGamesFinishedAtDecision: Int? = nil
     ) {
+        // The count describes the verdict's moment; one without the other is
+        // a driver bug, and a count outside these limits cannot be that moment.
+        precondition(
+            (sprtVerdict == nil) == (sprtGamesFinishedAtDecision == nil),
+            "TournamentStats: sprtGamesFinishedAtDecision must be set exactly when sprtVerdict is"
+        )
+        if let sprtVerdict, let sprtGamesFinishedAtDecision {
+            precondition(
+                sprtGamesFinishedAtDecision >= sprtVerdict.gamesAtDecision
+                    && sprtGamesFinishedAtDecision <= gamesPlayed,
+                "TournamentStats: \(sprtGamesFinishedAtDecision) finished at the verdict, outside "
+                    + "[\(sprtVerdict.gamesAtDecision), \(gamesPlayed)]"
+            )
+        }
         self.gamesPlayed = gamesPlayed
         self.playerAWins = playerAWins
         self.playerBWins = playerBWins
@@ -65,6 +92,7 @@ struct TournamentStats: Sendable {
         self.playerADrawsAsWhite = playerADrawsAsWhite
         self.playerADrawsAsBlack = playerADrawsAsBlack
         self.sprtVerdict = sprtVerdict
+        self.sprtGamesFinishedAtDecision = sprtGamesFinishedAtDecision
     }
 
     var playerAWinRate: Double {

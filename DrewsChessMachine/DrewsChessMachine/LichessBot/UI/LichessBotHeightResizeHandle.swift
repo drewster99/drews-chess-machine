@@ -4,8 +4,17 @@ import SwiftUI
 /// card taller or shorter. The height belongs to the caller (usually
 /// `@AppStorage`, so it is remembered across launches); the handle only
 /// changes it, clamped to `range`.
+///
+/// The content can be laid out taller than the stored height (the stored
+/// height is its minimum, not a fixed height). A drag therefore starts from
+/// the displayed height, the edge the operator sees: starting from the
+/// stored height would make the first part of a downward drag move nothing.
 struct LichessBotHeightResizeHandle: View {
     @Binding var height: Double
+    /// The content's laid-out height: `height` or more. Nil until the
+    /// content's first layout, which comes before any pointer reaches the
+    /// handle; until then the content is shown at `height`.
+    let displayedHeight: Double?
     let range: ClosedRange<Double>
     /// The height when the current drag began. Each drag update sets the
     /// height from this plus the total translation, not by accumulating
@@ -33,32 +42,50 @@ struct LichessBotHeightResizeHandle: View {
                         if let heightAtDragStart {
                             start = heightAtDragStart
                         } else {
-                            start = height
-                            heightAtDragStart = height
+                            start = Self.shownHeight(stored: height, displayed: displayedHeight, range: range)
+                            heightAtDragStart = start
                         }
-                        height = clamped(start + value.translation.height)
+                        height = Self.clamped(start + value.translation.height, to: range)
                     }
                     .onEnded { _ in
                         heightAtDragStart = nil
+                        height = Self.heightAfterDrag(stored: height, displayed: displayedHeight, range: range)
                     }
             )
             .help("Drag to resize")
             .accessibilityElement()
             .accessibilityLabel("Resize")
-            .accessibilityValue("\(Int(height)) points tall")
+            .accessibilityValue("\(Int(Self.shownHeight(stored: height, displayed: displayedHeight, range: range))) points tall")
             .accessibilityAdjustableAction { direction in
+                let shown = Self.shownHeight(stored: height, displayed: displayedHeight, range: range)
                 switch direction {
                 case .increment:
-                    height = clamped(height + Self.accessibilityStep)
+                    height = Self.clamped(shown + Self.accessibilityStep, to: range)
                 case .decrement:
-                    height = clamped(height - Self.accessibilityStep)
+                    height = Self.clamped(shown - Self.accessibilityStep, to: range)
                 @unknown default:
                     break
                 }
             }
     }
 
-    private func clamped(_ proposed: Double) -> Double {
+    /// The height the edge is at, where a drag or an accessibility step
+    /// starts: the displayed height once laid out, the stored height before
+    /// (which is then what the content is shown at), clamped to `range`.
+    nonisolated static func shownHeight(stored: Double, displayed: Double?, range: ClosedRange<Double>) -> Double {
+        clamped(displayed ?? stored, to: range)
+    }
+
+    /// The stored height once a drag ends. A drag that went above the
+    /// content's own minimum leaves the content at that minimum, so the
+    /// stored height is raised to what is shown and never sits where moving
+    /// it moves nothing.
+    nonisolated static func heightAfterDrag(stored: Double, displayed: Double?, range: ClosedRange<Double>) -> Double {
+        guard let displayed else { return stored }
+        return clamped(max(stored, displayed), to: range)
+    }
+
+    nonisolated static func clamped(_ proposed: Double, to range: ClosedRange<Double>) -> Double {
         min(max(proposed, range.lowerBound), range.upperBound)
     }
 }

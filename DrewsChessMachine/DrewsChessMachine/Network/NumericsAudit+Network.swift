@@ -2,18 +2,18 @@ import Foundation
 
 extension NumericsAudit {
 
-    /// Audit a live network's weights from its analysis snapshot (one
-    /// export, shared with the other analyses of the same request) over the
-    /// standard position set (start position, the Lichess bot's filed games
-    /// under `lichessDirectory`, and a corpus sample when `corpusShardURL` is
+    /// Audit a live network's weights from its analysis snapshot (one export,
+    /// shared with the other analyses of the same request), comparing them
+    /// with `optimizerState` — read in the same cut — over the standard
+    /// position set (start position, the Lichess bot's filed games under
+    /// `lichessDirectory`, and a corpus sample when `corpusShardURL` is
     /// given). The result's step is the snapshot's: the step the audited
-    /// weights were taken at.
+    /// weights were taken at. The head-bias init means come from the
+    /// snapshot's init reference.
     static func run(
         snapshot: AnalyzedNetworkSnapshot,
+        optimizerState: AnalysisOptimizerState,
         modelLabel: String,
-        masters: [[Float]]?,
-        mastersNote: String?,
-        velocity: LayerHealth.VelocitySource,
         corpusShardURL: URL?,
         lichessDirectory: LichessBotDataDirectory?
     ) async throws -> Result {
@@ -22,13 +22,15 @@ extension NumericsAudit {
             corpusShardURL: corpusShardURL,
             lichessDirectory: lichessDirectory
         )
+        let optimizer = optimizerInputs(optimizerState)
         return try await run(
             names: snapshot.names,
             weights: snapshot.weights,
             arch: snapshot.architecture,
-            masters: masters,
-            mastersNote: mastersNote,
-            velocity: velocity,
+            initReference: snapshot.initReference,
+            masters: optimizer.masters,
+            mastersNote: optimizer.mastersNote,
+            velocity: optimizer.velocity,
             positions: positions,
             dynamicSkippedReason: nil,
             policyTailPrecision: snapshot.policyTailPrecision,
@@ -37,6 +39,21 @@ extension NumericsAudit {
             trainingStep: snapshot.trainingStep
         )
     }
+
+    /// The masters and velocity an audit compares, from the optimizer state
+    /// taken with the snapshot's weights, or why there are none.
+    static func optimizerInputs(_ state: AnalysisOptimizerState)
+        -> (masters: [[Float]]?, mastersNote: String?, velocity: LayerHealth.VelocitySource) {
+        switch state {
+        case .inferenceNetwork:
+            return (nil, championMastersNote, .unavailable(reason: liveNetworkVelocityNote))
+        case .trainer(let masters, let velocity):
+            return (masters, masters == nil ? fp32TrainerMastersNote : nil, .trainerVelocity(velocity))
+        }
+    }
+
+    /// Why a trainer has no masters to compare.
+    static let fp32TrainerMastersNote = "the trainer computes in fp32 and keeps no separate masters"
 
     /// `buildPositionSet` on a GCD queue: it reads and replays game files
     /// synchronously.
@@ -58,45 +75,6 @@ extension NumericsAudit {
                 }
             }
         }
-    }
-
-    /// Masters for a trainer, or why they weren't read. Masters are read only
-    /// while training is stopped (the read races SGD otherwise); a trainer
-    /// computing in fp32 keeps none.
-    static func trainerMasters(
-        trainer: ChessTrainer,
-        trainingIsRunning: Bool
-    ) async throws -> (masters: [[Float]]?, note: String?) {
-        guard !trainingIsRunning else {
-            return (nil, "training is running, so the fp32 masters can't be read safely")
-        }
-        let masters = try await trainer.readMasterValues()
-        guard !masters.isEmpty else {
-            return (nil, "the trainer computes in fp32 and keeps no separate masters")
-        }
-        return (masters, nil)
-    }
-
-    /// A trainer's optimizer velocity for the layer-health checks — the
-    /// tail of its trainer-state export, one tensor per trainable — or why
-    /// it wasn't read. Like the masters, it is read only while training is
-    /// stopped: the export needs training paused.
-    /// `networkTensorCount` is the trainables plus the BN running statistics,
-    /// which the export carries before the velocity.
-    static func trainerVelocity(
-        trainer: ChessTrainer,
-        networkTensorCount: Int,
-        trainableCount: Int,
-        trainingIsRunning: Bool
-    ) async throws -> LayerHealth.VelocitySource {
-        guard !trainingIsRunning else {
-            return .unavailable(reason: "training is running, so the trainer's velocity can't be read safely")
-        }
-        let state = try await trainer.exportTrainerWeights()
-        guard state.count == networkTensorCount + trainableCount else {
-            throw NumericsAuditError.trainerStateCountMismatch(tensors: state.count, expected: networkTensorCount + trainableCount)
-        }
-        return .trainerVelocity(Array(state.suffix(trainableCount)))
     }
 
     /// Why an audit of the champion has no velocity for the layer-health

@@ -176,35 +176,6 @@ struct LichessBotControlsCard: View {
 
 }
 
-/// The account's rating in each speed, its rated games there (from
-/// Lichess), and its unrated games, games today and games in the last 24
-/// hours there. Lichess reports unrated games only as an account-wide total,
-/// so those three columns count DCM's own game records — every game this
-/// BOT account plays goes through DCM.
-struct LichessBotAccountRatingsGrid: View {
-    let controller: LichessBotController
-
-    private static let speeds = ["ultraBullet", "bullet", "blitz", "rapid", "classical"]
-
-    var body: some View {
-        // Today and the last 24 hours move with the clock, not with any
-        // state change, so the counts are re-read on a timer.
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            LichessBotAccountRatingsGridContent(rows: ratedRows, counts: LichessBotAccountGameCounts(rows: controller.index?.rows, now: context.date, calendar: .current))
-        }
-    }
-
-    /// Speeds the account has a rating in, in speed order.
-    private var ratedRows: [LichessBotAccountRatingRow] {
-        guard let perfs = controller.account?.perfs else { return [] }
-        return Self.speeds.compactMap { speed in
-            guard let rating = perfs[speed], let value = rating.rating else { return nil }
-            let ratingText = "\(value)" + (rating.prov == true ? "?" : " ")
-            return LichessBotAccountRatingRow(speed: speed, rating: ratingText, ratedGames: rating.games.map { "\($0)" } ?? "–")
-        }
-    }
-}
-
 /// The Lichess account the token belongs to.
 struct LichessBotAccountCard: View {
     let controller: LichessBotController

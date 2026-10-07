@@ -2,44 +2,25 @@ import SwiftUI
 
 /// The ratings grid itself, for one reading of the clock.
 struct LichessBotAccountRatingsGridContent: View {
-    let rows: [LichessBotAccountRatingRow]
-    /// Nil until the games index has loaded.
-    let counts: LichessBotAccountGameCounts?
+    let controller: LichessBotController
+    let now: Date
 
     var body: some View {
-        Grid(alignment: .trailing, horizontalSpacing: 16, verticalSpacing: 2) {
-            GridRow {
-                Text("")
-                Text("Rating")
-                Text("Rated")
-                Text("Unrated")
-                    .help("From DCM's game records; Lichess doesn't report unrated games per speed")
-                Text("Today")
-                    .help("Games started today, rated or not, from DCM's game records")
-                Text("Last 24 h")
-                    .help("Games started in the 24 hours before now, rated or not, from DCM's game records")
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            ForEach(rows, id: \.speed) { row in
-                GridRow {
-                    Text(row.speed)
-                        .font(.callout)
-                        .gridColumnAlignment(.leading)
-                    Text(row.rating)
-                    Text(row.ratedGames)
-                    Text(count(counts?.unrated, row.speed))
-                    Text(count(counts?.today, row.speed))
-                    Text(count(counts?.lastDay, row.speed))
+        let rows = LichessBotAccountRatingRow.rows(perfs: controller.account?.perfs)
+        let counts = controller.accountGameCounts(now: now, calendar: .current)
+        VStack(alignment: .leading, spacing: 0) {
+            Grid(alignment: .trailing, horizontalSpacing: 16, verticalSpacing: 2) {
+                LichessBotAccountRatingsHeaderRow()
+                ForEach(rows, id: \.speed) { row in
+                    LichessBotAccountRatingsSpeedRow(row: row, counts: counts)
                 }
-                .font(.system(.callout, design: .monospaced))
             }
+            Text(counts.failureText)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .padding(.top, 2)
+                .shown(counts.isFailed)
         }
-    }
-
-    /// The speed's count, 0 when none; "…" while the index loads.
-    private func count(_ counts: [String: Int]?, _ speed: String) -> String {
-        counts.map { "\($0[speed] ?? 0)" } ?? "…"
     }
 }
 
@@ -49,4 +30,18 @@ struct LichessBotAccountRatingRow: Equatable {
     let speed: String
     let rating: String
     let ratedGames: String
+
+    /// The speeds the grid lists, in speed order.
+    static let speeds = ["ultraBullet", "bullet", "blitz", "rapid", "classical"]
+
+    /// The speeds the account has a rating in, in speed order; none before
+    /// the account is loaded.
+    static func rows(perfs: [String: LichessBotPerfRating]?) -> [LichessBotAccountRatingRow] {
+        guard let perfs else { return [] }
+        return speeds.compactMap { speed in
+            guard let rating = perfs[speed], let value = rating.rating else { return nil }
+            let ratingText = "\(value)" + (rating.prov == true ? "?" : " ")
+            return LichessBotAccountRatingRow(speed: speed, rating: ratingText, ratedGames: rating.games.map { "\($0)" } ?? "–")
+        }
+    }
 }

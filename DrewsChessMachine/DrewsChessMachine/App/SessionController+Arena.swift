@@ -471,6 +471,11 @@ extension SessionController {
             await trainingGate.pauseAndWait()
             if !Task.isCancelled {
                 do {
+                    // Opens the champion's replacement window;
+                    // `recordPromotedChampionOrigin` below closes it. A failed
+                    // copy leaves it open: the champion may hold the
+                    // candidate's weights under the previous identity.
+                    noteChampionWeightsReplaced()
                     promotedChampionWeights = try await Task.detached(priority: .userInitiated) {
                         [candidateInference, champion, trainer, arenaStartTrainerState] in
                         let weights = try await candidateInference.exportWeights()
@@ -592,7 +597,8 @@ extension SessionController {
             candidateDrawsAsWhite: stats.playerADrawsAsWhite,
             candidateDrawsAsBlack: stats.playerADrawsAsBlack,
             promotionCriterion: promotionCriterion,
-            sprtVerdict: stats.sprtVerdict
+            sprtVerdict: stats.sprtVerdict,
+            sprtGamesFinishedAtDecision: stats.sprtGamesFinishedAtDecision
         )
         // Store the breakdown on the record only when at least one
         // game was played. A zero-game abort yields an all-empty

@@ -172,7 +172,7 @@ struct LichessBotLineageSegmentRow: View {
                 LichessBotModelFileRow(file: line.latest, showsModelID: true)
                 Text(tagText)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(isUntrained && trainedBelow.isEmpty ? Color.orange : Color.green)
+                    .foregroundStyle(ModelLineageNode.isSeedOnly(isUntrained: isUntrained, trainedBelow: trainedBelow) ? Color.orange : Color.green)
             }
             Text(chainText)
                 .font(.system(.caption, design: .monospaced))

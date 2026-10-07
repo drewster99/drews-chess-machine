@@ -119,4 +119,16 @@ final class ModelLineageTreeTests: XCTestCase {
         })
         XCTAssertTrue(root.searchableIDs.contains("20260917-sjiy-promote"))
     }
+
+    /// A seed whose only child is an untrained copy has nothing trained
+    /// below it: it sorts after trained roots, by the same rule that tags its
+    /// row "untrained" in orange.
+    func testASeedWithOnlyAnUntrainedChildSortsWithTheSeeds() {
+        let lines = [
+            line("Q-seed", [entry("Q-seed", step: nil, parent: nil, modified: 1)]),
+            line("Q-copy", [entry("Q-copy", step: nil, parent: "Q-seed", modified: 10)]),
+            line("R-trained", [entry("R-trained", step: 5, parent: nil, modified: 2)]),
+        ]
+        XCTAssertEqual(segmentIDs(ModelLineageTree.build(lines: lines, champions: [])), ["R-trained", "Q-seed"])
+    }
 }
