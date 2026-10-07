@@ -726,7 +726,7 @@ PROBE_BIN="$BIN" PROBE_SEGMENT=1 TRAINER_PID=<trainer pid> experiments/probe_loo
 - **Reading.** On the incident run the gap between healthy steps (≤ 1.39×) and the steps that broke it (18–48×) is wide; 3× sits
   far from both. On a healthy fresh start the cap never bound. Both pass the plan's criteria; P5 waits on the owner. V-2 (k = 3 in
   clip mode from B-silu's 18k, to 23k) was not run.
-- **Reproduce:** binary as above; `S` = the session scratchpad holding `relcapV1_launch.sh` / `relcapV3_launch.sh`. Commands:
+- **Reproduce:** binary as above; launch scripts in `experiments/20261005-lr-schedule-ab/launch/` (`relcapV1_launch.sh <binary> params`, `relcapV3_launch.sh <binary>`). Commands:
 
 ```
 BIN="$HOME/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2390-b4845088-relcap.app/Contents/MacOS/DrewsChessMachine"
