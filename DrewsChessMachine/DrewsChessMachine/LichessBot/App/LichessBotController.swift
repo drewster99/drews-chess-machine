@@ -2722,13 +2722,14 @@ final class LichessBotController {
 
     /// The automatic casual resend that declining `pending` with
     /// `reasonKey` calls for, or nil when it calls for none: the setting is
-    /// off, the reason isn't exactly `casual`, the challenge wasn't rated,
+    /// off, the reason isn't `casual` (by `LichessBotDeclineReason(lichessKey:)`,
+    /// the one reading of Lichess's key), the challenge wasn't rated,
     /// or matchmaking didn't pick it. The operator's own challenges keep the
     /// manual offer, and the resend itself (unrated, and of its own origin)
     /// never qualifies, so at most one resend follows a rated challenge.
     private func matchmakingCasualResend(for pending: PendingChallenge, reasonKey: String?) -> MatchmakingCasualResend? {
         guard settings.matchmaking.fallBackToCasual,
-              reasonKey == LichessBotDeclineReason.casual.rawValue,
+              LichessBotDeclineReasonRecord(reasonKey: reasonKey) == .known(.casual),
               pending.request.rated,
               case .matchmaking(_, let fillMode, let opponent) = pending.origin else { return nil }
         var request = pending.request
@@ -3626,7 +3627,7 @@ final class LichessBotController {
                     if let pending = pendingChallenges.first(where: { $0.id == challengeID }) {
                         recordDeclineCooldown(pending.username)
                     }
-                    if reasonKey == LichessBotDeclineReason.casual.rawValue,
+                    if LichessBotDeclineReasonRecord(reasonKey: reasonKey) == .known(.casual),
                        let pending = pendingChallenges.first(where: { $0.id == challengeID }),
                        pending.request.rated {
                         var casual = pending.request

@@ -183,7 +183,20 @@ enum LichessBotChatRoom: String, Sendable, Hashable, CaseIterable {
 }
 
 /// Reasons Lichess accepts on `POST /api/challenge/{id}/decline`. Any other
-/// value is treated by Lichess as `generic`.
+/// value is treated by Lichess as `generic`. The raw values are that
+/// endpoint's documented spelling (camelCase: `noBot`, `timeControl`), and
+/// they are what DCM sends and what its saved records store.
+///
+/// The event stream spells the same reasons differently: a
+/// `challengeDeclined` event's `declineReasonKey` is the name lowercased
+/// (`nobot`, `timecontrol`, `toofast`). The protocol logs show both sides
+/// of one decline — DCM POSTs `reason=timeControl` and the event reports
+/// `timecontrol` — so Lichess reads the camelCase name and reports it
+/// lowercased.
+/// Comparing a key from Lichess with `rawValue` therefore misses every
+/// reason with a capital letter in its name; that once filed most real
+/// declines (`nobot` above all) as unrecognized. `init(lichessKey:)` is the
+/// one place a key Lichess sends becomes a reason.
 enum LichessBotDeclineReason: String, Sendable, Hashable, CaseIterable, Codable {
     case generic
     case later
@@ -196,6 +209,24 @@ enum LichessBotDeclineReason: String, Sendable, Hashable, CaseIterable, Codable 
     case variant
     case noBot
     case onlyBot
+
+    /// The reason a key from Lichess names, matched without regard to case
+    /// so the event stream's `nobot` and the API documentation's `noBot`
+    /// are both `.noBot`. Nil for a key outside the
+    /// reasons; the caller keeps such a key as sent rather than folding it
+    /// into `generic`.
+    init?(lichessKey: String) {
+        guard let reason = Self.byLowercasedName[lichessKey.lowercased()] else { return nil }
+        self = reason
+    }
+
+    /// Every reason by its lowercased raw value. Derived from `allCases`,
+    /// so a reason added later is matched without a second list to keep in
+    /// step. No two raw values differ only by case (Lichess's own keys
+    /// could not tell them apart either); `LichessBotDeclineReasonKeyTests`
+    /// pins every real key.
+    private static let byLowercasedName: [String: LichessBotDeclineReason] =
+        Dictionary(uniqueKeysWithValues: allCases.map { ($0.rawValue.lowercased(), $0) })
 }
 
 // MARK: - Shared pieces
