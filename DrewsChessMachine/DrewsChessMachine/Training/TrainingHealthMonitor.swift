@@ -239,13 +239,19 @@ final class TrainingHealthMonitor: @unchecked Sendable {
     }
 
     /// The stamp an observation carries, taken before its data is read.
+    /// Reads the three scalars inside the lock rather than copying the step
+    /// store out: a copy would share the pending window's buffer, and a
+    /// `recordStep` append while it is alive would reallocate that whole
+    /// buffer (copy-on-write) on the trainer's hot path.
     func observationStamp() -> TrainingHealthStamp {
-        let store = steps.value
-        return TrainingHealthStamp(
-            runID: runID,
-            generation: store.generation,
-            stepsTrainedByThisProcess: store.stepsTrainedByThisProcess,
-            lastRecordedTrainerStep: store.lastRecordedTrainerStep)
+        let runID = self.runID
+        return steps.read { store in
+            TrainingHealthStamp(
+                runID: runID,
+                generation: store.generation,
+                stepsTrainedByThisProcess: store.stepsTrainedByThisProcess,
+                lastRecordedTrainerStep: store.lastRecordedTrainerStep)
+        }
     }
 
     // MARK: Rewind
@@ -254,9 +260,16 @@ final class TrainingHealthMonitor: @unchecked Sendable {
     /// arena-start trainer snapshot): both halves of R0's rewind at once.
     /// `restoredClock` is the trainer's completed-step clock after the
     /// rewind; the next record will be `restoredClock + 1`.
+    ///
+    /// An unannounced rewind `recordStep` detected that no evaluation has
+    /// logged yet is logged here first: this rewind's generation supersedes
+    /// it, so no later evaluation would see it as pending and its line would
+    /// be lost.
     func noteTrainerClockRewind(to restoredClock: Int, log: TrainingHealthLogSink) {
         evaluation.modify { state in
-            let rewound = self.steps.mutate { store -> (from: Int?, generation: Int) in
+            let rewound = self.steps.mutate { store -> (from: Int?, generation: Int, pending: [UnannouncedRewind]) in
+                let pending = store.unannouncedRewinds
+                store.unannouncedRewinds.removeAll()
                 let last = store.lastRecordedTrainerStep
                 store.generation += 1
                 store.pending.removeAll()
@@ -266,9 +279,10 @@ final class TrainingHealthMonitor: @unchecked Sendable {
                 }
                 store.lastRecordedTrainerStep = restoredClock
                 store.valueFC1AnchorBase = restoredClock
-                return (last, store.generation)
+                return (last, store.generation, pending)
             }
             Self.applyEvaluationSideRewind(&state, generation: rewound.generation)
+            Self.logUnannouncedRewinds(rewound.pending, log: log)
             log(TrainingHealthLogLine(
                 text: TrainingHealthLog.rewindLine(from: rewound.from, to: restoredClock, generation: rewound.generation),
                 eventKind: nil))
@@ -283,17 +297,27 @@ final class TrainingHealthMonitor: @unchecked Sendable {
     }
 
     /// Step 1 of every evaluation: if `recordStep` detected a rewind since
-    /// the last one this state applied, apply the evaluation-side half and
-    /// log it.
-    private func applyUnannouncedRewinds(_ state: inout EvaluationState, log: TrainingHealthLogSink) {
+    /// the last one this state applied, apply the evaluation-side half; then
+    /// log every detected rewind not yet logged. The reset always applies
+    /// (the state must never describe discarded weights, whatever the
+    /// config), but a disabled config logs nothing, so its evaluations leave
+    /// the lines pending for the first enabled evaluation or announced rewind
+    /// — nothing is lost and nothing is written while alarms are off.
+    private func applyUnannouncedRewinds(_ state: inout EvaluationState, logging: Bool, log: TrainingHealthLogSink) {
         let detected = steps.mutate { store -> (generation: Int, rewinds: [UnannouncedRewind]) in
+            guard logging else { return (store.generation, []) }
             let rewinds = store.unannouncedRewinds
             store.unannouncedRewinds.removeAll()
             return (store.generation, rewinds)
         }
-        guard detected.generation != state.appliedGeneration else { return }
-        Self.applyEvaluationSideRewind(&state, generation: detected.generation)
-        for rewind in detected.rewinds {
+        if detected.generation != state.appliedGeneration {
+            Self.applyEvaluationSideRewind(&state, generation: detected.generation)
+        }
+        Self.logUnannouncedRewinds(detected.rewinds, log: log)
+    }
+
+    private static func logUnannouncedRewinds(_ rewinds: [UnannouncedRewind], log: TrainingHealthLogSink) {
+        for rewind in rewinds {
             log(TrainingHealthLogLine(
                 text: TrainingHealthLog.unannouncedRewindLine(from: rewind.from, to: rewind.to, generation: rewind.generation),
                 eventKind: nil))
@@ -334,7 +358,7 @@ final class TrainingHealthMonitor: @unchecked Sendable {
     ) -> TrainingHealthEvaluation? {
         let clock = ContinuousClock()
         let started = clock.now
-        applyUnannouncedRewinds(&state, log: log)
+        applyUnannouncedRewinds(&state, logging: config.enabled, log: log)
 
         let digest: LayerHealthDigest?
         let boundary: Int?
@@ -356,20 +380,23 @@ final class TrainingHealthMonitor: @unchecked Sendable {
             let records = boundary.map { store.pending.take(throughTrainerStep: $0) } ?? []
             return (true, store.generation, records)
         }
-        let observationStep = boundary ?? 0
         guard extracted.valid else {
-            state.counters.stale += 1
-            log(TrainingHealthLogLine(
-                text: TrainingHealthLog.staleObservationLine(
-                    tier: .live, trainerStep: observationStep, generation: stamp.generation,
-                    currentGeneration: extracted.currentGeneration,
-                    newestApplied: state.evaluator.newestAppliedTrainerStep,
-                    reason: stamp.runID == runID ? nil : "stamp from another monitor"),
-                eventKind: nil))
+            // A disabled config judges, counts and logs nothing; the stale
+            // records stay pending either way.
+            if config.enabled {
+                state.counters.stale += 1
+                log(TrainingHealthLogLine(
+                    text: TrainingHealthLog.staleObservationLine(
+                        tier: .live, trainerStep: boundary, generation: stamp.generation,
+                        currentGeneration: extracted.currentGeneration,
+                        newestApplied: state.evaluator.newestAppliedTrainerStep,
+                        reason: stamp.runID == runID ? nil : "stamp from another monitor"),
+                    eventKind: nil))
+            }
             state.counters.cost += clock.now - started
             return nil
         }
-        if case .readFailed = layerHealth {
+        if case .readFailed = layerHealth, config.enabled {
             state.counters.liveReadFailed += 1
             log(TrainingHealthLogLine(
                 text: TrainingHealthLog.liveReadFailedLine(boundary: boundary),
@@ -401,13 +428,13 @@ final class TrainingHealthMonitor: @unchecked Sendable {
 
         beforeCommitForTesting?()
 
-        let committed = steps.mutate { store in store.generation == stamp.generation }
-        guard committed else {
+        let commitGeneration = steps.read { $0.generation }
+        guard commitGeneration == stamp.generation else {
             state.counters.stale += 1
             log(TrainingHealthLogLine(
                 text: TrainingHealthLog.staleObservationLine(
                     tier: .live, trainerStep: observationTrainerStep, generation: stamp.generation,
-                    currentGeneration: steps.value.generation,
+                    currentGeneration: commitGeneration,
                     newestApplied: state.evaluator.newestAppliedTrainerStep,
                     reason: "trainer clock rewound during the evaluation"),
                 eventKind: nil))
@@ -457,9 +484,14 @@ final class TrainingHealthMonitor: @unchecked Sendable {
     ) -> TrainingHealthEvaluation? {
         let clock = ContinuousClock()
         let started = clock.now
-        applyUnannouncedRewinds(&state, log: log)
+        applyUnannouncedRewinds(&state, logging: config.enabled, log: log)
+        guard config.enabled else {
+            // Judges, counts and logs nothing — not even a stale stamp.
+            state.counters.cost += clock.now - started
+            return nil
+        }
         let runID = self.runID
-        let validation = steps.mutate { store -> (valid: Bool, currentGeneration: Int) in
+        let validation = steps.read { store -> (valid: Bool, currentGeneration: Int) in
             (stamp.runID == runID && stamp.generation == store.generation, store.generation)
         }
         guard validation.valid else {
@@ -474,10 +506,6 @@ final class TrainingHealthMonitor: @unchecked Sendable {
             state.counters.cost += clock.now - started
             return nil
         }
-        guard config.enabled else {
-            state.counters.cost += clock.now - started
-            return nil
-        }
         let observation = TrainingHealthObservation(
             trainerStep: trainerStep, window: nil, layerHealth: digest, stamp: stamp,
             effectiveLearningRate: nil, effectiveMomentum: nil)
@@ -486,13 +514,13 @@ final class TrainingHealthMonitor: @unchecked Sendable {
 
         beforeCommitForTesting?()
 
-        let committed = steps.mutate { store in store.generation == stamp.generation }
-        guard committed else {
+        let commitGeneration = steps.read { $0.generation }
+        guard commitGeneration == stamp.generation else {
             state.counters.stale += 1
             log(TrainingHealthLogLine(
                 text: TrainingHealthLog.staleObservationLine(
                     tier: .checkpoint, trainerStep: trainerStep, generation: stamp.generation,
-                    currentGeneration: steps.value.generation,
+                    currentGeneration: commitGeneration,
                     newestApplied: state.evaluator.newestAppliedTrainerStep,
                     reason: "trainer clock rewound during the evaluation"),
                 eventKind: nil))
@@ -589,7 +617,7 @@ final class TrainingHealthMonitor: @unchecked Sendable {
 
     private func writeCheckLine(
         _ state: inout EvaluationState,
-        trainerStep: Int,
+        trainerStep: Int?,
         marker: TrainingHealthLog.CheckMarker?,
         log: TrainingHealthLogSink
     ) {
@@ -631,11 +659,16 @@ final class TrainingHealthMonitor: @unchecked Sendable {
     /// Write the final `[HEALTH] check … final=true` line so the last partial
     /// interval (and its cost) is never lost. A GUI checkpoint pass that
     /// finishes later still logs and applies, and writes its own
-    /// `late=true` check line.
+    /// `late=true` check line. Its trainer step is the newest the monitor
+    /// knows — the last recorded step or the newest step an evaluation
+    /// applied, whichever is later (a GUI log replayed offline has
+    /// evaluations but no records) — and `none` when it knows neither.
     func writeFinalCheck(log: TrainingHealthLogSink) {
         evaluation.modify { state in
-            let trainerStep = self.steps.value.lastRecordedTrainerStep
-            self.writeCheckLine(&state, trainerStep: trainerStep ?? 0, marker: .final, log: log)
+            let lastRecorded = self.steps.read { $0.lastRecordedTrainerStep }
+            let newestApplied = state.evaluator.newestAppliedTrainerStep
+            let trainerStep = [lastRecorded, newestApplied].compactMap { $0 }.max()
+            self.writeCheckLine(&state, trainerStep: trainerStep, marker: .final, log: log)
             state.finalCheckWritten = true
         }
     }
@@ -669,13 +702,16 @@ final class TrainingHealthMonitor: @unchecked Sendable {
     /// passed since the newest rule-3 observation of this generation, or,
     /// when there is none, since the clock this monitor started recording
     /// from (or the restored clock after a rewind). Never due when rule 3
-    /// does not apply, or before anything was recorded.
-    func valueFC1ReadDue(trainerStep: Int) -> Bool {
-        guard case .applies = valueFC1Applicability else { return false }
+    /// does not apply, before anything was recorded, or when `config` has
+    /// alarms disabled: a disabled config commits no evaluation, so the
+    /// anchor would never move and every step past the interval would ask
+    /// for a read whose result nothing judges.
+    func valueFC1ReadDue(trainerStep: Int, config: TrainingHealthConfig) -> Bool {
+        guard config.enabled, case .applies = valueFC1Applicability else { return false }
         return evaluation.mutate { state in
-            let store = self.steps.value
+            let store = self.steps.read { (generation: $0.generation, anchorBase: $0.valueFC1AnchorBase) }
             let observation = store.generation == state.appliedGeneration ? state.newestValueFC1ObservationStep : nil
-            guard let anchor = observation ?? store.valueFC1AnchorBase else { return false }
+            guard let anchor = observation ?? store.anchorBase else { return false }
             return trainerStep - anchor >= TrainingHealthThresholds.valueFC1CheckIntervalSteps
         }
     }

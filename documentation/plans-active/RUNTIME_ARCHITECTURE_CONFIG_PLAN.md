@@ -1009,12 +1009,16 @@ one-line `dcm_arch.require_relu` guard naming the sites it models:
 | `experiments/20261003-fatty-vs-skinny/tensor-health/fatty_tensors.py` | the BN sites `blocks.0.bn1/bn2`, `tower_final_bn`, `policy.pre_bn`, `value.bn` as ReLU-fed | in `load`: tower end, policy pre-block, value conv and the main path |
 | `experiments/20261001-se-fc1-leaky/full-model-analysis/scripts/input_features.py` | value-conv features as `ReLU(value.bn)` | after each `Checkpoint`: value conv only |
 
-The rest are left unedited: on a v9 file they either fail loudly or model no activation.
+The rest are not among those three. On a v9 or v10 file they model each site's own
+activation, refuse the file, fail loudly or model no activation. `fwd3.py` and `fwd4.py`
+(and, through them, every script that runs a forward from either) first read the retired
+top-level `activation_function` and raised `KeyError`; since HEAD_ACTIVATIONS_PLAN.md
+ID-17 they read the sites through `dcm_arch`, and their two rows below say what each does.
 
-| Script | On a v9 model |
+| Script | On a v9 or v10 model |
 |---|---|
-| `documentation/research/bf16-head-offset/scripts/fwd3.py`, `fwd4.py` and `net681.py` (calls `fwd4.forward`) | `KeyError` on the top-level `activation_function`, loud |
-| the other `bf16-head-offset/scripts/*` that run a forward from `fwd3` / `fwd4`: `analyze.py`, `trajce.py`, `validate2.py`, `variants.py`, `calib.py`, `calib_scan.py`, `gradcheck.py`, `heads681.py`, `sfcompare.py`, `trend_fwd.py` | `KeyError`, loud |
+| `documentation/research/bf16-head-offset/scripts/fwd3.py` and the scripts that run a forward from it: `analyze.py`, `trajce.py`, `validate2.py`, `variants.py` | models each site's own activation (ReLU, SiLU, GELU or leaky ReLU): the architecture-level sites from the file's metadata (`site_activations_md`), each group's main path and SE FC1 from its block group; `require_architecture_of` refuses an architecture that is not the metadata's (ID-17) |
+| `documentation/research/bf16-head-offset/scripts/fwd4.py` and the scripts that run a forward from it: `net681.py`, `calib.py`, `calib_scan.py`, `gradcheck.py`, `heads681.py`, `sfcompare.py`, `trend_fwd.py` | refuses any file with a non-ReLU site it models (`require_relu` on the tower end, policy pre-block, value conv, value FC1 and block main path, plus a ReLU check on the SE FC1): `ArchitectureError`, loud (ID-17) |
 | `documentation/research/policy-head-2026-10-01/scripts/analyze_policy_head.py` | `KeyError`, loud |
 | `experiments/20260929-se-style-ab/final_data.py`; the other `policy-head-2026-10-01/scripts/*`; `bf16-head-offset/scripts/traj2.py`; `bf16-head-offset/scripts/lines_list.py` | model no activation of a loaded file |
 

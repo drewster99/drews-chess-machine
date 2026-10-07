@@ -80,8 +80,8 @@ enum TrainingHealthTestSupport {
         LayerHealthDigest(
             tier: tier,
             deadChannels: LayerHealthDigest.DeadChannels(
-                classifiedSiteCount: 9, classifiedChannelCount: channels, deadChannelCount: dead,
-                sites: sites.map { LayerHealthDigest.SiteDeadChannels(site: $0.0, deadChannelCount: $0.1, channelCount: $0.2) },
+                modeledSiteCount: 9, modeledChannelCount: channels, parkedChannelCount: dead,
+                sites: sites.map { LayerHealthDigest.SiteDeadChannels(site: $0.0, parkedChannelCount: $0.1, channelCount: $0.2) },
                 coversEveryActivation: true),
             nonFiniteValueCount: 0, runningVariance: nil, valueFC1: nil)
     }

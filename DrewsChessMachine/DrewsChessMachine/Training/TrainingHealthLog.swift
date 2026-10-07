@@ -102,16 +102,18 @@ enum TrainingHealthLog {
         "\(healthTag) trainer clock rewind detected by recordStep (not announced): \(from) -> \(to); generation \(generation)"
     }
 
+    /// `trainerStep` is nil when the observation names no step at all (a
+    /// failed live read before anything was recorded): written `none`.
     static func staleObservationLine(
         tier: LayerHealthDigest.Tier,
-        trainerStep: Int,
+        trainerStep: Int?,
         generation: Int,
         currentGeneration: Int,
         newestApplied: Int?,
         reason: String?
     ) -> String {
         let reasonText = reason.map { "; \($0)" } ?? ""
-        return "\(healthTag) stale \(tier.rawValue) observation ignored: trainerStep=\(trainerStep) generation=\(generation)"
+        return "\(healthTag) stale \(tier.rawValue) observation ignored: trainerStep=\(trainerStep.map(String.init) ?? "none") generation=\(generation)"
             + " (current generation \(currentGeneration), newest applied \(newestApplied.map(String.init) ?? "none")\(reasonText))"
     }
 
@@ -134,7 +136,9 @@ enum TrainingHealthLog {
     }
 
     struct CheckFields: Sendable {
-        let trainerStep: Int
+        /// nil only on a final line of a monitor that never recorded a step
+        /// nor applied an observation: written `none`, never 0.
+        let trainerStep: Int?
         let generation: Int
         let live: Int
         let checkpoint: Int
@@ -153,8 +157,11 @@ enum TrainingHealthLog {
 
     /// `[HEALTH] check …` — counters since the previous check line.
     /// `evaluations` is `live + checkpoint` (committed evaluations).
-    /// `dead_channels_sites` names every affected site while
-    /// `dead_channels` is active.
+    /// While `dead_channels` is active, each field of its detail is written
+    /// with the rule's prefix — `dead_channels_sites=` naming every affected
+    /// site (`none` while a clear is pending) and, for an offline log that
+    /// predates the parked counts, `dead_channels_coverage=` — so every
+    /// field of the line is `key=value`.
     static func checkLine(_ fields: CheckFields) -> String {
         func ratio(_ value: Double?) -> String {
             value.map { String(format: "%.2f", $0) } ?? notMeasured
@@ -168,7 +175,7 @@ enum TrainingHealthLog {
         let active = fields.active
             .map { "\($0.rule.rawValue):\($0.severity.rawValue)" }
             .joined(separator: ",")
-        var line = "\(healthTag) check trainerStep=\(fields.trainerStep) generation=\(fields.generation)"
+        var line = "\(healthTag) check trainerStep=\(fields.trainerStep.map(String.init) ?? "none") generation=\(fields.generation)"
             + " evaluations=\(fields.live + fields.checkpoint) live=\(fields.live) checkpoint=\(fields.checkpoint)"
             + " stale=\(fields.stale) truncated=\(fields.truncated)"
             + " cost_ms=\(String(format: "%.1f", fields.costMs)) train_ms=\(String(format: "%.1f", fields.trainMs))"
@@ -178,7 +185,9 @@ enum TrainingHealthLog {
             + " nodata=\(noData.isEmpty ? "none" : noData)"
             + " active=\(active.isEmpty ? "none" : active)"
         if let dead = fields.active.first(where: { $0.rule == .deadChannels }) {
-            line += " dead_channels_\(dead.detail)"
+            for field in dead.detail.split(separator: " ") {
+                line += " \(TrainingHealthRule.deadChannels.rawValue)_\(field)"
+            }
         }
         if let marker = fields.marker {
             line += " \(marker.rawValue)=true"
@@ -189,16 +198,21 @@ enum TrainingHealthLog {
     // MARK: The dedicated value-FC1 read (D6)
 
     /// `[LAYER-HEALTH] value-fc1 …` — one dedicated value-FC1 velocity read;
-    /// the offline replay parses it as a rule-3-only observation.
+    /// the offline replay parses it as a rule-3-only observation. `trained=`
+    /// is the stamp's steps trained by this process when the state was read
+    /// (rule 3's gate, R0): the trainer clock cannot stand in for it, and a
+    /// GUI log has no step rows to recover it from, so without it the
+    /// offline replay could never judge rule 3 on a GUI log.
     static func valueFC1Line(
         trainerStep: Int,
+        stepsTrainedByThisProcess: Int,
         zeroVelocityUnitCount: Int,
         unitCount: Int,
         lowVelocityUnitCount: Int,
         readMs: Double,
         summaryMs: Double
     ) -> String {
-        "\(LayerHealthLog.tag) value-fc1 trainerStep=\(trainerStep)"
+        "\(LayerHealthLog.tag) value-fc1 trainerStep=\(trainerStep) trained=\(stepsTrainedByThisProcess)"
             + " valueFC1ZeroVel=\(zeroVelocityUnitCount)/\(unitCount) lowVel=\(lowVelocityUnitCount)"
             + " readMs=\(String(format: "%.2f", readMs)) summaryMs=\(String(format: "%.2f", summaryMs))"
     }

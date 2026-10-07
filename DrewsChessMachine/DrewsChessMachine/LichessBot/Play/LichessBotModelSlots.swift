@@ -103,6 +103,7 @@ struct LichessBotBuiltModel: Sendable {
 struct LichessBotGenerationBuilder: Sendable {
     let provider: any LichessBotModelProvider
     let time: any LichessBotTimeSource
+    let loader: LichessBotModelFileLoader
 
     func build(for settings: LichessBotModelSettings, progress: LichessBotModelBuildProgress?) async throws -> LichessBotBuiltModel {
         let started = time.now()
@@ -124,7 +125,7 @@ struct LichessBotGenerationBuilder: Sendable {
             }
             let url = URL(fileURLWithPath: path)
             progress?("loading \(url.lastPathComponent)")
-            let loaded = try await Self.loadFile(at: url)
+            let loaded = try await loader.load(at: url)
             snapshot = loaded.snapshot
             filePath = path
             fileSHA256 = loaded.sha256
@@ -143,19 +144,44 @@ struct LichessBotGenerationBuilder: Sendable {
             milliseconds: LichessBotBackoff.seconds(time.now() - started) * 1000
         )
     }
+}
 
-    /// Load and hash a model file off the cooperative thread pool.
-    /// `valueHeadRecentered` reports whether decode changed the value head
-    /// (see `ValueHeadRecentering`), so the generation records that its
-    /// weights no longer match the hashed bytes.
-    private static func loadFile(
-        at url: URL
-    ) async throws -> (snapshot: LichessBotWeightsSnapshot, sha256: String, valueHeadRecentered: Bool) {
-        try await withCheckedThrowingContinuation { continuation in
+/// Reads, decodes and hashes a model file for a generation (follow-lineage
+/// plan §3.5), off the cooperative thread pool. Decoding goes through
+/// `CheckpointManager.loadModelFile(fromBytes:source:)`, the single
+/// model-file loader.
+struct LichessBotModelFileLoader: Sendable {
+    /// What a load produced. `valueHeadRecentered` reports whether decode
+    /// changed the value head (see `ValueHeadRecentering`), so the
+    /// generation records that its weights no longer match the hashed
+    /// bytes.
+    struct Loaded: Sendable {
+        let snapshot: LichessBotWeightsSnapshot
+        let sha256: String
+        let valueHeadRecentered: Bool
+    }
+
+    /// Reads a file's bytes: the file itself in the app; scripted bytes in a
+    /// test.
+    let readBytes: @Sendable (URL) throws -> Data
+
+    static let live = LichessBotModelFileLoader(readBytes: { url in
+        try CheckpointManager.readModelFileBytes(at: url)
+    })
+
+    func load(at url: URL) async throws -> Loaded {
+        let readBytes = self.readBytes
+        return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let file = try CheckpointManager.loadModelFile(at: url)
-                    let bytes = try Data(contentsOf: url)
+                    // One read, decoded and hashed: the hash names exactly
+                    // the bytes played. A second read could see another file
+                    // renamed over the path in between (a rolling save).
+                    // `Data(contentsOf:)` keeps reading the inode it opened,
+                    // so the bytes are one file, and the decode's
+                    // `content_sha256` check refuses a half-copied one.
+                    let bytes = try readBytes(url)
+                    let file = try CheckpointManager.loadModelFile(fromBytes: bytes, source: url.lastPathComponent)
                     let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
                     let snapshot = LichessBotWeightsSnapshot(
                         weights: file.networkWeights,
@@ -168,7 +194,7 @@ struct LichessBotGenerationBuilder: Sendable {
                     }
                     let recentered: Bool
                     if case .recentered = centering { recentered = true } else { recentered = false }
-                    continuation.resume(returning: (snapshot, digest, recentered))
+                    continuation.resume(returning: Loaded(snapshot: snapshot, sha256: digest, valueHeadRecentered: recentered))
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -206,13 +232,17 @@ actor LichessBotModelSlots {
 
     /// The generation new games use.
     private(set) var current: LichessBotModelGeneration
-    /// The settings `current` was built for.
+    /// The model settings in force: `current`'s generation source, with
+    /// the newest values of the fields that don't select weights (the
+    /// refresh interval, the mid-game toggle).
     private var currentSettings: LichessBotModelSettings
     private var lastSnapshotAt: Duration
     private var nextGenerationID: Int
     /// A build in flight, joined by every caller that asks for the same
-    /// settings, so two callers never build two networks for one snapshot.
-    private var pendingBuild: (settings: LichessBotModelSettings, task: Task<LichessBotModelGeneration, Error>)?
+    /// generation source, so two callers never build two networks for one
+    /// snapshot (two callers differing only in, say, the refresh interval
+    /// want the same weights).
+    private var pendingBuild: (source: LichessBotGenerationSource, task: Task<LichessBotModelGeneration, Error>)?
 
     private init(builder: LichessBotGenerationBuilder, first: LichessBotModelGeneration, settings: LichessBotModelSettings, log: @escaping @Sendable (String) -> Void) {
         self.builder = builder
@@ -226,14 +256,18 @@ actor LichessBotModelSlots {
     /// Build the first generation for `settings` and return slots holding
     /// it. Throws whatever the build throws (no champion, no trainer, a file
     /// that won't load): the caller stays offline with that error.
+    ///
+    /// `loader` reads model files; the app passes `.live` (the file itself),
+    /// a test may count or script the reads.
     static func prepare(
         for settings: LichessBotModelSettings,
         provider: any LichessBotModelProvider,
         time: any LichessBotTimeSource,
+        loader: LichessBotModelFileLoader = .live,
         log: @escaping @Sendable (String) -> Void,
         progress: LichessBotModelBuildProgress? = nil
     ) async throws -> LichessBotModelSlots {
-        let builder = LichessBotGenerationBuilder(provider: provider, time: time)
+        let builder = LichessBotGenerationBuilder(provider: provider, time: time, loader: loader)
         let built = try await builder.build(for: settings, progress: progress)
         let firstID = 1
         let slots = LichessBotModelSlots(builder: builder, first: built.generation(id: firstID), settings: settings, log: log)
@@ -241,9 +275,11 @@ actor LichessBotModelSlots {
         return slots
     }
 
-    /// Run a build, or join the one already running for the same settings.
+    /// Run a build, or join the one already running for the same
+    /// generation source.
     private func rebuild(for settings: LichessBotModelSettings, reason: String) async throws -> LichessBotModelGeneration {
-        if let pendingBuild, pendingBuild.settings == settings {
+        let source = settings.generationSource
+        if let pendingBuild, pendingBuild.source == source {
             return try await pendingBuild.task.value
         }
         let builder = self.builder
@@ -251,9 +287,9 @@ actor LichessBotModelSlots {
             let built = try await builder.build(for: settings, progress: nil)
             return self.publish(built, settings: settings, reason: reason)
         }
-        pendingBuild = (settings, task)
+        pendingBuild = (source, task)
         defer {
-            if pendingBuild?.settings == settings {
+            if pendingBuild?.source == source {
                 pendingBuild = nil
             }
         }
@@ -278,31 +314,58 @@ actor LichessBotModelSlots {
     /// elapsed). Cheap to call often; does nothing otherwise. Throws when a
     /// switch or refresh fails, or the champion is gone; `current` keeps
     /// playing either way.
-    func refreshIfDue(for settings: LichessBotModelSettings) async throws {
-        guard pendingBuild == nil else { return }
-        guard currentSettings == settings else {
-            _ = try await rebuild(for: settings, reason: "source changed to \(settings.source.rawValue)")
-            return
+    ///
+    /// A build already in flight for the same weights is joined: the result
+    /// (or error) is that build's, never a success reported before it ends.
+    /// One for other weights is waited out first, then these settings are
+    /// handled as usual.
+    @discardableResult
+    func refreshIfDue(for settings: LichessBotModelSettings) async throws -> LichessBotModelRefreshOutcome {
+        if let pendingBuild {
+            if pendingBuild.source == settings.generationSource {
+                let joined = try await pendingBuild.task.value
+                return .joinedBuildInFlight(joined.info)
+            }
+            // Its outcome is its own caller's to report; these settings
+            // are handled below, after it.
+            _ = await pendingBuild.task.result
         }
+        guard currentSettings.generationSource == settings.generationSource else {
+            let built = try await rebuild(for: settings, reason: "source changed to \(settings.source.rawValue)")
+            return .built(built.info)
+        }
+        // Same weights: the interval and the mid-game toggle in force are
+        // the newest, with no rebuild.
+        currentSettings = settings
         switch settings.source {
         case .champion:
             guard let championID = await builder.provider.championModelID() else {
                 throw LichessBotModelError.noChampion
             }
             if championID != current.info.modelID {
-                _ = try await rebuild(for: settings, reason: "champion changed to \(championID)")
+                let built = try await rebuild(for: settings, reason: "champion changed to \(championID)")
+                return .built(built.info)
             }
         case .liveTrainer:
             if builder.time.now() - lastSnapshotAt >= .seconds(settings.liveTrainerRefreshIntervalSeconds) {
-                _ = try await rebuild(for: settings, reason: "live-trainer interval elapsed")
+                let built = try await rebuild(for: settings, reason: "live-trainer interval elapsed")
+                return .built(built.info)
             }
         case .trainerSnapshot, .file:
             break
         }
+        return .unchanged
     }
+}
 
-    /// The operator's "Re-snapshot now".
-    func forceRefresh(for settings: LichessBotModelSettings) async throws -> LichessBotModelGeneration {
-        try await rebuild(for: settings, reason: "operator re-snapshot")
-    }
+/// What `LichessBotModelSlots.refreshIfDue` did. Every case is a success;
+/// a failure throws.
+enum LichessBotModelRefreshOutcome: Equatable, Sendable {
+    /// Nothing was due: the current generation is up to date.
+    case unchanged
+    /// This call built a new generation, now current.
+    case built(LichessBotGenerationInfo)
+    /// A build already in flight for the same weights finished with this
+    /// generation, now current.
+    case joinedBuildInFlight(LichessBotGenerationInfo)
 }

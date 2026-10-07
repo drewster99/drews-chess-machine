@@ -19,8 +19,12 @@ struct LichessBotModelSwitchStatusView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
                 .textSelection(.enabled)
-                .shown(controller.modelRefreshFailure != nil)
+                .shown(hasFailure)
         }
+    }
+
+    private var hasFailure: Bool {
+        controller.modelRefreshFailure != nil
     }
 
     private var isSwitching: Bool {

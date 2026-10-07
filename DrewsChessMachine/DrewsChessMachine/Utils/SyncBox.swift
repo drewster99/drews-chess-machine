@@ -37,6 +37,17 @@ final class SyncBox<T: Sendable>: @unchecked Sendable {
         }
     }
 
+    /// Read part of the protected value inside the locked critical section.
+    /// Unlike `value`, which returns a copy of the whole `T`, this never
+    /// copies the value out: when `T` holds an array, a copy alive outside
+    /// the lock shares the array's buffer, and a writer that appends to it
+    /// meanwhile must then reallocate the whole buffer (copy-on-write).
+    public func read<R: Sendable>(_ body: @Sendable (T) -> R) -> R {
+        lock.withLock { lockedValue in
+            body(lockedValue)
+        }
+    }
+
     public init(_ value: T) {
         lock = OSAllocatedUnfairLock(initialState: value)
     }

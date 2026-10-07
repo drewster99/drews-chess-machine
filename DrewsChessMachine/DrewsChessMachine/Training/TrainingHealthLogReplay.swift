@@ -13,13 +13,18 @@ import Foundation
 ///   row, under the same span definition;
 /// - "steps trained by this process" (rule 3's gate) is the row's own
 ///   `step=` (segment steps), summed over the logs passed together; a
-///   corpus-replay or train-vs-UCI checkpoint headline uses its own `step=`;
-///   a GUI `session-…` checkpoint carries no such count, so rule 3 has no data
-///   from it;
+///   corpus-replay or train-vs-UCI checkpoint headline uses its own `step=`,
+///   and a dedicated `[LAYER-HEALTH] value-fc1` line its own `trained=`; a
+///   GUI `session-…` checkpoint carries no such count, so rule 3 has no data
+///   from it (a GUI log's rule-3 source is its value-fc1 lines);
 /// - per-site counts come from what the lines name: `parkedBy=` (every
 ///   affected site) on logs that have the parked counts; otherwise only the
 ///   live line's `worst=` site between checkpoints (a lower bound) and
-///   relu / leaky_relu sites only;
+///   relu / leaky_relu sites only. Such a line's overall arm still divides
+///   by every channel an activation consumes — the run's checkpoint table
+///   (rows whose `act` is not `-`) — and has no data in a run without a
+///   table: dividing by the relu / leaky_relu channels alone would overstate
+///   the fraction on a mixed tower (B-silu: 20/144 instead of 20/1040);
 /// - `[VS-UCI]` rows carry no `pIllM`, so rule 4 has no data offline;
 /// - logs without step rows (GUI logs, whose `[STATS]` values are rolling
 ///   means) are replayed for the layer-health rules only.
@@ -129,7 +134,10 @@ enum TrainingHealthLogReplay {
         case checkpointFailed
         /// A `[LAYER-HEALTH]` detail line (indented), its text after the tag.
         case checkpointDetail(String)
-        case valueFC1(trainerStep: Int, zero: Int, units: Int)
+        /// A dedicated value-FC1 read (D6), with the steps the writing
+        /// process had trained when it read the state (`trained=`, rule 3's
+        /// gate).
+        case valueFC1(trainerStep: Int, stepsTrained: Int, zero: Int, units: Int)
         case other
     }
 
@@ -243,10 +251,11 @@ enum TrainingHealthLogReplay {
         if rest.hasPrefix(" value-fc1 ") {
             let fields = try keyValueFields(rest.dropFirst(" value-fc1 ".count), malformed: malformed)
             guard let stepText = fields["trainerStep"], let step = Int(stepText),
+                  let trainedText = fields["trained"], let trained = Int(trainedText),
                   let velocity = try fraction(fields["valueFC1ZeroVel"], malformed: malformed) else {
-                throw malformed("value-fc1 line without trainerStep= and valueFC1ZeroVel=")
+                throw malformed("value-fc1 line without integer trainerStep=, trained= and valueFC1ZeroVel=")
             }
-            return .valueFC1(trainerStep: step, zero: velocity.0, units: velocity.1)
+            return .valueFC1(trainerStep: step, stepsTrained: trained, zero: velocity.0, units: velocity.1)
         }
         return .other
     }
@@ -435,14 +444,42 @@ enum TrainingHealthLogReplay {
         let ordinal: Int
     }
 
-    struct RunFacts: Sendable {
-        var channelCounts: [String: (count: Int, file: String, line: Int)] = [:]
-        var valueFC1Activation: String?
-        var hasValueFC1Lines = false
+    /// One batch-norm table row as the pre-scan keeps it: the site's channel
+    /// count and the activation that consumes it (`-` for none), with where
+    /// it was first read.
+    struct TableSite: Sendable {
+        let channelCount: Int
+        let activation: String
+        let file: String
+        let line: Int
     }
 
-    /// Every checkpoint table's channel counts, and the value FC1 layer's
-    /// activation, per run. Two different counts for one site within one run
+    struct RunFacts: Sendable {
+        var tableSites: [String: TableSite] = [:]
+        var valueFC1Activation: String?
+        var hasValueFC1Lines = false
+
+        /// Sites an activation consumes (table rows whose `act` is not `-`);
+        /// nil when the run has no checkpoint table.
+        var modeledSiteCount: Int? {
+            tableSites.isEmpty ? nil : tableSites.values.filter { $0.activation != Self.noActivation }.count
+        }
+
+        /// Their channels: rule 2's overall denominator for a line that
+        /// predates the parked counts; nil when the run has no table.
+        var modeledChannelCount: Int? {
+            tableSites.isEmpty
+                ? nil
+                : tableSites.values.filter { $0.activation != Self.noActivation }.reduce(0) { $0 + $1.channelCount }
+        }
+
+        /// How a table row says no activation consumes the site.
+        static let noActivation = "-"
+    }
+
+    /// Every checkpoint table's sites (channel count and consuming
+    /// activation), and the value FC1 layer's activation, per run. Two
+    /// different channel counts or activations for one site within one run
     /// are a malformed input.
     static func prescanRuns(_ files: [ParsedFile]) throws -> [RunKey: RunFacts] {
         var facts: [RunKey: RunFacts] = [:]
@@ -472,12 +509,21 @@ enum TrainingHealthLogReplay {
                                 file: file.name, line: number, reason: "batch-norm table row does not parse")
                         }
                         var runFacts = facts[key, default: RunFacts()]
-                        if let existing = runFacts.channelCounts[row.site], existing.count != row.channelCount {
-                            throw TrainingHealthLogReplayError.conflictingChannelCounts(
-                                site: row.site, first: "\(existing.file):\(existing.line) (\(existing.count))",
-                                second: "\(file.name):\(number) (\(row.channelCount))")
+                        if let existing = runFacts.tableSites[row.site] {
+                            if existing.channelCount != row.channelCount {
+                                throw TrainingHealthLogReplayError.conflictingChannelCounts(
+                                    site: row.site, first: "\(existing.file):\(existing.line) (\(existing.channelCount))",
+                                    second: "\(file.name):\(number) (\(row.channelCount))")
+                            }
+                            if existing.activation != row.activation {
+                                throw TrainingHealthLogReplayError.conflictingActivations(
+                                    site: row.site, first: "\(existing.file):\(existing.line) (\(existing.activation))",
+                                    second: "\(file.name):\(number) (\(row.activation))")
+                            }
+                        } else {
+                            runFacts.tableSites[row.site] = TableSite(
+                                channelCount: row.channelCount, activation: row.activation, file: file.name, line: number)
                         }
-                        runFacts.channelCounts[row.site] = (row.channelCount, file.name, number)
                         facts[key] = runFacts
                     } else if inVelocity, trimmed.hasPrefix("value.fc1.weight ") {
                         let tokens = trimmed.split(separator: " ", omittingEmptySubsequences: true)
@@ -518,6 +564,7 @@ enum TrainingHealthLogReplay {
             var absentCounts: [String: Int] = [:]
             var liveLines = 0
             var liveWithoutParked = 0
+            var valueFC1Lines = 0
             for (_, line) in file.lines {
                 switch line {
                 case .stepRow(let row):
@@ -527,12 +574,17 @@ enum TrainingHealthLogReplay {
                 case .live(_, let health):
                     liveLines += 1
                     if health.parked == nil { liveWithoutParked += 1 }
+                case .valueFC1:
+                    valueFC1Lines += 1
                 default:
                     break
                 }
             }
             if rows == 0 {
-                header.append("\(file.name): no [REPLAY]/[VS-UCI] step rows: layer-health rules only (non_finite, dead_channels, value_fc1_zero_velocity, bn_running_variance_runaway)")
+                // Rule 3 needs the steps trained by the writing process: a
+                // GUI `session-…` checkpoint has none, so only the dedicated
+                // value-fc1 lines (`trained=`) and CLI checkpoints feed it.
+                header.append("\(file.name): no [REPLAY]/[VS-UCI] step rows: layer-health rules only (non_finite, dead_channels, bn_running_variance_runaway); value_fc1_zero_velocity only from [LAYER-HEALTH] value-fc1 lines and replay-/vsuci- checkpoints (\(valueFC1Lines) value-fc1 lines in this log)")
             }
             for input in ruleInputs {
                 guard let count = absentCounts[input.field], count > 0 else { continue }
@@ -542,7 +594,7 @@ enum TrainingHealthLogReplay {
                 header.append("\(file.name): [VS-UCI] rows carry no pIllM: illegal_mass no data offline")
             }
             if liveWithoutParked > 0 {
-                header.append("\(file.name): \(liveWithoutParked) of \(liveLines) live lines predate the parked counts: dead_channels covers relu/leaky_relu sites only there, and per-site counts between checkpoints are the worst= site only (a lower bound)")
+                header.append("\(file.name): \(liveWithoutParked) of \(liveLines) live lines predate the parked counts: dead_channels counts relu/leaky_relu sites only there (a lower bound), per-site counts between checkpoints are the worst= site only (a lower bound), and the overall arm divides by every activated channel of the run's checkpoint table (no data in a run without one)")
             }
         }
         return header
@@ -674,9 +726,10 @@ enum TrainingHealthLogReplay {
                     flushRow()
                 case .checkpointDetail:
                     break
-                case .valueFC1(let trainerStep, let zero, let units):
+                case .valueFC1(let trainerStep, let stepsTrained, let zero, let units):
                     flushRow()
-                    evaluateValueFC1(trainerStep: trainerStep, zero: zero, units: units)
+                    lastSegmentStepInSource = max(lastSegmentStepInSource, stepsTrained)
+                    evaluateValueFC1(trainerStep: trainerStep, stepsTrained: stepsTrained, zero: zero, units: units)
                 case .other:
                     break
                 }
@@ -765,7 +818,7 @@ enum TrainingHealthLogReplay {
         }
 
         private mutating func evaluateLive(trainerStep: Int, health: CompactHealth) {
-            let digest = Self.digest(health, tier: .live, tableRows: nil, channelCounts: prescan[runKey]?.channelCounts ?? [:])
+            let digest = Self.digest(health, tier: .live, tableRows: nil, runFacts: prescan[runKey])
             if let pending = pendingRow, pending.trainerStep == trainerStep {
                 pendingRow = nil
                 evaluatePendingRow(pending, layerHealth: .read(digest, trainerStep: trainerStep))
@@ -795,8 +848,7 @@ enum TrainingHealthLogReplay {
             guard let pending = pendingCheckpoint else { return }
             pendingCheckpoint = nil
             var digest = Self.digest(
-                pending.health, tier: .checkpoint, tableRows: pending.tableRows,
-                channelCounts: prescan[runKey]?.channelCounts ?? [:])
+                pending.health, tier: .checkpoint, tableRows: pending.tableRows, runFacts: prescan[runKey])
             let isCLI = contextIsCLI(pending.context)
             if !isCLI {
                 digest = LayerHealthDigest(
@@ -812,8 +864,11 @@ enum TrainingHealthLogReplay {
             collect(result)
         }
 
-        private mutating func evaluateValueFC1(trainerStep: Int, zero: Int, units: Int) {
-            let observationStamp = stamp(stepsTrained: lastRowStepsTrained)
+        /// `stepsTrained` is the writing process's own count (`trained=`);
+        /// like a step row's segment step it is offset by the logs already
+        /// replayed into this evaluator.
+        private mutating func evaluateValueFC1(trainerStep: Int, stepsTrained: Int, zero: Int, units: Int) {
+            let observationStamp = stamp(stepsTrained: stepsTrainedOffset + stepsTrained)
             let result = monitor().evaluateCheckpoint(
                 stamp: observationStamp,
                 layerHealth: .valueFC1Only(LayerHealthDigest.ValueFC1Velocity(zeroVelocityUnitCount: zero, unitCount: units)),
@@ -825,21 +880,22 @@ enum TrainingHealthLogReplay {
         /// them (every activation, every affected site named); otherwise the
         /// relu / leaky_relu dead counts, per site from the checkpoint table
         /// or, for a live line, the worst site with its channel count from
-        /// the run's pre-scan.
+        /// the run's pre-scan, over the run's modeled channel count (nil
+        /// without a table: the overall arm then has no data).
         static func digest(
             _ health: CompactHealth,
             tier: LayerHealthDigest.Tier,
             tableRows: [TableRow]?,
-            channelCounts: [String: (count: Int, file: String, line: Int)]
+            runFacts: RunFacts?
         ) -> LayerHealthDigest {
             let dead: LayerHealthDigest.DeadChannels?
             if let parked = health.parked {
                 dead = LayerHealthDigest.DeadChannels(
-                    classifiedSiteCount: parked.siteCount,
-                    classifiedChannelCount: parked.channelCount,
-                    deadChannelCount: parked.parkedCount,
+                    modeledSiteCount: parked.siteCount,
+                    modeledChannelCount: parked.channelCount,
+                    parkedChannelCount: parked.parkedCount,
                     sites: parked.sites.map {
-                        LayerHealthDigest.SiteDeadChannels(site: $0.site, deadChannelCount: $0.parked, channelCount: $0.channels)
+                        LayerHealthDigest.SiteDeadChannels(site: $0.site, parkedChannelCount: $0.parked, channelCount: $0.channels)
                     },
                     coversEveryActivation: true)
             } else if let siteCount = health.reluClassifiedSiteCount {
@@ -847,21 +903,24 @@ enum TrainingHealthLogReplay {
                 if let tableRows, !tableRows.isEmpty {
                     sites = tableRows.compactMap { row in
                         guard let dead = row.deadCount else { return nil }
-                        return LayerHealthDigest.SiteDeadChannels(site: row.site, deadChannelCount: dead, channelCount: row.channelCount)
+                        return LayerHealthDigest.SiteDeadChannels(site: row.site, parkedChannelCount: dead, channelCount: row.channelCount)
                     }
                 } else if let worst = health.worstSite, let worstDead = health.worstSiteDead {
                     sites = [LayerHealthDigest.SiteDeadChannels(
-                        site: worst, deadChannelCount: worstDead, channelCount: channelCounts[worst]?.count)]
+                        site: worst, parkedChannelCount: worstDead, channelCount: runFacts?.tableSites[worst]?.channelCount)]
                 }
                 if siteCount == 0 {
                     // `reluSites=0/n`: no relu / leaky_relu site, and the line
                     // predates the parked counts, so silu / gelu sites were
                     // never checked — no data, not "does not apply".
                     dead = nil
-                } else if let channels = health.reluChannelCount, let deadCount = health.reluDeadCount {
+                } else if health.reluChannelCount != nil, let deadCount = health.reluDeadCount {
+                    // The line's `ch=` counts relu / leaky_relu channels only;
+                    // it is never the overall denominator.
                     dead = LayerHealthDigest.DeadChannels(
-                        classifiedSiteCount: siteCount, classifiedChannelCount: channels,
-                        deadChannelCount: deadCount, sites: sites, coversEveryActivation: false)
+                        modeledSiteCount: runFacts?.modeledSiteCount,
+                        modeledChannelCount: runFacts?.modeledChannelCount,
+                        parkedChannelCount: deadCount, sites: sites, coversEveryActivation: false)
                 } else {
                     dead = nil
                 }
@@ -879,6 +938,7 @@ enum TrainingHealthLogReplayError: LocalizedError, Equatable {
     case malformedLine(file: String, line: Int, reason: String)
     case unsupportedFormat(file: String, build: String?, missingField: String)
     case conflictingChannelCounts(site: String, first: String, second: String)
+    case conflictingActivations(site: String, first: String, second: String)
     case nonIncreasingSegmentSteps(file: String, line: Int)
     case noData(file: String)
 
@@ -890,6 +950,8 @@ enum TrainingHealthLogReplayError: LocalizedError, Equatable {
             return "unsupported log format: \(file) (build \(build ?? "unknown") from its [APP]/[RUN] line): step rows carry no \(field)"
         case .conflictingChannelCounts(let site, let first, let second):
             return "malformed input: site \(site) has two channel counts within one run: \(first) and \(second)"
+        case .conflictingActivations(let site, let first, let second):
+            return "malformed input: site \(site) has two activations within one run: \(first) and \(second)"
         case .nonIncreasingSegmentSteps(let file, let line):
             return "--segment-step-as-trainer-step refused: \(file):\(line): step= does not strictly increase"
         case .noData(let file):

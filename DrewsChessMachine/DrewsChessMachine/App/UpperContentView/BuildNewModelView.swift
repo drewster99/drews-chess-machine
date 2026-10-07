@@ -22,6 +22,17 @@ struct BuildNewModelView: View {
 
     @State private var saveStatus: String?
 
+    /// The functions a block group's "Activation" picker and the "Use for
+    /// every activation" menu offer: `ActivationFunction.functions`, the one
+    /// list every activation choice draws from, never `allCases`, which
+    /// holds `does_not_apply`. Neither control can take that marker:
+    /// `BlockGroup.setActivationFunction` traps on it, and the menu treats
+    /// its refusal as a defect. A named list (pinned by
+    /// `testEveryActivationChoiceListIsTheFunctionsList`) is what lets a test
+    /// see what these two controls offer; a literal written at each site
+    /// could later become `allCases` with no test failing.
+    static let activationChoices: [ActivationFunction] = ActivationFunction.functions
+
     /// A Save-as-Preset the store refused because a preset of that name
     /// already exists, captured at click time so "Replace" writes exactly
     /// what the user was looking at when they saved — not whatever the
@@ -99,10 +110,11 @@ struct BuildNewModelView: View {
                         // `applyMainActivationEverywhere` throws only for
                         // `does_not_apply` (`setMainActivationEverywhere`'s one
                         // refusal), and this menu lists only
-                        // `ActivationFunction.functions`, which never holds it.
-                        // A throw here is therefore a defect, not a user error.
+                        // `BuildNewModelView.activationChoices`, which never
+                        // holds it. A throw here is therefore a defect, not a
+                        // user error.
                         Menu("Use for every activation") {
-                            ForEach(ActivationFunction.functions, id: \.self) { function in
+                            ForEach(BuildNewModelView.activationChoices, id: \.self) { function in
                                 Button(function.rawValue) {
                                     do {
                                         try model.applyMainActivationEverywhere(function)
@@ -481,7 +493,7 @@ private struct BlockGroupFieldsView: View {
         // Through the draft, so the edit applies the rule
         // `--derive-model --set-activation` shares
         // (`BlockGroup.setActivationFunction`).
-        enumPicker("Activation", $draft.activationFunction, ActivationFunction.functions)
+        enumPicker("Activation", $draft.activationFunction, BuildNewModelView.activationChoices)
         // The SE FC1's own activation (issue #2), a site that exists only
         // with an SE block (OD-13): always present so the row layout never
         // shifts, disabled and `does_not_apply` on an SE-less group, and

@@ -1850,15 +1850,26 @@ enum CheckpointManager {
     }
 
     static func loadModelFile(at url: URL) throws -> ModelCheckpointFile {
-        let data: Data
+        try loadModelFile(fromBytes: try readModelFileBytes(at: url), source: url.lastPathComponent)
+    }
+
+    /// A model file's bytes, a failed read reported as `readFailed` with
+    /// the file's URL.
+    static func readModelFileBytes(at url: URL) throws -> Data {
         do {
-            data = try Data(contentsOf: url)
+            return try Data(contentsOf: url)
         } catch {
             throw CheckpointManagerError.readFailed(url, error)
         }
-        let file = try decodeAnyModelFile(data, valueHead: .recenterUnlessMarked, source: url.lastPathComponent)
+    }
+
+    /// `loadModelFile(at:)` over bytes already read, so a caller that also
+    /// needs the bytes (to hash exactly what was decoded) reads the file
+    /// once. `source` names the file in errors and log lines.
+    static func loadModelFile(fromBytes data: Data, source: String) throws -> ModelCheckpointFile {
+        let file = try decodeAnyModelFile(data, valueHead: .recenterUnlessMarked, source: source)
         file.architectureFormat?.logLegacyResolutions()
-        logValueHeadCentering(file, source: url.lastPathComponent)
+        logValueHeadCentering(file, source: source)
         return file
     }
 

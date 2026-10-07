@@ -50,6 +50,13 @@ Plan: `documentation/plans-active/HPARAM_RECORDING_PLAN.md` (gap 6 flag, B8 cons
 - New `scripts/safetensors_tensor_compare.py` (bit-exact or relative-tolerance tensor comparison, the plan's "no change to training math" check).
 - Tests: `test_build_info_script.py`, `test_safetensors_tensor_compare.py`, `BuildInfoConsistencyTests`.
 
+## 2026-10-06 — Per-site activations: independent review fixes
+
+- Build New Model: the group "Activation" picker and the "Use for every activation" menu list one shared `BuildNewModelView.activationChoices` (`ActivationFunction.functions`), pinned again by `testEveryActivationChoiceListIsTheFunctionsList`, so neither can come to offer `does_not_apply` unnoticed.
+- A pre-v9 block-groups file with neither the site keys nor `activation_function`: the error now also names a site key stated as JSON `null`, as `scripts/dcm_arch.py` does (it named none when only null keys were unresolved).
+- Python: `test_format_versions_match_the_swift_constants` compares every format-version constant `dcm_arch` / `dcm_lineage` copies with `ArchitectureFormat.swift`, parsing both sides.
+- Docs: `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md` §20 says what `fwd3.py` / `fwd4.py` and their callers do on a v9/v10 file; the ROADMAP entry lists every implementing commit; `HEAD_ACTIVATIONS_PLAN.md` ID-18 and its X2 row.
+
 ## 2026-10-06 — /stupid fixes: per-site activations review
 
 - Build New Model: one `Availability` decides each site picker's state and help; each architecture-level picker is built from its site and binds through `BuildNewModelModel.activationKeyPath(at:)`; the choice-list aliases are gone (`ActivationFunction.functions` everywhere).
