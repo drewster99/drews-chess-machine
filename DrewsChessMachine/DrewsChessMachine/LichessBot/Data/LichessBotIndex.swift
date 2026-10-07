@@ -26,6 +26,9 @@ struct LichessBotGameSummary: Sendable, Codable, Equatable {
     let builds: [Int]
     let reconciliation: LichessBotGameRecord.Reconciliation.Outcome
     let anomalyCount: Int
+    /// How the game began, copied from its record; nil when the record has
+    /// none (challenge-log plan §3.5).
+    let origin: LichessBotGameOrigin?
 
     init(record: LichessBotGameRecord) {
         gameID = record.gameID
@@ -52,6 +55,7 @@ struct LichessBotGameSummary: Sendable, Codable, Equatable {
         builds = record.builds
         reconciliation = record.reconciliation.outcome
         anomalyCount = record.anomalies.count
+        origin = record.origin
     }
 }
 
@@ -63,7 +67,10 @@ struct LichessBotGameSummary: Sendable, Codable, Equatable {
 /// general-purpose one, never the journal queue, since a rebuild decodes
 /// every record.
 enum LichessBotIndex {
-    static let schemaVersion = 2
+    /// Bumped by one for each change to a row (3: `origin`, challenge-log
+    /// plan §3.5), so a stored index from an older build is rebuilt from the
+    /// records once.
+    static let schemaVersion = 3
 
     /// A record file the index left out because it doesn't decode.
     struct UnreadableRecord: Sendable, Codable, Equatable {

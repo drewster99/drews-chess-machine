@@ -46,6 +46,11 @@ enum LichessBotJournalEvent: Sendable, Codable, Equatable {
     /// DCM decided to answer a chat command (see
     /// `LichessBotGameEvent.commandReplyQueued`).
     case commandReplyQueued(command: String, username: String, room: String)
+    /// How the game began (challenge-log plan §3.5), written by the
+    /// controller once it is known, or as undetermined at session end. A
+    /// build from before this case can't decode a journal holding it (the
+    /// rule above), the documented cost of downgrading mid-game.
+    case gameOrigin(LichessBotGameOrigin)
 }
 
 enum LichessBotJournalSyncKind: String, Sendable, Codable, Equatable {
@@ -274,6 +279,21 @@ final class LichessBotJournalWriter: LichessBotGameObserver {
         guard let gameID = record.gameID, !finalized.value.contains(gameID) else { return }
         do {
             try await append([LichessBotJournalEntry(at: record.startedAt, event: .request(record))], gameID: gameID, synchronize: false)
+        } catch {
+            onWriteFailure(gameID, error)
+        }
+    }
+
+    /// Record how the game began, into its journal, synchronized like a
+    /// posted move. A game already filed gets nothing (logged by `append`):
+    /// its origin then shows through the challenge log instead.
+    func recordOrigin(_ origin: LichessBotGameOrigin, gameID: String) async {
+        guard !finalized.value.contains(gameID) else {
+            SessionLogger.shared.log("[LICHESS-BOT] game \(gameID): origin \(origin.token) not written to the journal: the game is filed")
+            return
+        }
+        do {
+            try await append([LichessBotJournalEntry(at: Date(), event: .gameOrigin(origin))], gameID: gameID, synchronize: true)
         } catch {
             onWriteFailure(gameID, error)
         }

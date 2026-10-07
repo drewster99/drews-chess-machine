@@ -9,6 +9,50 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 — Lichess bot challenge log P7: documentation
+
+- `LICHESS_BOT_CHALLENGE_LOG_PLAN.md`: status (P1–P7 implemented) and implementation notes §12–§18; `LICHESS_BOT_PLAN.md` §10.1 layout gains `Challenges/`; the ROADMAP line is marked done (nothing removed).
+- Left to the owner (needs the running app or lichess.org): the plan's §6.5–§6.7 live, read-only-proof and crash checks, and §6.9's load time.
+
+## 2026-10-06 — Lichess bot challenge log P5: origins and the challenge log in the UI
+
+- Every game shows how it began: an Origin column with a filter and per-category counts in All Games, a glyph in the Recent games list and on tiles, the label in the Live picker, and an Origin row in the game detail. Glyphs and wording live in `LichessBotGameOriginStyle` / `LichessBotChallengeLogStyle`.
+- A Challenge Log window (from the outcomes card) lists every challenge, live and rebuilt, with filters (date, direction, state, sender, rebuilt rows, opponent search), its load and rebuild status, and a Rebuild button.
+- New tests: `LichessBotChallengeLogRowTests`, `LichessBotGameOriginStyleTests`, `LichessBotChallengeLogViewRenderTests`, `LichessBotGameOriginViewRenderTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §17.
+
+## 2026-10-06 — Lichess bot challenge log P6: the outcome log is a fold of the challenge log
+
+- `LichessBotChallengeOutcomeLog.fold`: the Overview's credit and outcome counts come from the challenge log's last day (plus rows rebuilt from the protocol log for the time before the live log began), refolded on every change. `challenge-outcomes.json` is no longer read or written; an existing file stays on disk as it was, and `LichessBotChallengeOutcomeLog.load` still reads it.
+- The protocol log keeps its "challenge outcome: …" lines with the rolling credit counts.
+- New tests: `LichessBotChallengeOutcomeFoldTests`, `LichessBotOutcomeLogFromChallengeLogTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §16.
+
+## 2026-10-06 — Lichess bot challenge log P4: back-fill from the protocol log
+
+- Algorithm v1 rebuilds past challenges from `Protocol/events-*.jsonl` into `Challenges/reconstructed-from-protocol.json` (derived, regenerable, written only when its bytes change). On this Mac it reproduces the plan's numbers exactly: 206 games = incoming 12, matchmaking 132, operator (inferred) 62, unknown 0; today's files give 222 = 12 / 148 / 62 / 0.
+- The controller rebuilds it once after the challenge log loads (not on the go-online path) and on demand; `LichessBotGameOriginDisplay` resolves what each game shows (record, live log, rebuilt challenge, the record's gap, unknown with a reason) into `originsByGameID`; disagreements are logged once per game.
+- The challenge log reader reports when the live log begins (the rebuild's cutoff).
+- New tests: `LichessBotChallengeReconstructionTests`, `LichessBotChallengeReconstructionRealDataTests` (read-only), `LichessBotGameOriginDisplayTests`, `LichessBotChallengeHistoryControllerTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §15.
+
+## 2026-10-06 — Lichess bot challenge log P3: how each game started
+
+- `LichessBotGameOrigin` (incoming, DCM's challenge with its sender, sender not recorded, tournament, undetermined with its gap) and `LichessBotGameOriginResolver`: decided at session start from the challenge ledger and the `gameStart`, later when the challenge's facts arrive (the POST race), or written as undetermined at session end. Once per game per run.
+- The journal gains `.gameOrigin`; the record builder, the resumed journal and the live view keep the first determined origin. `LichessBotGameRecord`, `LichessBotGameSummary` and `LichessBotLiveGame` gain an optional `origin`; `LichessBotIndex.schemaVersion` 2 → 3 (the cache rebuilds once); new PGNs carry `DCMOrigin`. `gameStart.source` is an open value from lila's `Source` list.
+- New tests: `LichessBotGameOriginResolverTests`, `LichessBotGameOriginJournalTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §14.
+
+## 2026-10-06 — Lichess bot challenge log P2: every challenge fact recorded
+
+- New `LichessBotChallengeLogRecorder` (owned by the controller): the ledger, its one funnel, loading (go-online and the bot window, once), held echoes of our own challenges (written only when unmatched, attributed to a single unanswered send), game starts, and replays that write nothing.
+- The controller records `outgoingCreated` / `outgoingNotCreated` (offline, refused, no answer) with who sent it, every withdrawal and Lichess's answer, incoming challenges and DCM's decisions, stream declines and cancels, and game starts. `ChallengeOrigin` gains `.casualResendOffer`, `.challengeQueue` and a matchmaking `trigger` (automatic pass or Fill Open Slots).
+- Manager events: `.challengeArrived` carries the challenge; new `.challengeAnsweredOnStream` and `.gameStartReceived`.
+- New tests: `LichessBotUnmatchedEchoTests`, `LichessBotChallengeLogControllerTests`. Notes in `LICHESS_BOT_CHALLENGE_LOG_PLAN.md` §13.
+
+## 2026-10-06 — Lichess bot: decline reasons from the event stream are recognized
+
+- Bug: the event stream's `declineReasonKey` is the reason's name lowercased (`nobot`, `timecontrol`, `toofast`, `tooslow`), while `LichessBotDeclineReason`'s raw values are the decline POST's camelCase (`noBot`, `timeControl`, …). `LichessBotDeclineReasonRecord(reasonKey:)` matched by raw value, so those declines were recorded as `.unrecognized`: the Challenge Outcomes card showed them as extra "other" rows while their own rows read 0. The protocol logs to date hold 39 `nobot`, 19 `timecontrol` and 4 `toofast` declines of DCM's own challenges (plus 1 `timecontrol`, 1 `toofast` and 1 `tooslow` event for incoming challenges DCM declined); `challenge-outcomes.json` held 21 `nobot`, 6 `timecontrol` and 2 `toofast` as unrecognized. The matchmaking cool-down (recorded for every decline whatever its reason) and the casual resend (`casual` is the same in both spellings) were not affected.
+- `LichessBotDeclineReason(lichessKey:)`: the one mapping from a key Lichess sends, case-insensitive (one dictionary derived from `allCases`). The record and the controller's two `casual` checks use it; the decline POST still sends the camelCase raw value.
+- `LichessBotDeclineReasonRecord` decodes a stored `.unrecognized` key that names a reason as `.known`; the stored shape is unchanged and nothing is rewritten.
+- New tests: `LichessBotDeclineReasonKeyTests`.
+
 ## 2026-10-06 23:00 — Lichess bot: follow a model lineage on disk, and build the model before going online
 
 Plan: `documentation/plans-active/LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` (implementation notes in §12).

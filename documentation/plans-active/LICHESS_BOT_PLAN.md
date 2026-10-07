@@ -906,6 +906,8 @@ LichessBot/
   Games/YYYY/MM/<YYYYMMDD-HHMMSS>-<gameId>.journal.jsonl  raw per-game journal, kept
   InProgress/<gameId>.journal.jsonl               journal while the game is live
   Protocol/events-YYYYMMDD.jsonl                  account-level protocol event log
+  Challenges/challenges-YYYYMMDD.jsonl            challenge log, one file per UTC day, kept forever (challenge-log plan)
+  Challenges/reconstructed-from-protocol.json     past challenges rebuilt from Protocol/ (derived, regenerable)
   index.json                                      rebuildable stats cache (never authoritative)
 ```
 

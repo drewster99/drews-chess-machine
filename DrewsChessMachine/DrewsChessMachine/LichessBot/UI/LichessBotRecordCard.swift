@@ -132,8 +132,9 @@ struct LichessBotTallyText: View {
     }
 }
 
-/// DCM's most recent filed games, newest first: result chip, color, the
-/// opponent and their kind and rating, the game's speed, and when. It
+/// DCM's most recent filed games, newest first: result chip, color, how the
+/// game began, the opponent and their kind and rating, the game's speed, and
+/// when. It
 /// scrolls within the card's height; "More…" opens every game in a
 /// sortable window.
 struct LichessBotRecentGamesList: View {
@@ -164,6 +165,8 @@ struct LichessBotRecentGamesList: View {
                             LichessBotResultChip(ourScore: row.ourScore)
                             PieceColorDisc(color: row.ourColor == .white ? .white : .black, diameter: 10)
                                 .help(row.ourColor == .white ? "DCM played White" : "DCM played Black")
+                            LichessBotGameOriginGlyph(display: controller.originsByGameID[row.gameID])
+                                .font(.caption)
                             HStack(spacing: 4) {
                                 LichessBotFavoriteStar(controller: controller, userID: row.opponentID)
                                 Text(row.opponentName ?? "?")
