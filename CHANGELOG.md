@@ -9,6 +9,19 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Training-health alarms on every training path (`d985a566`, `a6c8ccd5`)
+
+Plan: `documentation/plans-active/TRAINING_HEALTH_ALARMS_PLAN.md` (P2–P4; P1, the pure evaluator, landed earlier). Reference: `documentation/training-health-alarms.md`.
+
+- **Every training path now checks itself**: GUI Play-and-Train / `--train`, `--replay-corpus` and `--train-vs-uci` run one shared evaluator over every SGD step, a live layer-health read every 50 trainer steps, every save's checkpoint pass, and a value-FC1 velocity read at most 1,000 trainer steps apart (`ChessTrainer.readTrainableVelocity(named:)`, one variable, no operation). Nine rules: `non_finite`, `dead_channels`, `value_fc1_zero_velocity`, `illegal_mass`, `gradient_collapse`, `loss_spike`, `policy_offset_drift`, `bn_running_variance_runaway`, `gradient_spike`. New log lines `[HEALTH] …` and `[ALARM] health <kind> rule=…`.
+- **12 new parameters** (Health category, Health tab in the training settings popover): `training_health_alarms_enabled`, `training_health_check_interval_steps`, `training_health_learning_grace_steps`, `training_health_action_<rule>` × 9 (0 log — the default — / 1 stop on critical / 2 stop on any). Saved in sessions (actions by name) and restored on resume; recorded in `results.json` as `alarm_config`.
+- **Stops**: a CLI run stops before its next step, saves with reason `health-stop` (`vsuci-health-stop` session folder), records `termination_reason: "training_health_alarm"` and **exits 35**. The GUI suspends training (`trainingSuspension = .healthAlarm`; the worker parks and still acknowledges pauses, so saves complete; arenas and Promote Trainee Now refused; the periodic autosave still runs); GUI `--train` ends through `AutoTrainTermination`.
+- **Promote Trainee Now is now also refused during a divergence suspension** (it was not gated before): `trainingSuspension` (`.divergence` / `.healthAlarm`) replaces `trainingSuspendedByDivergence`.
+- **GUI**: an alarm list under the banner (always mounted, hidden when empty), one beep loop for the banner and critical health alarms (warnings never beep), its own Silence.
+- **`results.json`**: `alarms` (every event in log order, always present) and `alarm_config`.
+- **`--replay-health-log <log>…`**: the real evaluator over saved logs, read only. On the full evidence logs it reproduces every incident in the plan (B-silu: `gradient_spike` 20,600, `illegal_mass` critical 20,700, `dead_channels` warning); arms A, R7 and R8 raise nothing.
+- Tests: `TrainingHealthParameterTests`, `CliTrainingRecorderAlarmTests`, `ValueFC1VelocityReadTests`, `TrainingHealthReplayCLITests`, `CorpusReplayHealthStopTests`, `TrainingAlarmControllerHealthTests`, `PromoteTrainerNowSuspensionTests`, `TrainingHealthGuiDeliveryTests`, `TrainingHealthSegmentSummaryMergeTests`; `test_registry_size` 86 → 98 (owner-approved, OD-6 / OD-20).
+
 ## 2026-10-06 — Step lines, saves and checkpoint names on the trainer step; `training_step` is the trainer step (format v11)
 
 Plan: `documentation/plans-active/STATS_LINE_RESUME_CADENCE_FIX_PLAN.md`.
