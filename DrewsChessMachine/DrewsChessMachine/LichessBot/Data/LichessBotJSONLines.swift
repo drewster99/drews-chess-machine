@@ -32,9 +32,33 @@ extension LichessBotJSONLines.Decoded: Sendable where Element: Sendable {}
 extension LichessBotJSONLines {
 
     static func decode<Element: Decodable>(_ type: Element.Type, from data: Data, fileName: String) throws -> Decoded<Element> {
+        let decoder = makeDecoder()
+        var elements: [Element] = []
+        let droppedTrailingByteCount = try forEachCompleteLine(in: data) { lineNumber, line in
+            do {
+                elements.append(try decoder.decode(Element.self, from: line))
+            } catch {
+                throw LichessBotJSONLinesError.undecodableLine(file: fileName, lineNumber: lineNumber, detail: String(describing: error))
+            }
+        }
+        return Decoded(elements: elements, droppedTrailingByteCount: droppedTrailingByteCount)
+    }
+
+    /// The decoder every JSON Lines reader uses (the dates `encodeLine`
+    /// writes).
+    static func makeDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601withFractionalSeconds
-        var elements: [Element] = []
+        return decoder
+    }
+
+    /// Call `body` with each complete (`\n`-terminated) line of `data` that
+    /// holds anything but `\r`s, numbered from 1 by its place in the file
+    /// (blank lines count), and return the byte count of an unterminated
+    /// final line, which is not passed to `body`. The one definition of a
+    /// line, shared by `decode` and readers with their own per-line rules
+    /// (the challenge log skips lines from newer builds).
+    static func forEachCompleteLine(in data: Data, _ body: (_ lineNumber: Int, _ line: Data) throws -> Void) rethrows -> Int {
         var lineStart = data.startIndex
         var lineNumber = 0
         while let newline = data[lineStart...].firstIndex(of: UInt8(ascii: "\n")) {
@@ -44,13 +68,9 @@ extension LichessBotJSONLines {
             if line.allSatisfy({ $0 == UInt8(ascii: "\r") }) {
                 continue
             }
-            do {
-                elements.append(try decoder.decode(Element.self, from: line))
-            } catch {
-                throw LichessBotJSONLinesError.undecodableLine(file: fileName, lineNumber: lineNumber, detail: String(describing: error))
-            }
+            try body(lineNumber, line)
         }
-        return Decoded(elements: elements, droppedTrailingByteCount: data.distance(from: lineStart, to: data.endIndex))
+        return data.distance(from: lineStart, to: data.endIndex)
     }
 
     /// One encoded line, newline included.

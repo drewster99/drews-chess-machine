@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Lichess bot challenge log P1: entry schema, writer, reader, ledger
+
+- `Data/LichessBotChallengeLog.swift`: `LichessBotChallengeLogEntry` (`schemaVersion` 1, time, build, event) and its 12 event cases with their supporting types; the writer `LichessBotChallengeLog` (`F_FULLFSYNC` per append, the folder of a new day file too, timed syncs, torn tails recorded as `unterminatedLineCut`); the reader (newer-build lines skipped and counted, a corrupt day file left out with file and line, an unterminated tail dropped).
+- `Stats/LichessBotChallengeLedger.swift`: the pure, order-independent fold into one row per challenge or not-created attempt, with the plan's precedence, sender rule, typed notes and anomalies, and load status. Adds `canceledOnLichessDirectionNotRecorded` for a cancel whose direction no fact records.
+- `LichessBotJSONLines.forEachCompleteLine`: the one line splitter, shared by `decode` and the challenge-log reader. Nothing calls the writer yet (P2).
+- New tests: `LichessBotChallengeLogSchemaTests`, `LichessBotChallengeLogWriterTests`, `LichessBotChallengeLedgerTests`.
+
 ## 2026-10-06 — Lichess bot challenge log P1: one locked append path for journals and the protocol log
 
 - `FileSafety.openForAppending` / `openExistingRegularFileForAppending` (`O_RDWR | O_APPEND | O_NOFOLLOW | O_NONBLOCK`, type checked on the descriptor, exact "created" flag) and `waitForExclusiveLock` (`flock`).
