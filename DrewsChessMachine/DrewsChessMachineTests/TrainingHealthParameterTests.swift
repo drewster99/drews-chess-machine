@@ -46,6 +46,7 @@ final class TrainingHealthParameterTests: XCTestCase {
         .valueSaturation: "training_health_action_value_saturation",
         .valueDrawSaturation: "training_health_action_value_draw_saturation",
         .legalMassStall: "training_health_action_legal_mass_stall",
+        .batchNormRunningVarianceJump: "training_health_action_bn_running_variance_jump",
     ]
 
     private func definition(_ id: String) throws -> TrainingParameterDefinition {
@@ -79,7 +80,7 @@ final class TrainingHealthParameterTests: XCTestCase {
             XCTAssertTrue(action.liveTunable, id)
         }
         let healthIDs = TrainingParameters.allDefinitions.filter { $0.category == "Health" }.map(\.id)
-        XCTAssertEqual(healthIDs.count, 16)
+        XCTAssertEqual(healthIDs.count, 17)
     }
 
     func testEveryHealthKeyKeepsTheCurrentSettingWhenAbsent() {
@@ -99,6 +100,7 @@ final class TrainingHealthParameterTests: XCTestCase {
         XCTAssertEqual(TrainingHealthActionValueSaturation.absentValue, .currentSetting)
         XCTAssertEqual(TrainingHealthActionValueDrawSaturation.absentValue, .currentSetting)
         XCTAssertEqual(TrainingHealthActionLegalMassStall.absentValue, .currentSetting)
+        XCTAssertEqual(TrainingHealthActionBatchNormRunningVarianceJump.absentValue, .currentSetting)
     }
 
     /// The action keys store a raw `Int`; the declared range must be

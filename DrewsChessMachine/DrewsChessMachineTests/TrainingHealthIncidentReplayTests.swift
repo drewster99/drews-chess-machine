@@ -197,4 +197,33 @@ final class TrainingHealthIncidentReplayTests: XCTestCase {
         let events = try replay(["Bsilu"]).events
         XCTAssertEqual(steps(events, .illegalMass, .clear), [21_400], describe(events))
     }
+
+    // MARK: bn_running_variance_jump offline (BN_RUNNING_VARIANCE_CHANGE_ALARM_PLAN X5)
+
+    /// Offline the jump arm sees only each live line's largest channel, a
+    /// lower bound on the app's: B-silu raises critical at 19,900 (851.4×
+    /// against 61.3×, the smallest of the lines' largest ratios in
+    /// 18,900–19,850) — before the offline gradient_spike (20,600) and
+    /// illegal_mass (20,700). The app, which sees every channel, raises at
+    /// 19,800 (validation V-1).
+    func testBSiluRunningVarianceJumpRaisesCriticalAt19900Offline() throws {
+        let events = try replay(["Bsilu"]).events
+        let raise = try XCTUnwrap(
+            events.first { $0.rule == .batchNormRunningVarianceJump && $0.kind == .raise }, describe(events))
+        XCTAssertEqual(raise.trainerStep, 19_900)
+        XCTAssertEqual(raise.severity, .critical)
+        XCTAssertEqual(raise.detail, "channels=blocks.2.bn1[76]:<=61.30->851.4")
+        XCTAssertEqual(raise.value, "jumped=1 outliers=--/--", "the excerpt predates rvOver10xMedian=")
+        let gradientSpike = try XCTUnwrap(steps(events, .gradientSpike, .raise).first)
+        let illegalMass = try XCTUnwrap(steps(events, .illegalMass, .raise).first)
+        XCTAssertLessThan(raise.trainerStep, gradientSpike)
+        XCTAssertLessThan(raise.trainerStep, illegalMass)
+    }
+
+    func testRunningVarianceJumpIsQuietOnTheOtherIncidentAndHealthyLogs() throws {
+        for names in [["A"], ["B"], ["C-seg0", "C-seg1"], ["R7"], ["R8"]] {
+            let events = try replay(names).events.filter { $0.rule == .batchNormRunningVarianceJump }
+            XCTAssertTrue(events.isEmpty, "\(names): \(describe(events))")
+        }
+    }
 }

@@ -344,7 +344,7 @@ final class TrainingHealthLogReplayTests: XCTestCase {
         ].joined(separator: "\n")
         let output = try replay([text])
         XCTAssertTrue(output.header.contains(
-            "log0.txt: no [REPLAY]/[VS-UCI] step rows: layer-health rules only (non_finite, dead_channels, bn_running_variance_runaway); value_fc1_zero_velocity only from [LAYER-HEALTH] value-fc1 lines and replay-/vsuci- checkpoints (0 value-fc1 lines in this log)"),
+            "log0.txt: no [REPLAY]/[VS-UCI] step rows: layer-health rules only (non_finite, dead_channels, bn_running_variance_runaway, bn_running_variance_jump); value_fc1_zero_velocity only from [LAYER-HEALTH] value-fc1 lines and replay-/vsuci- checkpoints (0 value-fc1 lines in this log)"),
             output.header.joined(separator: "\n"))
     }
 
@@ -356,5 +356,64 @@ final class TrainingHealthLogReplayTests: XCTestCase {
                        "the second log continues the first's sustain and running minimum")
         let fresh = try replay([first + "\n" + second])
         XCTAssertTrue(fresh.events.filter { $0.rule == .illegalMass }.isEmpty, "a second [RUN] in one log starts a fresh evaluator")
+    }
+
+    // MARK: bn_running_variance_jump offline (BN_RUNNING_VARIANCE_CHANGE_ALARM_PLAN D5)
+
+    func testLiveLineKeepsTheLargestChannelAndTheOutlierCount() throws {
+        let line = "[LAYER-HEALTH] live trainerStep=19800 scope=batch_norm_state_only reluSites=2/10 ch=144 dead=0 off=0 alwaysOn=0 worst=none rvMaxOverMedian=154.0@blocks.2.bn1[76] rvOver10xMedian=6 rezero=none nonFinite=0"
+        guard case .live(_, let health) = try parse(line) else { return XCTFail("not a live line") }
+        XCTAssertEqual(health.runningVariance, LayerHealthDigest.RunningVarianceRunaway(maxOverMedian: 154, site: "blocks.2.bn1"))
+        XCTAssertEqual(health.runningVarianceLargestChannel, 76)
+        XCTAssertEqual(health.runningVarianceOutlierCount, 6)
+        XCTAssertEqual(health.runningVarianceChannels, LayerHealthDigest.RunningVarianceChannels(
+            coverage: .largestOnly(site: "blocks.2.bn1", channel: 76, ratio: 154), outlierCount: 6))
+    }
+
+    func testLiveLineWithoutTheOutlierFieldHasNoCount() throws {
+        let line = "[LAYER-HEALTH] live trainerStep=50 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none rvMaxOverMedian=3.0@stem.bn[1] rezero=none nonFinite=0"
+        guard case .live(_, let health) = try parse(line) else { return XCTFail("not a live line") }
+        XCTAssertEqual(health.runningVarianceLargestChannel, 1)
+        XCTAssertNil(health.runningVarianceOutlierCount)
+        let noRatio = "[LAYER-HEALTH] live trainerStep=50 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=n/a rvOver10xMedian=0 rezero=none nonFinite=0"
+        guard case .live(_, let empty) = try parse(noRatio) else { return XCTFail("not a live line") }
+        XCTAssertNil(empty.runningVarianceChannels, "no largest channel: rule 14 has no data on the line")
+        XCTAssertEqual(empty.runningVarianceOutlierCount, 0)
+    }
+
+    func testMalformedRunningVarianceChannelIsRejected() {
+        XCTAssertThrowsError(try parse(
+            "[LAYER-HEALTH] live trainerStep=50 scope=batch_norm_state_only rvMaxOverMedian=3.0@stem.bn[x] rezero=none nonFinite=0"))
+    }
+
+    func testHeaderStatesTheRunningVarianceJumpLowerBound() throws {
+        let text = [
+            "[RUN] path=gui build=2400",
+            "[LAYER-HEALTH] live trainerStep=50 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none rvMaxOverMedian=3.0@stem.bn[1] rezero=none nonFinite=0",
+            "[LAYER-HEALTH] live trainerStep=100 scope=batch_norm_state_only reluSites=9/10 ch=1040 dead=0 off=0 alwaysOn=0 worst=none rvMaxOverMedian=3.0@stem.bn[1] rvOver10xMedian=0 rezero=none nonFinite=0",
+        ].joined(separator: "\n")
+        let output = try replay([text])
+        XCTAssertTrue(output.header.contains(
+            "log0.txt: bn_running_variance_jump: the jump arm sees only each live line's largest channel (a lower bound on the app's); the outlier-count arm has no data on 1 of 2 live lines (no rvOver10xMedian=)"),
+            output.header.joined(separator: "\n"))
+    }
+
+    /// Offline, only the largest channel can jump, against the past lines'
+    /// largest ratios; the count arm reads `rvOver10xMedian=`.
+    func testOfflineReplayRaisesTheJumpFromLiveLines() throws {
+        func live(_ step: Int, _ ratio: String, _ outliers: Int) -> String {
+            "[LAYER-HEALTH] live trainerStep=\(step) scope=batch_norm_state_only reluSites=2/10 ch=144 dead=0 off=0 alwaysOn=0 worst=none rvMaxOverMedian=\(ratio) rvOver10xMedian=\(outliers) rezero=none nonFinite=0"
+        }
+        let text = (["[RUN] path=gui build=2400"]
+            + stride(from: 2000, through: 2900, by: 100).map { live($0, "60.0@blocks.2.bn1[31]", 5) }
+            + [live(3000, "700.0@blocks.2.bn1[76]", 11)]).joined(separator: "\n")
+        let events = try replay([text]).events.filter { $0.rule == .batchNormRunningVarianceJump }
+        let raise = try XCTUnwrap(events.first)
+        XCTAssertEqual(raise.kind, .raise)
+        XCTAssertEqual(raise.trainerStep, 3000)
+        XCTAssertEqual(raise.severity, .critical)
+        XCTAssertEqual(raise.value, "jumped=1 outliers=11/5")
+        XCTAssertEqual(raise.threshold, "jump>=10xmin&ratio>=100|outliers>=2xmin&+5")
+        XCTAssertEqual(raise.detail, "channels=blocks.2.bn1[76]:<=60.00->700.0")
     }
 }

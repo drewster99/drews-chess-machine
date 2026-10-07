@@ -9,13 +9,19 @@ import Foundation
 enum TrainingHealthReads {
 
     /// The live layer-health input of an evaluation, from a live read's
-    /// outcome: the digest with the trainer clock it was read at, or a failed
-    /// read (already logged by `LayerHealthLog` as one line of `outcome`).
+    /// outcome: the digest (with rule 14's per-channel ratios) with the
+    /// trainer clock it was read at, or a failed read (already logged by
+    /// `LayerHealthLog` as one line of `outcome`). A summary without its
+    /// profile cannot come out of `LayerHealthLog.live` (one pass yields
+    /// both), so it is a code bug, never "no data".
     static func liveLayerHealth(from outcome: LayerHealthLog.LiveOutcome) -> TrainingHealthLiveLayerHealth {
         guard let summary = outcome.summary, let trainerStep = outcome.trainerStep else {
             return .readFailed
         }
-        return .read(LayerHealthDigest(summary: summary), trainerStep: trainerStep)
+        guard let profile = outcome.runningVarianceProfile else {
+            preconditionFailure("LayerHealthLog.LiveOutcome carries a live summary without its running-variance profile")
+        }
+        return .read(LayerHealthDigest(liveSummary: summary, runningVarianceProfile: profile), trainerStep: trainerStep)
     }
 
     /// What one dedicated value-FC1 read produced.

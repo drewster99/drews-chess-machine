@@ -27,7 +27,12 @@ import Foundation
 ///   the fraction on a mixed tower (B-silu: 20/144 instead of 20/1040);
 /// - `[VS-UCI]` rows carry no `pIllM`, so rule 4 has no data offline;
 /// - logs without step rows (GUI logs, whose `[STATS]` values are rolling
-///   means) are replayed for the layer-health rules only.
+///   means) are replayed for the layer-health rules only;
+/// - `bn_running_variance_jump` sees only each live line's largest channel
+///   (`rvMaxOverMedian=…@site[channel]`), each past line bounding every other
+///   channel by its largest ratio, so its jump arm is a lower bound on the
+///   app's (never a raise the app would not make); its outlier-count arm
+///   reads `rvOver10xMedian=` and has no data on lines written before it.
 ///
 /// **Runs.** Within one log, each `[RUN]` line after the log's first starts a
 /// fresh evaluator, as the app starts a fresh monitor per run; the first
@@ -103,7 +108,23 @@ enum TrainingHealthLogReplay {
         let parked: Parked?
         let nonFiniteValueCount: Int?
         let runningVariance: LayerHealthDigest.RunningVarianceRunaway?
+        /// The channel `rvMaxOverMedian=value@site[channel]` names; nil when
+        /// the field is `n/a` or names no channel. Rule 14's offline input.
+        let runningVarianceLargestChannel: Int?
+        /// `rvOver10xMedian=`: channels at ≥ 10× their site median over every
+        /// BN site; nil on a line written before the field.
+        let runningVarianceOutlierCount: Int?
         let valueFC1: LayerHealthDigest.ValueFC1Velocity?
+
+        /// Rule 14's input from a live line: only its largest channel
+        /// (`largestOnly`), with the outlier count when the line has it; nil
+        /// when the line names no largest channel.
+        var runningVarianceChannels: LayerHealthDigest.RunningVarianceChannels? {
+            guard let runaway = runningVariance, let channel = runningVarianceLargestChannel else { return nil }
+            return LayerHealthDigest.RunningVarianceChannels(
+                coverage: .largestOnly(site: runaway.site, channel: channel, ratio: runaway.maxOverMedian),
+                outlierCount: runningVarianceOutlierCount)
+        }
 
         struct Parked: Sendable, Equatable {
             /// 0 when the line says `parked=n/a`.
@@ -416,13 +437,23 @@ enum TrainingHealthLogReplay {
         }
 
         var runningVariance: LayerHealthDigest.RunningVarianceRunaway?
+        var largestChannel: Int?
         if let text = fields["rvMaxOverMedian"], text != "n/a" {
             guard let at = text.firstIndex(of: "@"), let ratio = Double(text[text.startIndex..<at]) else {
                 throw malformed("rvMaxOverMedian=\(text) is not value@site[channel]")
             }
             let siteAndChannel = text[text.index(after: at)...]
-            let site = siteAndChannel.firstIndex(of: "[").map { String(siteAndChannel[siteAndChannel.startIndex..<$0]) }
-                ?? String(siteAndChannel)
+            let site: String
+            if let open = siteAndChannel.firstIndex(of: "[") {
+                site = String(siteAndChannel[siteAndChannel.startIndex..<open])
+                let channelText = siteAndChannel[siteAndChannel.index(after: open)...]
+                guard channelText.hasSuffix("]"), let channel = Int(channelText.dropLast()) else {
+                    throw malformed("rvMaxOverMedian=\(text) is not value@site[channel]")
+                }
+                largestChannel = channel
+            } else {
+                site = String(siteAndChannel)
+            }
             runningVariance = LayerHealthDigest.RunningVarianceRunaway(maxOverMedian: ratio, site: site)
         }
 
@@ -436,6 +467,8 @@ enum TrainingHealthLogReplay {
             parked: parked,
             nonFiniteValueCount: try integer("nonFinite"),
             runningVariance: runningVariance,
+            runningVarianceLargestChannel: largestChannel,
+            runningVarianceOutlierCount: try integer("rvOver10xMedian"),
             valueFC1: velocity.map { LayerHealthDigest.ValueFC1Velocity(zeroVelocityUnitCount: $0.0, unitCount: $0.1) })
     }
 
@@ -581,6 +614,7 @@ enum TrainingHealthLogReplay {
             var absentCounts: [String: Int] = [:]
             var liveLines = 0
             var liveWithoutParked = 0
+            var liveWithoutOutlierCount = 0
             var valueFC1Lines = 0
             for (_, line) in file.lines {
                 switch line {
@@ -591,6 +625,7 @@ enum TrainingHealthLogReplay {
                 case .live(_, let health):
                     liveLines += 1
                     if health.parked == nil { liveWithoutParked += 1 }
+                    if health.runningVarianceOutlierCount == nil { liveWithoutOutlierCount += 1 }
                 case .valueFC1:
                     valueFC1Lines += 1
                 default:
@@ -601,7 +636,7 @@ enum TrainingHealthLogReplay {
                 // Rule 3 needs the steps trained by the writing process: a
                 // GUI `session-…` checkpoint has none, so only the dedicated
                 // value-fc1 lines (`trained=`) and CLI checkpoints feed it.
-                header.append("\(file.name): no [REPLAY]/[VS-UCI] step rows: layer-health rules only (non_finite, dead_channels, bn_running_variance_runaway); value_fc1_zero_velocity only from [LAYER-HEALTH] value-fc1 lines and replay-/vsuci- checkpoints (\(valueFC1Lines) value-fc1 lines in this log)")
+                header.append("\(file.name): no [REPLAY]/[VS-UCI] step rows: layer-health rules only (non_finite, dead_channels, bn_running_variance_runaway, bn_running_variance_jump); value_fc1_zero_velocity only from [LAYER-HEALTH] value-fc1 lines and replay-/vsuci- checkpoints (\(valueFC1Lines) value-fc1 lines in this log)")
             }
             for input in ruleInputs {
                 guard let count = absentCounts[input.field], count > 0 else { continue }
@@ -609,6 +644,11 @@ enum TrainingHealthLogReplay {
             }
             if vsUciRows > 0 {
                 header.append("\(file.name): [VS-UCI] rows carry no pIllM: illegal_mass no data offline")
+            }
+            if liveLines > 0 {
+                // Rule 14 offline (plan D5): a live line names only its largest
+                // channel, so the jump arm is a lower bound on the app's.
+                header.append("\(file.name): bn_running_variance_jump: the jump arm sees only each live line's largest channel (a lower bound on the app's); the outlier-count arm has no data on \(liveWithoutOutlierCount) of \(liveLines) live lines (no rvOver10xMedian=)")
             }
             if liveWithoutParked > 0 {
                 header.append("\(file.name): \(liveWithoutParked) of \(liveLines) live lines predate the parked counts: dead_channels counts relu/leaky_relu sites only there (a lower bound), per-site counts between checkpoints are the worst= site only (a lower bound), and the overall arm divides by every activated channel of the run's checkpoint table (no data in a run without one)")
@@ -636,6 +676,10 @@ enum TrainingHealthLogReplay {
         private var lastSegmentStepInSource = 0
         private var lastRowStepsTrained = 0
         private var lastObservedTrainerStep: Int?
+        /// The first live line's trainer step in the current monitor: a log
+        /// without step rows (a GUI log) has no other measure of the steps
+        /// its process trained, which rule 14's settle window reads.
+        private var firstLiveTrainerStep: Int?
         private var pendingRow: (row: StepRow, trainerStep: Int)?
         private var pendingCheckpoint: PendingCheckpoint?
         private var lastRowSegmentStep: Int?
@@ -771,6 +815,7 @@ enum TrainingHealthLogReplay {
             lastRowStepsTrained = 0
             lastObservedTrainerStep = nil
             lastRowSegmentStep = nil
+            firstLiveTrainerStep = nil
         }
 
         private func contextIsCLI(_ context: String) -> Bool {
@@ -844,7 +889,16 @@ enum TrainingHealthLogReplay {
             }
             flushRow()
             announceRewindIfNeeded(trainerStep: trainerStep, restoredClock: trainerStep)
-            let observationStamp = stamp(stepsTrained: lastRowStepsTrained)
+            // Without step rows, the steps trained are counted from the first
+            // live line, taken as one live interval after the process started
+            // (the app's cadence) — an approximation used only by rule 14's
+            // settle window; live observations feed no other stamp-gated rule.
+            let firstLive = firstLiveTrainerStep ?? trainerStep
+            firstLiveTrainerStep = firstLive
+            let stepsTrained = lastRowStepsTrained > 0
+                ? lastRowStepsTrained
+                : trainerStep - firstLive + TrainingHealthThresholds.liveEvaluationIntervalSteps
+            let observationStamp = stamp(stepsTrained: stepsTrained)
             let result = monitor().evaluateLive(
                 stamp: observationStamp, layerHealth: .read(digest, trainerStep: trainerStep),
                 learningRate: nil, momentum: nil, config: options.config, log: logSink)
@@ -947,7 +1001,8 @@ enum TrainingHealthLogReplay {
             }
             return LayerHealthDigest(
                 tier: tier, deadChannels: dead, nonFiniteValueCount: health.nonFiniteValueCount,
-                runningVariance: health.runningVariance, valueFC1: tier == .checkpoint ? health.valueFC1 : nil)
+                runningVariance: health.runningVariance, valueFC1: tier == .checkpoint ? health.valueFC1 : nil,
+                runningVarianceChannels: tier == .live ? health.runningVarianceChannels : nil)
         }
     }
 }

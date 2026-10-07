@@ -34,9 +34,17 @@ The checkpoint's own architecture says which activation each BN site feeds (thro
 where to look.
 
 Usage: bn_liveness.py [--steps 1000,6000,...] [--site blocks.2.bn1] [--selftest]
+       bn_liveness.py --write-running-variance-fixture PATH
+
+`--write-running-variance-fixture` writes the real-data fixture of the BN running-variance change
+alarm's tests (`DrewsChessMachineTests/Resources/TrainingHealthIncidents/
+TrainingHealthRunningVarianceCheckpoints.json`; BN_RUNNING_VARIANCE_CHANGE_ALARM_PLAN.md, Part X3):
+every BN site's running variance of the checkpoints in `RUNNING_VARIANCE_FIXTURE_STEPS` and of AgG3's
+session trainer saves, read-only, to a new file (an existing one is refused).
 """
 import argparse
 import copy
+import hashlib
 import json
 import math
 import os
@@ -310,6 +318,150 @@ def checkpoints(run, models_dir=MODELS):
                                    for f in recorded])
 
 
+def _bn_site_order(site):
+    """Sort key putting BN site names in the app's graph order (`LayerHealth.batchNormSites`):
+    stem.bn, each block's bn1 then bn2, tower_final_bn, feature_skip.bn, policy.pre_bn, value.bn.
+    A name outside that list is refused: the fixture's site order is what the Swift test compares
+    read to read, so an unplaced site must not be slotted anywhere by guess."""
+    fixed_before = {"stem.bn": 0}
+    fixed_after = {"tower_final_bn": 0, "feature_skip.bn": 1, "policy.pre_bn": 2, "value.bn": 3}
+    if site in fixed_before:
+        return (0, 0, 0)
+    parts = site.split(".")
+    if len(parts) == 3 and parts[0] == "blocks" and parts[1].isdigit() and parts[2] in ("bn1", "bn2"):
+        return (1, int(parts[1]), 0 if parts[2] == "bn1" else 1)
+    if site in fixed_after:
+        return (2, fixed_after[site], 0)
+    raise ValueError(f"BN site {site!r} has no place in the app's graph order")
+
+
+def read_running_variance(path):
+    """Site -> running variance (float32 numpy vector) for every BN site of a checkpoint, in the
+    app's graph order (`_bn_site_order`), read-only from the tensor index. Every `<site>.running_var`
+    tensor of the header is read — the change alarm (`bn_running_variance_jump`) covers every BN
+    site, `stem.bn` included, whatever activation follows. Refuses a tensor that is not an F32
+    vector of its stated length and a short read."""
+    header, data_start = dcm_arch.read_header(path)
+    suffix = ".running_var"
+    sites = sorted((name[:-len(suffix)] for name in header if name.endswith(suffix)), key=_bn_site_order)
+    if not sites:
+        raise ValueError(f"{path}: no running_var tensor")
+    out = {}
+    with open(path, "rb") as handle:
+        for site in sites:
+            name = f"{site}{suffix}"
+            spec = header[name]
+            start, end = spec["data_offsets"]
+            if spec["dtype"] != "F32" or len(spec["shape"]) != 1 or end - start != 4 * spec["shape"][0]:
+                raise ValueError(f"{path}: {name} is {spec['dtype']} {spec['shape']} in {end - start} bytes; "
+                                 f"expected an F32 vector")
+            handle.seek(data_start + start)
+            raw = handle.read(end - start)
+            if len(raw) != end - start:
+                raise ValueError(f"{path}: {name} truncated ({len(raw)} of {end - start} bytes)")
+            out[site] = np.frombuffer(raw, dtype="<f4").copy()
+    return out
+
+
+# The checkpoints the running-variance fixture holds (BN_RUNNING_VARIANCE_CHANGE_ALARM_PLAN.md,
+# Part X3): run label (a RUNS key) -> the trainer steps taken from it. Each listed span is
+# contiguous at 1,000-step spacing, so consecutive checkpoints in it are exactly one lookback apart.
+RUNNING_VARIANCE_FIXTURE_STEPS = {
+    "B-silu": list(range(2000, 22001, 1000)),
+    "B-silu clip 1.0 (from 18k)": list(range(19000, 23001, 1000)) + list(range(31000, 33001, 1000))
+    + [39000, 40000],
+    "B-silu clip 2.0 (from 18k)": list(range(19000, 23001, 1000)),
+    "B-silu clip 5.0 (from 18k)": list(range(19000, 23001, 1000)),
+    "B-leaky (value head)": [1000, 2000, 3000, 20000, 21000, 22000],
+    "B-leakyall": [1000, 2000, 3000] + list(range(12000, 15001, 1000)) + list(range(29000, 32001, 1000)),
+    "B (ReLU)": [1000, 2000, 3000, 4000, 21000, 22000, 31000, 32000],
+    "A (ReLU, const 0.01)": list(range(2000, 6001, 1000)),
+}
+# The GUI run AgG3 (SiLU, dcm_log_20261007-084445.txt) has no enumerated checkpoints; its
+# evidence is the trainer state of its post-promotion session saves, found by the session ID in
+# the folder name and checked against these trainer steps.
+AGG3_LABEL = "AgG3 (GUI, SiLU)"
+AGG3_SESSION_MARKER = "-20261007-51-49tn-promote.dcmsession"
+AGG3_TRAINER_STEPS = [1607, 2831, 4655, 5261]
+SESSIONS = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Sessions")
+
+
+def _sha256_of_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fixture_checkpoint(path, expected_step):
+    """One checkpoint's fixture entry: identity (file, SHA-256, model_id, trainer step from its
+    lineage record) and every BN site's running variance as the shortest decimal that reads back
+    as the same float32 (checked here, value by value, so the Swift test's Double → Float
+    conversion of each number is exact)."""
+    metadata = dcm_arch.read_header(path)[0]["__metadata__"]
+    record = dcm_lineage.lineage_of(metadata, os.path.basename(path))
+    if isinstance(record, dcm_lineage.Unrecorded):
+        raise ValueError(f"{path}: no lineage record (trainer step not recorded)")
+    step = record["steps"]["cum_trainer_step"]
+    if step != expected_step:
+        raise ValueError(f"{path}: lineage cum_trainer_step {step}, expected {expected_step}")
+    sites = []
+    for site, values in read_running_variance(path).items():
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{path}: {site}.running_var has a non-finite value; JSON cannot hold it")
+        numbers = [float(str(v)) for v in values]  # str of a numpy float32 is its shortest unique decimal
+        back = np.array(numbers, dtype=np.float64).astype(np.float32)
+        if not np.array_equal(back, values):
+            raise ValueError(f"{path}: {site}.running_var does not round-trip through its shortest decimal")
+        sites.append({"site": site, "running_var": numbers})
+    return {
+        "file": os.path.relpath(path, os.path.dirname(os.path.dirname(path)))
+        if path.endswith("/trainer.safetensors") else os.path.basename(path),
+        "file_sha256": _sha256_of_file(path),
+        "model_id": metadata.get("model_id"),
+        "cum_trainer_step": step,
+        "sites": sites,
+    }
+
+
+def write_running_variance_fixture(out_path):
+    """Write the running-variance fixture of the BN running-variance change alarm's real-data
+    tests (`TrainingHealthRunningVarianceIncidentTests`), read-only from the checkpoints. Refuses
+    to write over an existing file."""
+    runs = []
+    for run, steps in RUNNING_VARIANCE_FIXTURE_STEPS.items():
+        cps = checkpoints(run)
+        missing = [s for s in steps if s not in cps]
+        if missing:
+            raise ValueError(f"{run}: no checkpoint at trainer steps {missing}")
+        runs.append({"run": run, "checkpoints": [_fixture_checkpoint(cps[s], s) for s in steps]})
+    folders = sorted(name for name in os.listdir(SESSIONS) if name.endswith(AGG3_SESSION_MARKER))
+    if len(folders) != len(AGG3_TRAINER_STEPS):
+        raise ValueError(f"{AGG3_LABEL}: {len(folders)} session folders, expected {len(AGG3_TRAINER_STEPS)}")
+    runs.append({"run": AGG3_LABEL, "checkpoints": [
+        _fixture_checkpoint(os.path.join(SESSIONS, folder, "trainer.safetensors"), step)
+        for folder, step in zip(folders, AGG3_TRAINER_STEPS)]})
+    document = {
+        "description": "Batch-norm running variances (every BN site, graph order) of the evidence runs of "
+                       "documentation/plans-active/BN_RUNNING_VARIANCE_CHANGE_ALARM_PLAN.md (Part X3), read-only "
+                       "from their enumerated checkpoints and, for AgG3, its sessions' trainer.safetensors. "
+                       "Each value is the shortest decimal that reads back as the stored float32.",
+        "generator": "bn_liveness.py --write-running-variance-fixture (experiments/20261005-lr-schedule-ab)",
+        "runs": runs,
+    }
+    with open(out_path, "x", encoding="utf-8") as handle:
+        json.dump(document, handle, ensure_ascii=False, separators=(",", ":"))
+        handle.write("\n")
+    with open(out_path, encoding="utf-8") as handle:
+        reread = json.load(handle)
+    for run, again in zip(runs, reread["runs"]):
+        for checkpoint, checkpoint_again in zip(run["checkpoints"], again["checkpoints"]):
+            for site, site_again in zip(checkpoint["sites"], checkpoint_again["sites"]):
+                if site["running_var"] != site_again["running_var"]:
+                    raise ValueError(f"{out_path}: {run['run']} {checkpoint['file']} {site['site']} changed on re-read")
+
+
 def analyze(path):
     """Site -> row of statistics for one checkpoint; one header read."""
     header, data_start = dcm_arch.read_header(path)
@@ -487,9 +639,15 @@ def main():
     ap.add_argument("--steps", default=None, help="comma-separated trainer steps; default: every checkpoint")
     ap.add_argument("--site", default=None, help="one BN site; default: a per-run summary over all sites")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--write-running-variance-fixture", metavar="PATH", default=None,
+                    help="write the running-variance fixture of the BN running-variance change alarm's tests to PATH "
+                         "(a new file)")
     args = ap.parse_args()
     if args.selftest:
         selftest()
+        return
+    if args.write_running_variance_fixture:
+        write_running_variance_fixture(args.write_running_variance_fixture)
         return
     requested = None if args.steps is None else [int(s) for s in args.steps.split(",")]
     for run in RUNS:

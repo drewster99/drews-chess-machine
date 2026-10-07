@@ -21,6 +21,7 @@ extension TrainingHealthRule {
         case .valueSaturation: return "Value saturation"
         case .valueDrawSaturation: return "Value draw saturation"
         case .legalMassStall: return "Legal-mass stall"
+        case .batchNormRunningVarianceJump: return "BN running-variance jump"
         }
     }
 
@@ -41,6 +42,8 @@ extension TrainingHealthRule {
         case .valueSaturation: return "Value head mean |p_win − p_loss| at 0.97 (warning) or 0.995 (critical)"
         case .valueDrawSaturation: return "Value head mean p_draw at 0.92 (warning) or 0.97 (critical); fresh is 0.75"
         case .legalMassStall: return "Illegal mass above the legal-mass threshold, not improving, for the probe count"
+        case .batchNormRunningVarianceJump:
+            return "A BN channel's running variance rose 10× within 1,000 steps to ≥ 10× its site median (critical ≥ 100×), or the count of such channels doubled (+5)"
         }
     }
 }

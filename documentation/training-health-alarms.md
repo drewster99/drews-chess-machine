@@ -2,14 +2,14 @@
 
 Every training path checks itself while it trains and says so in the log: GUI Play-and-Train (including GUI `--train`), `--replay-corpus` and `--train-vs-uci`. One evaluator does the checking for all of them, and `--replay-health-log` runs the same evaluator over saved logs. By default every rule only logs. Any rule can be set to stop the run.
 
-Design, evidence and decisions: `documentation/plans-active/TRAINING_HEALTH_ALARMS_PLAN.md`.
+Design, evidence and decisions: `documentation/plans-active/TRAINING_HEALTH_ALARMS_PLAN.md`; rule 14: `documentation/plans-active/BN_RUNNING_VARIANCE_CHANGE_ALARM_PLAN.md`.
 
 ## What is checked, and when
 
 | Check | Every path |
 |---|---|
 | Record the step (loss, illegal-move mass, pre-clip gradient norm, step time; the policy logit mean on diagnostic steps) | every SGD step |
-| Live evaluation: a live `[LAYER-HEALTH]` read (BN state, ReZero α) plus rules 1, 2, 4–9 | every 50 trainer steps, on overall trainer-step multiples, independent of the step lines. On the CLI, one read serves both when a step line falls on the same step |
+| Live evaluation: a live `[LAYER-HEALTH]` read (BN state, ReZero α) plus rules 1, 2, 4–14 | every 50 trainer steps, on overall trainer-step multiples, independent of the step lines. On the CLI, one read serves both when a step line falls on the same step |
 | Checkpoint evaluation: the save's full-tensor `[LAYER-HEALTH]` pass plus rules 1, 2, 3, 8 | every save (CLI rolling and final saves, train-vs-UCI session folders and enumerated checkpoints, every GUI session save) |
 | Rule 3's value-FC1 velocity | at most 1,000 trainer steps apart. A save's pass covers it where there is one (corpus replay's 1,000-step saves; train-vs-UCI with `--enumerate-checkpoints`); otherwise one dedicated read of `value.fc1.weight`'s velocity on the trainer queue, logged as `[LAYER-HEALTH] value-fc1 …` |
 | `[HEALTH] check` line and `active` reminders | at each multiple of `training_health_check_interval_steps` (default 1,000) |
@@ -35,12 +35,15 @@ The monitor only observes. It makes no random draws and changes no trainer, opti
 | 11 | `value_saturation` | window median of the value head's mean \|p_win − p_loss\|: warning ≥ 0.97, critical ≥ 0.995 (2 evaluations) | below 0.97 on 2 evaluations |
 | 12 | `value_draw_saturation` | window median of the value head's mean p_draw: warning ≥ 0.92, critical ≥ 0.97 (a fresh head starts at 0.75) | below 0.92 on 2 evaluations |
 | 13 | `legal_mass_stall` | critical: window median illegal mass above `legal_mass_collapse_threshold` (0.99) on `legal_mass_collapse_no_improvement_probes` (8) consecutive evaluations with no improvement, past warmup + learning grace | at or below the threshold on 2 evaluations |
+| 14 | `bn_running_variance_jump` | a BN channel's ratio (running variance ÷ its site's median) against the live reads of the previous 1,000 trainer steps. Jump: a channel at ≥ 10× that is also ≥ 10× its own lowest ratio in that lookback — warning, **critical when the channel is at ≥ 100×**. Outlier count: the channels at ≥ 10× over every site reached ≥ max(2 × their lowest count in the lookback, that count + 5) — warning. Immediate; judged from `lr_warmup_steps + training_health_learning_grace_steps` on, once the process has trained 100 steps; live reads only | neither arm on 2 evaluations ≥ 1 step apart — about one lookback after the last jump, once the pre-jump reads have left the lookback |
 
 Rules 10–13 are the conditions of the GUI's training-alarm banner detectors and its legal-mass probe (owner decision OD-9). One set of functions, `TrainingHealthDetectorConditions`, decides their levels for both: the banner applies them to its heartbeat's rolling means with its own streaks (unchanged), the evaluator to the step window's medians, so the command-line paths judge them too. In the app both report: the banner as before, the alarm list as a rule. Their inputs are diagnostic-step fields; `[VS-UCI]` rows carry no `vAbs` / `pD`, so offline rules 11–12 have no data for train-vs-UCI logs.
 
 Rule 9's reference median is the same function the relative gradient cap uses (`TrainingHealthReference.make(_:windowStart:policy:)`; the rules call it with `TrailingReferencePolicy.spikeRules`, the cap with its own window N and warm-up W; `documentation/plans-active/RELATIVE_GRADIENT_CAP_PLAN.md`). The data is not shared: the monitor keeps its own observer history, the trainer keeps the cap's per-step history as training state, and both are fed pre-clip norms, so a clip never hides a spike from rules 5 and 9. Every clip is logged as `[GRAD-CLIP]`, and each step line carries `gNormMax=` / `clips=` / `gCap=` for the steps since the previous line.
 
-Thresholds are declared constants (`TrainingHealthThresholds`), not parameters. Each was measured against the incident runs (arms B and C of the 2026-10-05 LR-schedule A/B, B-silu) and the healthy baselines (arm A, R7, R8, a long GUI run).
+Rule 14 is the change counterpart of rule 8's level. B-silu's channel 76 at `blocks.2.bn1` went from 0.02× its site median to 154× within 800 trainer steps (critical at 19,800 in the app, 800 steps before the 20,599–20,609 blowup), while rule 8 raised only at 20,600. Slow growth (clip1's channel 31 to 154×, AgG3's channel 88 to 48×) never rises 10× within 1,000 steps, so it never fires. The jump arm also warns on healthy runs (clip1, B-leaky, B-leakyall: decayed channels reactivating at LR peaks, to 35–47×); only B-silu and the clip2 / clip5 survivors reached the 100× critical level. The lookback is emptied by every trainer-clock rewind and at every process start. Reads made before the process (a CLI run, resume or segment, a GUI Play-and-Train start) has trained 100 steps only build the baseline (`TrainingHealthThresholds.batchNormRunningVarianceJumpSettleSteps`; held as `settling=<trained>/100`), and after a rewind the first read is a baseline only. A read names its channels as `site[channel]`; one residual-stream channel seen at several sites counts once per site.
+
+Thresholds are declared constants (`TrainingHealthThresholds`), not parameters. Each was measured against the incident runs (arms B and C of the 2026-10-05 LR-schedule A/B, B-silu) and the healthy baselines (arm A, R7, R8, a long GUI run); rule 14's against B-silu, its cap-1/2/5 resumes, B-leaky, B-leakyall, B, A and AgG3 (the rule's plan, Part E).
 
 A rule whose input has no data in a window holds its state: it neither raises nor clears, and the check line counts it under `nodata=`. LR-cycle peaks are not suppressed, because every incident began at a rising LR. A GUI promotion rewinds the trainer clock; the monitor then discards its windows and references but keeps active alarms, which clear only by recovery.
 
@@ -48,7 +51,7 @@ A rule whose input has no data in a window holds its state: it neither raises no
 
 One parameter per rule, `training_health_action_<rule>`: `0` log (the default), `1` stop while active at critical, `2` stop while active at any severity. Rules 6–9 have no critical level, so `1` never stops them.
 
-For unattended runs, the plan recommends `1` for `non_finite`, `illegal_mass`, `gradient_collapse` and `dead_channels` (documented, not applied).
+For unattended runs, the plan recommends `1` for `non_finite`, `illegal_mass`, `gradient_collapse`, `dead_channels` and `bn_running_variance_jump` (documented, not applied). With `1`, rule 14 would also have stopped the clip2 and clip5 resumes, which survived (BN_RUNNING_VARIANCE_CHANGE_ALARM_PLAN Q-1).
 
 | Path | Stop |
 |---|---|
@@ -66,7 +69,7 @@ A stop requested by a CLI run's final save changes neither the termination reaso
 | `training_health_alarms_enabled` | `true` | — |
 | `training_health_check_interval_steps` | 1000 | 50…100000 |
 | `training_health_learning_grace_steps` | 1000 | 0…100000 |
-| `training_health_action_<rule>` × 13 | 0 | 0…2 |
+| `training_health_action_<rule>` × 14 | 0 | 0…2 |
 
 - **Command-line paths:** read once from the run-start snapshot.
 - **GUI:** the config is resolved at every live evaluation, and the stop decision reads the actions when the result arrives.
@@ -77,8 +80,9 @@ A stop requested by a CLI run's final save changes neither the termination reaso
 
 ```
 [HEALTH] config enabled=true interval=1000 grace=1000 warmup=1000 momentum=0.85 path=replay actions=non_finite:log,… value_fc1_zero_velocity=applies
-[HEALTH] check trainerStep=2000 generation=0 evaluations=21 live=20 checkpoint=1 stale=0 truncated=0 cost_ms=3.1 train_ms=651400.0 liveReadFailed=0 lossMaxRatio=1.14 lossMedianRatio=1.02 gradMaxRatio=1.10 nodata=none active=dead_channels:critical dead_channels_sites=value.bn(6/16)
+[HEALTH] check trainerStep=2000 generation=0 evaluations=21 live=20 checkpoint=1 stale=0 truncated=0 cost_ms=3.1 train_ms=651400.0 liveReadFailed=0 lossMaxRatio=1.14 lossMedianRatio=1.02 gradMaxRatio=1.10 rvRiseMax=1.30 rvOutliers=3/3 nodata=none active=dead_channels:critical dead_channels_sites=value.bn(6/16)
 [ALARM] health raise rule=dead_channels severity=critical trainerStep=300 value=dead=5/1040 sites=value.bn(5/16) threshold=site>=0.2 action=log lr=0.3 mom=0.85
+[ALARM] health raise rule=bn_running_variance_jump severity=critical trainerStep=19800 value=jumped=1 outliers=6/5 channels=blocks.2.bn1[76]:0.02->154.0 threshold=jump>=10xmin&ratio>=100 action=log lr=0.384 mom=0.85
 [ALARM] health clear rule=loss_spike severity=warning since=300 trainerStep=500 value=median/ref=1.14 max/ref=1.14 ref=7.5471
 [ALARM] health stop rule=illegal_mass severity=critical trainerStep=350 action=stop_on_critical
 [LAYER-HEALTH] value-fc1 trainerStep=3000 trained=2500 valueFC1ZeroVel=2/128 lowVel=9 readMs=1.23 summaryMs=0.50
@@ -89,14 +93,15 @@ A stop requested by a CLI run's final save changes neither the termination reaso
 - **Grep:** `grep '\[ALARM\] health'` selects exactly the event lines.
 - **Event kinds:** `raise`, `escalate` (warning → critical), `worsen` (the count rose while active; at most one per check interval), `active` (a reminder each check interval), `clear`, `stop`.
 - **stderr:** on the command-line paths, raise, escalate and stop lines also go to stderr.
-- **results.json:** `alarms` holds every event in log order and `alarm_config` the resolved settings. GUI `--train` records both too.
+- **results.json:** `alarms` holds every event in log order and `alarm_config` the resolved settings. GUI `--train` records both too. Each `layer_health` record carries `running_variance_outlier_count`, in total and per BN site.
+- **Rule 14's fields:** `value=jumped=<n> outliers=<count>/<lookback minimum>` (`--` for an unknown part); the detail `channels=` names up to 8 jumped channels, ratio descending, as `site[c]:<baseline>-><ratio>` (`<=` before a baseline that is only an upper bound, offline), then `more=<n>`; `threshold=` joins the arms that hold with `|` (`jump>=10xmin&ratio>=100`, `jump>=10xmin&ratio>=10`, `outliers>=2xmin&+5`). On the check line, `rvRiseMax=` is the largest rise (ratio ÷ lookback minimum) of any channel at ≥ 10× over the interval (`inf` for a zero minimum, `--` for none) and `rvOutliers=` the latest live read's count over its lookback minimum. `[LAYER-HEALTH]` lines carry `rvOver10xMedian=<n>` after `rvMaxOverMedian=`, and the checkpoint table an `rv≥10x` column.
 
 ## In the app
 
 - **Alarm list:** active health alarms show in a list under the training-alarm banner. Each row shows the severity symbol, the rule, the measured value, the step it was raised at, and whether its current action stops the run.
 - **Suspension header:** when a health stop has suspended training, a header row names the rule.
 - **Sound:** a critical health alarm beeps even when the banner shows nothing; warnings never beep. The list has its own Silence button.
-- **Health tab:** the training settings popover's Health tab holds the 16 settings. Each edit is logged as a `[PARAM]` line.
+- **Health tab:** the training settings popover's Health tab holds the 17 settings (14 rule rows). Each edit is logged as a `[PARAM]` line.
 
 ## Offline replay
 
@@ -119,6 +124,8 @@ This runs the real monitor and evaluator over saved session logs. It reads only:
 - Rule 3's gate uses the row's `step=` (segment steps) and the value-fc1 lines' `trained=`.
 - `[VS-UCI]` rows carry no `pIllM`, so rule 4 has no data for train-vs-UCI logs.
 - GUI logs (no step rows) get the layer-health rules only.
+- Rule 14's 100-step settle window counts a row's `step=`; a log without step rows counts from its first live line, taken as 50 steps after the start.
+- Rule 14 sees only each live line's largest channel (`rvMaxOverMedian=…@site[channel]`), each past line bounding every other channel by its largest ratio, so its jump arm is a lower bound on the app's: it never raises where the app would not, and may raise later or not at all (B-silu: 19,900 offline, 19,800 in the app; clip1, clip2, clip5, B-leaky, B-leakyall: nothing offline). Its outlier-count arm reads `rvOver10xMedian=` and has no data on lines written before that field. The header says so.
 - Logs passed together are one continuing evaluator; each later `[RUN]` within a log starts a fresh one.
 - Rows without `trainerStep=` (older builds) need `--segment-step-as-trainer-step`.
 

@@ -145,6 +145,9 @@ final class TrainingHealthMonitor: @unchecked Sendable {
         var lossMaxRatio: Double?
         var lossMedianRatio: Double?
         var gradientMaxRatio: Double?
+        /// Rule 14 (`rvRiseMax=` / `rvOutliers=`).
+        var runningVarianceRiseMax: Double?
+        var runningVarianceOutliers: TrainingHealthRunningVarianceOutliers?
         var noData: [TrainingHealthRule: Int] = [:]
     }
 
@@ -455,6 +458,7 @@ final class TrainingHealthMonitor: @unchecked Sendable {
         if let window = observation.window {
             noteRatios(&state, window: window)
         }
+        noteRunningVarianceJump(&state, report: result.runningVarianceJump)
         commitBookkeeping(&state, result: result, digest: digest, trainerStep: observationTrainerStep)
         emit(result, state: &state, config: config, trainerStep: observationTrainerStep, started: started,
              clock: clock, log: log)
@@ -567,6 +571,17 @@ final class TrainingHealthMonitor: @unchecked Sendable {
         }
     }
 
+    /// Rule 14's check-line margins: the interval's largest rise factor and
+    /// the latest live evaluation's outlier count against its baseline.
+    private func noteRunningVarianceJump(_ state: inout EvaluationState, report: TrainingHealthRunningVarianceJumpReport?) {
+        guard let report else { return }
+        state.counters.runningVarianceOutliers = TrainingHealthRunningVarianceOutliers(
+            count: report.outlierCount, baseline: report.reading?.outlierBaseline)
+        if let rise = report.reading?.largestRise?.riseFactor {
+            state.counters.runningVarianceRiseMax = max(state.counters.runningVarianceRiseMax ?? -.infinity, rise)
+        }
+    }
+
     private func commitBookkeeping(
         _ state: inout EvaluationState,
         result: TrainingHealthEvaluation,
@@ -650,6 +665,8 @@ final class TrainingHealthMonitor: @unchecked Sendable {
             lossMaxRatio: counters.lossMaxRatio,
             lossMedianRatio: counters.lossMedianRatio,
             gradientMaxRatio: counters.gradientMaxRatio,
+            runningVarianceRiseMax: counters.runningVarianceRiseMax,
+            runningVarianceOutliers: counters.runningVarianceOutliers,
             noData: counters.noData,
             active: state.evaluator.activeAlarms,
             marker: marker)

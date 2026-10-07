@@ -493,6 +493,9 @@ extension SessionParameterResume {
                 restoreTrainingHealthAction(TrainingHealthActionValueDrawSaturation.self, rule: rule, from: rs, replacing: replacing)
             case .legalMassStall:
                 restoreTrainingHealthAction(TrainingHealthActionLegalMassStall.self, rule: rule, from: rs, replacing: replacing)
+            case .batchNormRunningVarianceJump:
+                restoreTrainingHealthAction(
+                    TrainingHealthActionBatchNormRunningVarianceJump.self, rule: rule, from: rs, replacing: replacing)
             }
         }
     }

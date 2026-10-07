@@ -85,7 +85,7 @@ final class TrainingHealthLogTests: XCTestCase {
             momentumCoefficient: 0.85, legalMassStallThreshold: 0.99, legalMassStallEvaluations: 8, actions: actions)
         XCTAssertEqual(
             TrainingHealthLog.configLine(config: config, path: "replay", valueFC1Applicability: .applies),
-            "[HEALTH] config enabled=true interval=1000 grace=1000 warmup=1000 momentum=0.85 legalMassStall=0.99x8 path=replay actions=non_finite:log,dead_channels:log,value_fc1_zero_velocity:log,illegal_mass:stop_on_critical,gradient_collapse:log,loss_spike:log,policy_offset_drift:log,bn_running_variance_runaway:log,gradient_spike:log,divergence:log,value_saturation:log,value_draw_saturation:log,legal_mass_stall:log value_fc1_zero_velocity=applies")
+            "[HEALTH] config enabled=true interval=1000 grace=1000 warmup=1000 momentum=0.85 legalMassStall=0.99x8 path=replay actions=non_finite:log,dead_channels:log,value_fc1_zero_velocity:log,illegal_mass:stop_on_critical,gradient_collapse:log,loss_spike:log,policy_offset_drift:log,bn_running_variance_runaway:log,gradient_spike:log,divergence:log,value_saturation:log,value_draw_saturation:log,legal_mass_stall:log,bn_running_variance_jump:log value_fc1_zero_velocity=applies")
         XCTAssertTrue(TrainingHealthLog.configLine(
             config: config, path: "gui", valueFC1Applicability: .doesNotApply(activation: .leakyRelu))
             .hasSuffix(" value_fc1_zero_velocity=not_applicable(activation=leaky_relu)"))
@@ -118,6 +118,7 @@ final class TrainingHealthLogTests: XCTestCase {
         let fields = TrainingHealthLog.CheckFields(
             trainerStep: 2000, generation: 0, live: 20, checkpoint: 1, stale: 0, truncated: 0, costMs: 3.14,
             trainMs: 651_400, liveReadFailed: 0, lossMaxRatio: 1.14, lossMedianRatio: 1.02, gradientMaxRatio: nil,
+            runningVarianceRiseMax: nil, runningVarianceOutliers: nil,
             noData: [.policyOffsetDrift: 3, .valueFC1ZeroVelocity: 20],
             active: [
                 TrainingHealthActiveAlarm(rule: .deadChannels, severity: .critical, since: 300, value: "dead=6/1040",
@@ -128,14 +129,34 @@ final class TrainingHealthLogTests: XCTestCase {
             marker: nil)
         XCTAssertEqual(
             TrainingHealthLog.checkLine(fields),
-            "[HEALTH] check trainerStep=2000 generation=0 evaluations=21 live=20 checkpoint=1 stale=0 truncated=0 cost_ms=3.1 train_ms=651400.0 liveReadFailed=0 lossMaxRatio=1.14 lossMedianRatio=1.02 gradMaxRatio=-- nodata=value_fc1_zero_velocity:20,policy_offset_drift:3 active=dead_channels:critical,policy_offset_drift:warning dead_channels_sites=value.bn(6/16),blocks.0.bn1(1/128)")
+            "[HEALTH] check trainerStep=2000 generation=0 evaluations=21 live=20 checkpoint=1 stale=0 truncated=0 cost_ms=3.1 train_ms=651400.0 liveReadFailed=0 lossMaxRatio=1.14 lossMedianRatio=1.02 gradMaxRatio=-- rvRiseMax=-- rvOutliers=-- nodata=value_fc1_zero_velocity:20,policy_offset_drift:3 active=dead_channels:critical,policy_offset_drift:warning dead_channels_sites=value.bn(6/16),blocks.0.bn1(1/128)")
         let empty = TrainingHealthLog.CheckFields(
             trainerStep: 1250, generation: 2, live: 5, checkpoint: 0, stale: 1, truncated: 0, costMs: 0.04,
             trainMs: 250, liveReadFailed: 1, lossMaxRatio: nil, lossMedianRatio: nil, gradientMaxRatio: 1.25,
+            runningVarianceRiseMax: nil, runningVarianceOutliers: nil,
             noData: [:], active: [], marker: .final)
         XCTAssertEqual(
             TrainingHealthLog.checkLine(empty),
-            "[HEALTH] check trainerStep=1250 generation=2 evaluations=5 live=5 checkpoint=0 stale=1 truncated=0 cost_ms=0.0 train_ms=250.0 liveReadFailed=1 lossMaxRatio=-- lossMedianRatio=-- gradMaxRatio=1.25 nodata=none active=none final=true")
+            "[HEALTH] check trainerStep=1250 generation=2 evaluations=5 live=5 checkpoint=0 stale=1 truncated=0 cost_ms=0.0 train_ms=250.0 liveReadFailed=1 lossMaxRatio=-- lossMedianRatio=-- gradMaxRatio=1.25 rvRiseMax=-- rvOutliers=-- nodata=none active=none final=true")
+    }
+
+    /// Rule 14's margins on the check line: the interval's largest rise
+    /// factor (`inf` for a zero baseline) and the latest outlier count over
+    /// its baseline, `--` for either part that is unknown.
+    func testCheckLineCarriesTheRunningVarianceJumpMargins() {
+        func line(rise: Double?, outliers: TrainingHealthRunningVarianceOutliers?) -> String {
+            TrainingHealthLog.checkLine(TrainingHealthLog.CheckFields(
+                trainerStep: 20_000, generation: 0, live: 20, checkpoint: 0, stale: 0, truncated: 0, costMs: 1,
+                trainMs: 1000, liveReadFailed: 0, lossMaxRatio: nil, lossMedianRatio: nil, gradientMaxRatio: nil,
+                runningVarianceRiseMax: rise, runningVarianceOutliers: outliers,
+                noData: [:], active: [], marker: nil))
+        }
+        XCTAssertTrue(line(rise: 7700.123, outliers: TrainingHealthRunningVarianceOutliers(count: 11, baseline: 5))
+            .contains(" gradMaxRatio=-- rvRiseMax=7700.12 rvOutliers=11/5 nodata=none "))
+        XCTAssertTrue(line(rise: .infinity, outliers: TrainingHealthRunningVarianceOutliers(count: 3, baseline: nil))
+            .contains(" rvRiseMax=inf rvOutliers=3/-- "))
+        XCTAssertTrue(line(rise: nil, outliers: TrainingHealthRunningVarianceOutliers(count: nil, baseline: nil))
+            .contains(" rvRiseMax=-- rvOutliers=--/-- "))
     }
 
     /// Review minor 1: every field of the active `dead_channels` detail gets
@@ -144,6 +165,7 @@ final class TrainingHealthLogTests: XCTestCase {
         let fields = TrainingHealthLog.CheckFields(
             trainerStep: 1000, generation: 0, live: 20, checkpoint: 0, stale: 0, truncated: 0, costMs: 1,
             trainMs: 1000, liveReadFailed: 0, lossMaxRatio: nil, lossMedianRatio: nil, gradientMaxRatio: nil,
+            runningVarianceRiseMax: nil, runningVarianceOutliers: nil,
             noData: [:],
             active: [
                 TrainingHealthActiveAlarm(rule: .deadChannels, severity: .warning, since: 300, value: "dead=20/1040",

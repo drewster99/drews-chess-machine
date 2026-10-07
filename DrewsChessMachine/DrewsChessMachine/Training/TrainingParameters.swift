@@ -1415,7 +1415,7 @@ public enum SessionSaveIncludeReplayBuffer: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Training Health Alarms Enabled",
-    description: "Run the training-health checks on every training path (GUI Play-and-Train, corpus replay, train-vs-UCI): thirteen rules over every SGD step and the layer-health reads, logged as [ALARM] health lines and a [HEALTH] check line every Training Health Check Interval steps. Off: no evaluation at all, and one [HEALTH] alarms disabled line at run start. The checks only observe: no random draws, no change to the trainer, optimizer or replay buffer.",
+    description: "Run the training-health checks on every training path (GUI Play-and-Train, corpus replay, train-vs-UCI): fourteen rules over every SGD step and the layer-health reads, logged as [ALARM] health lines and a [HEALTH] check line every Training Health Check Interval steps. Off: no evaluation at all, and one [HEALTH] alarms disabled line at run start. The checks only observe: no random draws, no change to the trainer, optimizer or replay buffer.",
     default: true,
     category: "Health",
     id: "training_health_alarms_enabled",
@@ -1603,6 +1603,18 @@ public enum TrainingHealthActionValueDrawSaturation: TrainingParameterKey {}
     absentValue: .currentSetting
 )
 public enum TrainingHealthActionLegalMassStall: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Health Action: BN Running Variance Jump",
+    description: "What the bn_running_variance_jump alarm (a batch-norm channel's running variance at ≥ 10× its site's median that rose ≥ 10× above its lowest value in the previous 1,000 trainer steps — critical when the channel is at ≥ 100× — or the number of channels at ≥ 10× rising to at least twice, and at least 5 more than, its lowest in the previous 1,000 trainer steps; judged from the learning gate on) does besides logging: 0 = log only (default), 1 = also stop the run while it is active at critical, 2 = also stop the run while it is active at any severity. A stop ends a command-line run through its final save (exit status 35) and suspends GUI training.",
+    default: 0,
+    range: 0...2,
+    category: "Health",
+    id: "training_health_action_bn_running_variance_jump",
+    liveTunable: true,
+    absentValue: .currentSetting
+)
+public enum TrainingHealthActionBatchNormRunningVarianceJump: TrainingParameterKey {}
 
 // MARK: Reproducibility (determinism plan, Part A3.2)
 //
@@ -1828,6 +1840,7 @@ extension TrainingParametersSnapshot {
         case .valueSaturation: raw = value(for: TrainingHealthActionValueSaturation.self)
         case .valueDrawSaturation: raw = value(for: TrainingHealthActionValueDrawSaturation.self)
         case .legalMassStall: raw = value(for: TrainingHealthActionLegalMassStall.self)
+        case .batchNormRunningVarianceJump: raw = value(for: TrainingHealthActionBatchNormRunningVarianceJump.self)
         }
         return TrainingHealthAction(persistedRawValue: raw)
     }
@@ -1991,6 +2004,7 @@ public final class TrainingParameters {
     public var trainingHealthActionValueSaturation: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionValueSaturation.self, value: trainingHealthActionValueSaturation.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionValueSaturation = oldValue } } }
     public var trainingHealthActionValueDrawSaturation: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionValueDrawSaturation.self, value: trainingHealthActionValueDrawSaturation.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionValueDrawSaturation = oldValue } } }
     public var trainingHealthActionLegalMassStall: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionLegalMassStall.self, value: trainingHealthActionLegalMassStall.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionLegalMassStall = oldValue } } }
+    public var trainingHealthActionBatchNormRunningVarianceJump: TrainingHealthAction { didSet { if !Self.commitAssignment(TrainingHealthActionBatchNormRunningVarianceJump.self, value: trainingHealthActionBatchNormRunningVarianceJump.rawValue, oldValue: oldValue.rawValue) { trainingHealthActionBatchNormRunningVarianceJump = oldValue } } }
     /// Stored as the enum; the raw value appears only at the persistence
     /// boundary (see `RandomSeedMode`).
     public var randomSeedMode: RandomSeedMode {
@@ -2122,6 +2136,7 @@ public final class TrainingParameters {
         self.trainingHealthActionValueSaturation = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionValueSaturation.self))
         self.trainingHealthActionValueDrawSaturation = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionValueDrawSaturation.self))
         self.trainingHealthActionLegalMassStall = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionLegalMassStall.self))
+        self.trainingHealthActionBatchNormRunningVarianceJump = TrainingHealthAction(persistedRawValue: Self.read(TrainingHealthActionBatchNormRunningVarianceJump.self))
         self.randomSeedMode = RandomSeedMode(persistedRawValue: Self.read(RandomSeedModeParameter.self))
         self.randomSeed = Self.read(RandomSeed.self)
         self.invalidStoredSettings = Self.invalidStoredValuesFound.value.values.sorted { $0.id < $1.id }
@@ -2240,6 +2255,7 @@ public final class TrainingParameters {
         v[TrainingHealthActionValueSaturation.id] = TrainingHealthActionValueSaturation.encode(trainingHealthActionValueSaturation.rawValue)
         v[TrainingHealthActionValueDrawSaturation.id] = TrainingHealthActionValueDrawSaturation.encode(trainingHealthActionValueDrawSaturation.rawValue)
         v[TrainingHealthActionLegalMassStall.id] = TrainingHealthActionLegalMassStall.encode(trainingHealthActionLegalMassStall.rawValue)
+        v[TrainingHealthActionBatchNormRunningVarianceJump.id] = TrainingHealthActionBatchNormRunningVarianceJump.encode(trainingHealthActionBatchNormRunningVarianceJump.rawValue)
         v[RandomSeedModeParameter.id] = RandomSeedModeParameter.encode(randomSeedMode.rawValue)
         v[RandomSeed.id] = RandomSeed.encode(randomSeed)
         return v
@@ -2522,6 +2538,9 @@ public final class TrainingParameters {
         case TrainingHealthActionLegalMassStall.id:
             try TrainingHealthActionLegalMassStall.definition.validate(raw)
             trainingHealthActionLegalMassStall = TrainingHealthAction(persistedRawValue: try TrainingHealthActionLegalMassStall.decode(raw))
+        case TrainingHealthActionBatchNormRunningVarianceJump.id:
+            try TrainingHealthActionBatchNormRunningVarianceJump.definition.validate(raw)
+            trainingHealthActionBatchNormRunningVarianceJump = TrainingHealthAction(persistedRawValue: try TrainingHealthActionBatchNormRunningVarianceJump.decode(raw))
         case RandomSeedModeParameter.id:
             try RandomSeedModeParameter.definition.validate(raw)
             randomSeedMode = RandomSeedMode(persistedRawValue: try RandomSeedModeParameter.decode(raw))
@@ -3108,6 +3127,7 @@ public final class TrainingParameters {
         TrainingHealthActionValueSaturation.self,
         TrainingHealthActionValueDrawSaturation.self,
         TrainingHealthActionLegalMassStall.self,
+        TrainingHealthActionBatchNormRunningVarianceJump.self,
         RandomSeedModeParameter.self,
         RandomSeed.self
     ]
@@ -3269,6 +3289,7 @@ extension TrainingParameters {
         case .valueSaturation: return \.trainingHealthActionValueSaturation
         case .valueDrawSaturation: return \.trainingHealthActionValueDrawSaturation
         case .legalMassStall: return \.trainingHealthActionLegalMassStall
+        case .batchNormRunningVarianceJump: return \.trainingHealthActionBatchNormRunningVarianceJump
         }
     }
 }

@@ -152,6 +152,15 @@ enum TrainingHealthLog {
         let lossMaxRatio: Double?
         let lossMedianRatio: Double?
         let gradientMaxRatio: Double?
+        /// Rule 14: the largest rise factor (ratio ÷ its lookback baseline)
+        /// of any channel at ≥ 10× its site median over the interval's live
+        /// evaluations; nil when none had such a channel with a baseline;
+        /// infinite for a zero baseline.
+        let runningVarianceRiseMax: Double?
+        /// Rule 14: the latest live evaluation's outlier count and its
+        /// lookback baseline; nil when no live evaluation of the interval
+        /// had rule 14's input.
+        let runningVarianceOutliers: TrainingHealthRunningVarianceOutliers?
         let noData: [TrainingHealthRule: Int]
         let active: [TrainingHealthActiveAlarm]
         let marker: CheckMarker?
@@ -159,6 +168,9 @@ enum TrainingHealthLog {
 
     /// `[HEALTH] check …` — counters since the previous check line.
     /// `evaluations` is `live + checkpoint` (committed evaluations).
+    /// `rvRiseMax=` (`inf` for a zero baseline) and `rvOutliers=<count>/
+    /// <baseline>` are rule 14's margins, so a run's distance from a
+    /// `bn_running_variance_jump` raise is visible without per-channel lines.
     /// While `dead_channels` is active, each field of its detail is written
     /// with the rule's prefix — `dead_channels_sites=` naming every affected
     /// site (`none` while a clear is pending) and, for an offline log that
@@ -167,6 +179,14 @@ enum TrainingHealthLog {
     static func checkLine(_ fields: CheckFields) -> String {
         func ratio(_ value: Double?) -> String {
             value.map { String(format: "%.2f", $0) } ?? notMeasured
+        }
+        func riseFactor(_ value: Double?) -> String {
+            guard let value else { return notMeasured }
+            return value.isInfinite ? "inf" : String(format: "%.2f", value)
+        }
+        func outliers(_ value: TrainingHealthRunningVarianceOutliers?) -> String {
+            guard let value else { return notMeasured }
+            return "\(value.count.map(String.init) ?? notMeasured)/\(value.baseline.map(String.init) ?? notMeasured)"
         }
         let noData = TrainingHealthRule.allCases
             .compactMap { rule -> String? in
@@ -184,7 +204,9 @@ enum TrainingHealthLog {
             + " liveReadFailed=\(fields.liveReadFailed)"
             + " lossMaxRatio=\(ratio(fields.lossMaxRatio)) lossMedianRatio=\(ratio(fields.lossMedianRatio))"
             + " gradMaxRatio=\(ratio(fields.gradientMaxRatio))"
-            + " nodata=\(noData.isEmpty ? "none" : noData)"
+        line += " rvRiseMax=\(riseFactor(fields.runningVarianceRiseMax))"
+            + " rvOutliers=\(outliers(fields.runningVarianceOutliers))"
+        line += " nodata=\(noData.isEmpty ? "none" : noData)"
             + " active=\(active.isEmpty ? "none" : active)"
         if let dead = fields.active.first(where: { $0.rule == .deadChannels }) {
             for field in dead.detail.split(separator: " ") {
@@ -218,4 +240,13 @@ enum TrainingHealthLog {
             + " valueFC1ZeroVel=\(zeroVelocityUnitCount)/\(unitCount) lowVel=\(lowVelocityUnitCount)"
             + " readMs=\(String(format: "%.2f", readMs)) summaryMs=\(String(format: "%.2f", summaryMs))"
     }
+}
+
+/// Rule 14's outlier count of one live read and the lowest count over its
+/// lookback (`rvOutliers=` on the `[HEALTH] check` line); either is nil when
+/// unknown (offline without `rvOver10xMedian=`; before the gate or with no
+/// read in the lookback for the baseline).
+struct TrainingHealthRunningVarianceOutliers: Sendable, Equatable {
+    let count: Int?
+    let baseline: Int?
 }

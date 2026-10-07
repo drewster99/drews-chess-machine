@@ -621,3 +621,77 @@ final class LayerHealthTests: XCTestCase {
         }
     }
 }
+
+// MARK: - Running-variance outliers (BN running-variance change alarm, X4)
+
+extension LayerHealthTests {
+
+    func testRunningVarianceOutlierCountsPerSiteAndInTotal() throws {
+        // Median 1: channels at 10 (exactly the outlier ratio) and 50 count,
+        // 9.99 does not, a non-finite variance never does.
+        let site = LayerHealth.BatchNormSite(name: "blocks.0.bn1", channels: 8, activation: .relu)
+        let health = LayerHealth.batchNormSiteHealth(
+            site: site, gamma: [Float](repeating: 1, count: 8), beta: [Float](repeating: 0, count: 8),
+            runningVariance: [1, 1, 1, 1, 9.99, 10, 50, .nan])
+        XCTAssertEqual(health.runningVarianceOutlierCount, 2)
+        XCTAssertEqual(health.runningVarianceMaxOverMedian, 50)
+
+        let zeroMedian = LayerHealth.batchNormSiteHealth(
+            site: LayerHealth.BatchNormSite(name: "value.bn", channels: 3, activation: .relu),
+            gamma: [1, 1, 1], beta: [0, 0, 0], runningVariance: [0, 0, 500])
+        XCTAssertEqual(zeroMedian.runningVarianceOutlierCount, 0, "no ratio, so no outlier, against a zero median")
+
+        let summary = LayerHealthSummary(
+            scope: .batchNormStateOnly, batchNormSites: [health, zeroMedian], squeezeExcitationFC1: nil, valueFC1: nil,
+            velocityNotIncludedReason: "live", reZero: [], examinedTensorCount: 0, examinedValueCount: 0,
+            nonFiniteValueCount: 0, nonFiniteTensorCount: 0, nonFiniteTensorNames: [], largestMagnitudeTensors: nil)
+        XCTAssertEqual(summary.runningVarianceOutlierCount, 2)
+        let line = summary.compactLine()
+        XCTAssertTrue(line.contains(" rvMaxOverMedian=50.0@blocks.0.bn1[6] rvOver10xMedian=2 "), line)
+
+        let table = summary.detailedLines()
+        let header = try XCTUnwrap(table.first { $0.hasPrefix("  site") })
+        XCTAssertTrue(header.hasSuffix("rv max/median [ch]  rv≥10x"), header)
+        let row = try XCTUnwrap(table.first { $0.hasPrefix("  blocks.0.bn1") })
+        // The row then notes the non-finite running variance.
+        XCTAssertTrue(row.contains("     50.0 [6]            2  (1 non-finite running var)"), row)
+        // The offline replay reads only a row's first four tokens.
+        XCTAssertEqual(TrainingHealthLogReplay.tableRow(String(row.drop(while: { $0 == " " })))?.channelCount, 8)
+
+        let data = try JSONEncoder().encode(summary)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["running_variance_outlier_count"] as? Int, 2)
+        let sites = try XCTUnwrap(object["batch_norm_sites"] as? [[String: Any]])
+        XCTAssertEqual(sites.map { $0["running_variance_outlier_count"] as? Int }, [2, 0])
+        XCTAssertEqual(try JSONDecoder().decode(LayerHealthSummary.self, from: data), summary)
+    }
+
+    /// The live read's profile is `runningVarianceRatios` of every BN site,
+    /// in site order, and its outlier count is the summary's.
+    func testLiveReadingProfileEqualsTheRatiosOfEverySite() throws {
+        let arch = mixedArch()
+        let plan = arch.weightTensorPlan()
+        var all = Dictionary(uniqueKeysWithValues: zip(plan.map(\.name), syntheticWeights(arch)))
+        let sites = LayerHealth.batchNormSites(for: arch)
+        let target = try XCTUnwrap(sites.last)
+        var variance = try XCTUnwrap(all[target.runningVarianceTensorName])
+        variance[0] = 40
+        variance[1] = .infinity
+        all[target.runningVarianceTensorName] = variance
+        var live: [String: [Float]] = [:]
+        for name in LayerHealth.liveStateTensorNames(for: arch) {
+            live[name] = all[name]
+        }
+        let reading = try LayerHealth.readLiveState(arch: arch, tensors: live)
+        XCTAssertEqual(reading.runningVarianceProfile.sites.map(\.site), sites.map(\.name))
+        for (profileSite, site) in zip(reading.runningVarianceProfile.sites, sites) {
+            let values = try XCTUnwrap(live[site.runningVarianceTensorName])
+            XCTAssertEqual(profileSite.channelCount, site.channels, site.name)
+            XCTAssertEqual(profileSite.ratios, LayerHealth.runningVarianceRatios(values).ratios, site.name)
+        }
+        XCTAssertEqual(reading.runningVarianceProfile.outlierCount, 1)
+        XCTAssertEqual(reading.summary.runningVarianceOutlierCount, 1)
+        XCTAssertEqual(reading.summary, try LayerHealth.summarizeLiveState(arch: arch, tensors: live))
+        XCTAssertTrue(reading.summary.compactLine().contains(" rvOver10xMedian=1 "))
+    }
+}

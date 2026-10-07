@@ -24,14 +24,16 @@ enum LayerHealthLog {
     // MARK: - Live tier
 
     /// The outcome of a live health read: the lines to log, and — when the
-    /// read and the summary succeeded — the summary together with the
-    /// trainer's completed-step clock read on the trainer queue with the
-    /// tensors, so a consumer (the training-health monitor) can pair the
-    /// summary with exactly the steps it describes. Both are nil when the
-    /// read failed; the failure is then the one line in `lines`.
+    /// read and the summary succeeded — the summary and the per-channel
+    /// running-variance profile (rule 14's input, from the same pass)
+    /// together with the trainer's completed-step clock read on the trainer
+    /// queue with the tensors, so a consumer (the training-health monitor)
+    /// can pair them with exactly the steps they describe. All three are nil
+    /// when the read failed; the failure is then the one line in `lines`.
     struct LiveOutcome: Sendable {
         let lines: [String]
         let summary: LayerHealthSummary?
+        let runningVarianceProfile: BatchNormRunningVarianceProfile?
         let trainerStep: Int?
     }
 
@@ -44,17 +46,19 @@ enum LayerHealthLog {
             let state = try await trainer.readLayerHealthLiveState()
             let arch = trainer.arch
             let tensors = state.tensors
-            let summary = try await runOffPool {
-                try LayerHealth.summarizeLiveState(arch: arch, tensors: tensors)
+            let reading = try await runOffPool {
+                try LayerHealth.readLiveState(arch: arch, tensors: tensors)
             }
             return LiveOutcome(
-                lines: [liveLine(summary: summary, trainerStep: state.completedTrainSteps)],
-                summary: summary,
+                lines: [liveLine(summary: reading.summary, trainerStep: state.completedTrainSteps)],
+                summary: reading.summary,
+                runningVarianceProfile: reading.runningVarianceProfile,
                 trainerStep: state.completedTrainSteps)
         } catch {
             return LiveOutcome(
                 lines: ["\(tag) live read failed: \(error.localizedDescription)"],
                 summary: nil,
+                runningVarianceProfile: nil,
                 trainerStep: nil)
         }
     }
@@ -115,9 +119,9 @@ enum LayerHealthLog {
 
     /// Run a synchronous summary on a GCD queue and resume with its result,
     /// so the cooperative thread keeps making progress.
-    private static func runOffPool(
-        _ work: @escaping @Sendable () throws -> LayerHealthSummary
-    ) async throws -> LayerHealthSummary {
+    private static func runOffPool<Value: Sendable>(
+        _ work: @escaping @Sendable () throws -> Value
+    ) async throws -> Value {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 do {

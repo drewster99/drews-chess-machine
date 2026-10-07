@@ -720,9 +720,13 @@ final class TrainingHealthMonitorTests: XCTestCase {
         let sink = S.LineSink()
         let base = S.deadDigest(dead: 0)
         let runningVariance = LayerHealthDigest.RunningVarianceRunaway(maxOverMedian: 5, site: "blocks.0.bn1")
+        // A live read carries rule 14's per-channel input too (here one
+        // channel at 5×, never an outlier), so rule 14 has data on it.
         let liveDigest = LayerHealthDigest(
             tier: .live, deadChannels: base.deadChannels, nonFiniteValueCount: 0, runningVariance: runningVariance,
-            valueFC1: nil)
+            valueFC1: nil,
+            runningVarianceChannels: LayerHealthDigest.RunningVarianceChannels(
+                coverage: .largestOnly(site: "blocks.0.bn1", channel: 0, ratio: 5), outlierCount: 0))
         let checkpointDigest = LayerHealthDigest(
             tier: .checkpoint, deadChannels: base.deadChannels, nonFiniteValueCount: 0, runningVariance: runningVariance,
             valueFC1: LayerHealthDigest.ValueFC1Velocity(zeroVelocityUnitCount: 0, unitCount: 128))

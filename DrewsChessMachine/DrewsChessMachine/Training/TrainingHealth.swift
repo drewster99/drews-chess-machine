@@ -4,7 +4,7 @@ import Foundation
 //
 // Every training path (GUI Play-and-Train, `--replay-corpus`,
 // `--train-vs-uci`) and the offline `--replay-health-log` judge a run's
-// health through the one evaluator in this file, so the thirteen rules and
+// health through the one evaluator in this file, so the fourteen rules and
 // their thresholds have exactly one home. Nothing here touches the GPU, the
 // trainer, the replay buffer, a file or the log: the inputs are values the
 // paths already compute (`TrainStepTiming`, `LayerHealthSummary`), the
@@ -39,6 +39,11 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
     case valueSaturation = "value_saturation"
     case valueDrawSaturation = "value_draw_saturation"
     case legalMassStall = "legal_mass_stall"
+    /// Rule 14: a BN channel's running variance jumped against its own
+    /// earlier reads, or the count of outlier channels did (the change
+    /// counterpart of rule 8's level; BN_RUNNING_VARIANCE_CHANGE_ALARM_PLAN).
+    /// Appended at the end so rules 9–13 keep their numbers (plan BVJ-16).
+    case batchNormRunningVarianceJump = "bn_running_variance_jump"
 
     /// Position in rule order (the declaration order of `allCases`).
     var ruleOrder: Int {
@@ -56,6 +61,7 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
         case .valueSaturation: return 10
         case .valueDrawSaturation: return 11
         case .legalMassStall: return 12
+        case .batchNormRunningVarianceJump: return 13
         }
     }
 
@@ -64,7 +70,8 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
     var hasCriticalLevel: Bool {
         switch self {
         case .nonFinite, .deadChannels, .valueFC1ZeroVelocity, .illegalMass, .gradientCollapse,
-             .divergence, .valueSaturation, .valueDrawSaturation, .legalMassStall:
+             .divergence, .valueSaturation, .valueDrawSaturation, .legalMassStall,
+             .batchNormRunningVarianceJump:
             return true
         case .lossSpike, .policyOffsetDrift, .batchNormRunningVarianceRunaway, .gradientSpike:
             return false
@@ -79,7 +86,7 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
             return false
         case .deadChannels, .valueFC1ZeroVelocity, .lossSpike, .policyOffsetDrift,
              .batchNormRunningVarianceRunaway, .gradientSpike,
-             .divergence, .valueSaturation, .valueDrawSaturation:
+             .divergence, .valueSaturation, .valueDrawSaturation, .batchNormRunningVarianceJump:
             return true
         }
     }
@@ -91,7 +98,7 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
              .divergence, .valueSaturation, .valueDrawSaturation:
             return TrainingHealthThresholds.windowRuleSustain
         case .nonFinite, .deadChannels, .valueFC1ZeroVelocity, .lossSpike,
-             .batchNormRunningVarianceRunaway, .gradientSpike:
+             .batchNormRunningVarianceRunaway, .gradientSpike, .batchNormRunningVarianceJump:
             return .immediate
         case .legalMassStall:
             // Its condition already spans `legalMassStallEvaluations`
@@ -110,7 +117,10 @@ enum TrainingHealthRule: String, CaseIterable, Codable, Sendable {
         case .illegalMass, .gradientCollapse, .policyOffsetDrift,
              .divergence, .valueSaturation, .valueDrawSaturation, .legalMassStall:
             return TrainingHealthThresholds.windowRuleSustain
-        case .deadChannels, .batchNormRunningVarianceRunaway:
+        case .deadChannels, .batchNormRunningVarianceRunaway, .batchNormRunningVarianceJump:
+            // Rule 14 clears when neither arm holds against the lookback, so
+            // an alarm lasts until its pre-jump reads leave the lookback —
+            // about one lookback after the last jump (plan BVJ-10, Q-4).
             return TrainingHealthThresholds.layerHealthRuleClearSustain
         case .valueFC1ZeroVelocity, .lossSpike, .gradientSpike:
             return .immediate
@@ -210,6 +220,7 @@ struct TrainingHealthActions: Sendable, Equatable, Encodable {
     var valueSaturation: TrainingHealthAction
     var valueDrawSaturation: TrainingHealthAction
     var legalMassStall: TrainingHealthAction
+    var batchNormRunningVarianceJump: TrainingHealthAction
 
     /// Build every rule's action from one function of the rule.
     init(_ actionForRule: (TrainingHealthRule) -> TrainingHealthAction) {
@@ -226,6 +237,7 @@ struct TrainingHealthActions: Sendable, Equatable, Encodable {
         valueSaturation = actionForRule(.valueSaturation)
         valueDrawSaturation = actionForRule(.valueDrawSaturation)
         legalMassStall = actionForRule(.legalMassStall)
+        batchNormRunningVarianceJump = actionForRule(.batchNormRunningVarianceJump)
     }
 
     subscript(rule: TrainingHealthRule) -> TrainingHealthAction {
@@ -244,6 +256,7 @@ struct TrainingHealthActions: Sendable, Equatable, Encodable {
             case .valueSaturation: return valueSaturation
             case .valueDrawSaturation: return valueDrawSaturation
             case .legalMassStall: return legalMassStall
+            case .batchNormRunningVarianceJump: return batchNormRunningVarianceJump
             }
         }
         set {
@@ -261,6 +274,7 @@ struct TrainingHealthActions: Sendable, Equatable, Encodable {
             case .valueSaturation: valueSaturation = newValue
             case .valueDrawSaturation: valueDrawSaturation = newValue
             case .legalMassStall: legalMassStall = newValue
+            case .batchNormRunningVarianceJump: batchNormRunningVarianceJump = newValue
             }
         }
     }
@@ -501,6 +515,48 @@ enum TrainingHealthThresholds {
     static let batchNormRunningVarianceRunawayRaise: Double = 1000
     static let batchNormRunningVarianceRunawayClear: Double = 300
 
+    // Rule 14 — bn_running_variance_jump: a channel's ratio (running variance
+    // ÷ its site's median, `LayerHealth.runningVarianceRatios`) against its
+    // own lowest ratio over the live reads of the lookback, and the count of
+    // outlier channels against its lowest count. Margins from
+    // BN_RUNNING_VARIANCE_CHANGE_ALARM_PLAN Part E (1,000-step checkpoints
+    // and 50-step live lines of the evidence runs).
+    /// The outlier level both arms judge: one declaration with the
+    /// `[LAYER-HEALTH]` `rvOver10xMedian=` count. B-silu's jumped channels
+    /// reached 27–980× by trainer step 20,000.
+    static let batchNormRunningVarianceJumpOutlierRatio = LayerHealth.runningVarianceOutlierRatio
+    /// The jump arm: a channel at ≥ the outlier ratio that is also ≥ this
+    /// multiple of its lowest ratio in the lookback. B-silu rose ≈ 7,700× in
+    /// 800 steps; slow growth rose at most 5.5× in 1,000 steps (AgG3, before
+    /// its gate) and 1.2× (clip1 channel 31); every jump in the evidence rose
+    /// ≥ 13×, each from a channel whose variance had decayed.
+    static let batchNormRunningVarianceJumpRiseFactor: Double = 10
+    /// The jump arm is critical when a jumped channel is at ≥ this ratio.
+    /// B-silu: 154× at its first live read past the jump, 980× at 20,000;
+    /// runs that stayed healthy at cap 15 peaked at ≤ 96.9× (clip1, through
+    /// 22,000), ≤ 62.7× (B-leaky), ≤ 80.4× (B-leakyall). clip2 (104.9×) and
+    /// clip5 (310×), which survived, also reach it (owner question Q-1,
+    /// answered: accept 100×).
+    static let batchNormRunningVarianceJumpCriticalRatio: Double = 100
+    /// Reads at trainer steps `[s − lookback, s)` are the baseline of the
+    /// read at `s`; the spike rules' look-back, one tenth of B's LR period.
+    static let batchNormRunningVarianceJumpLookbackSteps = 1000
+    /// The outlier-count arm raises when the count reaches at least this
+    /// multiple of its lowest count in the lookback …
+    static let batchNormRunningVarianceOutlierCountRiseFactor = 2
+    /// … and at least this many more (B-silu 5 → 11; healthy runs rose by
+    /// at most +5 at ×1.36, and small counts like 2 → 4 stay quiet).
+    static let batchNormRunningVarianceOutlierCountMinimumRise = 5
+    /// Defensive cap on stored reads; the lookback holds at most 20 at the
+    /// 50-step live cadence.
+    static let batchNormRunningVarianceJumpHistoryCapacity = 64
+    /// Reads made before the process (CLI run, resume, segment, GUI
+    /// Play-and-Train start) has trained this many steps only build the
+    /// baseline; they are stored, never judged (owner decision 2026-10-07,
+    /// plan Q-6): a resumed or restarted trainer's first reads are not
+    /// compared with nothing.
+    static let batchNormRunningVarianceJumpSettleSteps = 100
+
     // Rules 10–12 — the GUI banner detectors' levels (OD-9), moved here
     // from `TrainingAlarmController` so the banner and the evaluator read
     // one declaration. Applied by `TrainingHealthDetectorConditions`.
@@ -652,7 +708,7 @@ struct LayerHealthDigest: Sendable, Equatable {
     /// on the `[HEALTH] check` line (only a source that should have carried
     /// a rule's input and did not is).
     enum Tier: String, Sendable {
-        /// The live read: BN state and ReZero α (rules 1, 2, 8).
+        /// The live read: BN state and ReZero α (rules 1, 2, 8, 14).
         case live
         /// A save's full-tensor pass (rules 1, 2, 3, 8).
         case checkpoint
@@ -668,6 +724,11 @@ struct LayerHealthDigest: Sendable, Equatable {
                 return self != .valueFC1Read
             case .valueFC1ZeroVelocity:
                 return self != .live
+            case .batchNormRunningVarianceJump:
+                // Live only (plan BVJ-8): a save's checkpoint pass reads the
+                // same BN state at the same step as that step's live read and
+                // adds nothing, and a GUI checkpoint pass can arrive late.
+                return self == .live
             case .illegalMass, .gradientCollapse, .lossSpike, .policyOffsetDrift, .gradientSpike,
                  .divergence, .valueSaturation, .valueDrawSaturation, .legalMassStall:
                 return false
@@ -725,12 +786,47 @@ struct LayerHealthDigest: Sendable, Equatable {
         let unitCount: Int
     }
 
+    /// Rule 14's input: the running-variance ratios one live read carries,
+    /// and its outlier count (channels at ≥ 10× their site median).
+    struct RunningVarianceChannels: Sendable, Equatable {
+        enum Coverage: Sendable, Equatable {
+            /// In-app: every channel of every site.
+            case everyChannel(BatchNormRunningVarianceProfile)
+            /// Offline: only the line's largest channel (`rvMaxOverMedian=`);
+            /// every other channel of the read is at most `ratio`.
+            case largestOnly(site: String, channel: Int, ratio: Double)
+        }
+
+        let coverage: Coverage
+        /// nil offline when the line has no `rvOver10xMedian=` (a log
+        /// written before the field): the count arm has no data there.
+        let outlierCount: Int?
+
+        /// The in-app input, from a live read's profile.
+        init(profile: BatchNormRunningVarianceProfile) {
+            coverage = .everyChannel(profile)
+            outlierCount = profile.outlierCount
+        }
+
+        init(coverage: Coverage, outlierCount: Int?) {
+            self.coverage = coverage
+            self.outlierCount = outlierCount
+        }
+    }
+
     let tier: Tier
     let deadChannels: DeadChannels?
     let nonFiniteValueCount: Int?
     let runningVariance: RunningVarianceRunaway?
     let valueFC1: ValueFC1Velocity?
+    /// Rule 14's input; carried by live digests only (a checkpoint or
+    /// value-FC1 digest never feeds the rule, so nil there is not "no data").
+    let runningVarianceChannels: RunningVarianceChannels?
 
+    /// A digest that does not carry rule 14's input: every checkpoint and
+    /// value-FC1 digest, and a live digest from a source without per-channel
+    /// ratios — on which rule 14 then reports no data (counted `nodata=`),
+    /// never "healthy".
     init(
         tier: Tier,
         deadChannels: DeadChannels?,
@@ -738,16 +834,44 @@ struct LayerHealthDigest: Sendable, Equatable {
         runningVariance: RunningVarianceRunaway?,
         valueFC1: ValueFC1Velocity?
     ) {
+        self.init(
+            tier: tier, deadChannels: deadChannels, nonFiniteValueCount: nonFiniteValueCount,
+            runningVariance: runningVariance, valueFC1: valueFC1, runningVarianceChannels: nil)
+    }
+
+    init(
+        tier: Tier,
+        deadChannels: DeadChannels?,
+        nonFiniteValueCount: Int?,
+        runningVariance: RunningVarianceRunaway?,
+        valueFC1: ValueFC1Velocity?,
+        runningVarianceChannels: RunningVarianceChannels?
+    ) {
         self.tier = tier
         self.deadChannels = deadChannels
         self.nonFiniteValueCount = nonFiniteValueCount
         self.runningVariance = runningVariance
         self.valueFC1 = valueFC1
+        self.runningVarianceChannels = runningVarianceChannels
+    }
+
+    /// The in-app live source: the live summary with the profile read beside
+    /// it (`LayerHealth.readLiveState`), so rule 14 has every channel.
+    init(liveSummary summary: LayerHealthSummary, runningVarianceProfile: BatchNormRunningVarianceProfile) {
+        precondition(summary.scope == .batchNormStateOnly,
+                     "a live digest is built from a live (batch_norm_state_only) summary")
+        let base = LayerHealthDigest(summary: summary)
+        self.init(
+            tier: base.tier, deadChannels: base.deadChannels, nonFiniteValueCount: base.nonFiniteValueCount,
+            runningVariance: base.runningVariance, valueFC1: base.valueFC1,
+            runningVarianceChannels: RunningVarianceChannels(profile: runningVarianceProfile))
     }
 
     /// The in-app source: a live summary (BN state only) is the live tier, a
     /// full-tensor summary the checkpoint tier. Rule 2 reads the
     /// activation-aware parked counts of every site an activation consumes.
+    /// Rule 14's per-channel input is not in a summary: a live digest built
+    /// here has none (`init(liveSummary:runningVarianceProfile:)` adds it).
     init(summary: LayerHealthSummary) {
         switch summary.scope {
         case .batchNormStateOnly: tier = .live
@@ -771,6 +895,7 @@ struct LayerHealthDigest: Sendable, Equatable {
         valueFC1 = summary.valueFC1.map {
             ValueFC1Velocity(zeroVelocityUnitCount: $0.zeroVelocityUnitCount, unitCount: $0.unitCount)
         }
+        runningVarianceChannels = nil
     }
 
     /// A digest carrying only a value-FC1 velocity reading (the dedicated
@@ -1079,6 +1204,20 @@ struct TrainingHealthEvaluation: Sendable {
     let checkDue: Bool
     /// The window this evaluation judged (nil for a checkpoint evaluation).
     let window: TrainingHealthWindowStatistics?
+    /// Rule 14's view of this evaluation, for the `[HEALTH] check` line's
+    /// `rvRiseMax=` / `rvOutliers=`; nil when the rule had no input or did
+    /// not apply it (a stale observation).
+    let runningVarianceJump: TrainingHealthRunningVarianceJumpReport?
+}
+
+/// What rule 14 (`bn_running_variance_jump`) saw in one applied live
+/// evaluation: the read's outlier count and, from the learning gate on with
+/// a read in the lookback, its reading against the lookback.
+struct TrainingHealthRunningVarianceJumpReport: Sendable, Equatable {
+    /// nil offline when the line has no `rvOver10xMedian=`.
+    let outlierCount: Int?
+    /// nil before the gate or with no read in the lookback.
+    let reading: BatchNormRunningVarianceJump.Reading?
 }
 
 /// Who turns an active alarm into a stop (R2). The decision itself is always
@@ -1167,7 +1306,7 @@ enum TrainingHealthStopPolicy {
 
 // MARK: - The evaluator
 
-/// The thirteen rules as a value type: per-rule sustain counters, hysteresis,
+/// The fourteen rules as a value type: per-rule sustain counters, hysteresis,
 /// the active set and the stop flag. The monitor runs every transition on a
 /// copy and commits it only if no trainer-clock rewind intervened (D2).
 struct TrainingHealthEvaluator: Sendable {
@@ -1209,6 +1348,12 @@ struct TrainingHealthEvaluator: Sendable {
         /// at most `legalMassStallEvaluations` of them; emptied by any window
         /// at or below the threshold (the stall must be consecutive).
         var legalMassStallMedians: [Double] = []
+        /// Rule 14: the judged live reads of the last
+        /// `batchNormRunningVarianceJumpLookbackSteps` trainer steps, oldest
+        /// first (at most `batchNormRunningVarianceJumpHistoryCapacity`).
+        /// Only reads at or past the learning gate are stored, after they
+        /// were judged; emptied by a trainer-clock rewind.
+        var runningVarianceJumpHistory: [BatchNormRunningVarianceJump.HistoryEntry] = []
         /// Check-interval bucket of the last `[HEALTH] check` (nil before the
         /// first live evaluation).
         var lastCheckBucket: Int?
@@ -1252,9 +1397,9 @@ struct TrainingHealthEvaluator: Sendable {
     }
 
     /// R0's evaluation-side reset after a trainer-clock rewind: pending
-    /// sustain progress, rule 4's running minimum and every rule's freshness
-    /// step describe weights that no longer exist. Active alarms stay; they
-    /// clear only by recovery.
+    /// sustain progress, rule 4's running minimum, rule 14's lookback reads
+    /// and every rule's freshness step describe weights that no longer
+    /// exist. Active alarms stay; they clear only by recovery.
     mutating func resetForTrainerClockRewind() {
         for rule in TrainingHealthRule.allCases {
             state.rules[rule.ruleOrder].raiseStreak = nil
@@ -1263,6 +1408,7 @@ struct TrainingHealthEvaluator: Sendable {
         }
         state.illegalMassRunningMinimum = nil
         state.legalMassStallMedians = []
+        state.runningVarianceJumpHistory = []
     }
 
     // MARK: Evaluate
@@ -1274,7 +1420,8 @@ struct TrainingHealthEvaluator: Sendable {
         guard config.enabled else {
             return TrainingHealthEvaluation(
                 events: [], stopRequest: nil, active: activeAlarms, noDataRules: [],
-                staleRules: [], newlyNotApplicable: [], checkDue: false, window: observation.window)
+                staleRules: [], newlyNotApplicable: [], checkDue: false, window: observation.window,
+                runningVarianceJump: nil)
         }
         let step = observation.trainerStep
         let bucket = step / config.checkIntervalSteps
@@ -1295,14 +1442,21 @@ struct TrainingHealthEvaluator: Sendable {
         var stale: [TrainingHealthRule] = []
         var newlyNotApplicable: [(rule: TrainingHealthRule, reason: String)] = []
         var raisedOrEscalated: Set<TrainingHealthRule> = []
+        // Rule 14's input is computed once: its assessment and the check
+        // line's report read the same reading.
+        let jumpInput = runningVarianceJumpInput(observation, config: config)
+        var jumpApplied = false
 
         for rule in TrainingHealthRule.allCases {
-            let assessment = assess(rule, observation: observation, config: config)
+            let assessment = rule == .batchNormRunningVarianceJump
+                ? assessRunningVarianceJump(jumpInput)
+                : assess(rule, observation: observation, config: config)
             let outcome = apply(
                 assessment, to: rule, observation: observation, config: config, bucket: bucket)
             events.append(contentsOf: outcome.events)
             switch outcome.status {
-            case .applied: break
+            case .applied:
+                if rule == .batchNormRunningVarianceJump { jumpApplied = true }
             case .noData:
                 // R0 counts "no data" so that a silent rule is visible. A
                 // rule this observation's source never carries (the window
@@ -1334,6 +1488,9 @@ struct TrainingHealthEvaluator: Sendable {
         if let median = observation.window?.illegalMassMedian {
             state.illegalMassRunningMinimum = min(state.illegalMassRunningMinimum ?? median, median)
         }
+        // Rule 14's lookback includes this read after it was judged — only a
+        // read the rule applied (not stale) at or past the learning gate.
+        let jumpReport = jumpApplied ? recordRunningVarianceJumpRead(jumpInput, observation: observation) : nil
 
         if checkDue {
             for rule in TrainingHealthRule.allCases where !raisedOrEscalated.contains(rule) {
@@ -1366,12 +1523,43 @@ struct TrainingHealthEvaluator: Sendable {
         return TrainingHealthEvaluation(
             events: events, stopRequest: stopRequest, active: activeAlarms, noDataRules: noData,
             staleRules: stale, newlyNotApplicable: newlyNotApplicable, checkDue: checkDue,
-            window: observation.window)
+            window: observation.window, runningVarianceJump: jumpReport)
+    }
+
+    /// Store an applied rule-14 read in the lookback (from the learning gate
+    /// on) and return the check line's report of it.
+    private mutating func recordRunningVarianceJumpRead(
+        _ input: RunningVarianceJumpInput,
+        observation: TrainingHealthObservation
+    ) -> TrainingHealthRunningVarianceJumpReport? {
+        let channels: LayerHealthDigest.RunningVarianceChannels
+        let reading: BatchNormRunningVarianceJump.Reading?
+        switch input {
+        case .noData:
+            return nil
+        case .beforeGate(_, let read):
+            return TrainingHealthRunningVarianceJumpReport(outlierCount: read.outlierCount, reading: nil)
+        case .settling(_, let read), .noBaseline(let read):
+            channels = read
+            reading = nil
+        case .reading(let read, let judged):
+            channels = read
+            reading = judged
+        }
+        let step = observation.trainerStep
+        state.runningVarianceJumpHistory.append(
+            BatchNormRunningVarianceJump.HistoryEntry(trainerStep: step, channels: channels))
+        let oldest = step - TrainingHealthThresholds.batchNormRunningVarianceJumpLookbackSteps
+        state.runningVarianceJumpHistory.removeAll { $0.trainerStep < oldest }
+        let overflow = state.runningVarianceJumpHistory.count
+            - TrainingHealthThresholds.batchNormRunningVarianceJumpHistoryCapacity
+        if overflow > 0 { state.runningVarianceJumpHistory.removeFirst(overflow) }
+        return TrainingHealthRunningVarianceJumpReport(outlierCount: channels.outlierCount, reading: reading)
     }
 
     /// Whether `observation`'s source is meant to carry `rule`'s input. A
     /// live evaluation carries the window (rules 1, 4–7, 9) and the live read
-    /// (rules 1, 2, 8) — whether or not that read succeeded, since a failed
+    /// (rules 1, 2, 8, 14) — whether or not that read succeeded, since a failed
     /// read is exactly the no-data case the line must show; a checkpoint
     /// evaluation carries only its digest, whose tier says which rules it
     /// feeds.
@@ -1389,7 +1577,8 @@ struct TrainingHealthEvaluator: Sendable {
         case .illegalMass, .gradientCollapse, .lossSpike, .policyOffsetDrift, .gradientSpike,
              .divergence, .valueSaturation, .valueDrawSaturation, .legalMassStall:
             return true
-        case .nonFinite, .deadChannels, .valueFC1ZeroVelocity, .batchNormRunningVarianceRunaway:
+        case .nonFinite, .deadChannels, .valueFC1ZeroVelocity, .batchNormRunningVarianceRunaway,
+             .batchNormRunningVarianceJump:
             return false
         }
     }
@@ -1427,7 +1616,115 @@ struct TrainingHealthEvaluator: Sendable {
         case .valueSaturation: return assessValueSaturation(observation.window)
         case .valueDrawSaturation: return assessValueDrawSaturation(observation.window)
         case .legalMassStall: return assessLegalMassStall(observation, config: config)
+        case .batchNormRunningVarianceJump:
+            return assessRunningVarianceJump(runningVarianceJumpInput(observation, config: config))
         }
+    }
+
+    /// Rule 14's input from one observation, before any transition.
+    enum RunningVarianceJumpInput: Sendable {
+        /// Not a live observation, or a live one without per-channel ratios
+        /// (a failed live read, a source without them).
+        case noData
+        /// A live read before the learning gate: neither judged nor stored.
+        case beforeGate(gate: Int, LayerHealthDigest.RunningVarianceChannels)
+        /// Past the gate, but within the first
+        /// `batchNormRunningVarianceJumpSettleSteps` this process trained:
+        /// held, and stored as baseline only.
+        case settling(stepsTrained: Int, LayerHealthDigest.RunningVarianceChannels)
+        /// Past the gate with no read in the lookback: held, then stored as
+        /// the first baseline.
+        case noBaseline(LayerHealthDigest.RunningVarianceChannels)
+        /// Past the gate and judged against the lookback.
+        case reading(LayerHealthDigest.RunningVarianceChannels, BatchNormRunningVarianceJump.Reading)
+    }
+
+    /// Reads before the learning gate (`lr_warmup_steps +
+    /// training_health_learning_grace_steps`) are neither judged nor stored
+    /// (plan BVJ-7): BN running statistics start at the init and converge
+    /// during warm-up, so early jumps (B's `stem.bn[102]` 1.70× → 24.5×
+    /// between 1,000 and 2,000) settle and mean nothing.
+    func runningVarianceJumpInput(
+        _ observation: TrainingHealthObservation,
+        config: TrainingHealthConfig
+    ) -> RunningVarianceJumpInput {
+        guard observation.isLive, let channels = observation.layerHealth?.runningVarianceChannels else {
+            return .noData
+        }
+        guard observation.trainerStep >= config.learningGateTrainerStep else {
+            return .beforeGate(gate: config.learningGateTrainerStep, channels)
+        }
+        let stepsTrained = observation.stamp.stepsTrainedByThisProcess
+        guard stepsTrained >= TrainingHealthThresholds.batchNormRunningVarianceJumpSettleSteps else {
+            return .settling(stepsTrained: stepsTrained, channels)
+        }
+        guard let reading = BatchNormRunningVarianceJump.read(
+            channels, history: state.runningVarianceJumpHistory, trainerStep: observation.trainerStep) else {
+            return .noBaseline(channels)
+        }
+        return .reading(channels, reading)
+    }
+
+    /// Rule 14's assessment: raise when either arm holds (critical when a
+    /// jumped channel is at ≥ the critical ratio), clear when neither does,
+    /// hold before the gate, within the process's first
+    /// `batchNormRunningVarianceJumpSettleSteps`, and when no read is in the
+    /// lookback.
+    func assessRunningVarianceJump(_ input: RunningVarianceJumpInput) -> Assessment {
+        let reading: BatchNormRunningVarianceJump.Reading
+        switch input {
+        case .noData:
+            return .noData
+        case .beforeGate(let gate, _):
+            return .hold(value: "gate=\(gate)", detail: "")
+        case .settling(let stepsTrained, _):
+            return .hold(
+                value: "settling=\(stepsTrained)/\(TrainingHealthThresholds.batchNormRunningVarianceJumpSettleSteps)",
+                detail: "")
+        case .noBaseline:
+            return .hold(value: "baseline=none", detail: "")
+        case .reading(_, let judged):
+            reading = judged
+        }
+        let count = reading.outlierCount.map(String.init) ?? TrainingHealthLog.notMeasured
+        let baseline = reading.outlierBaseline.map(String.init) ?? TrainingHealthLog.notMeasured
+        let value = "jumped=\(reading.jumped.count) outliers=\(count)/\(baseline)"
+        let detail = Self.jumpedChannelsDetail(reading.jumped)
+        var arms: [String] = []
+        if reading.jumpHolds {
+            let level = reading.jumpIsCritical
+                ? TrainingHealthThresholds.batchNormRunningVarianceJumpCriticalRatio
+                : TrainingHealthThresholds.batchNormRunningVarianceJumpOutlierRatio
+            arms.append("jump>=\(Self.plain(TrainingHealthThresholds.batchNormRunningVarianceJumpRiseFactor))xmin"
+                + "&ratio>=\(Self.plain(level))")
+        }
+        if reading.outlierCountRiseHolds {
+            arms.append("outliers>=\(TrainingHealthThresholds.batchNormRunningVarianceOutlierCountRiseFactor)xmin"
+                + "&+\(TrainingHealthThresholds.batchNormRunningVarianceOutlierCountMinimumRise)")
+        }
+        guard !arms.isEmpty else { return .clear(value: value, detail: detail) }
+        return .raise(
+            severity: reading.jumpIsCritical ? .critical : .warning, value: value,
+            threshold: arms.joined(separator: "|"), detail: detail, count: reading.outlierCount)
+    }
+
+    /// How many jumped channels an event names before `more=`.
+    static let jumpedChannelsReportCount = 8
+
+    /// `channels=site[c]:<baseline>-><ratio>,…` for the jumped channels,
+    /// ratio descending, `<=` before a baseline that is an upper bound
+    /// (offline), then `more=<n>`; empty when none jumped.
+    static func jumpedChannelsDetail(_ jumped: [BatchNormRunningVarianceJump.JumpedChannel]) -> String {
+        guard !jumped.isEmpty else { return "" }
+        let named = jumped.prefix(jumpedChannelsReportCount).map { channel in
+            "\(channel.site)[\(channel.channel)]:\(channel.baselineIsExact ? "" : "<=")"
+                + "\(fixed(channel.baseline, 2))->\(fixed(channel.ratio, 1))"
+        }
+        var detail = "channels=\(named.joined(separator: ","))"
+        if jumped.count > jumpedChannelsReportCount {
+            detail += " more=\(jumped.count - jumpedChannelsReportCount)"
+        }
+        return detail
     }
 
     // Rules 10–12 judge the window medians with the GUI banner detectors'

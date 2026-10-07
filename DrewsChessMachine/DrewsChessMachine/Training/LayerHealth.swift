@@ -355,11 +355,30 @@ enum LayerHealth {
         arch: NetworkArchitecture,
         tensors: [String: [Float]]
     ) throws -> LayerHealthSummary {
-        try summarize(
+        try readLiveState(arch: arch, tensors: tensors).summary
+    }
+
+    /// What one live readback yields: the summary every path logs, and the
+    /// per-channel running-variance ratios the change alarm
+    /// (`bn_running_variance_jump`) compares read to read. Both come from one
+    /// pass over the same tensors, so the profile's outlier count and the
+    /// summary's can never disagree.
+    struct LiveStateReading: Sendable {
+        let summary: LayerHealthSummary
+        let runningVarianceProfile: BatchNormRunningVarianceProfile
+    }
+
+    /// The live tier's summary and running-variance profile.
+    static func readLiveState(
+        arch: NetworkArchitecture,
+        tensors: [String: [Float]]
+    ) throws -> LiveStateReading {
+        let result = try summarizeWithProfile(
             arch: arch,
             tensors: tensors,
             velocity: .unavailable(reason: liveVelocityNotReadReason),
             scope: .batchNormStateOnly)
+        return LiveStateReading(summary: result.summary, runningVarianceProfile: result.profile)
     }
 
     /// The core computation. `tensors` maps plan names to values and must
@@ -372,6 +391,18 @@ enum LayerHealth {
         velocity: VelocitySource,
         scope: LayerHealthSummary.Scope
     ) throws -> LayerHealthSummary {
+        try summarizeWithProfile(arch: arch, tensors: tensors, velocity: velocity, scope: scope).summary
+    }
+
+    /// `summarize`, also returning every BN site's running-variance ratios.
+    /// The profile is a few KB per read; the checkpoint tier drops it (the
+    /// change alarm reads the live tier only, plan BVJ-8).
+    private static func summarizeWithProfile(
+        arch: NetworkArchitecture,
+        tensors: [String: [Float]],
+        velocity: VelocitySource,
+        scope: LayerHealthSummary.Scope
+    ) throws -> (summary: LayerHealthSummary, profile: BatchNormRunningVarianceProfile) {
         let plan = arch.weightTensorPlan()
         let planNames = plan.map(\.name)
         let knownNames = Set(planNames)
@@ -425,6 +456,7 @@ enum LayerHealth {
         }
 
         var batchNormHealth: [LayerHealthSummary.BatchNormSiteHealth] = []
+        var profileSites: [BatchNormRunningVarianceProfile.Site] = []
         for site in batchNormSites(for: arch) {
             let gamma = try require(site.gammaTensorName)
             let beta = try require(site.betaTensorName)
@@ -436,8 +468,11 @@ enum LayerHealth {
             where values.count != site.channels {
                 throw LayerHealthError.tensorSizeMismatch(name: name, expected: site.channels, got: values.count)
             }
+            let ratios = runningVarianceRatios(runningVariance)
             batchNormHealth.append(batchNormSiteHealth(
-                site: site, gamma: gamma, beta: beta, runningVariance: runningVariance))
+                site: site, gamma: gamma, beta: beta, runningVariance: runningVariance, ratios: ratios))
+            profileSites.append(BatchNormRunningVarianceProfile.Site(
+                site: site.name, channelCount: site.channels, ratios: ratios.ratios))
         }
 
         var reZeroHealth: [LayerHealthSummary.ReZeroHealth] = []
@@ -507,7 +542,7 @@ enum LayerHealth {
             ? Array(magnitudes.sorted { $0.maxAbs > $1.maxAbs }.prefix(largestMagnitudeTensorReportCount))
             : nil
 
-        return LayerHealthSummary(
+        let summary = LayerHealthSummary(
             scope: scope,
             batchNormSites: batchNormHealth,
             squeezeExcitationFC1: squeezeExcitation,
@@ -520,6 +555,43 @@ enum LayerHealth {
             nonFiniteTensorCount: nonFiniteTensorCount,
             nonFiniteTensorNames: nonFiniteTensorNames,
             largestMagnitudeTensors: largest)
+        return (summary, BatchNormRunningVarianceProfile(sites: profileSites))
+    }
+
+    // MARK: - Running-variance ratio
+
+    /// Ratio at or above which a BN channel's running variance counts as an
+    /// outlier of its site: `rvOver10xMedian=` on `[LAYER-HEALTH]`, the
+    /// table's `rv≥10x` column, and the level both arms of
+    /// `bn_running_variance_jump` judge (plan BVJ-6;
+    /// `TrainingHealthThresholds.batchNormRunningVarianceJumpOutlierRatio` is
+    /// this constant, not a second literal).
+    static let runningVarianceOutlierRatio: Double = 10
+
+    /// The one definition of a channel's running variance relative to its
+    /// site: each channel's running variance divided by the median of the
+    /// site's finite running variances (the 50th percentile with linear
+    /// interpolation, numpy's median). `median` is nil when no value is
+    /// finite. `ratios` is nil when the median is not positive (a ratio
+    /// against it means nothing); otherwise one element per channel, nil for
+    /// a non-finite variance (rule 1 reports it). Used by the per-site
+    /// max/median, the outlier counts and the change alarm's profile, so
+    /// "ratio" has one meaning everywhere.
+    static func runningVarianceRatios(_ runningVariance: [Float]) -> (median: Double?, ratios: [Double?]?) {
+        let sortedFinite = runningVariance.filter(\.isFinite).map { Double($0) }.sorted()
+        guard !sortedFinite.isEmpty else { return (nil, nil) }
+        let median = NetworkWeightAnalyzer.percentile(p: 50, sortedAscending: sortedFinite)
+        guard median > 0 else { return (median, nil) }
+        return (median, runningVariance.map { $0.isFinite ? Double($0) / median : nil })
+    }
+
+    /// Channels whose ratio is at least `runningVarianceOutlierRatio`.
+    static func runningVarianceOutlierCount(_ ratios: [Double?]?) -> Int {
+        guard let ratios else { return 0 }
+        return ratios.reduce(0) { count, ratio in
+            guard let ratio, ratio >= runningVarianceOutlierRatio else { return count }
+            return count + 1
+        }
     }
 
     // MARK: - Per-site computations
@@ -543,6 +615,21 @@ enum LayerHealth {
         gamma: [Float],
         beta: [Float],
         runningVariance: [Float]
+    ) -> LayerHealthSummary.BatchNormSiteHealth {
+        batchNormSiteHealth(
+            site: site, gamma: gamma, beta: beta, runningVariance: runningVariance,
+            ratios: runningVarianceRatios(runningVariance))
+    }
+
+    /// `batchNormSiteHealth` with the site's running-variance ratios already
+    /// computed (`runningVarianceRatios(runningVariance)`), so the summary
+    /// and the change alarm's profile share one computation.
+    private static func batchNormSiteHealth(
+        site: BatchNormSite,
+        gamma: [Float],
+        beta: [Float],
+        runningVariance: [Float],
+        ratios: (median: Double?, ratios: [Double?]?)
     ) -> LayerHealthSummary.BatchNormSiteHealth {
         let siteClassification = Self.classification(for: site.activation)
         let classifies = siteClassification == .classified
@@ -592,16 +679,10 @@ enum LayerHealth {
             }
         }
         let varianceMax = finiteVariances.max { $0.value < $1.value }
-        let sortedVariances = finiteVariances.map(\.value).sorted()
-        let varianceMedian: Double? = sortedVariances.isEmpty
-            ? nil
-            : NetworkWeightAnalyzer.percentile(p: 50, sortedAscending: sortedVariances)
-        let maxOverMedian: Double?
-        if let varianceMax, let varianceMedian, varianceMedian > 0 {
-            maxOverMedian = varianceMax.value / varianceMedian
-        } else {
-            maxOverMedian = nil
-        }
+        let varianceMedian = ratios.median
+        // The largest channel's ratio, from the one ratio definition: the
+        // same division as max / median, so the value is unchanged.
+        let maxOverMedian: Double? = varianceMax.flatMap { ratios.ratios?[$0.channel] }
         let passThrough: (parked: Int, mostlyOff: Int, minimum: Double?, median: Double?)?
         do {
             passThrough = try passThroughHealth(activation: site.activation, gamma: gamma, beta: beta)
@@ -631,6 +712,7 @@ enum LayerHealth {
             runningVarianceMedian: varianceMedian,
             runningVarianceMaxOverMedian: maxOverMedian,
             nonFiniteRunningVarianceCount: nonFiniteVariances,
+            runningVarianceOutlierCount: runningVarianceOutlierCount(ratios.ratios),
             parkedChannelCount: passThrough?.parked,
             parkedMostlyOffChannelCount: passThrough?.mostlyOff,
             minPassThrough: passThrough?.minimum,
@@ -846,6 +928,11 @@ struct LayerHealthSummary: Codable, Sendable, Equatable {
         /// nil when the median running variance is not positive.
         let runningVarianceMaxOverMedian: Double?
         let nonFiniteRunningVarianceCount: Int
+        /// Channels whose running variance is at least
+        /// `LayerHealth.runningVarianceOutlierRatio` times the site's median
+        /// (`LayerHealth.runningVarianceRatios`); 0 when the median is not
+        /// positive.
+        let runningVarianceOutlierCount: Int
         /// Activation-aware counts (`BatchNormPassThrough`), over finite
         /// channels: parked (excess pass-through < Φ(−3)) and mostly off
         /// (< Φ(−2)). nil only when no activation consumes the site's output.
@@ -887,6 +974,7 @@ struct LayerHealthSummary: Codable, Sendable, Equatable {
             case runningVarianceMedian = "running_variance_median"
             case runningVarianceMaxOverMedian = "running_variance_max_over_median"
             case nonFiniteRunningVarianceCount = "non_finite_running_variance_count"
+            case runningVarianceOutlierCount = "running_variance_outlier_count"
             case parkedChannelCount = "parked_channel_count"
             case parkedMostlyOffChannelCount = "parked_mostly_off_channel_count"
             case minPassThrough = "min_pass_through"
@@ -981,6 +1069,41 @@ struct LayerHealthSummary: Codable, Sendable, Equatable {
     /// The tensors with the largest finite |value|, largest first; nil for
     /// `.batchNormStateOnly`.
     let largestMagnitudeTensors: [TensorMagnitude]?
+    /// Channels at or above `LayerHealth.runningVarianceOutlierRatio` times
+    /// their site's median running variance, over every BN site: the sum of
+    /// the sites' counts (`rvOver10xMedian=`). Stored so results.json's
+    /// `layer_health` records carry it; always derived from
+    /// `batchNormSites` by the initializer, never passed in.
+    let runningVarianceOutlierCount: Int
+
+    init(
+        scope: Scope,
+        batchNormSites: [BatchNormSiteHealth],
+        squeezeExcitationFC1: [HiddenUnitVelocityHealth]?,
+        valueFC1: HiddenUnitVelocityHealth?,
+        velocityNotIncludedReason: String?,
+        reZero: [ReZeroHealth],
+        examinedTensorCount: Int,
+        examinedValueCount: Int,
+        nonFiniteValueCount: Int,
+        nonFiniteTensorCount: Int,
+        nonFiniteTensorNames: [String],
+        largestMagnitudeTensors: [TensorMagnitude]?
+    ) {
+        self.scope = scope
+        self.batchNormSites = batchNormSites
+        self.squeezeExcitationFC1 = squeezeExcitationFC1
+        self.valueFC1 = valueFC1
+        self.velocityNotIncludedReason = velocityNotIncludedReason
+        self.reZero = reZero
+        self.examinedTensorCount = examinedTensorCount
+        self.examinedValueCount = examinedValueCount
+        self.nonFiniteValueCount = nonFiniteValueCount
+        self.nonFiniteTensorCount = nonFiniteTensorCount
+        self.nonFiniteTensorNames = nonFiniteTensorNames
+        self.largestMagnitudeTensors = largestMagnitudeTensors
+        self.runningVarianceOutlierCount = batchNormSites.reduce(0) { $0 + $1.runningVarianceOutlierCount }
+    }
 
     enum CodingKeys: String, CodingKey {
         case scope
@@ -995,6 +1118,7 @@ struct LayerHealthSummary: Codable, Sendable, Equatable {
         case nonFiniteTensorCount = "non_finite_tensor_count"
         case nonFiniteTensorNames = "non_finite_tensor_names"
         case largestMagnitudeTensors = "largest_magnitude_tensors"
+        case runningVarianceOutlierCount = "running_variance_outlier_count"
     }
 
     // MARK: Rollups (derived, never stored)
@@ -1067,6 +1191,45 @@ struct LayerHealthSummary: Codable, Sendable, Equatable {
     var saturatedReZeroCount: Int { reZero.filter { $0.saturated == true }.count }
 }
 
+// MARK: - Running-variance profile
+
+/// Every BN site's per-channel running-variance ratios
+/// (`LayerHealth.runningVarianceRatios`) from one live read: the input of
+/// `bn_running_variance_jump`, which compares each channel with its own
+/// earlier reads. Not `Codable` on purpose (plan BVJ-13): it is a vector per
+/// read, kept in memory for one lookback and never written to results.json;
+/// only the per-site and total outlier counts are recorded.
+///
+/// Ratios are `Double`, the type every threshold is judged in, so the
+/// profile's outlier count is the summary's to the last channel (a `Float`
+/// copy could round a ratio just under 10 up to 10).
+struct BatchNormRunningVarianceProfile: Sendable, Equatable {
+    struct Site: Sendable, Equatable {
+        let site: String
+        let channelCount: Int
+        /// nil when the site's median running variance is not positive; an
+        /// element is nil for a non-finite variance.
+        let ratios: [Double?]?
+    }
+
+    /// In `LayerHealth.batchNormSites(for:)` order.
+    let sites: [Site]
+
+    /// Channels at or above `LayerHealth.runningVarianceOutlierRatio` over
+    /// every site; equal to the summary's `runningVarianceOutlierCount`.
+    var outlierCount: Int {
+        sites.reduce(0) { $0 + LayerHealth.runningVarianceOutlierCount($1.ratios) }
+    }
+
+    /// Whether `other` has the same sites, in the same order, with the same
+    /// channel counts: what one monitor's reads must share for a channel to be
+    /// compared with its own earlier values.
+    func hasSameLayout(as other: BatchNormRunningVarianceProfile) -> Bool {
+        sites.count == other.sites.count
+            && zip(sites, other.sites).allSatisfy { $0.site == $1.site && $0.channelCount == $1.channelCount }
+    }
+}
+
 // MARK: - Rendering
 
 extension LayerHealthSummary {
@@ -1109,6 +1272,9 @@ extension LayerHealthSummary {
         } else {
             fields.append("rvMaxOverMedian=n/a")
         }
+        // Every BN site's channels at ≥ 10× their site median: the count the
+        // offline replay reads for `bn_running_variance_jump`'s outlier arm.
+        fields.append("rvOver10xMedian=\(runningVarianceOutlierCount)")
         if reZero.isEmpty {
             fields.append("rezero=none")
         } else if let most = mostSaturatedReZero, let fraction = most.fractionOfCap {
@@ -1238,6 +1404,9 @@ extension LayerHealthSummary {
         static let count = 6
         static let extreme = 17
         static let varianceRatio = 9
+        /// The whole `rv max/median [ch]` cell (ratio and channel), so the
+        /// `rv≥10x` column after it stays aligned.
+        static let varianceRatioCell = 18
         static let passThrough = 10
     }
 
@@ -1246,7 +1415,8 @@ extension LayerHealthSummary {
             .map { leftPad($0, BatchNormColumn.count) }
             .joined(separator: " ")
         let extremes = rightPad("min β/|γ| [ch]", BatchNormColumn.extreme) + "  " + rightPad("max β/|γ| [ch]", BatchNormColumn.extreme)
-        return "\(rightPad("site", nameWidth))  \(rightPad("act", BatchNormColumn.activation)) \(counts)  \(extremes)  rv max/median [ch]"
+        let variance = rightPad("rv max/median [ch]", BatchNormColumn.varianceRatioCell)
+        return "\(rightPad("site", nameWidth))  \(rightPad("act", BatchNormColumn.activation)) \(counts)  \(extremes)  \(variance)  \(leftPad("rv≥10x", BatchNormColumn.count))"
     }
 
     private static func batchNormRow(_ site: BatchNormSiteHealth, nameWidth: Int) -> String {
@@ -1266,7 +1436,8 @@ extension LayerHealthSummary {
             varianceRatio = leftPad("n/a", BatchNormColumn.varianceRatio)
         }
         let activation = rightPad(site.activation?.rawValue ?? "-", BatchNormColumn.activation)
-        var row = "\(rightPad(site.site, nameWidth))  \(activation) \(counts)  \(extremeMin)  \(extremeMax)  \(varianceRatio)"
+        let outliers = leftPad(String(site.runningVarianceOutlierCount), BatchNormColumn.count)
+        var row = "\(rightPad(site.site, nameWidth))  \(activation) \(counts)  \(extremeMin)  \(extremeMax)  \(rightPad(varianceRatio, BatchNormColumn.varianceRatioCell))  \(outliers)"
         if site.nonFiniteRunningVarianceCount > 0 {
             row += "  (\(site.nonFiniteRunningVarianceCount) non-finite running var)"
         }
