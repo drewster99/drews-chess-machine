@@ -348,6 +348,53 @@ extension TrainingParametersSnapshot {
         )
     }
 
+    /// These parameters with the schedule a trainer runs under written in:
+    /// `lr_warmup_steps` and every `lr_cycle_*` / `momentum_cycle_*` /
+    /// `momentum_follow*` key, taken from `schedule` — the exact inverse of
+    /// `lrMomentumCycle` / `lrMomentumCycleEnvelope` above, so
+    /// `adoptingSchedule(s).lrMomentumCycle == s.lrMomentumCycle` for every
+    /// schedule. Every other key is unchanged.
+    ///
+    /// Why: an exact resume trains under the checkpoint's own schedule
+    /// (`TrainerHyperparameters.adoptingSchedule`), whatever the run was
+    /// configured with. The lineage record's parameter snapshot must say the
+    /// same, or a file resumed under a parameters file with another cycle
+    /// period records that period while the weights were trained at the
+    /// checkpoint's. Composing the record from this one
+    /// value is what keeps the snapshot and the file's flat `trainer_*` keys
+    /// equal by construction.
+    ///
+    /// The values are written as they are, **never validated or clamped**
+    /// against today's declared ranges (`TrainingParametersSnapshot.replacing`):
+    /// the checkpoint's value is what ran, even when a range has narrowed
+    /// since it was saved.
+    func adoptingSchedule(_ schedule: TrainerScheduleState) -> TrainingParametersSnapshot {
+        let cycle = schedule.lrMomentumCycle
+        let envelope = cycle.envelope
+        return self
+            .replacing(LRWarmupSteps.self, with: schedule.lrWarmupSteps)
+            .replacing(LRCycleEnabled.self, with: cycle.lrEnabled)
+            .replacing(LRCyclePeriodSteps.self, with: cycle.lrPeriodSteps)
+            .replacing(LRCycleCount.self, with: cycle.lrCount)
+            .replacing(LRCycleMin.self, with: cycle.lrMin)
+            .replacing(LRCycleMax.self, with: cycle.lrMax)
+            .replacing(LRCycleInvert.self, with: cycle.lrInvert)
+            .replacing(MomentumCycleEnabled.self, with: cycle.momentumEnabled)
+            .replacing(MomentumCyclePeriodSteps.self, with: cycle.momentumPeriodSteps)
+            .replacing(MomentumCycleCount.self, with: cycle.momentumCount)
+            .replacing(MomentumCycleMin.self, with: cycle.momentumMin)
+            .replacing(MomentumCycleMax.self, with: cycle.momentumMax)
+            .replacing(MomentumCycleInvert.self, with: cycle.momentumInvert)
+            .replacing(LRCyclePeakEnd.self, with: envelope.lrPeakEnd)
+            .replacing(LRCycleTroughEnd.self, with: envelope.lrTroughEnd)
+            .replacing(LRCycleDecayHorizonSteps.self, with: envelope.decayHorizonSteps)
+            .replacing(MomentumFollowsLRCycle.self, with: envelope.momentumFollowsLRCycle)
+            .replacing(MomentumFollowStartLow.self, with: envelope.momentumFollowStartLow)
+            .replacing(MomentumFollowStartHigh.self, with: envelope.momentumFollowStartHigh)
+            .replacing(MomentumFollowEndLow.self, with: envelope.momentumFollowEndLow)
+            .replacing(MomentumFollowEndHigh.self, with: envelope.momentumFollowEndHigh)
+    }
+
     /// The decay envelope + momentum-follow configuration these parameters
     /// describe.
     var lrMomentumCycleEnvelope: LRMomentumCycleEnvelope {

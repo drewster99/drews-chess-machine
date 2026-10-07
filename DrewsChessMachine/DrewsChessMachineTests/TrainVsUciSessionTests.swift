@@ -186,7 +186,7 @@ final class TrainVsUciSessionTests: XCTestCase {
             sessionID: "20261003-9-TeSt", savedAt: saved, runStart: started,
             trainerCompletedSteps: snapshot.schedule.completedTrainSteps,
             parameters: parameters, hyperparameters: hyperparameters, arch: arch,
-            bufferSnapshot: buffer.stateSnapshot())
+            bufferSnapshot: buffer.stateSnapshot(), maxPliesPerGame: 400)
         let sessions = tempDir.appendingPathComponent("Sessions", isDirectory: true)
         let url = try await CheckpointManager.saveSession(
             championWeights: Array(snapshot.trainerWeights.prefix(baseCount)),
@@ -236,7 +236,7 @@ final class TrainVsUciSessionTests: XCTestCase {
             runStart: Date(timeIntervalSince1970: 1_800_000_000), trainerCompletedSteps: 0,
             parameters: TrainingParameters.shared.snapshot(),
             hyperparameters: TrainerHyperparameters(TrainingParameters.shared.snapshot()),
-            arch: ResumeEquivalenceTests.architecture, bufferSnapshot: nil)
+            arch: ResumeEquivalenceTests.architecture, bufferSnapshot: nil, maxPliesPerGame: 400)
         XCTAssertNil(state.withLineage(gui).guiLoadRefusal)
         XCTAssertNil(state.guiLoadRefusal, "a state with no lineage (a pre-lineage GUI session) is not refused")
     }

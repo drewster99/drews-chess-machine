@@ -107,6 +107,7 @@ final class GuiLineageLifecycleTests: XCTestCase {
         let trainer = try trainer()
         controller.trainer = trainer
         controller.lineageTracker = try resumedTracker(segmentStart: 0)
+        controller.beginRunStartCapture(buffer: ReplayBuffer(capacity: 64, inputEncoding: Self.architecture.inputEncoding, sampler: DCMRandom(seed: 3)))
         controller.lineageFedCarry = SessionController.LineageFedCarry(games: 7, positions: 300,
                                                                        baselineGames: nil, baselinePositions: nil)
         controller.championOrigin = .built(initialization: .forTests)
@@ -130,6 +131,7 @@ final class GuiLineageLifecycleTests: XCTestCase {
         let running = try resumedTracker(segmentStart: 0)
         let carry = SessionController.LineageFedCarry(games: 7, positions: 300, baselineGames: nil, baselinePositions: nil)
         controller.lineageTracker = running
+        controller.beginRunStartCapture(buffer: ReplayBuffer(capacity: 64, inputEncoding: Self.architecture.inputEncoding, sampler: DCMRandom(seed: 3)))
         controller.lineageFedCarry = carry
         controller.runRandomSeed = nil
 
@@ -149,6 +151,7 @@ final class GuiLineageLifecycleTests: XCTestCase {
         controller.pendingLoadedSession = try loadedSession()
         controller.pendingLoadedSessionAcceptedReplacements = ["x"]
         controller.runRandomSeed = runSeed()
+        controller.beginRunStartCapture(buffer: ReplayBuffer(capacity: 64, inputEncoding: Self.architecture.inputEncoding, sampler: DCMRandom(seed: 3)))
 
         let result = controller.beginRunLineage(
             mode: .freshOrFromLoadedSession, trainer: trainer, championIdentifier: ModelID(value: "20261003-1-CHMP"),
@@ -165,6 +168,7 @@ final class GuiLineageLifecycleTests: XCTestCase {
         let controller = SessionController()
         controller.trainer = try trainer()
         controller.lineageTracker = try resumedTracker(segmentStart: 50)
+        controller.beginRunStartCapture(buffer: ReplayBuffer(capacity: 64, inputEncoding: Self.architecture.inputEncoding, sampler: DCMRandom(seed: 3)))
         controller.lineageFedCarry = SessionController.LineageFedCarry(games: 7, positions: 300,
                                                                        baselineGames: 2, baselinePositions: 80)
 

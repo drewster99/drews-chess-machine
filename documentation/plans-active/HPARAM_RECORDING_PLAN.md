@@ -1,6 +1,7 @@
 # Hyperparameter recording plan: a checkpoint states exactly how it was trained
 
 Status (2026-10-05): **PLAN ONLY.** Nothing here is implemented.
+- Implementation (2026-10-06): **P1, P2 and P3 implemented** (build identity; CLI resume records what it trains; GUI values in force). P4+ not started. Decisions made while implementing are under **Implementation notes** at the end.
 - Independent review: **concurred on 2026-10-05, after five passes.** Every review item (A1–A20, B1–B9, C1–C6, D1–D7; N1–N6, NB1–NB7; P3-1, P3-2, NB-a–NB-c; P4-1 and nits; pass-5 nits) is listed, with what was done about it, in **Review reconciliation** at the end.
 - Second review (code-level, against the source): **concurred on 2026-10-05, after four passes.** Items X1–X13, the later passes' items and every nit are listed in **Second review** at the end.
 - Every `file:line` was checked against `main` at `a7d3b9ca`, and re-checked at `c0130599`: the commits since change no cited line (the only source edit is the `lr_cycle_max` range, `Training/TrainingParameters.swift:1094`).
@@ -1273,17 +1274,21 @@ After P4, additionally:
 
   Counts are from `grep` at `c0130599`, including calls whose arguments start on the next line. They are re-counted with a multi-line pattern (`record\(\s*\n?\s*at:`) before P4. `LineageTracker.init` gains no argument (gap 1b), so its test constructions are not edited.
 - **O-2 Regression-test sequencing.** In P2 (B1), P3 and P4, regression tests are written after an API-first step so they compile. They fail at that point and pass after the fix, unmodified. Is that acceptable as "write the test first"?
+  - **Decided (owner, 2026-10-06): follow the recommendation.** API-first step, then the regression test is run and seen to fail, then the fix makes it pass unmodified.
 - **O-3 `ReplayParams` becomes immutable and derived (P2).**
   - `ResumeEquivalenceTests.swift:196-203`, `CorpusReplayRefusalTests.swift` and `FinalTrainerSaveFailureTests.swift` build their snapshot with `declaredDefaults(overriding:)` instead of mutating fields afterwards.
   - One value changes: `CorpusReplayRefusalTests.testAnExactResumeRefusedForAGapThrowsNamingTheGaps` passes batch 16 (`:116`), below the declared range `32...65536` (`Training/TrainingParameters.swift:757`). It becomes 64, still different from the first run's 32, so the feed per step still changes; the assertions stay the same.
   - All other overrides are in range.
   - If declined, P2 keeps `var`s and drops the schedule backstop (those tests would trip it). The adoption fix and its regression test stand either way.
+  - **Decided (owner, 2026-10-06): approved.** `ReplayParams` becomes immutable and derived; the listed test edits, including batch 16 → 64.
 - **O-4 Resume parameter changes as gaps.** Should a changed training-math key on any exact resume be a `params` gap: a CLI `--resume-exact`, or a GUI resume where a saved value is replaced by the current setting (`App/SessionParameterResume.swift:253-269`)? Default: log only, on both paths.
 - **O-5 Gap 3.** Record the in-force value (planned). Also disable the three fields during a run?
+  - **Decided (owner, 2026-10-06): follow the recommendation.** The in-force value is recorded; the three fields stay editable during a run (caption + `[PARAM]` line), not disabled.
 - **O-6 Gap 8.** Should summaries of schema-2 parents carry the parent file's flat `trainer_policy_tail_precision`? It is a recorded value, but carrying it means adding it to `LineageTracker.ParentFile` (constructed in 23 test sites). Default: unrecorded.
 - **O-7 Gap 6.**
   - Embed `BuildDiff.patch` in the app bundle?
   - Widen the dirty/diff scope beyond `DrewsChessMachine/` (e.g. `scripts/`)? Default: no; `documentation/` and `experiments/` never count.
+  - **Decided (owner, 2026-10-06): follow the recommendation.** No `BuildDiff.patch` in the bundle; the scope stays `DrewsChessMachine/`.
 - **O-8 Gap 2.** Build the reconstruction report (P6)?
 - **O-9 Gap 9.** Exclude the seed settings from composed snapshots (planned), or keep them and document that `rng.streams` is the authority?
 - **O-10 Journal granularity (gap 4).** The Replay-tab fields propagate live as the user types (`App/UpperContentView/TrainingSettingsPopoverModel.swift:1587-1590`), so each valid intermediate value is a real in-force change and is journalled. Keep (honest; several entries per edit), or journal at popover Save only (fewer entries, but an in-force interval goes unrecorded)?
@@ -1296,6 +1301,7 @@ After P4, additionally:
   - `GuiSaveHarness.swift:114-125` installs its tracker directly, without the production start path, and then records (`LineageFedCountsTests.swift:70-72`, `SessionSaveConsistentCutTests`). After `championOrigin` is set (`:125`) it calls the production `noteSegmentStart(on: tracker, isNewSegment: true)`, with `runSeedStartKind` and `replayRatioStart` set first, so its records carry the `run_seeds` and `segment_start` entries the invariants require (pass 2). No other test installs a tracker and then records: `GuiLineageLifecycleTests.swift:109`, `:132`, `:167` install one and never record.
   - `LineageFedCountsTests.swift:70`, `:97`: the new `cut:` argument of `lineageRecordForSave`, a `GuiConfigurationCut` built with its memberwise initializer (P4; with review N1's resolution the GUI rule and this edit are both in P4).
   - `ChampionLineageRecordTests.swift:50`, `:63`, `:81` (constructions of `ChampionOrigin.file`) and `:101` (pattern match): the new `startWeights:` associated value (N5, P4).
+  - **Decided (owner, 2026-10-06): approved.** The capture-setup lines in `GuiSaveHarness` and `GuiLineageLifecycleTests` (setup only, no assertion changes).
 - **O-15 `cum_*` meaning (B4).** (a) Correct the doc to "this run's totals" + an ancestry-summing helper (recommended, planned), or (b) store weights-totals.
 - **O-16 Gap 12.** Keep `schedule_at_save` (with the readout refactor) or defer it? It is derivable from the file.
 - **O-17 B8.** Also record the executable's `LC_UUID` (read at runtime via `_dyld_get_image_header(0)`)?
@@ -1315,6 +1321,7 @@ After P4, additionally:
 # Interaction with adjacent plans
 
 - **O-23 Reading schema-2 records (S1).** Schema 3 is written from P4 on, but every existing model and session file (23 lineage records surveyed, including the live LR A/B continuations) is schema 2. S1 decodes a schema-2 record — new keys absent, carried values marked unrecorded, never fabricated — so those files stay loadable and resumable; without it P4 makes every existing file unreadable. This is backward-compatibility code, which the owner's rules require an explicit request for. Approve S1's schema-2 read path (recommended; the architecture format already reads older versions the same way), or drop it and accept that schema-2 files can no longer be loaded?
+  - **Decided (owner, 2026-10-06): approved** ("in general we always want to be able to read the old files"). S1's schema-2 read path stays: read-only compatibility, never a migration or rewrite of an existing file.
 - **`HEAD_ACTIVATIONS_PLAN.md`** bumps the architecture format to v9 (`dcm_format_version`). This plan bumps only the lineage schema (2 → 3) and never the architecture format (Part S), so the numbers do not collide: a file written after both is format v9, schema 3. That plan's edit of the `"8"` pin at `LineageRecordTests.swift:114` is its own owner decision. Gap 1c's `architecture_at_departure` stores a source's architecture text verbatim with its own `format_version`, so a v8 text inside a v9 file is read under v8's rules.
 - **`TRAINING_HEALTH_ALARMS_PLAN.md`** adds 11 `liveTunable` `@TrainingParameter` keys (its checklist step 1):
   - they enter every composed snapshot (as that plan says), so this plan's counts are never literals (Corrections);
@@ -1531,3 +1538,37 @@ The reviewer confirmed the relocated `run_seeds`, the single-snapshot `at_save`,
 ## Pass 4
 
 The reviewer confirmed every pass-3 item resolved and found **no must-fix issues**. One nit was applied: B6's `at_save: null` also covers a save while stopped, since Stop clears `replayRatioSnapshot` (`App/SessionController+Training.swift:2462`). **Concurred on 2026-10-05, after four passes.**
+
+# Implementation notes
+
+Decisions made while implementing, with the reason for each.
+
+## P1
+
+- **Build-setting names verified.** The Run Script phase sees `XCODE_PRODUCT_BUILD_VERSION`, `SDK_PRODUCT_BUILD_VERSION` and `CONFIGURATION` (the first build after the change wrote non-empty values for all three), closing B8's "not verified here" item.
+- **A git failure fails the build.** `git diff --quiet` exit status 0 is clean and 1 is dirty; anything else stops the build with a message instead of guessing either way. The script's existing `rev-parse` fallbacks for `gitHash` / `gitBranch` are unchanged.
+- **The hashed diff bytes are pinned against git configuration**: `--no-ext-diff --no-textconv --no-color --no-renames --src-prefix=a/ --dst-prefix=b/`, so a user's `color.ui`, diff drivers or prefix settings cannot change the hash. An untracked symbolic link is framed with its target text (what git would store); an untracked path that is neither a file nor a link fails the build.
+- **O-7 not taken** (owner, 2026-10-06): no `BuildDiff.patch` in the bundle; the scope stays `DrewsChessMachine/`.
+- **V1 run** (after the merge with `main`, 2026-10-06): a build of the committed tree wrote `gitDirty = false`, `gitDiffSHA256 = nil`, and `git status` still showed only `build_counter.txt` and `BuildInfo.swift` modified. Builds with an uncommitted source edit wrote `true` and a 64-hex hash. The toolchain fields already tell builds apart: this branch was built both by the Xcode app (`xcodeBuild` `27B5019j`, `sdkBuild` `26B5086k`) and by command-line `xcodebuild` (`27A9269`, `26A425`), both `Release`.
+- Tests beyond the plan's list: `test_a_staged_source_edit_is_dirty`, `test_an_untracked_file_alone_hashes_its_framing` and `test_untracked_files_are_framed_in_sorted_path_order` (they pin the framing byte for byte), and `BuildInfoConsistencyTests.testToolchainFieldsAreNeverBlank`; for the comparator, a dtype mismatch, a non-float tensor and a tensor whose bytes do not match its shape.
+
+## P2
+
+- **Correction to the P2 block: `TrainVsUciSession.sessionState` has test callers** (`TrainVsUciSessionTests.swift:185`, `:234`). The required `maxPliesPerGame:` argument needed `maxPliesPerGame: 400` added at both (argument only). **Approved by the owner, 2026-10-06.**
+- **`TrainingParametersSnapshot.replacing(_:with:)`** (typed, unvalidated) is the one way a snapshot takes an in-force value: `adoptingSchedule` uses it here, and P3's `RunStartParameterCapture.inForce(over:)` uses it too. A typed key makes the stored value's type right by construction; ranges are deliberately not checked (gap 5 design 1, review D1). `TrainingParametersSnapshot(values:)` stays file-private.
+- **The train-vs-UCI runner adopts the schedule where the snapshot is read** (inside the `--resume-exact` block), so the gap-13 comparison, which runs in the same block, compares against the in-force snapshot after adoption. The `[VS-UCI-RESUME] WARNING` lines therefore come before the `[RESUME]` verdict instead of after it. `TrainerHyperparameters.adoptingSchedule` is no longer called by the runners; it stays because `ExactResumeTests` uses it and its result equals the rebuilt `ReplayParams.trainer` (pinned by `testAnAdoptedScheduleIsNotADifference`).
+- **`[RESUME-DIFF]` on the CLI** reads the parent snapshot with `JSONDecoder`, not `JSONSerialization`. The snapshot text is written by `JSONSerialization` with every significant digit (`0.0003` as `0.00029999999999999997`), and `JSONSerialization`'s parser read that back as `0.0002999999999999999`, so the first implementation reported unchanged doubles as changed (caught by its own tests). Other readers of lineage snapshot text through `JSONSerialization` were not audited here.
+- **Line forms.** Besides `parent=… this_run=…`, a key the parent's snapshot predates is reported `(this run only: …)` (the plan names only parent-only keys; a key added since is the same kind of fact), and the seed settings are reported `(seed setting, informational …)` only when the parent's snapshot has them. A snapshot that cannot be read refuses the resume (`CLIRunRefusal`), never skipping the comparison.
+- **Regression sequencing (O-2), P2.** `testAnExactResumeRecordsTheScheduleItTrainsUnder` was run against the pre-fix record composition (the lineage records temporarily built from the configured `ReplayParams` again) and failed (warmup 7 ≠ 5, period 80 ≠ 40); it passes unmodified after the fix. `testSessionStateRecordsTheRunsPlyCap` was run after the API-first step (argument added, ignored) and failed (450 ≠ 123); it passes unmodified after the fix.
+
+## P3
+
+- **Test edits beyond O-14's list** (owner-approved 2026-10-06): `buildCurrentSessionState` now throws without a capture, so `ExactResumeCompletionTests.testAPostPromotionSaveRecordsTheArenaAsJustFinished` (one capture line, `throws`, `try` ×2) and `SessionSaveReplayBufferTests` (one capture line in `controllerWithBuffer()`, `try` ×2) were edited; setup only. `GuiLineageLifecycleTests`' success test (`:145-161`) also needed its capture line in P3, not P4: its `[RUN]` record goes through `lineageRecordForSave`.
+- **A failed start puts the previous capture back.** A start replaces the capture before its lineage segment begins; if it then fails — in `beginRunLineage` (Continue / keep-trainer modes, mirroring the tracker restore) or earlier in the start task (network builds, trainer reset) — `restoreRunStartCaptureAfterFailedStart()` puts back the capture of the segment left in place, so a save before the next start does not describe the old segment with the failed start's values.
+- **Readers switched beyond the plan's list**, for the same single source: the replay-ratio controller's batch size and the results recorder's sampling batch at start (same main-actor turn as the capture, so equal by construction), the progress-rate readout (`Heartbeat` positions trained), and the `[STATS] arena-start` buffer capacity (now the run's buffer itself, `none` without one, instead of falling back to the setting).
+- **Effective-LR status readout** is published only while a capture exists. A trainer used outside Play-and-Train (a sweep) steps at no run's batch size, so no "fed LR" exists to show; before, it showed the setting's.
+- **The arena stops** (logged `[ARENA] aborted — …`, recorded as a training error) if it finds no capture, rather than recording a batch size the run does not use. An arena runs only inside a run, so this is a bug guard.
+- **O-5 (decided):** the fields stay editable; the batch-size row carries the caption as its hint, the Replay-buffer group a caption line for capacity and pre-train fill.
+- **Not switched (outside gap 3's records, left for the owner):** `AnalysisExportMetadata.Training.batchSize` (Run All Analyses) and the Lichess-probe `positionsTrained` estimates (`completedTrainSteps × trainingBatchSize`) still read the setting. The latter is an estimate across the whole lineage, which no single capture describes either.
+- **Regression sequencing (O-2), P3.** After the API-first step (capture type, `runStartCapture`, `beginRunStartCapture(buffer:)` called at start, no reader switched) `testAGuiSaveRecordsTheBatchSizeTheRunTrainsAt` failed (128 ≠ 64, 900 ≠ 300, 1024 ≠ 512) and `testSessionStateBatchSizeIsTheRunsBatchSize` failed (128 ≠ 64, 1280 ≠ 640); both pass unmodified after the readers were switched.
+- **Not run here (needs the GUI with no training live):** V3's live check (edit batch mid-run ▸ save ▸ inspect `trainer.safetensors` and `session.json`; the caption's layout in the popover). Three training runs were live throughout.

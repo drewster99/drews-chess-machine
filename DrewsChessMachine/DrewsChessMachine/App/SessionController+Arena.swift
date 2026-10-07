@@ -123,6 +123,23 @@ extension SessionController {
             }
         }
 
+        // --- The run's start-time parameters ---
+        //
+        // The arena record states the batch size the trainer steps at —
+        // the run's capture, never the settings, which may hold an edit for
+        // the next start. An arena runs only inside a Play-and-Train run,
+        // so a missing capture is a bug: the arena stops rather than record
+        // a value the run does not use.
+        let runCapture: RunStartParameterCapture
+        do {
+            runCapture = try requiredRunStartCapture(for: "the arena record")
+        } catch {
+            trainingBox?.recordError("Arena aborted: \(error.localizedDescription)")
+            SessionLogger.shared.log("[ARENA] aborted — \(error.localizedDescription)")
+            cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+            return
+        }
+
         // --- Trainer → candidate inference snapshot ---
         //
         // Pause the training worker briefly (a few ms, at most one
@@ -578,7 +595,7 @@ extension SessionController {
                     throw RunCutError.noModelID
                 }
                 let trainingStep = try publishRunCountersAtCut()
-                let state = buildCurrentSessionState(
+                let state = try buildCurrentSessionState(
                     championID: championID,
                     trainerID: trainerID,
                     arenaClock: .arenaJustFinished,
@@ -629,7 +646,8 @@ extension SessionController {
             candidate: candidateInference,
             championSide: arenaChampion,
             diversity: arenaDiversity.snapshot(),
-            extended: extendedSummary
+            extended: extendedSummary,
+            runCapture: runCapture
         )
         // The post-promotion save is marked in flight before the arena is
         // released, so no manual, periodic or SIGUSR2 save can start in the
@@ -877,7 +895,8 @@ extension SessionController {
         candidate: ChessMPSNetwork,
         championSide: ChessMPSNetwork,
         diversity: GameDiversityTracker.Snapshot,
-        extended: ArenaExtendedSummary
+        extended: ArenaExtendedSummary,
+        runCapture: RunStartParameterCapture
     ) {
         let sp = samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()
         let ar = samplingScheduleBox?.arena ?? buildArenaSchedule()
@@ -886,7 +905,7 @@ extension SessionController {
         let trainerIDStr = trainer.identifier?.description ?? "?"
 
         let parameters = ArenaLogFormatter.Parameters(
-            batchSize: TrainingParameters.shared.trainingBatchSize,
+            batchSize: runCapture.trainingBatchSize,
             learningRate: trainer.learningRate,
             promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
             tournamentGames: TrainingParameters.shared.arenaGamesPerTournament,
@@ -972,7 +991,7 @@ extension SessionController {
                 trainerID: trainerIDStr,
                 learningRate: Double(trainer.learningRate),
                 promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
-                batchSize: TrainingParameters.shared.trainingBatchSize,
+                batchSize: runCapture.trainingBatchSize,
                 workerCount: TrainingParameters.shared.selfPlayConcurrency,
                 spStartTau: Double(sp.startTau),
                 spFloorTau: Double(sp.floorTau),
@@ -1103,7 +1122,9 @@ extension SessionController {
         let plmStr = snap.rollingPolicyLogitMean.map { String(format: "%+.4f", $0) } ?? "--"
         let vlmStr = snap.rollingValueLogitMean.map { String(format: "%+.4f", $0) } ?? "--"
         let bufCount = replayBuffer?.count ?? 0
-        let bufCap = replayBuffer?.capacity ?? TrainingParameters.shared.replayBufferCapacity
+        // The run's buffer itself, never the capacity setting (which may hold
+        // an edit for the next start).
+        let bufCap = replayBuffer.map { String($0.capacity) } ?? "none"
         SessionLogger.shared.log(
             "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) gNorm=\(gStr) vMean=\(vmStr) vAbs=\(vaStr) pLogitMean=\(plmStr) vLogitMean=\(vlmStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
         )

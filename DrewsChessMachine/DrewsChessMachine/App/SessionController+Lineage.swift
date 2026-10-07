@@ -97,7 +97,8 @@ extension SessionController {
     /// session stays pending, so the next start redoes the whole resume from
     /// it (consuming it here would have left the restored trainer to a
     /// "Continue" that re-records the run as unrecorded history). A kept
-    /// trainer's segment is put back as it was, since a failed `[RUN]`
+    /// trainer's segment is put back as it was, with the run-start
+    /// parameter capture it was trained under, since a failed `[RUN]`
     /// record must not replace or reset it. A trainer this start already
     /// reset leaves no segment behind: the old one no longer describes it.
     func beginRunLineage(mode: TrainingStartMode, trainer: ChessTrainer, championIdentifier: ModelID?,
@@ -148,6 +149,7 @@ extension SessionController {
                 lineageTracker = previousTracker
                 lineageFedCarry = previousCarry
                 checkpoint?.runResumeExactness = previousExactness
+                restoreRunStartCaptureAfterFailedStart()
             case .freshOrFromLoadedSession, .newSessionResetTrainerFromChampion:
                 lineageTracker = nil
                 lineageFedCarry = LineageFedCarry()
@@ -352,6 +354,50 @@ extension SessionController {
         lineageFedCarry.baselinePositions = 0
     }
 
+    /// Capture the parameters this Play-and-Train start trains under — the
+    /// batch size and pre-train fill from the settings, the capacity from
+    /// the run's buffer (on a Continue, the reused one) — as the single
+    /// source every reader of them uses until the next start (see
+    /// `RunStartParameterCapture`). Called at every start, right after the
+    /// buffer is chosen and before the lineage segment begins, whose `[RUN]`
+    /// record describes the parameters in force. The capture it replaces is
+    /// kept, so a start that fails before its lineage segment begins can put
+    /// it back (`restoreRunStartCaptureAfterFailedStart`).
+    @discardableResult
+    func beginRunStartCapture(buffer: ReplayBuffer) -> RunStartParameterCapture {
+        let params = TrainingParameters.shared
+        let capture = RunStartParameterCapture(
+            trainingBatchSize: params.trainingBatchSize,
+            replayBufferMinPositionsBeforeTraining: params.replayBufferMinPositionsBeforeTraining,
+            replayBufferCapacity: buffer.capacity)
+        runStartCaptureReplacedByLatestStart = runStartCapture
+        runStartCapture = capture
+        SessionLogger.shared.log(
+            "[PARAM] run-start capture: \(TrainingBatchSize.id)=\(capture.trainingBatchSize) "
+                + "\(ReplayBufferMinPositionsBeforeTraining.id)=\(capture.replayBufferMinPositionsBeforeTraining) "
+                + "\(ReplayBufferCapacity.id)=\(capture.replayBufferCapacity) (in force until the next Play-and-Train start)")
+        return capture
+    }
+
+    /// Put back the capture the latest start replaced, for a start that ends
+    /// without beginning (or replacing) its lineage segment: the segment
+    /// left in place — and any save of it before the next start — was
+    /// trained under that capture, not under the failed start's.
+    func restoreRunStartCaptureAfterFailedStart() {
+        runStartCapture = runStartCaptureReplacedByLatestStart
+    }
+
+    /// The running (or last stopped) run's start-time capture. Asked for
+    /// only where a run's state is being described; none there is a bug,
+    /// reported as the missing segment it implies — never answered from the
+    /// settings, which may hold an edit this run does not use.
+    func requiredRunStartCapture(for what: String) throws -> RunStartParameterCapture {
+        guard let runStartCapture else {
+            throw LineageSegmentError.noSegment("\(what) (no run-start parameter capture)")
+        }
+        return runStartCapture
+    }
+
     /// The record for a save of the running segment's state, with the
     /// trainer clock `trainerCompletedSteps` the saved trainer state carries
     /// and the dropout state and dropout-stream position captured with it
@@ -382,7 +428,9 @@ extension SessionController {
             segmentGames: games,
             segmentPositions: positions,
             corpus: nil,
-            parameters: try LineageRecord.Parameters(values: TrainingParameters.shared.snapshot().rawValueMap()),
+            parameters: try LineageRecord.Parameters(
+                values: try requiredRunStartCapture(for: "this save")
+                    .inForce(over: TrainingParameters.shared.snapshot()).rawValueMap()),
             rng: LineageRecord.RNG(dropoutPhiloxState: dropoutPhiloxState,
                                    streams: try runStreamsForSave(dropoutStreamState: dropoutStreamState),
                                    behaviorFingerprint: try behaviorFingerprintForSave(dropoutStreamState: dropoutStreamState)))

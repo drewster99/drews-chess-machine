@@ -29,6 +29,7 @@ final class SessionSaveReplayBufferTests: XCTestCase {
         let controller = SessionController()
         let buffer = ReplayBuffer(capacity: 64, inputEncoding: .basic30, sampler: DCMRandom(seed: 3))
         controller.replayBuffer = buffer
+        controller.beginRunStartCapture(buffer: buffer)
         return (controller, buffer)
     }
 
@@ -36,13 +37,13 @@ final class SessionSaveReplayBufferTests: XCTestCase {
     /// writes it, and records the automatic-save setting either way.
     func testTheSessionStateDescribesTheBufferOnlyWhenTheSaveIncludesIt() throws {
         let (controller, buffer) = controllerWithBuffer()
-        let omitted = controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .live,
+        let omitted = try controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .live,
                                                           includeReplayBuffer: false)
         XCTAssertEqual(omitted.hasReplayBuffer, false)
         XCTAssertNil(omitted.replayBufferCapacity)
         XCTAssertEqual(omitted.sessionSaveIncludeReplayBuffer, TrainingParameters.shared.sessionSaveIncludeReplayBuffer)
 
-        let included = controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .live,
+        let included = try controller.buildCurrentSessionState(championID: "c", trainerID: "t", arenaClock: .live,
                                                            includeReplayBuffer: true)
         XCTAssertEqual(included.hasReplayBuffer, true)
         XCTAssertEqual(included.replayBufferCapacity, buffer.capacity)

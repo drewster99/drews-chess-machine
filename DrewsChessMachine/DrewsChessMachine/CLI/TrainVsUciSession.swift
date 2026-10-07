@@ -111,6 +111,11 @@ enum TrainVsUciSession {
     /// `bufferSnapshot` is nil for a save without the replay buffer;
     /// `CheckpointManager.saveSession` replaces the buffer counters with the
     /// snapshot the buffer write itself took.
+    ///
+    /// `maxPliesPerGame` is the run's own game cap (`--max-plies`,
+    /// `TrainVsUciConfig.maxPliesPerGame`), which every game against the
+    /// engines was played to. The self-play cap in the parameter snapshot is
+    /// a setting this path never reads.
     static func sessionState(
         sessionID: String,
         savedAt: Date,
@@ -119,7 +124,8 @@ enum TrainVsUciSession {
         parameters p: TrainingParametersSnapshot,
         hyperparameters hp: TrainerHyperparameters,
         arch: NetworkArchitecture,
-        bufferSnapshot: ReplayBuffer.StateSnapshot?
+        bufferSnapshot: ReplayBuffer.StateSnapshot?,
+        maxPliesPerGame: Int
     ) -> SessionCheckpointState {
         SessionCheckpointState(
             formatVersion: SessionCheckpointState.currentFormatVersion,
@@ -193,7 +199,7 @@ enum TrainVsUciSession {
             maxDrawPercentPerBatch: p.maxDrawPercentPerBatch,
             replayBufferStratifyByMaterial: p.replayBufferStratifyByMaterial,
             selfPlayDrawKeepFraction: p.selfPlayDrawKeepFraction,
-            maxPliesPerGame: p.selfPlayMaxPliesPerGame,
+            maxPliesPerGame: maxPliesPerGame,
             drawWatchPDrawThreshold: p.drawWatchPDrawThreshold,
             drawWatchTerminateGames: p.drawWatchTerminateGames,
             drawWatchStreakLength: p.drawWatchStreakLength,

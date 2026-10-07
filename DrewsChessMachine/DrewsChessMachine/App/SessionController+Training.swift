@@ -211,6 +211,11 @@ extension SessionController {
             }
             replayBuffer = buffer
         }
+        // The batch size, pre-train fill and capacity this run trains under,
+        // from here until the next start — every reader below and every
+        // record of the run takes them from this capture, never from the
+        // settings, which the popover may change during the run.
+        let runCapture = beginRunStartCapture(buffer: buffer)
         // Seed the buffer's per-batch sampling constraints from the
         // current parameters. Subsequent updates come reactively from
         // `ControlSideEffectsProbe.onChange(of: trainingParams.X)` —
@@ -486,7 +491,7 @@ extension SessionController {
         )
         samplingScheduleBox = scheduleBox
         let ratioController = ReplayRatioController(
-            batchSize: TrainingParameters.shared.trainingBatchSize,
+            batchSize: runCapture.trainingBatchSize,
             targetRatio: TrainingParameters.shared.replayRatioTarget,
             autoAdjust: TrainingParameters.shared.replayRatioAutoAdjust,
             initialDelayMs: TrainingParameters.shared.replayRatioAutoAdjust
@@ -590,7 +595,7 @@ extension SessionController {
             r.setRunKind(.selfPlay)
             r.setRunRandomSeed(runSeed)
             r.setSamplingConstraints(.fromCurrentParameters(),
-                                     batchSize: TrainingParameters.shared.trainingBatchSize)
+                                     batchSize: runCapture.trainingBatchSize)
             recorder = r
             cliRecorder = r
         } else {
@@ -667,15 +672,12 @@ extension SessionController {
             }
         }
 
-        // Snapshot the CLI-overridable effective values into plain
-        // `let`s so the detached Task bodies below can read them
-        // without a MainActor hop. These values don't change after
-        // session start in the current model, so a one-time capture
-        // is safe and keeps the Task-side code MainActor-free.
-        let sessionTrainingBatchSize = TrainingParameters.shared.trainingBatchSize
-        let sessionMinBufferBeforeTraining = TrainingParameters.shared.replayBufferMinPositionsBeforeTraining
-        let sessionTournamentGames = TrainingParameters.shared.arenaGamesPerTournament
-        let sessionPromoteThreshold = TrainingParameters.shared.arenaPromoteThreshold
+        // The run-start capture's values as plain `let`s, so the detached
+        // Task bodies below can read them without a MainActor hop. They do
+        // not change during the run (the capture is what the run uses; a
+        // settings edit applies at the next start).
+        let sessionTrainingBatchSize = runCapture.trainingBatchSize
+        let sessionMinBufferBeforeTraining = runCapture.replayBufferMinPositionsBeforeTraining
         // The saved run's streams this run continues (nil when it drew a new
         // seed): the one source for the dropout-stream restore below and for
         // the resume's rng_sampler / serials verdict.
@@ -698,8 +700,7 @@ extension SessionController {
              gameWatcher, ratioController, recorder, cliTrainingTimeLimitSec,
              cliTrainingStepLimit, autoTrainTermination,
              isAutoTrainRun,
-             sessionTrainingBatchSize, sessionMinBufferBeforeTraining,
-             sessionTournamentGames, sessionPromoteThreshold] in
+             sessionTrainingBatchSize, sessionMinBufferBeforeTraining] in
 
             // --- Setup: build any missing networks, reset the trainer ---
 
@@ -727,6 +728,7 @@ extension SessionController {
                     box.recordError("Candidate network init failed: \(error.localizedDescription)")
                     await MainActor.run {
                         realTraining = false
+                        restoreRunStartCaptureAfterFailedStart()
                         realTrainingTask = nil
                     }
                     return
@@ -748,6 +750,7 @@ extension SessionController {
                     box.recordError("Probe network init failed: \(error.localizedDescription)")
                     await MainActor.run {
                         realTraining = false
+                        restoreRunStartCaptureAfterFailedStart()
                         realTrainingTask = nil
                     }
                     return
@@ -768,6 +771,7 @@ extension SessionController {
                     box.recordError("Arena champion init failed: \(error.localizedDescription)")
                     await MainActor.run {
                         realTraining = false
+                        restoreRunStartCaptureAfterFailedStart()
                         realTrainingTask = nil
                     }
                     return
@@ -796,6 +800,7 @@ extension SessionController {
                     box.recordError("Lichess probe network init failed: \(error.localizedDescription)")
                     await MainActor.run {
                         realTraining = false
+                        restoreRunStartCaptureAfterFailedStart()
                         realTrainingTask = nil
                     }
                     return
@@ -823,6 +828,7 @@ extension SessionController {
                     box.recordError("Tactical probe network init failed: \(error.localizedDescription)")
                     await MainActor.run {
                         realTraining = false
+                        restoreRunStartCaptureAfterFailedStart()
                         realTrainingTask = nil
                     }
                     return
@@ -959,6 +965,7 @@ extension SessionController {
                 box.recordError("Reset failed: \(error.localizedDescription)")
                 await MainActor.run {
                     realTraining = false
+                    restoreRunStartCaptureAfterFailedStart()
                     realTrainingTask = nil
                 }
                 return
@@ -1403,7 +1410,7 @@ extension SessionController {
                 // driven.
                 group.addTask(priority: .utility) {
                     [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox, scheduleBox, recorder, drawWatch,
-                     sessionTrainingBatchSize, sessionTournamentGames, sessionPromoteThreshold, probeInferenceForProbes] in
+                     sessionTrainingBatchSize, probeInferenceForProbes] in
                     let sessionStart = Date()
                     // Bootstrap-phase step threshold for the per-step
                     // emit. `UpperContentView.bootstrapStatsStepCount` is tunable
@@ -2020,8 +2027,8 @@ extension SessionController {
                                 insufficientMaterialDraws: parallelSnap.insufficientMaterialDraws,
                                 batchSize: sessionTrainingBatchSize,
                                 learningRate: Double(lr),
-                                promoteThreshold: sessionPromoteThreshold,
-                                arenaGames: sessionTournamentGames,
+                                promoteThreshold: livePromoteThreshold,
+                                arenaGames: liveTournamentGames,
                                 workerCount: workerN,
                                 gradClipMaxNorm: Double(gradClip),
                                 weightDecayC: Double(weightDec),

@@ -350,9 +350,10 @@ extension LRMomentumCycleLogFormat {
 
 extension TrainerHyperparameters {
     /// These hyperparameters with the schedule fields replaced by a resumed
-    /// checkpoint's, so a CLI runner builds its trainer, logs its
-    /// configuration and records `results.json` under the schedule it will
-    /// actually run.
+    /// checkpoint's. The CLI runners adopt a schedule through
+    /// `ReplayParams.adoptingSchedule`, which rebuilds everything — these
+    /// hyperparameters and the lineage snapshot — from one adopted parameter
+    /// snapshot; the trainer configuration that yields equals this one.
     func adoptingSchedule(_ schedule: TrainerScheduleState) -> TrainerHyperparameters {
         var adopted = self
         adopted.lrWarmupSteps = schedule.lrWarmupSteps

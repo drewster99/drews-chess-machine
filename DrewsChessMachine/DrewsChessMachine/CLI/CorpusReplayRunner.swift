@@ -29,21 +29,31 @@ final class ReplayAbortFlag: @unchecked Sendable {
 /// runners came to train without the LR/momentum cycle, the stats interval
 /// and the KL-probe interval. Only the run-level knobs that are not trainer
 /// state are listed separately.
+///
+/// **One source: `parameters`.** Every other field is derived from it in
+/// `init` and is immutable, so the parameters a run trains under and the
+/// snapshot its lineage records can never disagree. (When the fields were
+/// independently mutable, a caller could change `trainingBatchSize` without
+/// changing `lineageParameters`, and the files said one batch size while the
+/// trainer stepped at another.) A changed value means a new snapshot and a
+/// new `ReplayParams`; `adoptingSchedule(_:)` is the one such change a run
+/// makes.
 struct ReplayParams: Sendable {
-    var trainer: TrainerHyperparameters
-    var trainingBatchSize: Int
-    var replayBufferCapacity: Int
-    var replayRatioTarget: Double
-    var replayBufferMinPositionsBeforeTraining: Int
+    /// The snapshot every field below is derived from — what the run's
+    /// lineage records and a train-vs-UCI session's `session.json` records
+    /// its settings from.
+    let parameters: TrainingParametersSnapshot
+    let trainer: TrainerHyperparameters
+    let trainingBatchSize: Int
+    let replayBufferCapacity: Int
+    let replayRatioTarget: Double
+    let replayBufferMinPositionsBeforeTraining: Int
     /// The batch-composition constraints the replay buffer samples under,
     /// built by the same rule the GUI's self-play buffer uses.
-    var samplingConstraints: ReplayBuffer.SamplingConstraints
+    let samplingConstraints: ReplayBuffer.SamplingConstraints
     /// The complete parameter set, as every lineage record of the run
     /// carries it.
-    var lineageParameters: LineageRecord.Parameters
-    /// The snapshot every field above was taken from — what a train-vs-UCI
-    /// session's `session.json` records its settings from.
-    let parameters: TrainingParametersSnapshot
+    let lineageParameters: LineageRecord.Parameters
 
     init(_ parameters: TrainingParametersSnapshot) throws {
         self.parameters = parameters
@@ -54,6 +64,17 @@ struct ReplayParams: Sendable {
         replayRatioTarget = parameters.replayRatioTarget
         replayBufferMinPositionsBeforeTraining = parameters.replayBufferMinPositionsBeforeTraining
         samplingConstraints = ReplayBuffer.SamplingConstraints(parameters)
+    }
+
+    /// These parameters with a resumed checkpoint's schedule in force: the
+    /// warmup length and LR/momentum cycle it trained under, whatever the
+    /// run was configured with. Rebuilt from one adopted snapshot, so the
+    /// trainer is configured with — and every lineage record of the run
+    /// records — the schedule the file's flat `trainer_*` keys are written
+    /// from. A CLI trainer cannot change its schedule during a run, so this
+    /// one adoption at the start describes every save.
+    func adoptingSchedule(_ schedule: TrainerScheduleState) throws -> ReplayParams {
+        try ReplayParams(parameters.adoptingSchedule(schedule))
     }
 }
 
@@ -975,7 +996,7 @@ enum CorpusReplayRunner {
     /// `ResumeEquivalenceTests` can run the real loop in-process — a full run,
     /// then the same run split by a save and a `--resume-exact` — and compare
     /// the files they end with. Production enters through `runAndExit`.
-    static func runReplay(config: CorpusReplayConfig, params p: ReplayParams, abort: ReplayAbortFlag) async throws -> Result {
+    static func runReplay(config: CorpusReplayConfig, params configuredParams: ReplayParams, abort: ReplayAbortFlag) async throws -> Result {
         // `--output` support. Only allocated when a destination was given, so a
         // run without `--output` carries no per-step recording cost at all.
         let recorder: CliTrainingRecorder? = config.output == nil ? nil : {
@@ -1043,14 +1064,16 @@ enum CorpusReplayRunner {
         // length and LR/momentum cycle), whatever `--parameters` says; each
         // field that differs is logged, and the banner below shows the
         // schedule actually in force.
-        var trainerHyperparameters = p.trainer
+        let p: ReplayParams
         if let resumeSnapshot {
-            for line in p.trainer.scheduleDifferences(from: resumeSnapshot.schedule) {
+            for line in configuredParams.trainer.scheduleDifferences(from: resumeSnapshot.schedule) {
                 emit("[REPLAY-RESUME] WARNING \(line)")
             }
-            trainerHyperparameters = p.trainer.adoptingSchedule(resumeSnapshot.schedule)
+            p = try configuredParams.adoptingSchedule(resumeSnapshot.schedule)
+        } else {
+            p = configuredParams
         }
-        let hp = trainerHyperparameters
+        let hp = p.trainer
         let hparamsLine = String(
             format: "[REPLAY-HPARAMS] lr=%.6g batch=%ld wd=%.4g momentum=%.3g gradClip=%.3g entropyBonus=%.4g drawPenalty=%.4g policyW=%.3g valueW=%.3g illegalW=%.4g ",
             Double(hp.learningRate), p.trainingBatchSize, Double(hp.weightDecayC), Double(hp.momentumCoeff), Double(hp.gradClipMaxNorm),
@@ -1283,7 +1306,13 @@ enum CorpusReplayRunner {
                 } else {
                     resumeGaps.append(.rngSampler)
                 }
-                if parentRecord.parameters == nil { resumeGaps.append(.params) }
+                if let parentParameters = parentRecord.parameters {
+                    for line in try ParameterDifference.exactResumeLogLines(parent: parentParameters, inForce: p.parameters) {
+                        emit(line)
+                    }
+                } else {
+                    resumeGaps.append(.params)
+                }
                 let environment = ResumeGap.environmentGaps(
                     writtenBy: parentRecord, runningBuild: .current, runningDevice: .current,
                     runningFingerprint: try await BehaviorFingerprint.compute(
@@ -1439,7 +1468,7 @@ enum CorpusReplayRunner {
         // is inert and the static LR and momentum apply, exactly as in the GUI.
         let trainer = try ChessTrainer(
             dropoutStream: runSeed.streams.generator(.dropout),
-            hyperparameters: trainerHyperparameters, arch: arch, initialization: trainerInitialization,
+            hyperparameters: hp, arch: arch, initialization: trainerInitialization,
             policyTailPrecision: config.policyTailPrecision)
         emit(ChessNetwork.PolicyTailPrecision.processLogLine)
         // A requested GPU capture must be possible before any buffer fill or
@@ -1957,7 +1986,7 @@ enum CorpusReplayRunner {
                     // cycle fields come from the cycle evaluated at this step.
                     // `liveLR` (warmup- and sqrt-batch-scaled) stays in the
                     // [REPLAY] log line, where `lr=` is the honest label for it.
-                    trainerHyperparameters: trainerHyperparameters,
+                    trainerHyperparameters: hp,
                     cycleValues: cycleValues,
                     buildNumber: BuildInfo.buildNumber,
                     trainerID: config.runModelID,

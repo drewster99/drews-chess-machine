@@ -72,13 +72,14 @@ final class FinalTrainerSaveFailureTests: XCTestCase {
     private func replayError(stepLimit: Int, abortBeforeStart: Bool) async throws -> Error? {
         let corpus = try ResumeEquivalenceTests.writeCorpus(in: tempDir)
         let start = try await ResumeEquivalenceTests.writeStartModel(in: tempDir)
-        var p = try ReplayParams(TrainingParametersSnapshot.declaredDefaults(overriding: [:]))
-        p.trainingBatchSize = 32
-        p.replayBufferCapacity = 2000
-        p.replayBufferMinPositionsBeforeTraining = 500
-        p.trainer.lrWarmupSteps = 5
-        p.trainer.klProbeInterval = 0
-        p.trainer.batchStatsInterval = 0
+        let p = try ReplayParams(TrainingParametersSnapshot.declaredDefaults(overriding: [
+            TrainingBatchSize.id: .int(32),
+            ReplayBufferCapacity.id: .int(2000),
+            ReplayBufferMinPositionsBeforeTraining.id: .int(500),
+            LRWarmupSteps.id: .int(5),
+            KLProbeInterval.id: .int(0),
+            BatchStatsInterval.id: .int(0),
+        ]))
         let outModel = readOnlyDir.appendingPathComponent("out-replay-latest.safetensors")
         let config = CorpusReplayConfig(
             corpusDirectories: [corpus],
