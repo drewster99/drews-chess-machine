@@ -31,6 +31,12 @@ The monitor only observes. It makes no random draws and changes no trainer, opti
 | 7 | `policy_offset_drift` | warning: window median \|policy logit mean\| ≥ 3 (2 evaluations, ≥ 50 steps) | < 2 on 2 evaluations |
 | 8 | `bn_running_variance_runaway` | warning: largest BN running-variance max/median ≥ 1,000 | < 300 on 2 evaluations ≥ 1 step apart |
 | 9 | `gradient_spike` | warning: window max gradient norm ≥ 5× the reference median | < 2.5× |
+| 10 | `divergence` | window medians of policy entropy and gradient norm. Critical: entropy < 0.5 or gNorm > 500. Warning: entropy < 1.0 and gNorm > 50 (2 evaluations, ≥ 50 steps) | neither, on 2 evaluations |
+| 11 | `value_saturation` | window median of the value head's mean \|p_win − p_loss\|: warning ≥ 0.97, critical ≥ 0.995 (2 evaluations) | below 0.97 on 2 evaluations |
+| 12 | `value_draw_saturation` | window median of the value head's mean p_draw: warning ≥ 0.92, critical ≥ 0.97 (a fresh head starts at 0.75) | below 0.92 on 2 evaluations |
+| 13 | `legal_mass_stall` | critical: window median illegal mass above `legal_mass_collapse_threshold` (0.99) on `legal_mass_collapse_no_improvement_probes` (8) consecutive evaluations with no improvement, past warmup + learning grace | at or below the threshold on 2 evaluations |
+
+Rules 10–13 are the conditions of the GUI's training-alarm banner detectors and its legal-mass probe (owner decision OD-9). One set of functions, `TrainingHealthDetectorConditions`, decides their levels for both: the banner applies them to its heartbeat's rolling means with its own streaks (unchanged), the evaluator to the step window's medians, so the command-line paths judge them too. In the app both report: the banner as before, the alarm list as a rule. Their inputs are diagnostic-step fields; `[VS-UCI]` rows carry no `vAbs` / `pD`, so offline rules 11–12 have no data for train-vs-UCI logs.
 
 Thresholds are declared constants (`TrainingHealthThresholds`), not parameters. Each was measured against the incident runs (arms B and C of the 2026-10-05 LR-schedule A/B, B-silu) and the healthy baselines (arm A, R7, R8, a long GUI run).
 
@@ -58,7 +64,7 @@ A stop requested by a CLI run's final save changes neither the termination reaso
 | `training_health_alarms_enabled` | `true` | — |
 | `training_health_check_interval_steps` | 1000 | 50…100000 |
 | `training_health_learning_grace_steps` | 1000 | 0…100000 |
-| `training_health_action_<rule>` × 9 | 0 | 0…2 |
+| `training_health_action_<rule>` × 13 | 0 | 0…2 |
 
 - **Command-line paths:** read once from the run-start snapshot.
 - **GUI:** the config is resolved at every live evaluation, and the stop decision reads the actions when the result arrives.
@@ -88,7 +94,7 @@ A stop requested by a CLI run's final save changes neither the termination reaso
 - **Alarm list:** active health alarms show in a list under the training-alarm banner. Each row shows the severity symbol, the rule, the measured value, the step it was raised at, and whether its current action stops the run.
 - **Suspension header:** when a health stop has suspended training, a header row names the rule.
 - **Sound:** a critical health alarm beeps even when the banner shows nothing; warnings never beep. The list has its own Silence button.
-- **Health tab:** the training settings popover's Health tab holds the 12 settings. Each edit is logged as a `[PARAM]` line.
+- **Health tab:** the training settings popover's Health tab holds the 16 settings. Each edit is logged as a `[PARAM]` line.
 
 ## Offline replay
 

@@ -593,6 +593,10 @@ struct SessionCheckpointState: Codable, Equatable {
     var trainingHealthActionPolicyOffsetDrift: String?
     var trainingHealthActionBatchNormRunningVarianceRunaway: String?
     var trainingHealthActionGradientSpike: String?
+    var trainingHealthActionDivergence: String?
+    var trainingHealthActionValueSaturation: String?
+    var trainingHealthActionValueDrawSaturation: String?
+    var trainingHealthActionLegalMassStall: String?
     // --- Arena promotion criterion ---
     //
     // All Optional for back-compat; absent → the loader falls through to the
@@ -973,6 +977,10 @@ struct SessionCheckpointState: Codable, Equatable {
             case .policyOffsetDrift: return trainingHealthActionPolicyOffsetDrift
             case .batchNormRunningVarianceRunaway: return trainingHealthActionBatchNormRunningVarianceRunaway
             case .gradientSpike: return trainingHealthActionGradientSpike
+            case .divergence: return trainingHealthActionDivergence
+            case .valueSaturation: return trainingHealthActionValueSaturation
+            case .valueDrawSaturation: return trainingHealthActionValueDrawSaturation
+            case .legalMassStall: return trainingHealthActionLegalMassStall
             }
         }
         set {
@@ -986,6 +994,10 @@ struct SessionCheckpointState: Codable, Equatable {
             case .policyOffsetDrift: trainingHealthActionPolicyOffsetDrift = newValue
             case .batchNormRunningVarianceRunaway: trainingHealthActionBatchNormRunningVarianceRunaway = newValue
             case .gradientSpike: trainingHealthActionGradientSpike = newValue
+            case .divergence: trainingHealthActionDivergence = newValue
+            case .valueSaturation: trainingHealthActionValueSaturation = newValue
+            case .valueDrawSaturation: trainingHealthActionValueDrawSaturation = newValue
+            case .legalMassStall: trainingHealthActionLegalMassStall = newValue
             }
         }
     }

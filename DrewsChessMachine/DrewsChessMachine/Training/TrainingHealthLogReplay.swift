@@ -75,6 +75,13 @@ enum TrainingHealthLogReplay {
         let illegalMassPenalty: Float?
         let gradGlobalNorm: Float?
         let policyLogitMean: Float?
+        /// Rules 10–12's inputs (`pEnt=`, `vAbs=`, `pD=`); nil when the row
+        /// does not measure them (`--`, a lean step) or does not carry them
+        /// (`[VS-UCI]` rows have no `vAbs` / `pD`). Not listed in
+        /// `absentFields`, which names the rules 1–9 inputs a log lacks.
+        let policyEntropy: Float?
+        let valueAbsMean: Float?
+        let valueProbDraw: Float?
         let totalMs: Double?
         let learningRate: Double?
         let momentum: Double?
@@ -327,12 +334,22 @@ enum TrainingHealthLogReplay {
         let illegal = try number("pIllM", as: Float.self)
         let gradient = try number("gNorm", as: Float.self)
         let offset = try number("pLogitMean", as: Float.self)
+        func optionalNumber(_ key: String) throws -> Float? {
+            guard let text = fields[key], text != TrainingHealthLog.notMeasured else { return nil }
+            guard let value = Float(text) else { throw malformed("\(key)=\(text) is not a number") }
+            return value
+        }
+        let entropy = try optionalNumber("pEnt")
+        let valueAbs = try optionalNumber("vAbs")
+        let valueDraw = try optionalNumber("pD")
         let ms = try number("ms", as: Double.self)
         let lr = try number("lr", as: Double.self)
         let mom = try number("mom", as: Double.self)
         return StepRow(
             segmentStep: step, trainerStep: trainerStep, loss: loss, illegalMassPenalty: illegal,
-            gradGlobalNorm: gradient, policyLogitMean: offset, totalMs: ms, learningRate: lr,
+            gradGlobalNorm: gradient, policyLogitMean: offset,
+            policyEntropy: entropy, valueAbsMean: valueAbs, valueProbDraw: valueDraw,
+            totalMs: ms, learningRate: lr,
             momentum: mom, absentFields: absent, isTrainVsUci: isTrainVsUci)
     }
 
@@ -794,7 +811,8 @@ enum TrainingHealthLogReplay {
             announceRewindIfNeeded(trainerStep: trainerStep, restoredClock: trainerStep - 1)
             monitor().recordStep(TrainingHealthStepRecord(
                 trainerStep: trainerStep, loss: row.loss, illegalMassPenalty: row.illegalMassPenalty,
-                gradGlobalNorm: row.gradGlobalNorm, totalMs: row.totalMs, policyLogitMean: row.policyLogitMean))
+                gradGlobalNorm: row.gradGlobalNorm, totalMs: row.totalMs, policyLogitMean: row.policyLogitMean,
+                policyEntropy: row.policyEntropy, valueAbsMean: row.valueAbsMean, valueProbDraw: row.valueProbDraw))
             lastRowStepsTrained = stepsTrainedOffset + row.segmentStep
             pendingRow = (row, trainerStep)
         }

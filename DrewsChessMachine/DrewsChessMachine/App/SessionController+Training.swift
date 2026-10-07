@@ -2090,9 +2090,9 @@ extension SessionController {
                         // story. Skipped if entropy isn't yet
                         // available (training hasn't started).
                         if let entropy = trainingSnap.rollingPolicyEntropy,
-                           entropy < TrainingAlarmController.policyEntropyAlarmThreshold {
+                           entropy < TrainingHealthThresholds.policyEntropyAlarm {
                             SessionLogger.shared.log(
-                                "[ALARM] policy entropy \(String(format: "%.4f", entropy)) < \(String(format: "%.2f", TrainingAlarmController.policyEntropyAlarmThreshold)) — policy may be collapsing (steps=\(trainingSnap.stats.steps))"
+                                "[ALARM] policy entropy \(String(format: "%.4f", entropy)) < \(String(format: "%.2f", TrainingHealthThresholds.policyEntropyAlarm)) — policy may be collapsing (steps=\(trainingSnap.stats.steps))"
                             )
                         }
                     }
@@ -2346,23 +2346,11 @@ extension SessionController {
                         // `noImprovementProbeCount` samples before
                         // declaring "no improvement"; until then we
                         // log the probe and continue.
-                        let windowFull = legalMassWindow.count >= noImprovementProbeCount
-                        let allAboveThreshold: Bool = {
-                            guard windowFull else { return false }
-                            for legalMass in legalMassWindow where (1.0 - legalMass) <= illegalMassThreshold {
-                                return false
-                            }
-                            return true
-                        }()
-                        let noImprovement: Bool = {
-                            guard windowFull,
-                                  let oldest = legalMassWindow.first,
-                                  let newest = legalMassWindow.last else {
-                                return false
-                            }
-                            return newest <= oldest
-                        }()
-                        let probeMatches = allAboveThreshold && noImprovement
+                        // The condition is shared with the training-health
+                        // evaluator's `legal_mass_stall` rule (OD-9).
+                        let probeMatches = TrainingHealthDetectorConditions.legalMassStalled(
+                            legalMassRun: legalMassWindow, illegalMassThreshold: illegalMassThreshold,
+                            evaluations: noImprovementProbeCount)
                         if probeMatches {
                             SessionLogger.shared.log(
                                 String(format: "[ALARM] legal-mass collapse window: %d/%d probes illegalMass>%.4f, newest legalMass=%.5f ≤ oldest=%.5f",

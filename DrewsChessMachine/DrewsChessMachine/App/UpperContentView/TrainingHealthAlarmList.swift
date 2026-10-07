@@ -107,8 +107,13 @@ struct TrainingHealthAlarmRow: View {
                 .frame(width: 60, alignment: .trailing)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            "\(isCritical ? "Critical" : "Warning"): \(alarm.rule.displayName), \(alarm.value), "
-                + "since trainer step \(alarm.since), \(stops ? "stops the run" : "logged only")")
+        .accessibilityLabel(Self.accessibilityText(alarm: alarm, stops: stops))
+    }
+
+    /// The row's one combined VoiceOver label, e.g. "Critical: Dead
+    /// channels, dead=339/1040, since trainer step 514, stops the run".
+    static func accessibilityText(alarm: TrainingHealthActiveAlarm, stops: Bool) -> String {
+        "\(alarm.severity == .critical ? "Critical" : "Warning"): \(alarm.rule.displayName), \(alarm.value), "
+            + "since trainer step \(alarm.since), \(stops ? "stops the run" : "logged only")"
     }
 }

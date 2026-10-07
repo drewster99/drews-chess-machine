@@ -17,6 +17,10 @@ extension TrainingHealthRule {
         case .policyOffsetDrift: return "Policy offset drift"
         case .batchNormRunningVarianceRunaway: return "BN running variance"
         case .gradientSpike: return "Gradient spike"
+        case .divergence: return "Divergence"
+        case .valueSaturation: return "Value saturation"
+        case .valueDrawSaturation: return "Value draw saturation"
+        case .legalMassStall: return "Legal-mass stall"
         }
     }
 
@@ -33,6 +37,10 @@ extension TrainingHealthRule {
         case .policyOffsetDrift: return "Window median |policy logit mean| at or above 3"
         case .batchNormRunningVarianceRunaway: return "Largest BN running-variance max/median at or above 1000"
         case .gradientSpike: return "Window's largest gradient norm at 5× the previous 1000 steps' median"
+        case .divergence: return "Policy entropy < 1.0 with gNorm > 50 (warning); entropy < 0.5 or gNorm > 500 (critical)"
+        case .valueSaturation: return "Value head mean |p_win − p_loss| at 0.97 (warning) or 0.995 (critical)"
+        case .valueDrawSaturation: return "Value head mean p_draw at 0.92 (warning) or 0.97 (critical); fresh is 0.75"
+        case .legalMassStall: return "Illegal mass above the legal-mass threshold, not improving, for the probe count"
         }
     }
 }

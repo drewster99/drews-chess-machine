@@ -14,7 +14,8 @@ enum TrainingHealthTestSupport {
     ) throws -> TrainingHealthConfig {
         try TrainingHealthConfig(
             enabled: enabled, checkIntervalSteps: checkIntervalSteps, learningGraceSteps: learningGraceSteps,
-            lrWarmupSteps: lrWarmupSteps, momentumCoefficient: 0.85, actions: actions)
+            lrWarmupSteps: lrWarmupSteps, momentumCoefficient: 0.85,
+            legalMassStallThreshold: 0.99, legalMassStallEvaluations: 8, actions: actions)
     }
 
     static func stamp(generation: Int = 0, stepsTrained: Int = 10_000, lastRecorded: Int? = nil) -> TrainingHealthStamp {
@@ -39,9 +40,15 @@ enum TrainingHealthTestSupport {
         offset: Float? = nil,
         ms: Double? = 10
     ) -> TrainingHealthStepRecord {
+        // A record with `offset` is a diagnostic step, which in-app carries
+        // every diagnostic field together; rules 10–12's inputs get healthy
+        // values so they are measured (not "no data") and raise nothing.
         TrainingHealthStepRecord(
             trainerStep: step, loss: loss, illegalMassPenalty: illegal, gradGlobalNorm: gradient,
-            totalMs: ms, policyLogitMean: offset)
+            totalMs: ms, policyLogitMean: offset,
+            policyEntropy: offset == nil ? nil : 2.0,
+            valueAbsMean: offset == nil ? nil : 0.3,
+            valueProbDraw: offset == nil ? nil : 0.5)
     }
 
     /// A healthy reference history: one entry every `stride` steps before

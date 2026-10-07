@@ -464,6 +464,14 @@ extension SessionParameterResume {
                 restoreTrainingHealthAction(TrainingHealthActionBatchNormRunningVarianceRunaway.self, rule: rule, from: rs, replacing: replacing)
             case .gradientSpike:
                 restoreTrainingHealthAction(TrainingHealthActionGradientSpike.self, rule: rule, from: rs, replacing: replacing)
+            case .divergence:
+                restoreTrainingHealthAction(TrainingHealthActionDivergence.self, rule: rule, from: rs, replacing: replacing)
+            case .valueSaturation:
+                restoreTrainingHealthAction(TrainingHealthActionValueSaturation.self, rule: rule, from: rs, replacing: replacing)
+            case .valueDrawSaturation:
+                restoreTrainingHealthAction(TrainingHealthActionValueDrawSaturation.self, rule: rule, from: rs, replacing: replacing)
+            case .legalMassStall:
+                restoreTrainingHealthAction(TrainingHealthActionLegalMassStall.self, rule: rule, from: rs, replacing: replacing)
             }
         }
     }
