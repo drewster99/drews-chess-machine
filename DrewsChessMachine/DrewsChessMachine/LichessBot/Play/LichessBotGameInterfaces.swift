@@ -19,7 +19,11 @@ extension LichessBotAPIClient: LichessBotGameAPI {}
 /// Identity of the weights a move was played with (plan §9). Recorded with
 /// every move, so every statistic is attributable to exact weights.
 struct LichessBotGenerationInfo: Sendable, Equatable, Codable {
-    /// Distinct per snapshot within one run of the app.
+    /// Distinct per snapshot within one going-online: numbering restarts at
+    /// 1 each time the bot goes online (`LichessBotModelSlots.prepare`), so
+    /// one ID can name different generations in a game resumed after a
+    /// relaunch. A record tells them apart by the whole info
+    /// (`LichessBotGameRecord.Move.generationIndex`).
     let generationID: Int
     let sourceKind: LichessBotModelSourceKind
     let modelID: String

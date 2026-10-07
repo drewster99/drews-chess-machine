@@ -71,10 +71,10 @@ struct LichessBotGenerationFacts: Sendable, Codable, Equatable {
     let modelID: String
     let trainingStep: Int?
     let fileSHA256: String?
-    /// The followed lineage's run, segment and cumulative trainer step, when
-    /// the generation was loaded from a file carrying a lineage record.
-    /// Nil until generations record their lineage
-    /// (`LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` §3.6).
+    /// The run, segment and cumulative trainer step of the file the
+    /// generation was loaded from, when the file carries a lineage record
+    /// (`LichessBotGenerationInfo.lineage`, `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md`
+    /// §3.6); nil for in-memory sources and files without one.
     let lineageRunID: String?
     let segmentIndex: Int?
     let cumTrainerStep: Int?
@@ -276,9 +276,9 @@ extension LichessBotGameMoveFacts {
                 modelID: generation.modelID,
                 trainingStep: generation.trainingStep,
                 fileSHA256: generation.fileSHA256,
-                lineageRunID: nil,
-                segmentIndex: nil,
-                cumTrainerStep: nil,
+                lineageRunID: generation.lineage?.lineageRunID,
+                segmentIndex: generation.lineage?.segmentIndex,
+                cumTrainerStep: generation.lineage?.cumTrainerStep,
                 ourMoves: moves
             )
         }
