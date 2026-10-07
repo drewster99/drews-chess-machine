@@ -108,9 +108,6 @@ struct AnalysisExportMetadata: Codable, Sendable {
     // MARK: - Architecture
 
     struct Architecture: Codable, Sendable {
-        /// `NetworkArchitecture.architectureVersionLabel`, for display.
-        /// Identity is the full config / `summary`, not this number.
-        let architectureVersion: Int
         /// Total persistent-tensor element count (`NetworkArchitecture.parameterCount`).
         let parameterCount: Int
         /// Every block in the tower, all groups summed (`NetworkArchitecture.numBlocks`).
@@ -137,7 +134,6 @@ struct AnalysisExportMetadata: Codable, Sendable {
         }
 
         init(_ arch: NetworkArchitecture) {
-            architectureVersion = arch.architectureVersionLabel
             parameterCount = arch.parameterCount
             // `numBlocks` is the whole tower, `channels` the last group's
             // width, `convKernelSize` / `seReductionRatio` the first group's;
@@ -221,5 +217,7 @@ struct AnalysisExportMetadata: Codable, Sendable {
     /// draws; the value head's fc2 bias `initial` / `initialBiasOnlySoftmax` /
     /// `delta` are null unless exact; the numerics audit's `biasInitMean` is
     /// the reference's stored initial mean (in the model's compute dtype).
-    static let currentSchemaVersion = 5
+    /// v6: the architecture drops `architectureVersion` (the retired
+    /// v3/v4/v5 display label), and its `summary` no longer starts with it.
+    static let currentSchemaVersion = 6
 }

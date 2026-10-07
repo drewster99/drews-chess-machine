@@ -207,8 +207,16 @@ final class SessionController {
     /// records the origin of the weights the champion now holds, which ends
     /// a replacement `noteChampionWeightsReplaced()` began.
     @ObservationIgnored var championOrigin: ChampionOrigin? {
-        didSet { championWeightIdentity.recordOrigin() }
+        didSet {
+            championWeightIdentity.recordOrigin()
+            championNameplate = championOrigin.map(ModelNameplate.init(championOrigin:))
+        }
     }
+    /// The champion's name, preset and file format for the title bar and
+    /// About popover (`ModelNameplate`); nil while it has no recorded
+    /// origin. Set only by `championOrigin`'s observer, so it always
+    /// describes the origin of the weights the champion holds.
+    private(set) var championNameplate: ModelNameplate?
     /// How the champion's weights relate to `championOrigin` and its
     /// identifier, for readers that must attribute a champion export (the
     /// analyzers' snapshots): not awaiting an origin before the export and
@@ -1136,7 +1144,9 @@ final class SessionController {
     /// Build a fresh champion of `architecture` — the Build New Model
     /// screen's Build (its architecture and entered init seed) and the
     /// headless `--train` launch (`NetworkArchitecture.newModelDefault`, no
-    /// seed). `enteredInitSeed` nil draws a seed at the build.
+    /// seed). `enteredInitSeed` nil draws a seed at the build. `naming` is
+    /// what the model is made under (`ModelNaming`), recorded in its
+    /// champion origin and so in every file of its line.
     ///
     /// The refusals come first, before anything else happens: the busy and
     /// network-already-built guards (belt-and-suspenders behind the menu's
@@ -1149,7 +1159,7 @@ final class SessionController {
     ///
     /// On success, mints a fresh `ModelID`, wires the new network + runner,
     /// fills `networkStatus`, and clears the last-saved-at marker.
-    func buildNetwork(architecture arch: NetworkArchitecture, enteredInitSeed: UInt64?) {
+    func buildNetwork(architecture arch: NetworkArchitecture, enteredInitSeed: UInt64?, naming: ModelNaming) {
         if isBusyProvider() {
             onRefuseMenuAction(busyReasonProvider())
             return
@@ -1180,7 +1190,7 @@ final class SessionController {
             initSeed = WeightInitialization.drawnInitSeed()
             initSeedSource = "drawn"
         }
-        SessionLogger.shared.log("[BUTTON] Build Network (\(arch.architectureSummary)) init_seed=\(initSeed) (\(initSeedSource)) init_scheme=\(WeightInitScheme.current)")
+        SessionLogger.shared.log("[BUTTON] Build Network (\(arch.architectureSummary)) \(ModelNaming.logText(.recorded(naming))) init_seed=\(initSeed) (\(initSeedSource)) init_scheme=\(WeightInitScheme.current)")
         isBuilding = true
         networkStatus = ""
         // Drop the trainer (it owns graph state we're about to invalidate by
@@ -1200,7 +1210,8 @@ final class SessionController {
                 network = net
                 // Weights initialized here: a run from this champion is fresh,
                 // drawn under this init seed.
-                championOrigin = .built(initialization: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current))
+                championOrigin = .built(initialization: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current),
+                                        naming: naming)
                 net.network.commandQueue.label = "champion (self-play)"
                 runner = ChessRunner(network: net)
                 let idStr = net.identifier?.description ?? "?"
@@ -1214,7 +1225,7 @@ final class SessionController {
                     event: "built champion \(idStr)",
                     arch: net.network.arch
                 )
-                SessionLogger.shared.log("[BUILD] champion \(idStr) built in \(String(format: "%.1f", net.buildTimeMs)) ms init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current)")
+                SessionLogger.shared.log("[BUILD] champion \(idStr) built in \(String(format: "%.1f", net.buildTimeMs)) ms \(ModelNaming.logText(.recorded(naming))) init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current)")
                 checkpoint?.lastSavedAt = nil
                 checkpoint?.lastResumedAt = nil
             case .failure(let error):

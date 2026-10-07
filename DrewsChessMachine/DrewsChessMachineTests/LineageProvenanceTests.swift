@@ -53,12 +53,12 @@ final class LineageProvenanceTests: XCTestCase {
             modelID: "20261002-1-SRCB", createdAtUnix: 1_790_000_000,
             metadata: ModelCheckpointMetadata(creator: "test", trainingStep: 0, parentModelID: "", notes: ""),
             weights: baseWeights(), architecture: arch, includesVelocity: false,
-            lineage: try LineageTracker.mintRecord(pathKind: .newModel, argv: ["dcm", "--new-model"], initialization: .forTests, at: mintDate))
+            lineage: try LineageTracker.mintRecord(pathKind: .newModel, argv: ["dcm", "--new-model"], initialization: .forTests, naming: .unnamedWithoutPreset, at: mintDate))
         return try ModelDerivation.derive(
             sourceData: source, sourceName: "source.safetensors",
             operations: [SetRezeroAlphaCapDeriveOperation(value: 2, groupIndices: nil)],
             newModelID: "20261002-2-DRVB", createdAtUnix: 1_790_000_100, build: "test",
-            invocationArguments: ["dcm", "--derive-model"])
+            invocationArguments: ["dcm", "--derive-model"], renamedTo: nil)
     }
 
     // MARK: - B4: derivation_history carried forward
@@ -107,7 +107,7 @@ final class LineageProvenanceTests: XCTestCase {
             sourceData: trainedModel, sourceName: "trained.safetensors",
             operations: [SetRezeroAlphaCapDeriveOperation(value: 3, groupIndices: nil)],
             newModelID: "20261002-4-DRV2", createdAtUnix: 1_790_000_400, build: "test",
-            invocationArguments: ["dcm", "--derive-model"])
+            invocationArguments: ["dcm", "--derive-model"], renamedTo: nil)
         XCTAssertEqual(second.history.map(\.modelID), ["20261002-2-DRVB", "20261002-4-DRV2"])
     }
 
@@ -145,7 +145,7 @@ final class LineageProvenanceTests: XCTestCase {
 
     private func resumedRecord() throws -> (record: LineageRecord, parentSHA: String) {
         let start = Date(timeIntervalSince1970: 1_790_001_000)
-        let first = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .replay, argv: ["dcm"], startedAt: start, segmentStartTrainerStep: 0)
+        let first = try LineageTracker(start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .replay, argv: ["dcm"], startedAt: start, segmentStartTrainerStep: 0)
         first.recordTrainingStep(totalMs: 2500)
         let firstRecord = try first.record(at: start.addingTimeInterval(100), trainerCompletedSteps: 10, segmentLocalStep: 10,
                                            segmentGames: 7, segmentPositions: 400, corpus: nil, parameters: nil,

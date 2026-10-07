@@ -223,7 +223,7 @@ final class ExactResumeCompletionTests: XCTestCase {
     func testTheRunsInitSeedIsRecordedCarriedAndOnlyOnAFreshRun() throws {
         let initialization = ModelInitRecord(initSeed: 18_446_744_073_709_551_557, scheme: WeightInitScheme.current)
         let start = Date(timeIntervalSince1970: 1_790_000_000)
-        let fresh = try LineageTracker(start: .fresh(initialization: initialization), pathKind: .replay, argv: ["dcm"],
+        let fresh = try LineageTracker(start: .fresh(initialization: initialization, naming: .unnamedWithoutPreset), pathKind: .replay, argv: ["dcm"],
                                        startedAt: start, segmentStartTrainerStep: 0)
         let freshRecord = try fresh.record(at: start, trainerCompletedSteps: 3, segmentLocalStep: 3, segmentGames: 0,
                                            segmentPositions: 0, corpus: nil, parameters: nil,
@@ -243,7 +243,7 @@ final class ExactResumeCompletionTests: XCTestCase {
         let branch = try LineageTracker(start: .branch(parent: parent), pathKind: .replay, argv: ["dcm"],
                                         startedAt: start, segmentStartTrainerStep: 0)
         XCTAssertNil(try branch.startRecord(at: start, trainerCompletedSteps: 0, parameters: nil, inputs: branch.testInputs).rng.initialization)
-        let minted = try LineageTracker.mintRecord(pathKind: .newModel, argv: ["dcm"], initialization: initialization, at: start)
+        let minted = try LineageTracker.mintRecord(pathKind: .newModel, argv: ["dcm"], initialization: initialization, naming: .unnamedWithoutPreset, at: start)
         XCTAssertEqual(minted.rng.initialization, initialization)
 
         // A seed without its scheme is refused.

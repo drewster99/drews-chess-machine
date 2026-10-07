@@ -137,7 +137,7 @@ final class BlockGroupArchitectureTests: XCTestCase {
         let params = 8_445_748.formatted(.number)
         XCTAssertEqual(
             NetworkArchitecture.current.architectureSummary,
-            "v4 . in basic30(30) -> stem 128 (7x7)"
+            "in basic30(30) -> stem 128 (7x7)"
             + " . 5x[7x7+7x7 @128, SE+/4, relu/pre, clean_add, ReZero(0.447·tanh≤0.447), drop*1]"
             + " . act relu . policy intermediate_conv(4864)"
             + " . value WDL(16->FC128) . bfloat16 policy-tail mixed_final_projection . \(params) params"
@@ -149,7 +149,7 @@ final class BlockGroupArchitectureTests: XCTestCase {
         let params = arch.parameterCount.formatted(.number)
         XCTAssertEqual(
             arch.architectureSummary,
-            "v4 . in basic30(30) -> stem 64 (7x7)"
+            "in basic30(30) -> stem 64 (7x7)"
             + " . 1x[7x7+3x3 @64, SE+/4, relu/pre, clean_add, ReZero(0.5·tanh≤0.5), drop*1]"
             + " -> 3x[3x3+3x3 @128, SE+/4, relu/pre, clean_add, ReZero(0.5·tanh≤0.5), drop*0.5]"
             + " . act relu . policy intermediate_conv(4864)"
@@ -227,10 +227,11 @@ final class BlockGroupArchitectureTests: XCTestCase {
         XCTAssertFalse(NetworkArchitecture.groupSummary(
             NetworkArchitecture.preset(.v4_5block_7x7).blockGroups[0]).contains("out:"))
 
-        // Family label: output norm bumps to v5; v4 (no output norm) stays v4.
-        XCTAssertEqual(arch.architectureVersionLabel, 5)
-        XCTAssertTrue(arch.architectureSummary.hasPrefix("v5 "))
-        XCTAssertEqual(NetworkArchitecture.preset(.v4_5block_7x7).architectureVersionLabel, 4)
+        // Legacy .dcmmodel hash topology version: output norm bumps to 5; v4
+        // (no output norm) stays 4. The summary carries no family label.
+        XCTAssertEqual(ModelCheckpointFile.legacyTopologyVersion(of: arch), 5)
+        XCTAssertTrue(arch.architectureSummary.hasPrefix("in "))
+        XCTAssertEqual(ModelCheckpointFile.legacyTopologyVersion(of: NetworkArchitecture.preset(.v4_5block_7x7)), 4)
     }
 
     // MARK: GPU — v5 LayerNorm-output tower builds, evaluates, exports

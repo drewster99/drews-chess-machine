@@ -50,7 +50,7 @@ final class BuildNetworkRefusalTests: XCTestCase {
         let controller = controller(recordingInto: recorder)
         controller.isBusyProvider = { true }
         controller.busyReasonProvider = { "busy" }
-        controller.buildNetwork(architecture: .preset(.v3_8block_3x3), enteredInitSeed: 7)
+        controller.buildNetwork(architecture: .preset(.v3_8block_3x3), enteredInitSeed: 7, naming: .unnamedWithoutPreset)
         assertNothingHappened(controller, recorder)
         XCTAssertEqual(recorder.refusals, ["busy"])
         XCTAssertNil(controller.network)
@@ -64,7 +64,7 @@ final class BuildNetworkRefusalTests: XCTestCase {
         let recorder = Recorder()
         let controller = controller(recordingInto: recorder)
         controller.network = existing
-        controller.buildNetwork(architecture: .preset(.v3_8block_3x3), enteredInitSeed: 7)
+        controller.buildNetwork(architecture: .preset(.v3_8block_3x3), enteredInitSeed: 7, naming: .unnamedWithoutPreset)
         assertNothingHappened(controller, recorder)
         XCTAssertTrue(controller.network === existing)
     }
@@ -74,7 +74,7 @@ final class BuildNetworkRefusalTests: XCTestCase {
         arch.blockGroups[0].count = 1 << 30
         let recorder = Recorder()
         let controller = controller(recordingInto: recorder)
-        controller.buildNetwork(architecture: arch, enteredInitSeed: nil)
+        controller.buildNetwork(architecture: arch, enteredInitSeed: nil, naming: .unnamedWithoutPreset)
         assertNothingHappened(controller, recorder)
         let refusal = try XCTUnwrap(recorder.refusals.first)
         XCTAssertTrue(refusal.contains("physical memory"), refusal)

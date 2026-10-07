@@ -32,9 +32,10 @@ enum NewModelCLI {
     /// routine runs its GPU work off-actor). Logs the `[ARCH] size guidance`
     /// line for this Mac (`ModelSizeGuidance`) and refuses, like a failed
     /// validation, a model whose training state cannot fit in physical
-    /// memory.
-    static func runAndExit(architecture arch: NetworkArchitecture, name: String, outPath: String?, modelID: String,
-                           enteredInitSeed: UInt64?) -> Never {
+    /// memory. `naming` (`--name` and the preset `--architecture` named) is
+    /// recorded in the file's lineage.
+    static func runAndExit(architecture arch: NetworkArchitecture, name: String, naming: ModelNaming, outPath: String?,
+                           modelID: String, enteredInitSeed: UInt64?) -> Never {
         SessionLogger.shared.start()
 
         // Defensive re-validation (the caller already validated via the store).
@@ -103,9 +104,9 @@ enum NewModelCLI {
         }
         let initLine = "init_seed=\(initSeed) (\(initSeedSource)) init_scheme=\(WeightInitScheme.current)"
         FileHandle.standardError.write(Data(
-            "[NEW-MODEL] minting \(name) (v\(arch.architectureVersionLabel), \(arch.parameterCount) params) id=\(modelID) \(initLine)\n".utf8
+            "[NEW-MODEL] minting \(name) (\(arch.parameterCount) params) id=\(modelID) \(ModelNaming.logText(.recorded(naming))) \(initLine)\n".utf8
         ))
-        SessionLogger.shared.log("[NEW-MODEL] minting \(name) id=\(modelID) \(initLine)")
+        SessionLogger.shared.log("[NEW-MODEL] minting \(name) id=\(modelID) \(ModelNaming.logText(.recorded(naming))) \(initLine)")
 
         do {
             // Build with random weights (includes the BN warmup forward) and
@@ -132,7 +133,7 @@ enum NewModelCLI {
                 creator: "new-model",
                 trainingStep: nil,
                 parentModelID: "",
-                notes: "fresh \(name) net (untrained), arch v\(arch.architectureVersionLabel), "
+                notes: "fresh \(name) net (untrained), "
                     + "BN warm-up under policy tail precision \(arch.policyTailPrecision.rawValue)"
             )
             let mintDate = Date()
@@ -144,7 +145,7 @@ enum NewModelCLI {
                 architecture: arch,
                 includesVelocity: false,
                 lineage: try LineageTracker.mintRecord(pathKind: .newModel, argv: CommandLine.arguments,
-                                                       initialization: initialization, at: mintDate)
+                                                       initialization: initialization, naming: naming, at: mintDate)
             )
             try FileManager.default.createDirectory(
                 at: outURL.deletingLastPathComponent(),

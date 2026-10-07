@@ -14,12 +14,14 @@
 import Foundation
 import Observation
 
-/// What the Build button hands the host: the architecture to build and the
-/// init seed the user entered, or nil when the seed is to be drawn at the
-/// build (and then shown and logged).
+/// What the Build button hands the host: the architecture to build, the
+/// init seed the user entered (nil when the seed is to be drawn at the
+/// build, and then shown and logged), and the naming the model is made
+/// under (`ModelNaming`: the Name field and the Start from preset).
 struct BuildNewModelRequest: Equatable {
     let architecture: NetworkArchitecture
     let enteredInitSeed: UInt64?
+    let naming: ModelNaming
 }
 
 /// The Init seed field's reading.
@@ -105,6 +107,17 @@ final class BuildNewModelModel {
     /// (`featureSkipUsesCompressNode`), so it needs no site sync.
     var featureSkipToFinalBlock: Bool
 
+    /// The preset last chosen in Start from (or last saved with Save as
+    /// Preset), with its architecture: what the built model records as the
+    /// preset it started from (owner decision D2, MODEL_NAMING_PLAN.md),
+    /// edited when the fields no longer equal it. nil until one is chosen —
+    /// the screen opens on "Custom" fields.
+    struct ChosenPreset: Equatable {
+        let name: String
+        let architecture: NetworkArchitecture
+    }
+    private(set) var startedFromPreset: ChosenPreset? = nil
+
     /// Name to save the current config under (Save-as-Preset). Defaults from the
     /// label, sanitized to a filename-safe slug.
     var saveAsName: String = ""
@@ -183,6 +196,19 @@ final class BuildNewModelModel {
     /// appears in the picker without re-scanning on every render.
     func refreshPresets() {
         availablePresets = ArchitecturePresetStore.allPresets()
+    }
+
+    /// Populate every field from the preset `name` (the Start from picker)
+    /// and record it as the preset the model starts from.
+    func loadPreset(named name: String, _ named: NamedArchitecture) {
+        load(named)
+        startedFromPreset = ChosenPreset(name: name, architecture: named.architecture)
+    }
+
+    /// The fields were just saved as the preset `name`: the model now
+    /// starts from it, as the Start from picker then shows.
+    func noteSavedAsPreset(named name: String, architecture savedArchitecture: NetworkArchitecture) {
+        startedFromPreset = ChosenPreset(name: name, architecture: savedArchitecture)
     }
 
     /// Populate every field from a preset (the picker selection is derived from
@@ -594,15 +620,43 @@ final class BuildNewModelModel {
         return .entered(seed)
     }
 
-    /// The Build request, or nil while the architecture or the init seed is
-    /// invalid (Build is disabled then).
+    /// The naming the built model records: the Name field (empty or only
+    /// spaces = none given) and `startedFromPreset`, edited when the
+    /// current architecture differs from the preset's. Throws for a name
+    /// `ModelNaming.validatedName` refuses.
+    func makeModelNaming() throws -> ModelNaming {
+        let typedName = labelOverride.trimmingCharacters(in: .whitespaces)
+        let presetStart = try startedFromPreset.map {
+            try ModelNaming.PresetStart(preset: $0.name, edited: $0.architecture != architecture)
+        }
+        return try ModelNaming(name: typedName.isEmpty ? nil : typedName, presetStart: .recorded(presetStart))
+    }
+
+    /// Why the Name field can't name a model, or nil when it can.
+    var nameError: String? {
+        do {
+            _ = try makeModelNaming()
+            return nil
+        } catch {
+            return String(describing: error)
+        }
+    }
+
+    /// The Build request, or nil while the architecture, the init seed or
+    /// the name is invalid (Build is disabled then).
     var buildRequest: BuildNewModelRequest? {
         guard isValid else { return nil }
+        let naming: ModelNaming
+        do {
+            naming = try makeModelNaming()
+        } catch {
+            return nil
+        }
         switch initSeedEntry {
         case .drawnAtBuild:
-            return BuildNewModelRequest(architecture: architecture, enteredInitSeed: nil)
+            return BuildNewModelRequest(architecture: architecture, enteredInitSeed: nil, naming: naming)
         case let .entered(seed):
-            return BuildNewModelRequest(architecture: architecture, enteredInitSeed: seed)
+            return BuildNewModelRequest(architecture: architecture, enteredInitSeed: seed, naming: naming)
         case .invalid:
             return nil
         }

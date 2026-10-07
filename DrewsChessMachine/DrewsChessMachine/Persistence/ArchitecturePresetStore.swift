@@ -232,12 +232,30 @@ enum ArchitecturePresetStore {
     /// NOT silently retried as a path) — only "no such name" falls through to
     /// the path interpretation.
     static func resolve(nameOrPath value: String) throws -> (named: NamedArchitecture, sourceName: String) {
+        let resolved = try resolveArchitecture(nameOrPath: value)
+        return (resolved.named, resolved.sourceName)
+    }
+
+    /// What `resolveArchitecture(nameOrPath:)` found.
+    struct ResolvedArchitecture {
+        let named: NamedArchitecture
+        /// The preset name, or the architecture file's stem.
+        let sourceName: String
+        /// The preset's name when the value resolved as a preset (built-in or
+        /// user-saved); nil when it was a path to an architecture file — a
+        /// file outside the preset store is not a preset, so a model made
+        /// from one records no preset start (`ModelNaming`).
+        let presetName: String?
+    }
+
+    /// `resolve(nameOrPath:)`, also saying whether the value was a preset.
+    static func resolveArchitecture(nameOrPath value: String) throws -> ResolvedArchitecture {
         // 1. As a name (built-in, or Presets/<base>.json), tolerating a `.json`
         //    suffix on the passed value.
         let base = value.lowercased().hasSuffix(".json") ? String(value.dropLast(5)) : value
         if !base.isEmpty {
             do {
-                return (try resolve(name: base), base)
+                return ResolvedArchitecture(named: try resolve(name: base), sourceName: base, presetName: base)
             } catch StoreError.presetNotFound {
                 // Not a known name — try it as a filesystem path below.
             }
@@ -247,7 +265,8 @@ enum ArchitecturePresetStore {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw StoreError.presetNotFound(value)
         }
-        return (try loadFile(at: url), url.deletingPathExtension().lastPathComponent)
+        return ResolvedArchitecture(named: try loadFile(at: url), sourceName: url.deletingPathExtension().lastPathComponent,
+                                    presetName: nil)
     }
 
     // MARK: Saving

@@ -46,7 +46,7 @@ final class DeriveTrainedSourceTests: XCTestCase {
     private func derive(_ data: Data, _ operations: [any DeriveOperation]) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: data, sourceName: "source.safetensors", operations: operations,
-            newModelID: "20261002-2-DRVD", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
+            newModelID: "20261002-2-DRVD", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"], renamedTo: nil)
     }
 
     private func assertRefusedAsTrained(_ data: Data, _ operation: any DeriveOperation,

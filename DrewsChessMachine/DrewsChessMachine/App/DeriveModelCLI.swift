@@ -33,6 +33,7 @@ enum DeriveModelCLI {
     static let initSeedFlag = "--init-seed"
     static let graftToFlag = "--graft-to"
     static let graftMapFlag = "--graft-map"
+    static let nameFlag = "--name"
 
     /// `--derive-model --help` text, generated from the operation catalog.
     static var helpText: String {
@@ -51,6 +52,10 @@ enum DeriveModelCLI {
             "                   omitted = every group the operation applies to",
             "  \(initSeedFlag) <u64>   init seed for operations that draw weights (decimal UInt64);",
             "                   omitted = a drawn seed; either way it is recorded in derivation_history",
+            "  \(nameFlag) <name>      the derived model's name (at most \(ModelNaming.maximumNameLength) characters, no line",
+            "                   breaks); omitted = the source's name carries over. The preset the source's",
+            "                   topology started from carries over either way, marked edited when the",
+            "                   derive changes the architecture. Also accepted with \(graftToFlag).",
             "",
             "operations:",
         ]
@@ -96,7 +101,8 @@ enum DeriveModelCLI {
         }
 
         let operationFlags = Set(ModelDerivation.operationKinds.map(\.flag))
-        let allowedFlags: Set<String> = Set([flag, fromFlag, outFlag, groupFlag, initSeedFlag, graftToFlag, graftMapFlag])
+        let allowedFlags: Set<String> = Set([flag, fromFlag, outFlag, groupFlag, initSeedFlag, graftToFlag, graftMapFlag,
+                                             nameFlag])
             .union(operationFlags)
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             fail("does not accept '\(bad)' (see \(flag) \(CommandLineHelp.longFlag))", 90)
@@ -122,6 +128,18 @@ enum DeriveModelCLI {
 
         guard let fromPath = single(fromFlag) else { fail("\(fromFlag) <model.safetensors> is required", 92) }
         guard let outPath = single(outFlag) else { fail("\(outFlag) <new.safetensors> is required", 92) }
+        // The derived model's new name (`ModelNaming`); without it the
+        // source's naming carries over.
+        let newName: String?
+        if let nameText = single(nameFlag) {
+            do {
+                newName = try ModelNaming.validatedName(nameText)
+            } catch {
+                fail("\(nameFlag) '\(nameText)': \(error)", 93)
+            }
+        } else {
+            newName = nil
+        }
 
         if let graftTarget = single(graftToFlag) {
             if let operationFlag = rawArgs.first(where: { operationFlags.contains($0) }) {
@@ -131,7 +149,7 @@ enum DeriveModelCLI {
                 fail("\(groupFlag) does not apply to \(graftToFlag)", 94)
             }
             runGraft(fromPath: fromPath, outPath: outPath, targetValue: graftTarget,
-                     mapText: single(graftMapFlag), initSeedText: single(initSeedFlag), fail: fail)
+                     mapText: single(graftMapFlag), initSeedText: single(initSeedFlag), newName: newName, fail: fail)
         }
         if rawArgs.contains(graftMapFlag) {
             fail("\(graftMapFlag) requires \(graftToFlag)", 94)
@@ -210,7 +228,8 @@ enum DeriveModelCLI {
                 newModelID: modelID,
                 createdAtUnix: Int64(Date().timeIntervalSince1970),
                 build: "\(BuildInfo.buildNumber) (\(BuildInfo.gitHash)\(BuildInfo.gitDirty ? "*" : ""))",
-                invocationArguments: CommandLine.arguments)
+                invocationArguments: CommandLine.arguments,
+                renamedTo: newName)
         } catch {
             SessionLogger.shared.log("[DERIVE] refused \(sourceURL.lastPathComponent): \(error)")
             SessionLogger.shared.shutdown()
@@ -259,7 +278,7 @@ enum DeriveModelCLI {
     /// fresh tensors, graft, write, exit. Runs on the main thread like the
     /// rest of the CLI (it blocks for the one network build).
     private static func runGraft(fromPath: String, outPath: String, targetValue: String, mapText: String?,
-                                 initSeedText: String?, fail: (String, Int32) -> Never) -> Never {
+                                 initSeedText: String?, newName: String?, fail: (String, Int32) -> Never) -> Never {
         let map: GraftMap
         if let mapText {
             do {
@@ -282,13 +301,14 @@ enum DeriveModelCLI {
             initSeed = WeightInitialization.drawnInitSeed()
             initSeedOrigin = "drawn"
         }
-        let named: NamedArchitecture
-        let targetLabel: String
+        let resolvedTarget: ArchitecturePresetStore.ResolvedArchitecture
         do {
-            (named, targetLabel) = try ArchitecturePresetStore.resolve(nameOrPath: targetValue)
+            resolvedTarget = try ArchitecturePresetStore.resolveArchitecture(nameOrPath: targetValue)
         } catch {
             fail("\(graftToFlag) \(targetValue): \(error)", 93)
         }
+        let named = resolvedTarget.named
+        let targetLabel = resolvedTarget.sourceName
 
         let sourceURL = URL(fileURLWithPath: (fromPath as NSString).expandingTildeInPath)
         let outURL = URL(fileURLWithPath: (outPath as NSString).expandingTildeInPath)
@@ -339,12 +359,14 @@ enum DeriveModelCLI {
                 sourceName: sourceURL.lastPathComponent,
                 fresh: fresh,
                 targetLabel: targetLabel,
+                targetPreset: resolvedTarget.presetName,
                 map: map,
                 initSeedOrigin: initSeedOrigin,
                 newModelID: modelID,
                 createdAtUnix: Int64(Date().timeIntervalSince1970),
                 build: "\(BuildInfo.buildNumber) (\(BuildInfo.gitHash)\(BuildInfo.gitDirty ? "*" : ""))",
-                invocationArguments: CommandLine.arguments)
+                invocationArguments: CommandLine.arguments,
+                renamedTo: newName)
         } catch {
             SessionLogger.shared.log("[DERIVE] graft refused \(sourceURL.lastPathComponent): \(error)")
             SessionLogger.shared.shutdown()

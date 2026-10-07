@@ -77,7 +77,6 @@ final class SessionResumeSummaryTests: XCTestCase {
         XCTAssertEqual(summary.championID, "CHAMP")
         XCTAssertEqual(summary.trainerID, "TRAIN")
         XCTAssertEqual(summary.architecture, ArchitectureMetadata(
-            architectureVersion: 4,
             channels: 128,
             numBlocks: 12,
             inputPlanes: 30,

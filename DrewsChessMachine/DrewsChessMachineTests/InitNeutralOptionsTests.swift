@@ -362,7 +362,7 @@ final class InitNeutralOptionsTests: XCTestCase {
     private func derive(_ data: Data, _ operations: [any DeriveOperation]) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: data, sourceName: "source.safetensors", operations: operations,
-            newModelID: "20261003-2-DRVD", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
+            newModelID: "20261003-2-DRVD", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"], renamedTo: nil)
     }
 
     /// The names of the tensors `derived` holds differently from `source`.
@@ -391,8 +391,8 @@ final class InitNeutralOptionsTests: XCTestCase {
         let map = try GraftMap.parse("blocks.1.skip_proj.weight=,policy.conv.weight=,value.wdl_fc2.weight=")
         let result = try ModelDerivation.graft(
             sourceData: try encodedModel(Self.architecture()), sourceName: "source.safetensors", fresh: fresh,
-            targetLabel: "neutral target", map: map, initSeedOrigin: "entered", newModelID: "20261003-3-GRFT",
-            createdAtUnix: 1_790_000_200, build: "test", invocationArguments: ["test"])
+            targetLabel: "neutral target", targetPreset: nil, map: map, initSeedOrigin: "entered", newModelID: "20261003-3-GRFT",
+            createdAtUnix: 1_790_000_200, build: "test", invocationArguments: ["test"], renamedTo: nil)
 
         let perTensor = try XCTUnwrap(try XCTUnwrap(result.record.operations.last).perTensorInit)
         XCTAssertEqual(perTensor["blocks.1.skip_proj.weight"], RandomTensorRole.identityLike.rawValue)

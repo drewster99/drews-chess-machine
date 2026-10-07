@@ -195,7 +195,7 @@ final class RunStartReadingsTests: XCTestCase {
         let training = try XCTUnwrap(harness.controller.currentAnalysisExportMetadata().training)
         XCTAssertNil(training.batchSize, "no run is active: no run's batch size")
         XCTAssertEqual(training.batchSizeSetting, 128, "the setting, under the setting's own key")
-        XCTAssertEqual(AnalysisExportMetadata.currentSchemaVersion, 5)
+        XCTAssertEqual(AnalysisExportMetadata.currentSchemaVersion, 6)
     }
 
     func testTheDisplayLabelSaysWhenAValueIsTheSetting() {
@@ -344,7 +344,7 @@ final class RunStartReadingsTests: XCTestCase {
     private static func loadedSession(trainingSteps: Int, trainingPositionsSeen: Int?) throws -> LoadedSession {
         let arch = ResumeEquivalenceTests.architecture
         let start = Date(timeIntervalSince1970: 1_790_000_000)
-        let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .gui,
+        let tracker = try LineageTracker(start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .gui,
                                          argv: ["DrewsChessMachine"], startedAt: start, segmentStartTrainerStep: 0)
         try tracker.noteSegmentStartForTests(trainerStep: 0)
         let record = try tracker.record(

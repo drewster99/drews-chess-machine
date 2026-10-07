@@ -21,7 +21,7 @@ final class LineageSchema3Tests: XCTestCase {
     private let start = Date(timeIntervalSince1970: 1_790_000_000)
 
     private func tracker(_ pathKind: LineageRecord.PathKind, at step: Int = 0) throws -> LineageTracker {
-        try LineageTracker(start: .fresh(initialization: .forTests), pathKind: pathKind, argv: ["dcm"],
+        try LineageTracker(start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: pathKind, argv: ["dcm"],
                            startedAt: start, segmentStartTrainerStep: step)
     }
 

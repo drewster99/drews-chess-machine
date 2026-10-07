@@ -47,7 +47,7 @@ final class GuiLineageLifecycleTests: XCTestCase {
     private func loadedSession() throws -> LoadedSession {
         let arch = Self.architecture
         let start = Date(timeIntervalSince1970: 1_790_000_000)
-        let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .gui,
+        let tracker = try LineageTracker(start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .gui,
                                          argv: ["DrewsChessMachine"], startedAt: start, segmentStartTrainerStep: 0)
         try tracker.noteSegmentStartForTests(trainerStep: 0)
         let record = try tracker.record(
@@ -113,7 +113,7 @@ final class GuiLineageLifecycleTests: XCTestCase {
         controller.beginRunStartCapture(buffer: ReplayBuffer(capacity: 64, inputEncoding: Self.architecture.inputEncoding, sampler: DCMRandom(seed: 3)))
         controller.lineageFedCarry = SessionController.LineageFedCarry(games: 7, positions: 300,
                                                                        baselineGames: nil, baselinePositions: nil)
-        controller.championOrigin = .built(initialization: .forTests)
+        controller.championOrigin = .built(initialization: .forTests, naming: .unnamedWithoutPreset)
         // No run seed: the segment begins, then its [RUN] record fails.
         controller.runRandomSeed = nil
 

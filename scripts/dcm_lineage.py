@@ -18,11 +18,13 @@ The rules mirror the app and CLAUDE.md "Run tracking: three axes":
   reported as unrecorded — nothing is reconstructed for it.
 - A file at or after that version without a record, with a record that does
   not parse, or with a record of a schema outside `OLDEST_SUPPORTED_SCHEMA` ...
-  `SUPPORTED_SCHEMA` (2 ... 3), is refused (the app refuses to load it too).
+  `SUPPORTED_SCHEMA` (2 ... 4), is refused (the app refuses to load it too).
   A schema-2 record (every file written before hyperparameter recording P4)
   is read as written: it has no `configuration` / `run_seeds` / `ancestry`,
   and its corpus position names one corpus as `corpus_id` / `corpus_path`
   where schema 3 has `corpus_identity` (read both with `corpus_ids`).
+  Schema 4 adds `model_naming` (the model's name and starting preset; read it
+  with `model_naming`), required at 4 and refused before.
 - A record's `cum_*` totals are *this run's* totals: a branch restarts them,
   a derive continues its source's. The totals behind the weights themselves
   are `weights_totals`, which adds the runs a schema-3 `ancestry` names.
@@ -60,7 +62,7 @@ LINEAGE_REQUIRED_FROM_VERSION = 7
 # dcm_format_version is.
 UNVERSIONED_LEGACY_VERSION = 3
 # LineageRecord.currentSchema.
-SUPPORTED_SCHEMA = 3
+SUPPORTED_SCHEMA = 4
 # LineageRecord.oldestDecodableSchema: the oldest schema the app still reads.
 OLDEST_SUPPORTED_SCHEMA = 2
 # LineageRecord.metadataKey.
@@ -147,6 +149,8 @@ _SCHEMA_3_TOP = ("configuration", "run_seeds", "ancestry")
 _SCHEMA_3_BUILD = ("git_diff_sha256", "xcode_build", "sdk_build", "configuration")
 _SCHEMA_3_SEGMENT_SUMMARY = ("configuration", "parameters", "corpus_identity", "segment_start_corpus",
                              "path_kind", "argv", "run_seeds")
+# What schema 4 added (model naming plan): required at 4, refused before.
+_SCHEMA_4_TOP = ("model_naming",)
 
 
 def lineage_of(metadata, source):
@@ -194,6 +198,7 @@ def validated_record(record, source, field=METADATA_KEY):
     if not isinstance(build, dict):
         raise LineageError(f"{source}: {field}.build is missing or not an object")
     _check_schema_keys(record, _SCHEMA_3_TOP, schema, source, field)
+    _check_schema_keys(record, _SCHEMA_4_TOP, schema, source, field, added_in=4)
     _check_schema_keys(build, _SCHEMA_3_BUILD, schema, source, f"{field}.build")
     for position, summary in enumerate(record["segments"]):
         for key in _REQUIRED_SEGMENT_SUMMARY:
@@ -246,14 +251,27 @@ def _check_seed_origin(record, schema, source, field):
                            f"value in a schema-{schema} record")
 
 
-def _check_schema_keys(holder, keys, schema, source, where):
-    """Each of schema 3's `keys` is present in `holder` at schema 3 and
-    absent at schema 2, as the app's decoder requires."""
+def _check_schema_keys(holder, keys, schema, source, where, added_in=3):
+    """Each of `keys` (added in schema `added_in`) is present in `holder` from
+    that schema on and absent before it, as the app's decoder requires."""
     for key in keys:
-        if schema >= 3 and key not in holder:
+        if schema >= added_in and key not in holder:
             raise LineageError(f"{source}: {where} has no {key} (schema {schema})")
-        if schema < 3 and key in holder:
+        if schema < added_in and key in holder:
             raise LineageError(f"{source}: {where} carries {key}, which schema {schema} never wrote")
+
+
+def model_naming(record):
+    """The record's model naming as written (`{"name": str|None, "preset_start":
+    {"recorded": bool, "value": {"preset": str, "edited": bool}|None}}`), or
+    None when the record does not state it: a schema before 4, or a schema-4
+    record whose `model_naming` is `{"recorded": false}`."""
+    if record["schema"] < 4:
+        return None
+    wrapper = record["model_naming"]
+    if not wrapper.get("recorded"):
+        return None
+    return wrapper["value"]
 
 
 def corpus_ids(corpus):

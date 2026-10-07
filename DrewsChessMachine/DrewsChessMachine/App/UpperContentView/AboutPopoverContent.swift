@@ -6,6 +6,9 @@ import SwiftUI
 /// when one exists.
 struct AboutPopoverContent: View {
     let network: ChessMPSNetwork?
+    /// The champion's name, preset and file format; nil while its weights
+    /// have no recorded origin.
+    let nameplate: ModelNameplate?
 
     /// The architecture of the live network, or the current preset when none is
     /// built yet — so the popover reflects what was actually built.
@@ -30,6 +33,9 @@ struct AboutPopoverContent: View {
                     .textSelection(.enabled)
                 Text("Parameters: \(parameterCountText)")
                     .font(.system(.callout, design: .monospaced))
+                if let nameplate {
+                    AboutNameplateRows(nameplate: nameplate)
+                }
                 if let net = network {
                     Text("Network ID: \(net.identifier?.description ?? "–")")
                         .font(.system(.callout, design: .monospaced))

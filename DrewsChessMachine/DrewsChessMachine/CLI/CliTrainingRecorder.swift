@@ -340,6 +340,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case schema, run, parent, steps, fed, time, parameters, build, invocation, device, rng
             case configuration
             case runSeeds = "run_seeds"
+            case modelNaming = "model_naming"
             case checkpointSHA256 = "checkpoint_sha256"
         }
 
@@ -362,6 +363,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             // only seed record.
             try c.encode(record.configuration, forKey: .configuration)
             try c.encode(record.runSeeds, forKey: .runSeeds)
+            try c.encode(record.modelNaming, forKey: .modelNaming)
             try c.encode(checkpointSHA256, forKey: .checkpointSHA256)
         }
     }

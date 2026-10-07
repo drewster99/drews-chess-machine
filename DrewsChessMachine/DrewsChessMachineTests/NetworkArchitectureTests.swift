@@ -146,8 +146,8 @@ final class NetworkArchitectureTests: XCTestCase {
         let v3 = NetworkArchitecture.preset(.v3_8block_3x3)
         XCTAssertFalse(v3.hasTowerEndBN)        // post-activation
         XCTAssertTrue(v3.hasStemActivation)
-        XCTAssertEqual(v3.architectureVersionLabel, 3)
-        XCTAssertEqual(wdl.architectureVersionLabel, 4)
+        XCTAssertEqual(ModelCheckpointFile.legacyTopologyVersion(of: v3), 3)
+        XCTAssertEqual(ModelCheckpointFile.legacyTopologyVersion(of: wdl), 4)
     }
 
     // MARK: Codable (rides in safetensors __metadata__ as canonical JSON)
@@ -287,7 +287,7 @@ final class NetworkArchitectureTests: XCTestCase {
         XCTAssertEqual(cur.blockGroups[0].seReductionRatio, 4)
         XCTAssertEqual(cur.valueHeadConvChannels, 16)
         XCTAssertEqual(cur.valueHeadHiddenUnits, 128)
-        XCTAssertEqual(cur.architectureVersionLabel, 4)
+        XCTAssertEqual(ModelCheckpointFile.legacyTopologyVersion(of: cur), 4)
         // Fixed engine constants still owned by ChessNetwork.
         XCTAssertEqual(ChessNetwork.boardSize, 8)
         XCTAssertEqual(ChessNetwork.policyChannels, 76)

@@ -278,10 +278,26 @@ struct ModelCheckpointFile {
         // values. Mixing it for v3 would make the v3 presets hash to values
         // no real file carries, so they could neither be written nor
         // matched. Label 3 therefore contributes nothing; 4 and above do.
-        if arch.architectureVersionLabel >= 4 {
-            mix(arch.architectureVersionLabel)
+        let topologyVersion = legacyTopologyVersion(of: arch)
+        if topologyVersion >= 4 {
+            mix(topologyVersion)
         }
         return h
+    }
+
+    /// The topology "version" the legacy `.dcmmodel` hash mixes: 5 when any
+    /// group has an output norm (the v5-era re-centered clean-add highway,
+    /// which post-dates the v3/v4 split and so takes precedence), else 4
+    /// for a pre-activation first group, else 3. Mixed-style towers report
+    /// the first group's. It once also labelled every architecture in the
+    /// UI; it now exists only so `archHash` keeps matching the files it
+    /// stamped, and must never change.
+    static func legacyTopologyVersion(of arch: NetworkArchitecture) -> Int {
+        guard let first = arch.blockGroups.first else {
+            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
+        }
+        if arch.blockGroups.contains(where: { $0.resolvedOutputNorm != .none }) { return 5 }
+        return first.activationStyle == .pre ? 4 : 3
     }
 
     /// Smallest legal encoded size — just the fixed header plus a

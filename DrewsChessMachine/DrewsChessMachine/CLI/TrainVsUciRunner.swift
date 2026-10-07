@@ -207,6 +207,9 @@ enum TrainVsUciRunner {
         // fresh preset / the current default.
         let arch: NetworkArchitecture
         let startModelFile: ModelCheckpointFile?
+        /// The naming of a fresh run's model (its preset, no name); nil when
+        /// the run starts from `startModelFile`, whose record carries its own.
+        let freshNaming: ModelNaming?
         let parentModelID: String
         // Set only for `--resume-exact` (see `TrainVsUciConfig.resumeExact`).
         var resumeSnapshot: TrainerResumeSnapshot? = nil
@@ -246,6 +249,7 @@ enum TrainVsUciRunner {
                     + "replayBuffer=\(loaded.replayBufferURL == nil ? "not saved" : "saved")")
             }
             startModelFile = file
+            freshNaming = nil
             parentModelID = file.modelID
             arch = file.architecture
             if config.resumeExact {
@@ -320,16 +324,20 @@ enum TrainVsUciRunner {
             p = configuredParams
             startModelFile = nil
             parentModelID = ""
+            let freshPreset: NetworkArchitecture.Preset
             if let pn = config.presetName {
                 guard let preset = NetworkArchitecture.Preset(rawValue: pn) else {
                     let names = NetworkArchitecture.Preset.allCases.map(\.rawValue).joined(separator: ", ")
                     throw CLIRunRefusal(message: "unknown --preset '\(pn)'. Available: \(names)")
                 }
-                arch = NetworkArchitecture.preset(preset)
+                freshPreset = preset
                 emit("[VS-UCI] fresh net from preset: \(pn)")
             } else {
-                arch = NetworkArchitecture.current
+                freshPreset = NetworkArchitecture.Preset.current
             }
+            arch = NetworkArchitecture.preset(freshPreset)
+            // A fresh run's model is its preset's topology, unnamed.
+            freshNaming = try ModelNaming.unnamed(fromPreset: freshPreset.rawValue)
         }
 
         for line in runSeed.parameterNotes { emit(line) }
@@ -410,7 +418,11 @@ enum TrainVsUciRunner {
             emit("[VS-UCI] fresh trainer init_seed=\(initSeed) init_scheme=\(WeightInitScheme.current) "
                 + "(from run seed \(runSeed.masterSeed))")
             trainerInitialization = .seeded(initSeed: initSeed)
-            lineageStart = .fresh(initialization: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current))
+            guard let freshNaming else {
+                throw CLIRunRefusal(message: "internal: a fresh run reached its lineage start without its model naming")
+            }
+            lineageStart = .fresh(initialization: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current),
+                                  naming: freshNaming)
         }
         let trainer = try ChessTrainer(
             dropoutStream: runSeed.streams.generator(.dropout),

@@ -13,7 +13,7 @@ extension LineageRecord {
     static func forTests(trainerCompletedSteps: Int?, corpus: CorpusPosition?) throws -> LineageRecord {
         let start = Date(timeIntervalSince1970: 1_790_000_000)
         let tracker = try LineageTracker(
-            start: .fresh(initialization: .forTests), pathKind: .replay, argv: ["DrewsChessMachine", "--test"],
+            start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .replay, argv: ["DrewsChessMachine", "--test"],
             startedAt: start, segmentStartTrainerStep: 0)
         return try tracker.record(
             at: start.addingTimeInterval(60),
@@ -67,7 +67,8 @@ extension LineageRecord {
         rng: .withoutRunStreams(dropoutPhiloxState: nil),
         segments: [],
         ancestry: .fresh,
-        derivationHistory: [])
+        derivationHistory: [],
+        modelNaming: .recorded(.unnamedWithoutPreset))
     }
 }
 

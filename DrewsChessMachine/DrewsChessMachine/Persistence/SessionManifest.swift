@@ -240,10 +240,9 @@ extension SessionManifest {
                 blocks = aInt("numBlocks")
                 inputPlanes = aInt("inputPlanes")
                 paramCount = aInt("parameterCount")
-                let v = aInt("architectureVersion").map { "v\($0) " } ?? ""
                 if let b = blocks, let c = chans {
                     let planes = inputPlanes.map { " in \($0) planes" } ?? ""
-                    archSummary = "\(v)\(b)x[\(c)ch]\(planes) (legacy)"
+                    archSummary = "\(b)x[\(c)ch]\(planes) (legacy)"
                 }
             }
         }

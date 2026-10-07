@@ -227,18 +227,23 @@ extension ModelDerivation {
     }
 
     /// Graft the model in `sourceData` onto `fresh.architecture`. Pure: no
-    /// file, log or GPU work (`fresh` was built beforehand).
+    /// file, log or GPU work (`fresh` was built beforehand). `targetPreset`
+    /// is the target's preset name, nil for a target given as an
+    /// architecture file; `newName` renames the output
+    /// (`ModelNaming.ofGraft`).
     static func graft(
         sourceData: Data,
         sourceName: String,
         fresh: GraftFreshTarget,
         targetLabel: String,
+        targetPreset: String?,
         map: GraftMap,
         initSeedOrigin: String,
         newModelID: String,
         createdAtUnix: Int64,
         build: String,
-        invocationArguments: [String]
+        invocationArguments: [String],
+        renamedTo newName: String?
     ) throws -> GraftResult {
         let (sourceTensors, sourceMetadata) = try SafetensorsFile.decode(sourceData)
         let parentModelID = try requirePlainModelSource(tensors: sourceTensors, metadata: sourceMetadata,
@@ -387,6 +392,8 @@ extension ModelDerivation {
             sourceArchitecture: try LineageRecord.AncestorRun.ArchitectureAtDeparture.ifChanged(
                 from: sourceDecoded.architecture, to: target, sourceMetadata: sourceMetadata,
                 sourceFormatVersion: sourceDecoded.architectureFormat.formatVersion, sourceName: sourceName),
+            naming: try ModelNaming.ofGraft(of: sourceLineage.record?.modelNaming ?? .unrecorded,
+                                            targetPreset: targetPreset, renamedTo: newName),
             pathKind: .derive, argv: invocationArguments,
             at: Date(timeIntervalSince1970: TimeInterval(createdAtUnix)))
 

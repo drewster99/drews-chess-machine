@@ -27,7 +27,7 @@ final class LichessBotSessionModelProviderTests: XCTestCase {
         let champion = try ChessMPSNetwork(.randomWeights(initSeed: 21), arch: Self.architecture)
         champion.identifier = ModelID(value: "20261007-1-CHMP")
         session.network = champion
-        session.championOrigin = .built(initialization: .forTests)
+        session.championOrigin = .built(initialization: .forTests, naming: .unnamedWithoutPreset)
         let provider = LichessBotSessionModelProvider()
         provider.attach(session: session)
 
@@ -39,7 +39,7 @@ final class LichessBotSessionModelProviderTests: XCTestCase {
             XCTAssertEqual(error, .championChangedDuringExport)
         }
 
-        session.championOrigin = .built(initialization: .forTests)
+        session.championOrigin = .built(initialization: .forTests, naming: .unnamedWithoutPreset)
         let snapshot = try await provider.championSnapshot()
         XCTAssertEqual(snapshot.modelID, "20261007-1-CHMP")
         let exported = try await champion.exportWeights()

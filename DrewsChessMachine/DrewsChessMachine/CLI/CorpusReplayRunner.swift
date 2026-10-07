@@ -1121,6 +1121,9 @@ enum CorpusReplayRunner {
         // the current preset.
         let arch: NetworkArchitecture
         let startModelFile: ModelCheckpointFile?
+        /// The naming of a fresh run's model (its preset, no name); nil when
+        /// the run starts from `startModelFile`, whose record carries its own.
+        let freshNaming: ModelNaming?
         let parentModelID: String
         // Set only for `--resume-exact`: the start model's full trainer state.
         // Without the flag a `--start-model` launch is a new branch — its
@@ -1130,6 +1133,7 @@ enum CorpusReplayRunner {
             let url = URL(fileURLWithPath: (sm as NSString).expandingTildeInPath)
             let file = try CheckpointManager.loadModelFile(at: url)
             startModelFile = file
+            freshNaming = nil
             parentModelID = file.modelID
             arch = file.architecture
             emit("[REPLAY] start-model: \(url.lastPathComponent) modelID=\(file.modelID) encoding=\(arch.inputEncoding.rawValue) "
@@ -1144,16 +1148,20 @@ enum CorpusReplayRunner {
         } else {
             startModelFile = nil
             parentModelID = ""
+            let freshPreset: NetworkArchitecture.Preset
             if let pn = config.presetName {
                 guard let preset = NetworkArchitecture.Preset(rawValue: pn) else {
                     let names = NetworkArchitecture.Preset.allCases.map(\.rawValue).joined(separator: ", ")
                     throw CLIRunRefusal(message: "unknown --preset '\(pn)'. Available: \(names)")
                 }
-                arch = NetworkArchitecture.preset(preset)
+                freshPreset = preset
                 emit("[REPLAY] fresh net from preset: \(pn)")
             } else {
-                arch = NetworkArchitecture.current
+                freshPreset = NetworkArchitecture.Preset.current
             }
+            arch = NetworkArchitecture.preset(freshPreset)
+            // A fresh run's model is its preset's topology, unnamed.
+            freshNaming = try ModelNaming.unnamed(fromPreset: freshPreset.rawValue)
         }
 
         // Startup banner: make the network type and the training hyperparameters
@@ -1587,7 +1595,11 @@ enum CorpusReplayRunner {
                 + "(from run seed \(runSeed.masterSeed))")
             netInitMode = .randomWeights(initSeed: initSeed)
             trainerInitialization = .seeded(initSeed: initSeed)
-            lineageStart = .fresh(initialization: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current))
+            guard let freshNaming else {
+                throw CLIRunRefusal(message: "internal: a fresh run reached its lineage start without its model naming")
+            }
+            lineageStart = .fresh(initialization: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current),
+                                  naming: freshNaming)
         }
         let net = try ChessMPSNetwork(netInitMode, arch: arch)
         // Configured through `TrainerHyperparameters` — the same path the GUI

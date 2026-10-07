@@ -452,7 +452,7 @@ final class SEActivationTests: XCTestCase {
     private func derive(_ source: Data, _ operations: [any DeriveOperation]) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: source, sourceName: "source.safetensors", operations: operations,
-            newModelID: "20261001-2-DRV1", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
+            newModelID: "20261001-2-DRV1", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"], renamedTo: nil)
     }
 
     private func assertEveryTensorBitExact(_ sourceData: Data, _ derivedData: Data) throws {

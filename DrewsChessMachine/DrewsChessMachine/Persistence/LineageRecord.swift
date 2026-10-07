@@ -38,8 +38,13 @@
 //  decision O-23): the facts they never stored read back as explicitly
 //  unrecorded (`Recorded.unrecorded`), never filled in, and every write —
 //  including a champion file or derive of a schema-2 model — is schema 3.
-//  The in-memory record always has the schema-3 shape; only decoding knows
+//  The in-memory record always has the current shape; only decoding knows
 //  the schema a file was written at.
+//
+//  Schema 4 (model naming plan) adds `model_naming`: the name the model was
+//  made under and the preset its topology started from, carried by every
+//  later record of the model like its derivation history. An older record
+//  reads it back as unrecorded.
 //
 //  The JSON value is the single source of truth. The flat `__metadata__`
 //  mirror keys (`lineage_run_id`, `cum_trainer_step`, …) are derived from it
@@ -57,8 +62,9 @@ struct LineageRecord: Codable, Equatable, Sendable {
     /// continues from. Schema 3 adds the segment configuration, run seeds,
     /// ancestry, per-segment summaries of every earlier segment's
     /// configuration, the corpus identity of mixed corpora and the build's
-    /// diff hash and toolchain (see the file comment).
-    static let currentSchema = 3
+    /// diff hash and toolchain (see the file comment). Schema 4 adds
+    /// `model_naming`.
+    static let currentSchema = 4
     /// The oldest schema this build reads (owner decision O-23). Schema 1
     /// stays refused.
     static let oldestDecodableSchema = 2
@@ -98,6 +104,10 @@ struct LineageRecord: Codable, Equatable, Sendable {
     let runSeeds: RecordedIfTrained<[RunSeedEntry]>
     /// The earlier runs these weights descend from (gaps 1b, 1c, B3).
     let ancestry: Ancestry
+    /// What the model was called when it was made and the preset its
+    /// topology started from (`ModelNaming`); unrecorded when carried from
+    /// a record before schema 4 or from a file without a record.
+    let modelNaming: Recorded<ModelNaming>
 
     // MARK: Run
 
@@ -1208,6 +1218,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
         case configuration
         case runSeeds = "run_seeds"
         case ancestry
+        case modelNaming = "model_naming"
     }
 
     /// A record this build composes: always at the current schema, with
@@ -1216,7 +1227,8 @@ struct LineageRecord: Codable, Equatable, Sendable {
          parameters: Parameters?, configuration: RecordedIfTrained<TrainingConfiguration>,
          runSeeds: RecordedIfTrained<[RunSeedEntry]>, build: Build, invocation: Invocation, device: Device,
          rng: RNG, segments: [SegmentSummary], ancestry: Ancestry,
-         derivationHistory: [ModelDerivation.DerivationRecord]) throws {
+         derivationHistory: [ModelDerivation.DerivationRecord],
+         modelNaming: Recorded<ModelNaming>) throws {
         self.schema = Self.currentSchema
         self.run = run
         self.parent = parent
@@ -1233,6 +1245,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
         self.segments = segments
         self.ancestry = ancestry
         self.derivationHistory = derivationHistory
+        self.modelNaming = modelNaming
         try checkInvariants()
     }
 
@@ -1290,6 +1303,13 @@ struct LineageRecord: Codable, Equatable, Sendable {
                                     runFirstStartedAs: summaries.first?.start ?? run.start),
                                 runs: [])
         }
+        if schema >= 4 {
+            modelNaming = try c.decode(Recorded<ModelNaming>.self, forKey: .modelNaming)
+        } else {
+            try Self.refuseKeys([.modelNaming], in: c,
+                                reason: "a schema-\(schema) record does not carry this schema-4 key")
+            modelNaming = .unrecorded
+        }
         do {
             try checkInvariants()
         } catch {
@@ -1322,6 +1342,7 @@ struct LineageRecord: Codable, Equatable, Sendable {
         try c.encode(configuration, forKey: .configuration)
         try c.encode(runSeeds, forKey: .runSeeds)
         try c.encode(ancestry, forKey: .ancestry)
+        try c.encode(modelNaming, forKey: .modelNaming)
     }
 
     /// The record-level invariants (plan S2), checked on encode and decode.
@@ -1434,7 +1455,8 @@ struct LineageRecord: Codable, Equatable, Sendable {
             rng: RNG.withoutRunStreams(dropoutPhiloxState: nil).withInitialization(rng.initialization),
             segments: segments,
             ancestry: ancestry,
-            derivationHistory: derivationHistory)
+            derivationHistory: derivationHistory,
+            modelNaming: modelNaming)
     }
 
     /// The record as the compact, sorted-key JSON text stored in a file.

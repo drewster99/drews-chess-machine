@@ -66,7 +66,7 @@ final class PolicyTailArchitectureTests: XCTestCase {
     /// A trained replay record whose configuration states `tail`.
     private func trainedRecord(tail: PolicyTailPrecisionSetting) throws -> LineageRecord {
         let start = Date(timeIntervalSince1970: 1_790_000_000)
-        let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .replay, argv: ["dcm"],
+        let tracker = try LineageTracker(start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .replay, argv: ["dcm"],
                                          startedAt: start, segmentStartTrainerStep: 0)
         try tracker.noteSegmentStartForTests(trainerStep: 0, policyTailPrecision: tail)
         return try tracker.record(at: start.addingTimeInterval(60), trainerCompletedSteps: 1, segmentLocalStep: 1,
@@ -346,7 +346,7 @@ final class PolicyTailArchitectureTests: XCTestCase {
         XCTAssertTrue(try operation.tensorRewrites(source: arch, target: target).isEmpty)
         let result = try ModelDerivation.derive(
             sourceData: source, sourceName: "trained.safetensors", operations: [operation],
-            newModelID: "20261007-3-DRVD", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["dcm"])
+            newModelID: "20261007-3-DRVD", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["dcm"], renamedTo: nil)
         let derived = try SafetensorsModelIO.decode(result.data, valueHead: .asStored)
         XCTAssertEqual(derived.architecture.policyTailPrecision, .float32FromPreBatchNorm)
         let sourceWeights = try SafetensorsModelIO.decode(source, valueHead: .asStored).file.weights
@@ -357,7 +357,7 @@ final class PolicyTailArchitectureTests: XCTestCase {
         let doesNotApply = try SetPolicyTailPrecisionDeriveOperation.kind.make("does_not_apply", nil)
         XCTAssertThrowsError(try ModelDerivation.derive(
             sourceData: source, sourceName: "trained.safetensors", operations: [doesNotApply],
-            newModelID: "20261007-4-DRVD", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["dcm"])) { error in
+            newModelID: "20261007-4-DRVD", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["dcm"], renamedTo: nil)) { error in
             guard case .invalidTargetArchitecture? = error as? ModelDerivation.DeriveError else {
                 return XCTFail("expected invalidTargetArchitecture, got \(error)")
             }

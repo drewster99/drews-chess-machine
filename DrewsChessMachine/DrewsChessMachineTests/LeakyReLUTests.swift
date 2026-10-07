@@ -161,7 +161,7 @@ final class LeakyReLUTests: XCTestCase {
         try ModelDerivation.derive(
             sourceData: source, sourceName: "source.safetensors",
             operations: [SetActivationDeriveOperation(value: value)],
-            newModelID: "20261001-2-DRV1", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
+            newModelID: "20261001-2-DRV1", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"], renamedTo: nil)
     }
 
     func testSetActivationChangesEverySiteAndCopiesEveryTensor() throws {

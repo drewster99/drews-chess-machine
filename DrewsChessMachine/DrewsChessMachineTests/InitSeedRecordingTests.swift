@@ -40,7 +40,7 @@ final class InitSeedRecordingTests: XCTestCase {
 
     private func mintLineage(_ initialization: ModelInitRecord) throws -> LineageRecord {
         try LineageTracker.mintRecord(pathKind: .newModel, argv: ["DrewsChessMachine", "--new-model"],
-                                      initialization: initialization,
+                                      initialization: initialization, naming: .unnamedWithoutPreset,
                                       at: Date(timeIntervalSince1970: 1_790_000_000))
     }
 
@@ -130,7 +130,7 @@ final class InitSeedRecordingTests: XCTestCase {
     private func derive(_ source: Data, _ operations: [any DeriveOperation]) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: source, sourceName: "source.safetensors", operations: operations,
-            newModelID: "20261002-2-DRVE", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
+            newModelID: "20261002-2-DRVE", createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"], renamedTo: nil)
     }
 
     /// A seeded `glorot` β re-draw writes exactly the β rows a fresh mint
@@ -190,7 +190,8 @@ final class InitSeedRecordingTests: XCTestCase {
     func testBuildScreenInitSeedEntry() {
         let model = BuildNewModelModel(NamedArchitecture(label: "test", architecture: Self.architecture))
         XCTAssertEqual(model.initSeedEntry, .drawnAtBuild)
-        XCTAssertEqual(model.buildRequest, BuildNewModelRequest(architecture: Self.architecture, enteredInitSeed: nil))
+        XCTAssertEqual(model.buildRequest, BuildNewModelRequest(architecture: Self.architecture, enteredInitSeed: nil,
+                                                                naming: .unnamedWithoutPreset))
         model.initSeedText = " 18446744073709551615 "
         XCTAssertEqual(model.initSeedEntry, .entered(UInt64.max))
         XCTAssertEqual(model.buildRequest?.enteredInitSeed, UInt64.max)

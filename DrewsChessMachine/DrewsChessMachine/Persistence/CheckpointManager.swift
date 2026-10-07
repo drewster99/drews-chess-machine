@@ -1123,6 +1123,10 @@ struct SessionResumeSummary: Sendable, Equatable {
     /// `championID` between promotions (every promotion forks a fresh
     /// next-generation trainer ID off the promoted champion).
     let trainerID: String
+    /// The model's name and starting preset, from the session's lineage
+    /// record (`ModelNaming`); unrecorded for a session saved before
+    /// lineage or before schema 4.
+    let modelNaming: LineageRecord.Recorded<ModelNaming>
     /// Architecture snapshot persisted in `session.json`. nil on
     /// sessions saved before the field landed; the resume sheet
     /// renders "unknown" in that case.
@@ -1147,6 +1151,7 @@ struct SessionResumeSummary: Sendable, Equatable {
         self.promotionCount = state.arenaHistory.lazy.filter { $0.promoted }.count
         self.championID = state.championID
         self.trainerID = state.trainerID
+        self.modelNaming = state.lineage?.modelNaming ?? .unrecorded
         self.architecture = state.architecture
         self.buildNumber = state.buildNumber
         self.buildGitHash = state.buildGitHash

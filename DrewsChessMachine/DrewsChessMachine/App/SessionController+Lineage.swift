@@ -30,8 +30,8 @@ extension SessionController {
     /// Where the champion's current weights came from.
     enum ChampionOrigin: Sendable {
         /// Built in this process from fresh weights drawn under
-        /// `initialization`.
-        case built(initialization: ModelInitRecord)
+        /// `initialization`, named by `naming` (the New Network screen).
+        case built(initialization: ModelInitRecord, naming: ModelNaming)
         /// Loaded from a file (or promoted with a run's record): the lineage
         /// parent a run from the champion branches from, and how its weights
         /// reached this process (B9).
@@ -66,8 +66,9 @@ extension SessionController {
     /// champion's start weights came from its load, not from anything at the
     /// segment's start.
     enum ChampionStartWeights: Sendable {
-        /// Loaded (Load Model, Load Session) with this value-head centering.
-        case loaded(ValueHeadCentering)
+        /// Loaded (Load Model, Load Session) with this value-head centering,
+        /// from a file in `fileFormat` (shown in the title bar).
+        case loaded(ValueHeadCentering, fileFormat: ModelFileFormat)
         /// Promoted from the trainer: never read from a file.
         case notLoaded
     }
@@ -127,7 +128,7 @@ extension SessionController {
     /// in this process, a branch from the file it was loaded from otherwise.
     private func championLineageStart() throws -> LineageTracker.Start {
         switch championOrigin {
-        case .built(let initialization): return .fresh(initialization: initialization)
+        case .built(let initialization, let naming): return .fresh(initialization: initialization, naming: naming)
         case .file(let source, _): return .branch(parent: source)
         case nil: throw LineageSegmentError.noChampionOrigin
         }
@@ -355,7 +356,12 @@ extension SessionController {
             championOrigin = nil
             return
         }
-        championOrigin = .file(file.lineageParent, startWeights: .loaded(centering))
+        // Both decoders set the centering; of decoded files, only the legacy
+        // `.dcmmodel` decoder leaves `architectureFormat` nil (its
+        // architecture is a compiled-in preset, not decoded JSON).
+        let fileFormat: ModelFileFormat = file.architectureFormat.map { .safetensors(architectureFormat: $0.formatVersion) }
+            ?? .legacyDCMModel(formatVersion: file.formatVersion)
+        championOrigin = .file(file.lineageParent, startWeights: .loaded(centering, fileFormat: fileFormat))
         guard let trainer else { return }
         do {
             try noteChampionChange(trainerStep: trainer.completedTrainSteps, trigger: .loadedModel)
@@ -372,7 +378,7 @@ extension SessionController {
         case .built: return false
         case .file(let source, let startWeights):
             switch startWeights {
-            case .loaded(let centering):
+            case .loaded(let centering, _):
                 return try LineageTracker.startValueHeadRecentered(centering, file: source.modelID)
             case .notLoaded:
                 return false
@@ -791,17 +797,18 @@ extension SessionController {
     /// - no recorded origin: an error, never a guess.
     static func championFileLineageRecord(origin: ChampionOrigin?, at date: Date) throws -> LineageRecord {
         switch origin {
-        case .built(let initialization):
+        case .built(let initialization, let naming):
             return try LineageTracker.mintRecord(pathKind: .gui, argv: CommandLine.arguments,
-                                                 initialization: initialization, at: date)
+                                                 initialization: initialization, naming: naming, at: date)
         case .file(let source, _):
             switch source.lineage {
             case .recorded(let record):
                 return try record.withoutTrainerState()
             case .unrecorded:
                 // An untrained copy changes no architecture (gap 1c).
+                // No record, so no naming to carry.
                 return try LineageTracker.untrainedCopyRecord(source: source, derivation: nil, sourceArchitecture: nil,
-                                                              pathKind: .gui, argv: CommandLine.arguments, at: date)
+                                                              naming: .unrecorded, pathKind: .gui, argv: CommandLine.arguments, at: date)
             }
         case nil:
             throw LineageSegmentError.noChampionOrigin

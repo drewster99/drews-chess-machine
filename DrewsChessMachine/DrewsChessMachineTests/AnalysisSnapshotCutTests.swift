@@ -138,7 +138,7 @@ final class AnalysisSnapshotCutTests: XCTestCase {
         let champion = try ChessMPSNetwork(.randomWeights(initSeed: 21), arch: Self.architecture(compute: .float32))
         champion.identifier = ModelID(value: "20261007-1-CHMP")
         controller.network = champion
-        controller.championOrigin = .built(initialization: .forTests)
+        controller.championOrigin = .built(initialization: .forTests, naming: .unnamedWithoutPreset)
         controller.noteChampionWeightsReplaced()
         do {
             _ = try await controller.analysisSnapshot(of: .champion, initReferences: AnalysisInitReferenceCache())
@@ -146,7 +146,7 @@ final class AnalysisSnapshotCutTests: XCTestCase {
         } catch AnalysisSnapshotError.weightsBeingReplaced(let role) {
             XCTAssertEqual(role, .champion)
         }
-        controller.championOrigin = .built(initialization: .forTests)
+        controller.championOrigin = .built(initialization: .forTests, naming: .unnamedWithoutPreset)
         let capture = try await controller.analysisSnapshot(of: .champion, initReferences: AnalysisInitReferenceCache())
         XCTAssertEqual(capture.snapshot.modelID, "20261007-1-CHMP")
         XCTAssertEqual(capture.snapshot.trainingStep, 0)

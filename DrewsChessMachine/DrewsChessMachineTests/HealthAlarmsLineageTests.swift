@@ -36,7 +36,7 @@ final class HealthAlarmsLineageTests: XCTestCase {
     }
 
     func testTheTrackerMergesTheLiveSummaryWithoutStoringIt() throws {
-        let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .gui, argv: ["dcm"],
+        let tracker = try LineageTracker(start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .gui, argv: ["dcm"],
                                          startedAt: Date(), segmentStartTrainerStep: 0)
         XCTAssertNil(tracker.healthAlarms(withLive: nil), "no monitor: nothing to state")
         XCTAssertEqual(tracker.healthAlarms(withLive: .empty), .empty)

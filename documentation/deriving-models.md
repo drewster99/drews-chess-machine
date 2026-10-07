@@ -15,7 +15,7 @@ pass, no training). Both are safe to run next to a training job.
 
 ```
 DrewsChessMachine --derive-model --from <model.safetensors> <operation> <value> \
-    [--group <index>]... [--init-seed <u64>] --out <new.safetensors>
+    [--group <index>]... [--init-seed <u64>] [--name <name>] --out <new.safetensors>
 DrewsChessMachine --derive-model --help      # lists every operation this build supports
 ```
 
@@ -47,6 +47,12 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
   init scheme (`dcm-init-1`) are written into that operation's `derivation_history`
   record, so the derive can be repeated exactly. Given with no weight-drawing operation,
   it is refused.
+- `--name <name>`: the derived model's name (trimmed, 1–120 characters, no line breaks or
+  other control characters), recorded in its lineage `model_naming`. Without it the
+  source's name carries over. The preset the source's topology started from carries over
+  either way, marked `edited` when the derive changes the architecture; a source whose
+  record has no naming (written before lineage schema 4) stays unrecorded unless `--name`
+  is given. Accepted with `--graft-to` too.
 - The new file's path is printed on stdout. The rewritten tensors are listed on stderr
   and in the session log as `[DERIVE]` lines.
 

@@ -31,7 +31,7 @@ final class GuiResumeGapsTests: XCTestCase {
     /// self-play serial and arena count.
     private func trainerFile(withStreams: Bool) throws -> ModelCheckpointFile {
         let start = Date(timeIntervalSince1970: 1_790_000_000)
-        let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .gui, argv: ["DrewsChessMachine"],
+        let tracker = try LineageTracker(start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .gui, argv: ["DrewsChessMachine"],
                                          startedAt: start, segmentStartTrainerStep: 0)
         let seed = RunRandomSeed.resolve(mode: .seeded, configuredSeed: 7, commandLineSeed: nil, drawSeed: { 0 })
         try tracker.noteSegmentStartForTests(trainerStep: 0, policyTailPrecision: savedPrecision, seed: seed)

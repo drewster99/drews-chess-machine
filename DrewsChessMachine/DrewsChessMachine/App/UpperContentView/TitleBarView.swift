@@ -20,6 +20,10 @@ struct TitleBarView: View {
     /// reconstructed `TitleBarView`. Drives the displayed "Self play
     /// ID" text and the Equatable comparison.
     let networkIdentifier: ModelID?
+    /// The champion's name, preset and file format
+    /// (`SessionController.championNameplate`); nil while its weights have
+    /// no recorded origin.
+    let championNameplate: ModelNameplate?
     let networkStatus: String
     let hasSavedCheckpoint: Bool
     let lastSavedDisplayString: String
@@ -39,10 +43,10 @@ struct TitleBarView: View {
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showingInfoPopover) {
-                AboutPopoverContent(network: network)
+                AboutPopoverContent(network: network, nameplate: championNameplate)
             }
             if let arch = network?.network.arch {
-                Text(arch.shortLabel)
+                Text(TitleBarView.architectureText(arch: arch, nameplate: championNameplate))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -73,9 +77,20 @@ struct TitleBarView: View {
 
 }
 
+extension TitleBarView {
+    /// "my-net · preset v4_5block_7x7 (edited) · format v12 · 3-block 9×9 ·
+    /// 128ch · 8,271,279 params": the nameplate's text, when the champion has
+    /// one, before the topology.
+    static func architectureText(arch: NetworkArchitecture, nameplate: ModelNameplate?) -> String {
+        guard let nameplate else { return arch.shortLabel }
+        return nameplate.headerText + " · " + arch.shortLabel
+    }
+}
+
 extension TitleBarView: Equatable {
     nonisolated static func == (lhs: TitleBarView, rhs: TitleBarView) -> Bool {
         lhs.networkIdentifier == rhs.networkIdentifier
+            && lhs.championNameplate == rhs.championNameplate
             && lhs.networkStatus == rhs.networkStatus
             && lhs.hasSavedCheckpoint == rhs.hasSavedCheckpoint
             && lhs.lastSavedDisplayString == rhs.lastSavedDisplayString

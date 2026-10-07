@@ -44,15 +44,15 @@ final class DeriveLineageTrainedSourceTests: XCTestCase {
     private func graft(_ data: Data) throws -> Data {
         let fresh = try GraftFreshTarget.build(architecture: Self.graftTarget, initSeed: 77)
         return try ModelDerivation.graft(
-            sourceData: data, sourceName: "source.safetensors", fresh: fresh, targetLabel: "test target",
+            sourceData: data, sourceName: "source.safetensors", fresh: fresh, targetLabel: "test target", targetPreset: nil,
             map: .empty, initSeedOrigin: "entered", newModelID: "20261003-2-LGRF", createdAtUnix: 1_790_000_100,
-            build: "test", invocationArguments: ["test"]).data
+            build: "test", invocationArguments: ["test"], renamedTo: nil).data
     }
 
     private func derive(_ data: Data, _ operation: any DeriveOperation) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: data, sourceName: "derive-source.safetensors", operations: [operation],
-            newModelID: "20261003-3-LDRV", createdAtUnix: 1_790_000_200, build: "test", invocationArguments: ["test"])
+            newModelID: "20261003-3-LDRV", createdAtUnix: 1_790_000_200, build: "test", invocationArguments: ["test"], renamedTo: nil)
     }
 
     private var rewrite: any DeriveOperation { SetRezeroAlphaInitDeriveOperation(value: 0, groupIndices: nil) }
@@ -82,7 +82,7 @@ final class DeriveLineageTrainedSourceTests: XCTestCase {
             lineage: .recorded(try LineageRecord.forTests(trainerCompletedSteps: 5000, corpus: nil)),
             derivationHistory: [])
         let copyRecord = try LineageTracker.untrainedCopyRecord(
-            source: trainedParent, derivation: nil, sourceArchitecture: nil, pathKind: .gui, argv: ["test"],
+            source: trainedParent, derivation: nil, sourceArchitecture: nil, naming: .unrecorded, pathKind: .gui, argv: ["test"],
             at: Date(timeIntervalSince1970: 1_790_000_050))
         assertRefusedAsTrained(try encodedModel(trainingStep: nil, lineage: copyRecord))
     }
@@ -97,7 +97,7 @@ final class DeriveLineageTrainedSourceTests: XCTestCase {
 
     func testRewriteOnAGraftOfAFreshMintStaysAllowed() throws {
         let mint = try LineageTracker.mintRecord(
-            pathKind: .newModel, argv: ["test"], initialization: .forTests,
+            pathKind: .newModel, argv: ["test"], initialization: .forTests, naming: .unnamedWithoutPreset,
             at: Date(timeIntervalSince1970: 1_790_000_000))
         let grafted = try graft(try encodedModel(trainingStep: 0, lineage: mint))
         let result = try derive(grafted, rewrite)

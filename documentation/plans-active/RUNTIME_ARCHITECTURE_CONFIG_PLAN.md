@@ -19,6 +19,11 @@ requirement"):**
 - **Preset `label` in `__metadata__`** (§10 "embedded into saved-model metadata", Phase E):
   not done — `SafetensorsModelIO` writes no label key. Either embed it or drop the
   requirement.
+  *Resolved 2026-10-07 (owner decisions D1–D3, `MODEL_NAMING_PLAN.md`), differently from
+  the plan:* not a flat `__metadata__` label key but lineage schema 4's `model_naming` —
+  the name given at build (`--name`, the New Network Name field) and the preset the
+  topology started from with an `edited` flag — carried by every later record of the
+  model. The derived `architecture_version` label below was retired at the same time.
 - **Memory-budget check in `validate()`** (§5a limits, Phase A, §10 live readouts): not
   done — `NetworkArchitecture.validate()` is structural only, and the New Network screen
   shows estimated F32 weight bytes, not memory against the device budget. Either add it or

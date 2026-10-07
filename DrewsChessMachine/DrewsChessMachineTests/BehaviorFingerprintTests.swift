@@ -145,7 +145,7 @@ final class BehaviorFingerprintTests: XCTestCase {
 
     private func record(fingerprint: BehaviorFingerprint.Record?) throws -> LineageRecord {
         let start = Date(timeIntervalSince1970: 1_790_000_000)
-        let tracker = try LineageTracker(start: .fresh(initialization: .forTests), pathKind: .replay, argv: ["dcm"],
+        let tracker = try LineageTracker(start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .replay, argv: ["dcm"],
                                          startedAt: start, segmentStartTrainerStep: 0)
         return try tracker.record(at: start, trainerCompletedSteps: 1, segmentLocalStep: 1, segmentGames: 0,
                                   segmentPositions: 0, corpus: nil, parameters: nil,

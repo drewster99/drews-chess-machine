@@ -174,7 +174,7 @@ final class TrainVsUciSessionTests: XCTestCase {
         let baseCount = trainer.network.trainableVariables.count + trainer.network.bnRunningStatsVariables.count
         let started = Date(timeIntervalSince1970: 1_800_000_000)
         let tracker = try LineageTracker(
-            start: .fresh(initialization: .forTests), pathKind: .vsuci, argv: ["DrewsChessMachine", "--train-vs-uci"],
+            start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .vsuci, argv: ["DrewsChessMachine", "--train-vs-uci"],
             startedAt: started, segmentStartTrainerStep: 0)
         let saved = started.addingTimeInterval(120)
         let lineage = try tracker.record(

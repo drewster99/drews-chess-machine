@@ -45,9 +45,9 @@ final class GraftDeriveTests: XCTestCase {
     private func graft(_ data: Data, onto fresh: GraftFreshTarget, map: GraftMap = .empty,
                        id: String = "20261003-2-GRFT") throws -> ModelDerivation.GraftResult {
         try ModelDerivation.graft(
-            sourceData: data, sourceName: "source.safetensors", fresh: fresh, targetLabel: "test target",
+            sourceData: data, sourceName: "source.safetensors", fresh: fresh, targetLabel: "test target", targetPreset: nil,
             map: map, initSeedOrigin: "entered", newModelID: id, createdAtUnix: 1_790_000_100,
-            build: "test", invocationArguments: ["test"])
+            build: "test", invocationArguments: ["test"], renamedTo: nil)
     }
 
     private func tensorsByName(_ data: Data) throws -> [String: SafetensorsTensor] {

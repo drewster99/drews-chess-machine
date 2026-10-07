@@ -438,7 +438,7 @@ final class SEBetaInitTests: XCTestCase {
     ) throws -> ModelDerivation.Result {
         try ModelDerivation.derive(
             sourceData: source, sourceName: "source.safetensors", operations: operations,
-            newModelID: newModelID, createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"])
+            newModelID: newModelID, createdAtUnix: 1_790_000_100, build: "test", invocationArguments: ["test"], renamedTo: nil)
     }
 
     /// Every tensor of `derived` is bit-identical to `source`'s except the β
@@ -529,7 +529,7 @@ final class SEBetaInitTests: XCTestCase {
         let second = try ModelDerivation.derive(
             sourceData: first.data, sourceName: "first.safetensors",
             operations: [SetSEBetaInitDeriveOperation(value: .glorot, groupIndices: [1])],
-            newModelID: "20260930-3-DRV2", createdAtUnix: 1_790_000_200, build: "test", invocationArguments: ["test"])
+            newModelID: "20260930-3-DRV2", createdAtUnix: 1_790_000_200, build: "test", invocationArguments: ["test"], renamedTo: nil)
         XCTAssertEqual(second.targetArchitecture.blockGroups.map(\.seBetaInit), [.glorot, .glorot])
         try assertOnlyBetaChanged(
             source: try parts(first.data), derived: try parts(second.data), arch: sourceArch,

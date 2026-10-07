@@ -1114,6 +1114,7 @@ struct UpperContentView: View {
             TitleBarView(
                 network: network,
                 networkIdentifier: network?.identifier,
+                championNameplate: session.championNameplate,
                 networkStatus: networkStatus,
                 hasSavedCheckpoint: checkpoint.lastSavedAt != nil,
                 lastSavedDisplayString: lastSavedDisplayString,
@@ -1224,7 +1225,8 @@ struct UpperContentView: View {
                 initial: NamedArchitecture(label: "Custom", architecture: .newModelDefault),
                 onBuild: { request in
                     showBuildNewModelSheet = false
-                    session.buildNetwork(architecture: request.architecture, enteredInitSeed: request.enteredInitSeed)
+                    session.buildNetwork(architecture: request.architecture, enteredInitSeed: request.enteredInitSeed,
+                                         naming: request.naming)
                 },
                 onCancel: { showBuildNewModelSheet = false }
             )
@@ -2099,7 +2101,9 @@ struct UpperContentView: View {
             return
         }
 
-        session.buildNetwork(architecture: .newModelDefault, enteredInitSeed: nil)
+        // The New Network screen's opening state: these fields, no preset
+        // chosen, no name.
+        session.buildNetwork(architecture: .newModelDefault, enteredInitSeed: nil, naming: .unnamedWithoutPreset)
         Task { @MainActor in
             while isBuilding {
                 do {

@@ -1974,8 +1974,9 @@ struct DrewsChessMachineApp: App {
         let archFlag = "--architecture"
         let outFlag = "--out-model"
         let initSeedFlag = "--init-seed"
+        let nameFlag = "--name"
 
-        let allowedFlags: Set<String> = [flag, archFlag, outFlag, initSeedFlag]
+        let allowedFlags: Set<String> = [flag, archFlag, outFlag, initSeedFlag, nameFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data(
                 "error: \(flag) does not accept '\(bad)'\n".utf8
@@ -2010,12 +2011,21 @@ struct DrewsChessMachineApp: App {
                  + "  built-in presets: \(builtins)\n"
                  + "  saved presets in \(ArchitecturePresetStore.presetsDirURL.path): \(savedStr)", 77)
         }
-        let named: NamedArchitecture
-        let sourceName: String
+        let resolved: ArchitecturePresetStore.ResolvedArchitecture
         do {
-            (named, sourceName) = try ArchitecturePresetStore.resolve(nameOrPath: archValue)
+            resolved = try ArchitecturePresetStore.resolveArchitecture(nameOrPath: archValue)
         } catch {
             fail("error: \(flag) \(archFlag): \(error)", 77)
+        }
+        // The model's naming (MODEL_NAMING_PLAN.md): `--name` when given, and
+        // the preset `--architecture` named, unedited; an architecture file
+        // given by path is not a preset.
+        let naming: ModelNaming
+        do {
+            let presetStart = try resolved.presetName.map { try ModelNaming.PresetStart(preset: $0, edited: false) }
+            naming = try ModelNaming(name: value(after: nameFlag), presetStart: .recorded(presetStart))
+        } catch {
+            fail("error: \(flag) \(nameFlag): \(error)", 77)
         }
 
         // Mint on the main actor (the minter is main-actor isolated); the build
@@ -2031,7 +2041,7 @@ struct DrewsChessMachineApp: App {
         }
 
         let modelID = MainActor.assumeIsolated { ModelIDMinter.mint().value }
-        NewModelCLI.runAndExit(architecture: named.architecture, name: sourceName,
+        NewModelCLI.runAndExit(architecture: resolved.named.architecture, name: resolved.sourceName, naming: naming,
                                outPath: value(after: outFlag), modelID: modelID,
                                enteredInitSeed: enteredInitSeed)
     }

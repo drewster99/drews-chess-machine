@@ -24,7 +24,7 @@ final class ChampionLineageRecordTests: XCTestCase {
     private func trainedRecordWithTrainerState() throws -> LineageRecord {
         let start = Date(timeIntervalSince1970: 1_790_000_000)
         let tracker = try LineageTracker(
-            start: .fresh(initialization: .forTests), pathKind: .gui, argv: ["DrewsChessMachine"],
+            start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .gui, argv: ["DrewsChessMachine"],
             startedAt: start, segmentStartTrainerStep: 0)
         let seed = RunRandomSeed.resolve(mode: .seeded, configuredSeed: 11, commandLineSeed: nil,
                                          drawSeed: { 0 })
@@ -63,25 +63,25 @@ final class ChampionLineageRecordTests: XCTestCase {
         let fileRecord = try trainedRecordWithTrainerState()
         let origin = SessionController.ChampionOrigin.file(LineageTracker.ParentFile(
             modelID: "20261003-1-LOAD", contentSHA256: "00", trainerCompletedSteps: 1000,
-            lineage: .recorded(fileRecord), derivationHistory: []), startWeights: .loaded(.alreadyCentered))
+            lineage: .recorded(fileRecord), derivationHistory: []), startWeights: .loaded(.alreadyCentered, fileFormat: .safetensors(architectureFormat: ArchitectureFormat.currentVersion)))
         let record = try SessionController.championFileLineageRecord(origin: origin, at: saveDate)
         XCTAssertEqual(record, try fileRecord.withoutTrainerState())
         assertNoTrainerState(record)
     }
 
     func testBuiltChampionGetsAMintRecord() throws {
-        let record = try SessionController.championFileLineageRecord(origin: .built(initialization: .forTests), at: saveDate)
+        let record = try SessionController.championFileLineageRecord(origin: .built(initialization: .forTests, naming: .unnamedWithoutPreset), at: saveDate)
         XCTAssertEqual(record.run.start, .fresh)
         XCTAssertEqual(record.steps.cumTrainerStep, 0)
         XCTAssertNil(record.parent)
         XCTAssertEqual(record.rng.initialization, .forTests)
-        XCTAssertEqual(try SessionController.championFileTrainingStep(origin: .built(initialization: .forTests)), 0)
+        XCTAssertEqual(try SessionController.championFileTrainingStep(origin: .built(initialization: .forTests, naming: .unnamedWithoutPreset)), 0)
     }
 
     func testAPreLineageSourceGetsAnUntrainedCopyRecord() throws {
         let origin = SessionController.ChampionOrigin.file(LineageTracker.ParentFile(
             modelID: "20260801-1-PREL", contentSHA256: nil, trainerCompletedSteps: 2500,
-            lineage: .unrecorded(formatVersion: 6), derivationHistory: []), startWeights: .loaded(.alreadyCentered))
+            lineage: .unrecorded(formatVersion: 6), derivationHistory: []), startWeights: .loaded(.alreadyCentered, fileFormat: .safetensors(architectureFormat: ArchitectureFormat.currentVersion)))
         let record = try SessionController.championFileLineageRecord(origin: origin, at: saveDate)
         XCTAssertEqual(record.run.start, .derive)
         XCTAssertEqual(record.parent?.modelID, "20260801-1-PREL")
@@ -110,11 +110,11 @@ final class ChampionLineageRecordTests: XCTestCase {
     func testAPromotionWhoseRecordFailedClearsTheChampionsOrigin() throws {
         struct RecordFailure: Error {}
         let controller = SessionController()
-        controller.championOrigin = .built(initialization: .forTests)
+        controller.championOrigin = .built(initialization: .forTests, naming: .unnamedWithoutPreset)
         controller.recordPromotedChampionOrigin(
             championID: ModelID(value: "20261003-1-PROM"), trainerCompletedSteps: 1000, record: .failure(RecordFailure()))
         XCTAssertNil(controller.championOrigin)
-        controller.championOrigin = .built(initialization: .forTests)
+        controller.championOrigin = .built(initialization: .forTests, naming: .unnamedWithoutPreset)
         controller.recordPromotedChampionOrigin(
             championID: nil, trainerCompletedSteps: 1000, record: .success(try trainedRecordWithTrainerState()))
         XCTAssertNil(controller.championOrigin)
@@ -138,7 +138,7 @@ final class ChampionLineageRecordTests: XCTestCase {
         let schedule = TrainerScheduleState(completedTrainSteps: 1000, lrWarmupSteps: 10, lrMomentumCycle: .disabled)
         let runRecord = try trainedRecordWithTrainerState()
         let championRecord = try SessionController.championFileLineageRecord(
-            origin: .built(initialization: .forTests), at: saveDate)
+            origin: .built(initialization: .forTests, naming: .unnamedWithoutPreset), at: saveDate)
         let state = try SessionCheckpointState.decode(Data("""
         {
           "formatVersion": \(SessionCheckpointState.currentFormatVersion),

@@ -2142,20 +2142,6 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         }
         return first.activationStyle == .post
     }
-    /// Human v-number for display only (no role in identity / hashing).
-    /// Mixed-style towers report the FIRST group's lineage.
-    var architectureVersionLabel: Int {
-        guard let first = blockGroups.first else {
-            preconditionFailure("NetworkArchitecture.blockGroups is empty (validate() rejects this)")
-        }
-        // Output normalization on any block is the v5-era addition (re-centered
-        // clean-add highway); it post-dates the pre-vs-post v3/v4 split, so it
-        // takes precedence. v3 (post-act) and v4 (pre-act) keep their labels
-        // because neither carries an output norm.
-        if blockGroups.contains(where: { $0.resolvedOutputNorm != .none }) { return 5 }
-        return first.activationStyle == .pre ? 4 : 3
-    }
-
     // MARK: Validation (structural only — memory budget is a build-time, device-aware check)
 
     /// Everything an architecture must satisfy on any machine. Never walks
@@ -2459,7 +2445,8 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
 
     // MARK: Summary (human-readable, computed from the config)
 
-    /// Compact one-glance label for the title bar, e.g. "v3 · 8-block 3×3 · 128ch · 2,483,667 params".
+    /// Compact one-glance topology label, e.g. "8-block 3×3 · 128ch · 2,483,667 params". The
+    /// title bar puts the model's name, preset and file format before it (`ModelNameplate`).
     /// Multi-group towers render the kernel mix as "mixed" and the width as a
     /// stem→tower range when the widths differ.
     var shortLabel: String {
@@ -2474,7 +2461,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         let chDesc = stemOutputChannels == towerOutputChannels
             ? "\(towerOutputChannels)ch"
             : "\(stemOutputChannels)→\(towerOutputChannels)ch"
-        return "v\(architectureVersionLabel) · \(numBlocks)-block \(kDesc) · \(chDesc) · \(parameterCount.formatted(.number)) params"
+        return "\(numBlocks)-block \(kDesc) · \(chDesc) · \(parameterCount.formatted(.number)) params"
     }
 
     /// Fully-explicit tower description — every attribute of every group is
@@ -2499,8 +2486,7 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         } else {
             skipDesc = ""
         }
-        return "v\(architectureVersionLabel)"
-            + " . in \(inputEncoding.rawValue)(\(inputPlanes)) -> stem \(stemOutputChannels) (\(stemConvKernelSize)x\(stemConvKernelSize))"
+        return "in \(inputEncoding.rawValue)(\(inputPlanes)) -> stem \(stemOutputChannels) (\(stemConvKernelSize)x\(stemConvKernelSize))"
             + " . \(groupsDesc)"
             + siteActivationClause
             + " . policy \(policyHeadStyle.rawValue)(\(policySize))"

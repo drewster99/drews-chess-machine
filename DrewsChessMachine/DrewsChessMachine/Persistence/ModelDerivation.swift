@@ -318,7 +318,9 @@ enum ModelDerivation {
 
     /// Apply `operations` to the model in `sourceData` (read from
     /// `sourceName`). See the file header for the guardrails. Pure: no file
-    /// or log I/O — the caller writes `Result.data` and logs.
+    /// or log I/O — the caller writes `Result.data` and logs. `newName`
+    /// (`--name`) renames the derived model; nil keeps the source's naming
+    /// (`ModelNaming.ofDerive`).
     static func derive(
         sourceData: Data,
         sourceName: String,
@@ -326,7 +328,8 @@ enum ModelDerivation {
         newModelID: String,
         createdAtUnix: Int64,
         build: String,
-        invocationArguments: [String]
+        invocationArguments: [String],
+        renamedTo newName: String?
     ) throws -> Result {
         guard !operations.isEmpty else { throw DeriveError.noOperations }
 
@@ -433,11 +436,15 @@ enum ModelDerivation {
         // derivation history — the source's plus this step — is written
         // by the record, with the flat `derivation_history` key as its
         // mirror.
+        let sourceArchitectureAtDeparture = try LineageRecord.AncestorRun.ArchitectureAtDeparture.ifChanged(
+            from: source, to: target, sourceMetadata: sourceMetadata,
+            sourceFormatVersion: sourceDecoded.architectureFormat.formatVersion, sourceName: sourceName)
         let lineage = try LineageTracker.untrainedCopyRecord(
             source: sourceParent, derivation: record,
-            sourceArchitecture: try LineageRecord.AncestorRun.ArchitectureAtDeparture.ifChanged(
-                from: source, to: target, sourceMetadata: sourceMetadata,
-                sourceFormatVersion: sourceDecoded.architectureFormat.formatVersion, sourceName: sourceName),
+            sourceArchitecture: sourceArchitectureAtDeparture,
+            naming: try ModelNaming.ofDerive(of: sourceLineage.record?.modelNaming ?? .unrecorded,
+                                             architectureChanged: sourceArchitectureAtDeparture != nil,
+                                             renamedTo: newName),
             pathKind: .derive, argv: invocationArguments,
             at: Date(timeIntervalSince1970: TimeInterval(createdAtUnix)))
         for (key, value) in try lineage.metadataEntries() { metadata[key] = value }

@@ -19,6 +19,7 @@ struct AutoResumeModelBlockView: View {
         VStack(alignment: .leading, spacing: 2) {
             AutoResumeStatRowView(label: "Champion", value: summary.championID)
             AutoResumeStatRowView(label: "Trainer", value: summary.trainerID)
+            AutoResumeStatRowView(label: "Name", value: ModelNaming.compactText(summary.modelNaming))
             AutoResumeStatRowView(label: "Network", value: archDescription)
         }
         .padding(.vertical, 6)
@@ -29,7 +30,7 @@ struct AutoResumeModelBlockView: View {
         )
     }
 
-    /// `v4 · 12 blocks · 128 channels · SE/4 · 3.9M params` when
+    /// `12 blocks · 128 channels · SE/4 · 3.9M params` when
     /// architecture metadata is present, or a "(unknown)" fallback
     /// when the session predates the field.
     private var archDescription: String {
@@ -37,8 +38,7 @@ struct AutoResumeModelBlockView: View {
             return "unknown (saved before arch metadata)"
         }
         let paramsStr = AutoResumeFormat.count(arch.parameterCount) + " params"
-        let v = arch.architectureVersion
         let se = arch.seReductionRatio
-        return "v\(v) · \(arch.numBlocks) blocks · \(arch.channels) channels · SE/\(se) · \(paramsStr)"
+        return "\(arch.numBlocks) blocks · \(arch.channels) channels · SE/\(se) · \(paramsStr)"
     }
 }

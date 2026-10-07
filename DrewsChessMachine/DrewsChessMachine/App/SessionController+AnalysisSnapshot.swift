@@ -129,7 +129,7 @@ extension SessionController {
         }
         let step = championFileTrainingStep(recordedOrigin: origin)
         switch origin {
-        case .built(let record):
+        case .built(let record, _):
             return (step, "built in this process; never trained", record)
         case .file(let source, _):
             return (step,

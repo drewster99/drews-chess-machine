@@ -100,7 +100,7 @@ final class GuiSaveHarness {
         } else {
             box = ParallelWorkerStatsBox(sessionStart: started)
             tracker = try LineageTracker(
-                start: .fresh(initialization: .forTests), pathKind: .gui, argv: ["DrewsChessMachine"],
+                start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .gui, argv: ["DrewsChessMachine"],
                 startedAt: started, segmentStartTrainerStep: trainer.completedTrainSteps)
         }
 
@@ -123,7 +123,7 @@ final class GuiSaveHarness {
         let counts = box.snapshot()
         controller.lineageFedCarry.baselineGames = counts.emittedGames
         controller.lineageFedCarry.baselinePositions = counts.emittedPositions
-        controller.championOrigin = .built(initialization: .forTests)
+        controller.championOrigin = .built(initialization: .forTests, naming: .unnamedWithoutPreset)
         controller.trainingStats = TrainingRunStats()
         // What `startRealTraining` notes on a new segment before its first
         // save: the configuration, seed, segment_start champion and

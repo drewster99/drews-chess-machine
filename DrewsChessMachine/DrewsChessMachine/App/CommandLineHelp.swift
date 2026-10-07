@@ -133,7 +133,7 @@ enum CommandLineHelp {
                                       continuing evaluator. Declared-default settings, every action log.
                                       --segment-step-as-trainer-step: for logs whose step rows carry no
                                       trainerStep=. Exit 0, or 2 on an unreadable or malformed log.
-      --derive-model --from <model.safetensors> <operation> <value> [--group <index>]... --out <new.safetensors>
+      --derive-model --from <model.safetensors> <operation> <value> [--group <index>]... [--name <name>] --out <new.safetensors>
                                       Write a new model copied bit-exact from --from except the tensors the
                                       operation re-initializes, with a fresh ModelID, parent_model_id and a
                                       derivation_history record; shape-changing requests are refused.

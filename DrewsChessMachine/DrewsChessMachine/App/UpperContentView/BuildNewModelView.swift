@@ -229,6 +229,7 @@ struct BuildNewModelView: View {
 
                     Section("Name") {
                         TextField("Label", text: $model.labelOverride, prompt: Text(model.label))
+                        BuildNameStatusText(model: model)
                     }
 
                     Section("Initialization") {
@@ -385,6 +386,7 @@ struct BuildNewModelView: View {
             let url = try ArchitecturePresetStore.save(
                 name: name, label: label, architecture: architecture, replacingExisting: replacingExisting)
             model.refreshPresets()
+            model.noteSavedAsPreset(named: name, architecture: architecture)
             saveStatus = "\(replacingExisting ? "Replaced" : "Saved") \(url.lastPathComponent)"
         } catch ArchitecturePresetStore.StoreError.presetAlreadyExists(_) {
             saveStatus = nil
@@ -409,7 +411,7 @@ struct BuildNewModelView: View {
                 guard let name = newName,
                       let entry = model.availablePresets.first(where: { $0.name == name })
                 else { return }
-                model.load(entry.named)
+                model.loadPreset(named: name, entry.named)
             }
         )
     }

@@ -29,7 +29,7 @@ enum LineageTestRuns {
     /// A new run's first segment.
     static func fresh(modelID: String, startedUnix: Int64, pathKind: LineageRecord.PathKind = .replay) throws -> LineageTestSegment {
         let tracker = try LineageTracker(
-            start: .fresh(initialization: .forTests), pathKind: pathKind, argv: ["DrewsChessMachine", "--test"],
+            start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: pathKind, argv: ["DrewsChessMachine", "--test"],
             startedAt: Date(timeIntervalSince1970: TimeInterval(startedUnix)), segmentStartTrainerStep: 0)
         return LineageTestSegment(tracker: tracker, modelID: modelID)
     }

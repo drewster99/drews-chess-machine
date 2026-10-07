@@ -229,10 +229,9 @@ struct ArenaSPRTVerdictCodable: Codable, Equatable {
 /// Optional on `SessionCheckpointState` for back-compat with
 /// sessions saved before the field landed.
 struct ArchitectureMetadata: Codable, Equatable {
-    /// `NetworkArchitecture.architectureVersionLabel` — distinguishes
-    /// topology changes (e.g. the v3 → v4 pre-activation rebuild) that
-    /// pure shape constants don't capture.
-    let architectureVersion: Int
+    // Sessions written before the model naming plan also carry
+    // `architectureVersion` (the retired v3/v4/v5 display label); the
+    // synthesized decoder ignores it.
     let channels: Int
     let numBlocks: Int
     let inputPlanes: Int
@@ -255,7 +254,6 @@ extension ArchitectureMetadata {
     /// file embeds).
     init(describing arch: NetworkArchitecture) {
         self.init(
-            architectureVersion: arch.architectureVersionLabel,
             channels: arch.towerOutputChannels,
             numBlocks: arch.numBlocks,
             inputPlanes: arch.inputPlanes,
