@@ -142,7 +142,7 @@ DrewsChessMachine \
 | scope | where | fields |
 |---|---|---|
 | **per opponent pool** | inside each `--train-vs-uci "…"` (`;`-delimited) | `cmd=` engine path · `n=` instance count · `go=` per-move limit · any other `KEY=VALUE` → `setoption name KEY value VALUE` (`UCI_Elo`, `Skill Level`, `Threads`, `Hash`, …) |
-| **global (whole run)** | top-level flags | `--start-model` (+ `--resume-exact`) / `--preset`, `--out-session-dir`, `--save-replay-buffer`, `--parameters`, `--training-step-limit`, `--training-time-limit`, `--max-plies` (400), `--eval-sync-steps` (10), `--enumerate-checkpoints` (+ `--checkpoint-stem`) |
+| **global (whole run)** | top-level flags | `--start-model` (+ `--resume-exact`) / `--preset`, `--out-session-dir`, `--save-replay-buffer`, `--parameters`, `--training-step-limit`, `--training-time-limit`, `--max-plies` (400; at least 1), `--eval-sync-steps` (10), `--enumerate-checkpoints` (+ `--checkpoint-stem`) |
 | **hardcoded global** | `UCIArbiter.Configuration` (no flag) | `handshakeTimeout` 10 s, `moveTimeout` 30 s |
 
 `--start-model` alone starts a **new branch**: the file's weights, with a fresh

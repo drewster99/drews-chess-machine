@@ -142,7 +142,10 @@ final class TrainVsUciDriver: @unchecked Sendable {
         self.buffer = buffer
         self.opponents = opponents
         self.schedule = schedule
-        self.maxPliesPerGame = max(1, maxPliesPerGame)
+        // `--max-plies` refuses a cap below 1 where it is parsed, so the cap
+        // the games are played to is the one the run's session.json records.
+        precondition(maxPliesPerGame >= 1, "the ply cap is at least 1 (refused at parse); got \(maxPliesPerGame)")
+        self.maxPliesPerGame = maxPliesPerGame
         self.statsBox = SyncBox(opponents.map {
             SlotStats(kind: $0.kind, instanceLabel: $0.instanceLabel)
         })

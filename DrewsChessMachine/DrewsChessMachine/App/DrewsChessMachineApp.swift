@@ -1193,6 +1193,30 @@ struct DrewsChessMachineApp: App {
         }
     }
 
+    /// Parse `--train-vs-uci --max-plies <n>`: the ply cap every game against
+    /// the engines is played to, which the run's session.json records. A cap
+    /// below one ply plays no game, so it is refused here rather than raised
+    /// to 1 out of sight while the record states the value given.
+    static func parseMaxPliesPerGame(_ text: String) throws -> Int {
+        guard let plies = Int(text) else {
+            throw CLIRunRefusal(message: "--max-plies expects an integer value, got '\(text)'")
+        }
+        guard plies >= 1 else {
+            throw CLIRunRefusal(message: "--max-plies must be at least 1, got \(plies)")
+        }
+        return plies
+    }
+
+    /// `parseMaxPliesPerGame`, or exit with a usage error.
+    static func parseMaxPliesPerGameOrExit(_ text: String) -> Int {
+        do {
+            return try parseMaxPliesPerGame(text)
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            Darwin.exit(2)
+        }
+    }
+
     /// Parse a `--seed` value or exit with a usage error.
     static func parseCommandLineSeedOrExit(_ text: String) -> UInt64 {
         do {
@@ -1315,7 +1339,7 @@ struct DrewsChessMachineApp: App {
                 }
                 timeLimitSec = t; i += 2
             case "--max-plies":
-                maxPliesPerGame = requireInt(arg, nextValue); i += 2
+                maxPliesPerGame = parseMaxPliesPerGameOrExit(requireValue(arg, nextValue)); i += 2
             case "--eval-sync-steps":
                 evalSyncEverySteps = requireInt(arg, nextValue); i += 2
             case "--enumerate-checkpoints":
