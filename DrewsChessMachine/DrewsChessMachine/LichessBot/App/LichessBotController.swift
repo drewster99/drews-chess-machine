@@ -3039,7 +3039,7 @@ final class LichessBotController {
                     guard current() else { return }
                     consecutiveModelRefreshFailures = 0
                     modelRefreshFailure = nil
-                    nextModelRefreshAt = Date().addingTimeInterval(Self.modelRefreshInterval)
+                    nextModelRefreshAt = Date().addingTimeInterval(TimeInterval(LichessBotLimits.modelRefreshPollSeconds))
                 } catch {
                     guard current() else { return }
                     // Each failure rebuilds a network; back off so a missing
@@ -3069,8 +3069,6 @@ final class LichessBotController {
         }
     }
 
-    /// How often a working model source is checked for a newer generation.
-    private static let modelRefreshInterval: TimeInterval = 15
     /// Retry spacing after a failed model refresh.
     private static let modelRefreshBackoff = LichessBotBackoff(initial: .seconds(30), multiplier: 2, cap: .seconds(900))
 
