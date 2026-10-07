@@ -328,6 +328,19 @@ grep -A16 'LAYER-HEALTH\] checkpoint replay-final' ~/Library/Logs/DrewsChessMach
   cap is credited; if neither blows up, the original blowup depended on its trajectory; if both do, the cap did not
   prevent it.
 
+### B-silu-ctl15 result at 19,800 (2026-10-06 ~19:55)
+
+- The control (cap 15) logs exactly what B-silu logged at trainer step 19,800 (loss 3.5357, gNorm 0.379), and
+  matches it at every 50-step line from 18,050. B-silu-clip1 differs there (loss 3.5356, gNorm 0.332). So the
+  clip1/B-silu split is caused by the cap, not by GPU nondeterminism. The earlier note above ("shared-GPU
+  nondeterminism") is superseded.
+- gNorm is logged only every 50 steps, and every logged clip1 value is below 1.0. The cap must therefore have
+  acted on an unlogged step between 19,751 and 19,799, where the pre-clip norm exceeded 1.0. B-silu's gradients
+  are identical through 19,750, so B-silu very likely had the same unlogged spike, unclipped, about 800 steps
+  before its logged blowup (gNorm 2.57 at 20,600).
+- clip1 so far: 21k 1386.6 and 22k 1412.8 pElo, 0 policy pre-BN channels parked. B-silu at the same steps:
+  457.4 / 833.8, 20 / 21 parked.
+
 ## Arm C-leaky (added 2026-10-05 23:13, owner)
 
 - Owner: "let's do a leaky version of C with the crazy high LR schedule". C's damage was not confined to the value head
