@@ -200,7 +200,7 @@ final class LichessBotModelSlotsPrepareTests: XCTestCase {
         XCTAssertEqual(during.generationID, 1)
         XCTAssertEqual(during.sourceKind, .champion, "new games keep the old generation while the new one builds")
         provider.releaseSnapshots()
-        try await switching.value
+        _ = try await switching.value
         let after = await slots.current.info
         XCTAssertEqual(after.generationID, 2)
         XCTAssertEqual(after.sourceKind, .trainerSnapshot)

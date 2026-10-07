@@ -825,7 +825,7 @@ private extension LichessBotChallengeReconstruction {
                     // Answers, game starts and the like for an id with no
                     // challenge event and no send line (a tournament game,
                     // or a challenge from before the log began).
-                    for line in evidence.declines.map { $0.evidence } + evidence.cancels + evidence.gameStarts {
+                    for line in evidence.declines.map(\.evidence) + evidence.cancels + evidence.gameStarts {
                         note(line.line, .namesNoMatchingChallenge)
                     }
                     continue
