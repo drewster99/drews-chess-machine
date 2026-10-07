@@ -9,6 +9,14 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Lichess bot challenge log P1: one locked append path for journals and the protocol log
+
+- `FileSafety.openForAppending` / `openExistingRegularFileForAppending` (`O_RDWR | O_APPEND | O_NOFOLLOW | O_NONBLOCK`, type checked on the descriptor, exact "created" flag) and `waitForExclusiveLock` (`flock`).
+- `LichessBotJSONLines.append(to:synchronization:systemCalls:composing:)`: open, `flock(LOCK_EX)`, tail check and cut on the same descriptor, write, `Synchronization` (`.none` / `.fsync` / `.fullSync`, the last also flushing the folder of a new file), close. The journal (`fsync` where it synchronized before) and the protocol log (`.none`) use it.
+- Behavior changes: a symbolic link, folder or FIFO at a journal or protocol-log path is refused and reported, never written through (none exist in the real data); two instances' protocol-log appends take turns; the tail is checked on every append, so a fragment another instance's crash left is cut and recorded instead of corrupting the next line. Existing files are appended in place, byte for byte.
+- `LichessBotDataDirectory`: `Challenges/` (created at startup), `challengeLogURL(for:)`, `reconstructedChallengesURL`, and one UTC day stamp shared with `protocolLogURL(for:)`.
+- `LICHESS_BOT_CHALLENGE_LOG_PLAN.md`: owner decisions recorded (all but OD-11, which stays open), implementation notes in §12. New tests: `FileSafetyAppendTests`, `LichessBotJSONLinesSynchronizationTests`, `LichessBotAppendPathCompatibilityTests`, `LichessBotDataDirectoryChallengePathsTests`.
+
 ## 2026-10-06 — /stupid fixes: per-site activations review
 
 - Build New Model: one `Availability` decides each site picker's state and help; each architecture-level picker is built from its site and binds through `BuildNewModelModel.activationKeyPath(at:)`; the choice-list aliases are gone (`ActivationFunction.functions` everywhere).

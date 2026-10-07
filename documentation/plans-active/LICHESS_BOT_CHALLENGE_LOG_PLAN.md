@@ -1,6 +1,6 @@
 # Lichess bot: a durable challenge log, and how each game started
 
-Status (2026-10-06): **PLAN ONLY.** Nothing here is implemented. P1 (file layer) may start now; P2 onward start after `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` has landed (§7, "Sequencing"). Reviewed 2026-10-06 against the code and the real bot data; the fixes are listed in §11.
+Status (2026-10-06): **P1 file layer implemented** (`FileSafety.openForAppending`, the locked JSONL append, the journal and protocol log on it, the data-directory paths; §12). The P1 row's challenge-log entry schema, writer, reader and ledger are **not yet implemented**. P2 onward start after `LICHESS_BOT_FOLLOW_LINEAGE_PLAN.md` has landed (§7, "Sequencing"). Owner decisions: all but OD-11 decided (§10). Reviewed 2026-10-06 against the code and the real bot data; the fixes are listed in §11.
 - Every `file:line` was checked against `main` at `57af1480`.
 - Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachineTests/` (= `DrewsChessMachine/DrewsChessMachineTests/`) or `documentation/`.
 - Numbers about the bot's data were measured on this Mac on 2026-10-06, read-only, from `~/Library/Application Support/DrewsChessMachine/LichessBot/`. Sizes are base-2.
@@ -261,7 +261,7 @@ Rationale: the journal's rule ("a newer case makes the file undecodable") would 
 
 `LichessBotChallengeLog` (`final class`, `Sendable`, `Data/LichessBotChallengeLog.swift`) mirrors `LichessBotProtocolLog`:
 - `record(_ event:at:)` is synchronous and enqueues the append on the controller's general file queue (`LichessBotFileQueue`, the one the protocol log uses). Entries land in the order they were recorded.
-- The first append to a file this launch hasn't vouched for runs `cutUnterminatedFinalLine`. Any cut bytes are written as an `unterminatedLineCut` line ahead of the entry, so the file itself records the repair. They are also logged as `[ALARM] LICHESS-BOT …`, as the protocol log does.
+- The first append to a file this launch hasn't vouched for runs `cutUnterminatedFinalLine`. *(As implemented in P1, every append checks the tail under the lock; no "tail verified" set is needed. §12.)* Any cut bytes are written as an `unterminatedLineCut` line ahead of the entry, so the file itself records the repair. They are also logged as `[ALARM] LICHESS-BOT …`, as the protocol log does.
 - **Durability: `F_FULLFSYNC` after every append** (OD-3). Challenge events are rare (Lichess caps sends at 25/min), and a full sync measured 3.85 ms median and 7.94 ms max here (§1.7). This is the one record the owner wants kept, so the protocol log's no-sync risk (§1.1) isn't repeated here. When an append **created** the day file, the `Challenges/` directory is also flushed (`FileSafety.fullSync(at:)` on the directory), so the new file's name survives a power loss along with its contents.
 - **Where the sync runs.** It runs on the general file queue (`LichessBotFileQueue`, a serial `DispatchQueue` at `.utility`), never on the main actor and never on a cooperative-pool thread. `record` only enqueues. Nothing on the play path waits on that queue: journals use their own queue (`App/LichessBotController.swift:360-366`). So the cost is a few ms of delay to queued protocol-log and index work per challenge fact. Each sync is timed. One over 100 ms logs `[LICHESS-BOT] challenge log: slow sync <ms> ms`, and shutdown logs `[LICHESS-BOT] challenge log: <n> appends, slowest sync <ms> ms` (in memory only; nothing new is persisted for it).
 - A failed append calls `onWriteFailure`, which the controller raises as an alarm. Nothing is dropped silently. After the queue is closed (shutdown), a refused append is written to the session log with its event, as `LichessBotFileQueue.enqueue` already does.
@@ -814,22 +814,24 @@ Each phase: all work → recheck → build → its tests → commit (`git add` o
 
 ## 10. Owner decisions
 
-| OD | Question | Recommendation |
-|---|---|---|
-| OD-1 | Store a game's origin on the game (journal event + record + index row), with the challenge-log join only as a fallback (§2.2 A), or join only (B)? | **A.** Keeps the record the game's single description; tournament games and resumed games work without the log. |
-| OD-2 | Make the 24 h credit log a fold of the challenge log and stop writing `challenge-outcomes.json` (P6), or keep both fed by one funnel? | **Fold (P6).** One source of truth. The old file stays on disk, readable. |
-| OD-3 | Challenge-log durability: `F_FULLFSYNC` per append, plain `fsync`, or none? | **`F_FULLFSYNC`.** Rare events, the record the owner wants kept. |
-| OD-4 | File granularity: per UTC day, one file, or per month? | **Per UTC day**, like `Protocol/`. |
-| OD-5 | Add `FileSafety.openForAppending` and move the shared JSONL append helper (journal, protocol log, challenge log) onto it, with the tail cut on the same descriptor under a per-append `flock` (§3.3)? | **Yes, in P1.** One append path. For the journal and protocol log, the changes are refusing a symbolic link, FIFO or directory (none exist today, §1.7) and the cross-process lock. |
-| OD-6 | Back-fill: automatic when stale (controller load) plus a Rebuild button, or manual only? | **Automatic + button.** Idempotent and cheap (0.23 s here). |
-| OD-7 | How inferred origins look: "≈" + secondary color + explanatory help, or a separate "(inferred)" word? | **"≈" + help.** Short in tables; the help text says it in words. |
-| OD-8 | Log sends DCM refused itself before any request (limits, offline, scope)? | **No.** Not challenges; already in the protocol log and the UI. |
-| OD-9 | Store typed snapshots only, or also each raw Lichess JSON line, in the challenge log? | **Typed only.** The protocol log keeps the raw lines; this keeps the challenge log compact and its schema deliberate. |
-| OD-10 | Add `DCMOrigin` to newly filed PGNs? | **Yes**, new games only. |
-| OD-11 | Add a one-line ROADMAP.md entry under the Lichess bot item? **Needs the owner's express permission** (standing rule: new plans go into the ROADMAP only with it); nothing is written to ROADMAP.md until then (§3.10). | **Yes:** `- **Lichess bot: durable challenge log and game origins (planned 2026-10-06).** Plan: documentation/plans-active/LICHESS_BOT_CHALLENGE_LOG_PLAN.md.` Marked complete at P7, nothing removed. |
-| OD-12 | Load every day file at launch, with a row cache only when a load exceeds 1 s? | **Yes, defer the cache.** Measured on every load. |
-| OD-13 | Record the matchmaking trigger (automatic pass vs. Fill Open Slots) on live sends? | **Yes.** Cheap and otherwise unknowable; reconstruction can't recover it. |
-| OD-14 | Fix the tests' session-log pollution (§1.8, §8) in a separate small change? | **Yes, separately:** give tests a temporary log folder. Not part of this plan. |
+| OD | Question | Recommendation | Decision |
+|---|---|---|---|
+| OD-1 | Store a game's origin on the game (journal event + record + index row), with the challenge-log join only as a fallback (§2.2 A), or join only (B)? | **A.** Keeps the record the game's single description; tournament games and resumed games work without the log. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+| OD-2 | Make the 24 h credit log a fold of the challenge log and stop writing `challenge-outcomes.json` (P6), or keep both fed by one funnel? | **Fold (P6).** One source of truth. The old file stays on disk, readable. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+| OD-3 | Challenge-log durability: `F_FULLFSYNC` per append, plain `fsync`, or none? | **`F_FULLFSYNC`.** Rare events, the record the owner wants kept. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+| OD-4 | File granularity: per UTC day, one file, or per month? | **Per UTC day**, like `Protocol/`. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+| OD-5 | Add `FileSafety.openForAppending` and move the shared JSONL append helper (journal, protocol log, challenge log) onto it, with the tail cut on the same descriptor under a per-append `flock` (§3.3)? | **Yes, in P1.** One append path. For the journal and protocol log, the changes are refusing a symbolic link, FIFO or directory (none exist today, §1.7) and the cross-process lock. | Decided (team lead, 2026-10-06, owner delegation): as recommended. Includes the per-append `flock` and the same-descriptor (`O_RDWR`, `O_NONBLOCK`) tail cut. Implemented in P1 (§12). |
+| OD-6 | Back-fill: automatic when stale (controller load) plus a Rebuild button, or manual only? | **Automatic + button.** Idempotent and cheap (0.23 s here). | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+| OD-7 | How inferred origins look: "≈" + secondary color + explanatory help, or a separate "(inferred)" word? | **"≈" + help.** Short in tables; the help text says it in words. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+| OD-8 | Log sends DCM refused itself before any request (limits, offline, scope)? | **No.** Not challenges; already in the protocol log and the UI. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+| OD-9 | Store typed snapshots only, or also each raw Lichess JSON line, in the challenge log? | **Typed only.** The protocol log keeps the raw lines; this keeps the challenge log compact and its schema deliberate. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+| OD-10 | Add `DCMOrigin` to newly filed PGNs? | **Yes**, new games only. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+| OD-11 | Add a one-line ROADMAP.md entry under the Lichess bot item? **Needs the owner's express permission** (standing rule: new plans go into the ROADMAP only with it); nothing is written to ROADMAP.md until then (§3.10). | **Yes:** `- **Lichess bot: durable challenge log and game origins (planned 2026-10-06).** Plan: documentation/plans-active/LICHESS_BOT_CHALLENGE_LOG_PLAN.md.` Marked complete at P7, nothing removed. | **Open.** Needs the owner's express permission; nothing is written to ROADMAP.md until then. |
+| OD-12 | Load every day file at launch, with a row cache only when a load exceeds 1 s? | **Yes, defer the cache.** Measured on every load. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+| OD-13 | Record the matchmaking trigger (automatic pass vs. Fill Open Slots) on live sends? | **Yes.** Cheap and otherwise unknowable; reconstruction can't recover it. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+| OD-14 | Fix the tests' session-log pollution (§1.8, §8) in a separate small change? | **Yes, separately:** give tests a temporary log folder. Not part of this plan. | Decided (team lead, 2026-10-06, owner delegation): as recommended. |
+
+The owner delegated these on 2026-10-06 ("solve the problem yourself"). Also decided then (team lead, 2026-10-06, owner delegation): the wording **Withdrawn (reason not recorded)** for the 6 historical outgoing cancels with no withdrawal line (§11, open points) is accepted.
 
 ---
 
@@ -901,9 +903,29 @@ What was checked:
 - the lock discipline is `SyncBox` / `flock`, with no `NSLock`.
 
 **Open points for the owner.**
-- OD-1 … OD-14 are all still undecided. OD-11 (ROADMAP) needs express permission.
+- OD-1 … OD-14 are all still undecided. OD-11 (ROADMAP) needs express permission. *(Since decided, 2026-10-06: all but OD-11, which stays open; §10.)*
 - New with this review, folded into OD-5: the per-append `flock` and the `O_NONBLOCK` / same-descriptor cut also change the journal and protocol-log append path. The recommendation is yes: it fixes a latent cross-instance cut race that exists today.
-- Whether "Withdrawn (reason not recorded)" is acceptable wording for the 6 historical outgoing cancels, which were probably the operator's but have no line that says so.
+- Whether "Withdrawn (reason not recorded)" is acceptable wording for the 6 historical outgoing cancels, which were probably the operator's but have no line that says so. *(Since decided, 2026-10-06: accepted; §10.)*
+
+## 12. Implementation notes: P1 file layer (2026-10-06)
+
+Implemented: `FileSafety.openForAppending(at:)`, `FileSafety.openExistingRegularFileForAppending(at:)`, `FileSafety.waitForExclusiveLock(onOpenFile:path:)`; `LichessBotJSONLines.append(to:synchronization:systemCalls:composing:)` with `Synchronization` (`.none`, `.fsync`, `.fullSync`); the journal writer and the protocol log on it; `LichessBotDataDirectory.challengesDirectory`, `challengeLogURL(for:)`, `reconstructedChallengesURL`, `protocolLogURL(for:)`, `Challenges/` in `createDirectories()` and the layout comment. Not implemented yet: the rest of the P1 row (entry schema, writer, reader, ledger).
+
+Where it differs from §3.3, and why:
+- **The tail is checked on every append**, not only on the first one a launch makes to a file it hasn't vouched for. A launch can vouch only for its own appends: another instance that crashes mid-append to the same protocol day file (or, later, challenge day file) leaves a fragment after this launch's last good line, and a vouched append would join its line to it, making a complete line that doesn't decode. The check costs one `fstat` and a one-byte `pread` when the file ends in a newline, so the "tail verified" sets of the journal writer and the protocol log are gone. The challenge-log writer (§3.3) needs no such set either.
+- **The cut bytes reach the caller through a closure.** `append` takes `composing: (cutTail) throws -> Data`, called under the lock after the cut, so a caller's record of the cut (the journal's `anomaly`, the protocol log's `anomaly` entry, later `unterminatedLineCut`) goes ahead of its own lines in the same write. Callers write the cut bytes to the session log first thing in the closure, since the cut stands even if the write then fails.
+- **`createdByThisCall` is exact.** `openForAppending` first opens without `O_CREAT` (the file usually exists, so one `open`); on `ENOENT` it creates the file with `O_CREAT | O_EXCL`, and if another process created it in between it tries the pair again (bounded). A single `O_CREAT` open can't say whether it created the file. A refused item's kind is read with `lstat`, not guessed from `errno`.
+- **The path-taking `cutUnterminatedFinalLine(of:)` opens through `FileSafety`** (`openExistingRegularFileForAppending`, no `O_CREAT`), per the project rule that such opens extend `FileSafety` rather than adding another helper. Its signature and its three existing test expectations are unchanged.
+- **The test seam is `LichessBotJSONLines.AppendSystemCalls`** (write, `fsync`, `F_FULLFSYNC`, folder `F_FULLFSYNC`). There is no default argument: production passes `.system` explicitly.
+- **The journal's "file exists" check uses `lstat`** (`FileSafety.existingItem`) instead of `FileManager.fileExists`, which follows links. A dangling link at a journal path read as "no journal": either "the game was filed" (entries skipped) or a fresh journal created through the link at its target. Now the append is refused and reported (`onWriteFailure`).
+- **One UTC day stamp.** The `YYYYMMDD` format moved from `LichessBotProtocolLog` into `LichessBotDataDirectory` (`utcDayStamp(for:)`), used by both `protocolLogURL(for:)` and `challengeLogURL(for:)`. `LichessBotProtocolLog.fileURL(for:)` keeps its signature and delegates.
+- **Known limit.** The lock orders only writers that take it. A build from before P1 appends to the protocol log without it, so while such a build runs beside this one, a fragment cut by this build can, in the moment between its tail check and its cut, take a line that build had just appended. Old builds also still follow links. Nothing on disk changes for old files: they are appended in place, byte for byte.
+
+Tests (new files; no existing test changed):
+- `FileSafetyAppendTests`: creation flag, two handles at the end, link / folder / FIFO refused untouched (a link's unterminated target kept), dangling link not followed, FIFO refused promptly, no creation for the existing-file open; the lock held during the write (`EWOULDBLOCK` from another open file), the append waiting for a lock another open file holds (the `O_NONBLOCK` descriptor still waits), the cut under the lock and before `compose`, a terminated file untouched, a whole-file fragment, a new file, a fragment left after this writer's own append still cut, the lock released after a failed write.
+- `LichessBotJSONLinesSynchronizationTests`: `.none` / `.fsync` / `.fullSync` reach the right calls, the folder flushed only for a new file; a link at a journal path and at a protocol-log path refused with a reported failure, its target unchanged.
+- `LichessBotAppendPathCompatibilityTests`: literal journal and protocol lines in the earlier builds' format decode and re-encode byte for byte; such files, clean or with a torn tail, are appended in place (same inode and mode, old bytes kept, new lines in the same format) and stay readable; a fragment another instance left after this launch's append is cut and recorded; a new day file gets the earlier builds' permissions.
+- `LichessBotDataDirectoryChallengePathsTests`: the `Challenges/` paths, UTC day naming in three time zones (shared with the protocol log), `createDirectories()`.
 
 ## Appendix A. Measured data (2026-10-06, read-only)
 

@@ -48,21 +48,15 @@ struct LichessBotProtocolEntry: Sendable, Codable, Equatable {
 /// Never synchronized to disk (plan E38 says otherwise; this is the actual
 /// behavior): entries still queued when the app crashes are lost, and written
 /// ones survive an app crash but not a power loss.
+///
+/// Every DCM instance appends to the same day file. Each append goes through
+/// `LichessBotJSONLines.append`, which takes the file's lock for its tail
+/// check, cut and write, so one instance never cuts another's line in
+/// flight, and refuses a symbolic link, folder or FIFO at the path.
 final class LichessBotProtocolLog: Sendable {
     private let directory: LichessBotDataDirectory
     private let fileQueue: LichessBotFileQueue
     private let onWriteFailure: @Sendable (Error) -> Void
-    /// Day files whose end this launch has vouched for (its own last append to
-    /// them succeeded). Read and changed only inside file-queue closures.
-    private let tailVerifiedPaths = SyncBox<Set<String>>([])
-
-    /// The day-file name part, in UTC: a value-type style, so nothing is
-    /// allocated per entry.
-    private static let dayFileNameStyle = Date.VerbatimFormatStyle(
-        format: "\(year: .padded(4))\(month: .twoDigits)\(day: .twoDigits)",
-        timeZone: .gmt,
-        calendar: Calendar(identifier: .gregorian)
-    )
 
     init(directory: LichessBotDataDirectory, fileQueue: LichessBotFileQueue, onWriteFailure: @escaping @Sendable (Error) -> Void) {
         self.directory = directory
@@ -80,12 +74,10 @@ final class LichessBotProtocolLog: Sendable {
         )
         let url = fileURL(for: at)
         let onWriteFailure = self.onWriteFailure
-        let tailVerifiedPaths = self.tailVerifiedPaths
         fileQueue.enqueue("protocol event (\(entry.kind.rawValue)) \(entry.message)") {
             do {
-                var data = Data()
-                if !tailVerifiedPaths.value.contains(url.path), FileManager.default.fileExists(atPath: url.path) {
-                    let cut = try LichessBotJSONLines.cutUnterminatedFinalLine(of: url)
+                try LichessBotJSONLines.append(to: url, synchronization: .none, systemCalls: .system) { cut in
+                    var data = Data()
                     if !cut.isEmpty {
                         SessionLogger.shared.log("[ALARM] LICHESS-BOT \(url.lastPathComponent): cut an unterminated final line of \(cut.count) bytes left by an interrupted write; base64 \(cut.base64EncodedString())")
                         let note = LichessBotProtocolEntry(
@@ -97,17 +89,9 @@ final class LichessBotProtocolLog: Sendable {
                         )
                         data.append(try LichessBotJSONLines.encodeLine(note))
                     }
+                    data.append(try LichessBotJSONLines.encodeLine(entry))
+                    return data
                 }
-                data.append(try LichessBotJSONLines.encodeLine(entry))
-                do {
-                    try LichessBotJSONLines.append(data, to: url, synchronize: false)
-                } catch {
-                    // A failed append may have left part of a line: check the
-                    // end again before the next one.
-                    tailVerifiedPaths.modify { $0.remove(url.path) }
-                    throw error
-                }
-                tailVerifiedPaths.modify { $0.insert(url.path) }
             } catch {
                 onWriteFailure(error)
             }
@@ -120,11 +104,12 @@ final class LichessBotProtocolLog: Sendable {
         try await fileQueue.run {}
     }
 
-    /// The file for the UTC day containing `date`. A local day spans two
-    /// files wherever the local zone isn't UTC; a reader that wants a local
-    /// day reads both.
+    /// The file for the UTC day containing `date`
+    /// (`LichessBotDataDirectory.protocolLogURL(for:)`). A local day spans
+    /// two files wherever the local zone isn't UTC; a reader that wants a
+    /// local day reads both.
     func fileURL(for date: Date) -> URL {
-        directory.protocolDirectory.appendingPathComponent("events-\(date.formatted(Self.dayFileNameStyle)).jsonl", isDirectory: false)
+        directory.protocolLogURL(for: date)
     }
 
     /// Entries for the UTC day containing `date`, oldest first.
