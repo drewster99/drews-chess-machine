@@ -253,6 +253,9 @@ final class LichessBotController {
             recordsByOpponent = LichessBotRecordSummary.byOpponent(rows: index?.rows ?? [])
             pastOpponents = LichessBotRecordSummary.pastOpponents(rows: index?.rows ?? [])
             refreshGameOrigins()
+            if let index {
+                recordStatistics.indexChanged(rows: index.rows)
+            }
             // Reported whenever the set of undecodable records changes (and so
             // at least once per launch): they are left out of every count.
             if let index, !index.unreadableRecords.isEmpty, index.unreadableRecords != oldValue?.unreadableRecords {
@@ -404,6 +407,10 @@ final class LichessBotController {
     /// Everything on disk except game journals and filing: index, protocol
     /// log, player notes, Keychain, the instance lock.
     private let fileQueue = LichessBotFileQueue()
+    /// The Record card's statistics, computed on their own queue from each
+    /// new games index, and the panel's remembered selections
+    /// (`LICHESS_BOT_RECORD_STATS_PLAN.md` §4.3).
+    let recordStatistics: LichessBotRecordStatisticsPipeline
     /// Game journals and filing. Every game-stream line waits for its journal
     /// append, so this queue carries nothing else. One for the controller's
     /// whole life, shared by every runtime: a torn-down journal writer and a
@@ -427,7 +434,13 @@ final class LichessBotController {
     /// What every game shows for how it began, by game id (§3.6): the one
     /// map views read, recomputed whenever the index, the challenge log or
     /// the rebuilt history changes.
-    private(set) var originsByGameID: [String: LichessBotGameOriginDisplay] = [:]
+    private(set) var originsByGameID: [String: LichessBotGameOriginDisplay] = [:] {
+        didSet {
+            // The Record card's origin breakdown reads the same resolver
+            // (record stats plan §11 D1), never the raw row field.
+            recordStatistics.originsChanged(originsByGameID.mapValues(\.category))
+        }
+    }
     /// Games whose record and challenge log disagree about the origin,
     /// already logged (once per game per launch).
     @ObservationIgnored private var loggedOriginDisagreements: Set<String> = []
@@ -485,6 +498,7 @@ final class LichessBotController {
         self.challengeWithdrawalShutdownLimit = challengeWithdrawalShutdownLimit
         self.modelProvider = modelProvider
         self.defaults = defaults
+        self.recordStatistics = LichessBotRecordStatisticsPipeline(defaults: defaults)
         self.dataDirectory = dataDirectory
         self.services = services
         self.finishedGameHoldDuration = finishedGameHold
@@ -1342,6 +1356,10 @@ final class LichessBotController {
 
     private func performShutdown(reason: String) async {
         protocolLog.record(.lifecycle, "shutting down: \(reason)")
+        // First, so an index change during the rest of the shutdown
+        // schedules no computation (synchronous: nothing is awaited before
+        // the runtime stops).
+        recordStatistics.stopScheduling()
         stopRuntime(reason: reason)
         await awaitOutstandingChallengeTraffic()
         cancelAutoFollowHold()
@@ -1353,6 +1371,7 @@ final class LichessBotController {
         await fileQueue.close(reason: "the bot shut down: \(reason)")
         // After the close, so every append queued before it is counted.
         challengeLogRecorder.logSummary()
+        await recordStatistics.shutdown(reason: reason)
         SessionLogger.shared.log("[LICHESS-BOT] shut down: \(reason)")
     }
 

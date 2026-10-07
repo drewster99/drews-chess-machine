@@ -9,6 +9,16 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 — Lichess bot record statistics on the Overview (P1–P8, L1–L6, D1)
+
+Plan: `documentation/plans-active/LICHESS_BOT_RECORD_STATS_PLAN.md`.
+
+- `LichessBot/Stats/`: per-game facts reduced from each record into the games index (`LichessBotGameFacts`, index schema 4: checkpoints, expected-score buckets, held runs, decisive ply, per-generation move counts, move choice, clock, opening, health counts); the six periods and when they next change; the Elo maximum-likelihood performance rating and 50% offset with a data-derived bisection bracket; Wilson score intervals (draws as half points); the endings classification; one snapshot of every statistic for every filter (all / rated / casual) and period, computed in linear time.
+- `LichessBotRecordStatisticsPipeline`: computes the snapshot on its own queue from each new index, drops late outcomes, recomputes when a period boundary passes and at once on system clock and time-zone changes, logs `[LICHESS-BOT] record stats (index): …`, and remembers the panel's pane, period and filter. The index logs every rebuild, load and update with its duration and reason.
+- Record card: six-period table, footnote, and panes (time controls with rating sparklines, models with a progression chart, self-assessment, endings, opponent strength, move choice, clock, game length, openings, opponents, bot health, origins); side by side with the recent games on a wide card, stacked otherwise; default height 560.
+- `scripts/lichess_bot_record_stats.py`: an independent recomputation from the records (read-only); it matches the app's numbers on the 222 real records exactly.
+- New tests: `LichessBotEloMathTests`, `LichessBotStatsPeriodsTests`, `LichessBotGameEndingTests`, `LichessBotGameFactsTests`, `LichessBotRecordStatisticsTests`, `LichessBotStatsFormatTests`, `LichessBotIndexFactsTests`, `LichessBotRecordStatisticsPipelineTests`, `LichessBotRecordStatisticsScaleTests`, `LichessBotRecordStatisticsConcentratedScaleTests`, `LichessBotRecordCardRenderTests`, `LichessBotTimeControlStatsTests`, `LichessBotModelsPaneValuesTests`, `LichessBotSelfAssessmentFormatTests`, `LichessBotLaterStatisticsTests`, `LichessBotRecordStatisticsReviewFixTests`.
+
 ## 2026-10-07 — Lichess bot challenge log P7: documentation
 
 - `LICHESS_BOT_CHALLENGE_LOG_PLAN.md`: status (P1–P7 implemented) and implementation notes §12–§18; `LICHESS_BOT_PLAN.md` §10.1 layout gains `Challenges/`; the ROADMAP line is marked done (nothing removed).
