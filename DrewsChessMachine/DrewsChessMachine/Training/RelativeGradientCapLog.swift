@@ -19,9 +19,10 @@ enum RelativeGradientCapLogFormat {
     /// One `[GRAD-CLIP]` line for a step whose pre-clip norm exceeded the fed
     /// cap (`applied=true`, any mode — hard-max clips included), or, in mode
     /// `logOnly`, the rule's cap (`applied=false`); nil for any other step.
-    /// Every clip is logged (owner decision OD-13) because the step lines
-    /// are every 50 steps and a clip between them would otherwise be
-    /// invisible.
+    /// Every clip is logged (owner decision OD-13) because step lines are
+    /// sparse (the shared step-line cadence: every 50 trainer steps only
+    /// through 1000, then about every `step_line_interval_sec`), so a clip
+    /// between them would otherwise be invisible.
     static func eventLine(trainerStep: Int, preClipNorm: Float, decision: GradientCapDecision, learningRate: Double) -> String? {
         let applied = decision.clipped(preClipNorm: preClipNorm)
         let logOnlyEvent = decision.mode == .logOnly && decision.wouldClip(preClipNorm: preClipNorm)
