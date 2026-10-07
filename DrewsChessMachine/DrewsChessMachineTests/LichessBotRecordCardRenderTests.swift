@@ -156,7 +156,7 @@ final class LichessBotRecordCardRenderTests: XCTestCase {
 
     func testFailedState() async throws {
         let controller = try makeController()
-        let pipeline = LichessBotRecordStatisticsPipeline(defaults: try makeTemporaryDefaults(), compute: { _, now, _ in
+        let pipeline = LichessBotRecordStatisticsPipeline(defaults: try makeTemporaryDefaults(), compute: { _, _, now, _ in
             throw LichessBotStatsPeriods.CalendarError.noWeekInterval(now)
         })
         addTeardownBlock { @MainActor in await pipeline.shutdown(reason: "test teardown") }

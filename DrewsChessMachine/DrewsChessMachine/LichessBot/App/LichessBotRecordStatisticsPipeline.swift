@@ -42,6 +42,8 @@ enum LichessBotRecordStatisticsReason: String, Sendable {
     case index
     /// A period boundary passed, or the clock or time zone changed.
     case clock
+    /// The games' resolved origins changed (a challenge-log fact arrived).
+    case origins
 }
 
 /// Computes the Record card's statistics off the main actor and keeps the
@@ -80,7 +82,7 @@ enum LichessBotRecordStatisticsReason: String, Sendable {
 @Observable
 final class LichessBotRecordStatisticsPipeline {
 
-    typealias Compute = @Sendable (_ rows: [LichessBotGameSummary], _ now: Date, _ calendar: Calendar) throws -> LichessBotRecordStatistics
+    typealias Compute = @Sendable (_ rows: [LichessBotGameSummary], _ origins: [String: LichessBotGameOriginCategory]?, _ now: Date, _ calendar: Calendar) throws -> LichessBotRecordStatistics
 
     private(set) var state: LichessBotRecordStatisticsState = .loading
 
@@ -104,6 +106,9 @@ final class LichessBotRecordStatisticsPipeline {
     @ObservationIgnored private let calendar: @MainActor () -> Calendar
     /// The latest index rows; nil until the first index arrives.
     @ObservationIgnored private var rows: [LichessBotGameSummary]?
+    /// Each game's origin category from the controller's resolver; nil
+    /// until it first reports, and then there is no origin breakdown.
+    @ObservationIgnored private var origins: [String: LichessBotGameOriginCategory]?
     @ObservationIgnored private(set) var requestCount = 0
     @ObservationIgnored private var isShutDown = false
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
@@ -124,7 +129,7 @@ final class LichessBotRecordStatisticsPipeline {
     init(
         defaults: UserDefaults,
         queue: LichessBotFileQueue = LichessBotFileQueue(label: "drewschess.lichessbot.statistics", qos: .utility),
-        compute: @escaping Compute = { rows, now, calendar in try LichessBotRecordStatistics.compute(rows: rows, now: now, calendar: calendar) },
+        compute: @escaping Compute = { rows, origins, now, calendar in try LichessBotRecordStatistics.compute(rows: rows, origins: origins, now: now, calendar: calendar) },
         calendar: @escaping @MainActor () -> Calendar = { Calendar.current }
     ) {
         self.defaults = defaults
@@ -169,6 +174,16 @@ final class LichessBotRecordStatisticsPipeline {
     }
 
     /// The games index changed: recompute from its rows.
+    /// The controller's origin resolver (`originsByGameID`) changed: keep
+    /// each game's category for the origin breakdown (§11 D1), and
+    /// recompute when there are rows to compute from.
+    func originsChanged(_ categories: [String: LichessBotGameOriginCategory]) {
+        guard categories != origins else { return }
+        origins = categories
+        guard rows != nil else { return }
+        schedule(reason: .origins, now: Date())
+    }
+
     func indexChanged(rows: [LichessBotGameSummary]) {
         self.rows = rows
         indexLogPending = true
@@ -203,6 +218,7 @@ final class LichessBotRecordStatisticsPipeline {
         requestCount += 1
         let request = requestCount
         let calendar = calendar()
+        let origins = self.origins
         let compute = self.compute
         let queue = self.queue
         latestComputation = Task { @MainActor [weak self] in
@@ -210,7 +226,7 @@ final class LichessBotRecordStatisticsPipeline {
             do {
                 let computed = try await queue.run {
                     let started = DispatchTime.now().uptimeNanoseconds
-                    let statistics = try compute(rows, now, calendar)
+                    let statistics = try compute(rows, origins, now, calendar)
                     let milliseconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
                     return (statistics, milliseconds)
                 }

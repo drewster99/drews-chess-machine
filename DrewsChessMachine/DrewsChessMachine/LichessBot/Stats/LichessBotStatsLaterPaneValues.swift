@@ -209,6 +209,27 @@ struct LichessBotHealthStatistics: Sendable, Equatable {
     var rowsWithoutFacts = 0
 }
 
+/// D1: DCM's results in games of one origin (how the game began).
+struct LichessBotOriginRow: Sendable, Equatable, Identifiable {
+    let category: LichessBotGameOriginCategory
+    let tally: LichessBotResultTally
+    let performance: LichessBotRatingEstimate
+    let ratedOpponentGames: Int
+
+    var id: LichessBotGameOriginCategory { category }
+}
+
+/// D1 over one period: results by origin category, from the controller's
+/// one origin resolver (challenge-log plan §3.6), which also covers games
+/// played before origins were recorded. "Unknown" is its own row, never
+/// folded into a known origin.
+struct LichessBotOriginStatistics: Sendable, Equatable {
+    /// Categories with scored games, in the category's own order.
+    let rows: [LichessBotOriginRow]
+    /// Scored games the resolver had no entry for.
+    let gamesUnresolved: Int
+}
+
 /// Every later pane's values for one period and filter.
 struct LichessBotLaterBreakdowns: Sendable, Equatable {
     let moveChoice: LichessBotMoveChoiceStatistics
@@ -218,4 +239,6 @@ struct LichessBotLaterBreakdowns: Sendable, Equatable {
     let openings: LichessBotOpeningStatistics
     let opponents: LichessBotOpponentsStatistics
     let health: LichessBotHealthStatistics
+    /// Nil when the statistics were computed without origins.
+    let origins: LichessBotOriginStatistics?
 }

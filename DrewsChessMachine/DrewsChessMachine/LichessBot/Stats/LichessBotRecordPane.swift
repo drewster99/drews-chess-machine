@@ -16,13 +16,14 @@ enum LichessBotRecordPane: String, CaseIterable, Sendable, Identifiable {
     case openings
     case opponents
     case botHealth
+    case origins
 
     var id: String { rawValue }
 
     /// The first pass (§9 P3–P8), the picker's first section.
     static let firstPass: [LichessBotRecordPane] = [.timeControls, .models, .selfAssessment, .endings, .opponentStrength]
     /// The later panes (§11 L1–L6), its second section.
-    static let later: [LichessBotRecordPane] = [.moveChoice, .clock, .gameLength, .openings, .opponents, .botHealth]
+    static let later: [LichessBotRecordPane] = [.moveChoice, .clock, .gameLength, .openings, .opponents, .botHealth, .origins]
 
     var label: String {
         switch self {
@@ -37,6 +38,7 @@ enum LichessBotRecordPane: String, CaseIterable, Sendable, Identifiable {
         case .openings: return "Openings"
         case .opponents: return "Opponents"
         case .botHealth: return "Bot health"
+        case .origins: return "Origins"
         }
     }
 }

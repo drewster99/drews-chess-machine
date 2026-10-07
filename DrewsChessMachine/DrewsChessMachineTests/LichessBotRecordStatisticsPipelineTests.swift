@@ -38,8 +38,8 @@ final class LichessBotRecordStatisticsPipelineTests: XCTestCase {
         return controller
     }
 
-    private func makePipeline(compute: @escaping LichessBotRecordStatisticsPipeline.Compute = { rows, now, calendar in
-        try LichessBotRecordStatistics.compute(rows: rows, now: now, calendar: calendar)
+    private func makePipeline(compute: @escaping LichessBotRecordStatisticsPipeline.Compute = { rows, origins, now, calendar in
+        try LichessBotRecordStatistics.compute(rows: rows, origins: origins, now: now, calendar: calendar)
     }) throws -> LichessBotRecordStatisticsPipeline {
         let pipeline = LichessBotRecordStatisticsPipeline(
             defaults: try makeTemporaryDefaults(),
@@ -82,11 +82,11 @@ final class LichessBotRecordStatisticsPipelineTests: XCTestCase {
 
     func testALateOlderResultIsDropped() async throws {
         let release = DispatchSemaphore(value: 0)
-        let pipeline = try makePipeline { rows, now, calendar in
+        let pipeline = try makePipeline { rows, origins, now, calendar in
             if rows.count == 1 {
                 release.wait()
             }
-            return try LichessBotRecordStatistics.compute(rows: rows, now: now, calendar: calendar)
+            return try LichessBotRecordStatistics.compute(rows: rows, origins: origins, now: now, calendar: calendar)
         }
         pipeline.indexChanged(rows: try rows(1))
         let first = pipeline.latestComputation
@@ -103,12 +103,12 @@ final class LichessBotRecordStatisticsPipelineTests: XCTestCase {
     func testALateOlderErrorIsDropped() async throws {
         struct Boom: Error {}
         let release = DispatchSemaphore(value: 0)
-        let pipeline = try makePipeline { rows, now, calendar in
+        let pipeline = try makePipeline { rows, origins, now, calendar in
             if rows.count == 1 {
                 release.wait()
                 throw Boom()
             }
-            return try LichessBotRecordStatistics.compute(rows: rows, now: now, calendar: calendar)
+            return try LichessBotRecordStatistics.compute(rows: rows, origins: origins, now: now, calendar: calendar)
         }
         pipeline.indexChanged(rows: try rows(1))
         let first = pipeline.latestComputation
@@ -154,7 +154,7 @@ final class LichessBotRecordStatisticsPipelineTests: XCTestCase {
     }
 
     func testAFailedStateIsShownAndNotRetriedByTheTick() async throws {
-        let pipeline = try makePipeline { _, now, _ in
+        let pipeline = try makePipeline { _, _, now, _ in
             throw LichessBotStatsPeriods.CalendarError.noWeekInterval(now)
         }
         pipeline.indexChanged(rows: try rows(1))

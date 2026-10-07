@@ -434,7 +434,13 @@ final class LichessBotController {
     /// What every game shows for how it began, by game id (§3.6): the one
     /// map views read, recomputed whenever the index, the challenge log or
     /// the rebuilt history changes.
-    private(set) var originsByGameID: [String: LichessBotGameOriginDisplay] = [:]
+    private(set) var originsByGameID: [String: LichessBotGameOriginDisplay] = [:] {
+        didSet {
+            // The Record card's origin breakdown reads the same resolver
+            // (record stats plan §11 D1), never the raw row field.
+            recordStatistics.originsChanged(originsByGameID.mapValues(\.category))
+        }
+    }
     /// Games whose record and challenge log disagree about the origin,
     /// already logged (once per game per launch).
     @ObservationIgnored private var loggedOriginDisagreements: Set<String> = []

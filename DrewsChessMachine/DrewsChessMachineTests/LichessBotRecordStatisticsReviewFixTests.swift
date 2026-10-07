@@ -50,12 +50,12 @@ final class LichessBotRecordStatisticsReviewFixTests: XCTestCase {
     func testTheIndexLineIsWrittenWhenAClockRequestSupersedesTheIndexRequest() async throws {
         let release = DispatchSemaphore(value: 0)
         let first = SyncBox(true)
-        let pipeline = LichessBotRecordStatisticsPipeline(defaults: try makeTemporaryDefaults(), compute: { rows, now, calendar in
+        let pipeline = LichessBotRecordStatisticsPipeline(defaults: try makeTemporaryDefaults(), compute: { rows, origins, now, calendar in
             if first.value {
                 first.value = false
                 release.wait()
             }
-            return try LichessBotRecordStatistics.compute(rows: rows, now: now, calendar: calendar)
+            return try LichessBotRecordStatistics.compute(rows: rows, origins: origins, now: now, calendar: calendar)
         }, calendar: { Fixtures.utcCalendar })
         addTeardownBlock { @MainActor in await pipeline.shutdown(reason: "test teardown") }
         pipeline.indexChanged(rows: [try Fixtures.row(id: "a", at: now, score: 1)])
@@ -80,11 +80,11 @@ final class LichessBotRecordStatisticsReviewFixTests: XCTestCase {
 
     func testSystemClockAndTimeZoneChangesRecomputeAtOnceAndRetryAFailure() async throws {
         let failing = SyncBox(false)
-        let pipeline = LichessBotRecordStatisticsPipeline(defaults: try makeTemporaryDefaults(), compute: { rows, now, calendar in
+        let pipeline = LichessBotRecordStatisticsPipeline(defaults: try makeTemporaryDefaults(), compute: { rows, origins, now, calendar in
             if failing.value {
                 throw LichessBotStatsPeriods.CalendarError.noWeekInterval(now)
             }
-            return try LichessBotRecordStatistics.compute(rows: rows, now: now, calendar: calendar)
+            return try LichessBotRecordStatistics.compute(rows: rows, origins: origins, now: now, calendar: calendar)
         }, calendar: { Fixtures.utcCalendar })
         addTeardownBlock { @MainActor in await pipeline.shutdown(reason: "test teardown") }
         pipeline.observeSystemTimeChanges()

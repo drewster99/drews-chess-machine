@@ -19,6 +19,8 @@ struct LichessBotLaterPanes: View {
                 .shown(pane == .opponents)
             LichessBotBotHealthPane(health: later.health)
                 .shown(pane == .botHealth)
+            LichessBotOriginsPane(origins: later.origins)
+                .shown(pane == .origins)
         }
     }
 }

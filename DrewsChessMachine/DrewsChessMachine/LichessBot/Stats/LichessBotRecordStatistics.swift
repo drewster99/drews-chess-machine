@@ -43,15 +43,34 @@ struct LichessBotRecordStatistics: Sendable, Equatable {
         byFilter[filter]
     }
 
+    /// Every statistic but the origin breakdown (§11 D1), which needs the
+    /// controller's origin resolver; `LichessBotLaterBreakdowns.origins` is
+    /// nil.
     static func compute(rows: [LichessBotGameSummary], now: Date, calendar: Calendar) throws -> LichessBotRecordStatistics {
+        try compute(rows: rows, origins: nil, now: now, calendar: calendar)
+    }
+
+    /// - Parameter origins: each game's resolved origin category, from the
+    ///   controller's one resolver (`originsByGameID`, challenge-log plan
+    ///   §3.6); nil when not loaded, and then the origin breakdown is nil
+    ///   rather than every game shown as unknown.
+    static func compute(rows: [LichessBotGameSummary], origins: [String: LichessBotGameOriginCategory]?, now: Date, calendar: Calendar) throws -> LichessBotRecordStatistics {
         let starts = try LichessBotStatsPeriods.starts(now: now, calendar: calendar)
         let validUntil = try LichessBotStatsPeriods.nextChange(after: now, rows: rows, calendar: calendar)
         // Per-row derivations that don't depend on the filter or period,
         // done once.
-        let derived = rows.map(DerivedRow.init)
+        let derived = rows.map { row -> DerivedRow in
+            let origin: OriginLookup
+            if let origins {
+                origin = origins[row.gameID].map { .resolved($0) } ?? .unresolved
+            } else {
+                origin = .notLoaded
+            }
+            return DerivedRow(row, origin: origin)
+        }
         let byFilter = try LichessBotFilterValues<FilterStatistics> { filter in
             let included = derived.filter { filter.includes($0.row) }
-            return try filterStatistics(included, now: now, calendar: calendar, starts: starts)
+            return try filterStatistics(included, now: now, calendar: calendar, starts: starts, originsLoaded: origins != nil)
         }
         return LichessBotRecordStatistics(
             byFilter: byFilter,
@@ -65,11 +84,11 @@ struct LichessBotRecordStatistics: Sendable, Equatable {
 
     // MARK: - Per filter
 
-    private static func filterStatistics(_ rows: [DerivedRow], now: Date, calendar: Calendar, starts: LichessBotStatsPeriodStarts) throws -> FilterStatistics {
+    private static func filterStatistics(_ rows: [DerivedRow], now: Date, calendar: Calendar, starts: LichessBotStatsPeriodStarts, originsLoaded: Bool) throws -> FilterStatistics {
         // The W–D–L splits through `LichessBotRecordSummary.compute`, so the
         // split rules have one definition.
         let records = try LichessBotRecordSummary.compute(rows: rows.map(\.row), now: now, calendar: calendar)
-        var accumulators = LichessBotPeriodValues { _ in PeriodAccumulator() }
+        var accumulators = LichessBotPeriodValues { _ in PeriodAccumulator(later: LaterAccumulator(originsLoaded: originsLoaded)) }
         for row in rows {
             for period in LichessBotStatsPeriod.allCases where starts.contains(row.row.createdAt, in: period) {
                 accumulators.update(period) { $0.add(row) }
@@ -110,9 +129,11 @@ private struct DerivedRow {
     let row: LichessBotGameSummary
     let ending: LichessBotGameEnding
     let attribution: ModelAttribution
+    let origin: OriginLookup
 
-    init(_ row: LichessBotGameSummary) {
+    init(_ row: LichessBotGameSummary, origin: OriginLookup) {
         self.row = row
+        self.origin = origin
         ending = LichessBotGameEnding.classify(
             status: row.status,
             winner: row.winner,
@@ -122,6 +143,17 @@ private struct DerivedRow {
         )
         attribution = ModelAttribution(row.facts?.moves)
     }
+}
+
+/// A game's origin as the statistics see it (§11 D1).
+private enum OriginLookup {
+    /// The caller passed no origins: the breakdown is not computed.
+    case notLoaded
+    case resolved(LichessBotGameOriginCategory)
+    /// Origins were passed, but none for this game (the resolver covers
+    /// every indexed game, so only a race between the two would do this);
+    /// counted, never folded into "unknown".
+    case unresolved
 }
 
 /// Which model a game belongs to (§3.8, OD-11): the model key whose
@@ -389,7 +421,7 @@ private struct PeriodAccumulator {
     var decisiveLosses = DecisiveAccumulator()
 
     var endings: [LichessBotGameEnding: LichessBotEndingRow] = [:]
-    var later = LaterAccumulator()
+    var later: LaterAccumulator
 
     var bands: [Int: BandAccumulator] = [:]
     var gaps: [Int] = []
@@ -708,6 +740,15 @@ private struct LaterAccumulator {
     /// Scored games in time order, for the streaks.
     var results: [(createdAt: Date, gameID: String, ourScore: Double)] = []
     var health = LichessBotHealthStatistics()
+    /// Whether the caller passed origins; without them there is no origin
+    /// breakdown (nil), never one with every game unknown.
+    let originsLoaded: Bool
+    var origins: [LichessBotGameOriginCategory: (tally: LichessBotResultTally, performance: PerformanceAccumulator)] = [:]
+    var originsUnresolved = 0
+
+    init(originsLoaded: Bool) {
+        self.originsLoaded = originsLoaded
+    }
 
     mutating func add(_ derived: DerivedRow) {
         let row = derived.row
@@ -726,6 +767,16 @@ private struct LaterAccumulator {
             }
         }
         addOpening(row, ourScore: ourScore)
+        switch derived.origin {
+        case .notLoaded:
+            break
+        case .resolved(let category):
+            // In place: the performance accumulator holds an array.
+            origins[category, default: (LichessBotResultTally(), PerformanceAccumulator())].tally.add(ourScore: ourScore)
+            origins[category, default: (LichessBotResultTally(), PerformanceAccumulator())].performance.add(row)
+        case .unresolved:
+            originsUnresolved += 1
+        }
         guard let moves = row.facts?.moves else { return }
         moveChoice.add(moves.choice, decisions: moves.ourMovesWithDecision)
         if let model = derived.attribution.model {
@@ -822,7 +873,20 @@ private struct LaterAccumulator {
                 gamesWithoutOpening: gamesWithoutOpening
             ),
             opponents: opponentStatistics(),
-            health: health
+            health: health,
+            origins: originsLoaded ? LichessBotOriginStatistics(
+                rows: LichessBotGameOriginCategory.allCases.compactMap { category in
+                    origins[category].map { entry in
+                        LichessBotOriginRow(
+                            category: category,
+                            tally: entry.tally,
+                            performance: entry.performance.estimate,
+                            ratedOpponentGames: entry.performance.opponents.count
+                        )
+                    }
+                },
+                gamesUnresolved: originsUnresolved
+            ) : nil
         )
     }
 
