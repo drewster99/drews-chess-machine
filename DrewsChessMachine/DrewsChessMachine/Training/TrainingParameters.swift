@@ -81,8 +81,9 @@ public enum ParameterValue: Codable, Equatable, Sendable {
     }
 
     /// Parse one value of a parameters JSON object (`JSONSerialization`
-    /// output) — the one reader both the `--parameters` loader and the
-    /// settings "load" path use. `NSNumber` bridging is treacherous (`as? Bool`
+    /// output) — the kind reader of `parametersObject(fromJSON:)`, which every
+    /// parameter JSON reader goes through (it replaces each `.double` with
+    /// the exactly-parsed value). `NSNumber` bridging is treacherous (`as? Bool`
     /// succeeds for any number, so `1` would read as `true`), so the kind is
     /// taken from the number's `objCType`: true/false are char-typed
     /// ("c"/"B"), JSON doubles are "d"/"f", everything else is an integer. A
@@ -2697,15 +2698,10 @@ public final class TrainingParameters {
         try data.write(to: url, options: [.atomic])
     }
 
+    /// Apply a settings file `save(to:)` wrote. Read through
+    /// `ParameterValue.parametersObject(fromJSON:)`, so every value is the
+    /// one that was saved, to the bit.
     public func load(from url: URL) throws {
-        let data = try Data(contentsOf: url)
-        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw TrainingConfigError.wrongType(id: "<root>")
-        }
-        var values: [String: ParameterValue] = [:]
-        for (id, anyValue) in dict {
-            values[id] = try ParameterValue(jsonValue: anyValue, id: id)
-        }
-        try apply(values)
+        try apply(try ParameterValue.parametersObject(fromJSON: try Data(contentsOf: url)))
     }
 }

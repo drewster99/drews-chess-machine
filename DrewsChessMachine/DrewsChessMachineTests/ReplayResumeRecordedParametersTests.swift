@@ -85,12 +85,7 @@ final class ReplayResumeRecordedParametersTests: XCTestCase {
 
     /// The lineage snapshot of `record` as a parameter snapshot.
     private func snapshot(of parameters: LineageRecord.Parameters) throws -> TrainingParametersSnapshot {
-        let object = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: Data(parameters.snapshotJSON.utf8)) as? [String: Any])
-        var values: [String: ParameterValue] = [:]
-        for (id, json) in object {
-            values[id] = try ParameterValue(jsonValue: json, id: id)
-        }
+        let values = try JSONDecoder().decode([String: ParameterValue].self, from: Data(parameters.snapshotJSON.utf8))
         return try TrainingParametersSnapshot.declaredDefaults(overriding: values)
     }
 
