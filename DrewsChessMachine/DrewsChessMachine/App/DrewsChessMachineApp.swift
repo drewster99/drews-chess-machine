@@ -123,6 +123,10 @@ struct DrewsChessMachineApp: App {
         // what a command does never starts it.
         CommandLineHelp.handleIfRequested(rawArgs: rawArgs)
 
+        // `--version` (alone): the build's identity on stdout, exit 0. The
+        // launcher scripts print it before every launch.
+        CommandLineVersion.handleIfRequested(rawArgs: rawArgs)
+
         // Pre-flight: handle the two defaults-emitter flags BEFORE any
         // SwiftUI / AppKit / Metal initialization. They're sub-second
         // exits and never touch the singleton; the only user-visible

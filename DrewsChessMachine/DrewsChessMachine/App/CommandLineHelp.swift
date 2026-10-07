@@ -100,6 +100,8 @@ enum CommandLineHelp {
 
     Headless engine / tools (each runs without opening a window, then exits):
       --help, -h                      Print this usage to stdout and exit (with --derive-model: its own help).
+      --version                       Print this build's number, commit, configuration and build time to
+                                      stdout and exit (alone; the run_*.sh launchers print it before launching).
       --uci [--model <path>]          Run as a UCI engine on stdin/stdout (cutechess, etc.). --model
                                       selects weights (default: latest saved session's trainer).
       --sweep [--sweep-sizes <csv>] [--sweep-seconds <n>]
