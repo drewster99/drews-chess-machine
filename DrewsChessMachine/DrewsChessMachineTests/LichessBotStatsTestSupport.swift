@@ -126,6 +126,49 @@ enum LichessBotStatsFixtures {
         )
     }
 
+    /// Synthetic rows shaped like the bot's real ones: several speeds, rated
+    /// and casual, ratings spread over 600 points, `models` models with
+    /// several checkpoints each, full facts, a game every ten minutes back
+    /// from `now`. `allWins` makes every game a win.
+    static func syntheticRows(_ count: Int, now: Date, models: Int = 40, allWins: Bool = false) throws -> [LichessBotGameSummary] {
+        let speeds = ["bullet", "blitz", "rapid", "classical"]
+        return try (0..<count).map { index in
+            let score: Double? = allWins ? 1 : (index % 37 == 0 ? nil : [1, 0.5, 0, 0][index % 4])
+            let decisive: LichessBotDecisivePly
+            switch score {
+            case .some(1): decisive = .atPly(20 + index % 30)
+            case .some(0): decisive = index % 5 == 0 ? .never : .atPly(30 + index % 20)
+            default: decisive = .notApplicable
+            }
+            return try row(
+                id: "s\(index)",
+                at: now.addingTimeInterval(Double(-index) * 600),
+                score: score,
+                speed: speeds[index % speeds.count],
+                rated: index % 9 != 0,
+                color: index % 2 == 0 ? .white : .black,
+                kind: index % 11 == 0 ? .human : .bot,
+                opponentRating: 1200 + (index * 7) % 600,
+                ourRatingBefore: 1400 + index % 50,
+                ourRatingDiff: index % 13 == 0 ? nil : (index % 21) - 10,
+                status: score == nil ? "aborted" : (score == 0.5 ? "draw" : "mate"),
+                plies: 40 + index % 60,
+                facts: facts(
+                    localDrawCondition: score == 0.5 && index % 2 == 0 ? .threefoldRepetition : nil,
+                    checkpoints: [
+                        .init(moveNumber: 10, win: 0.5, draw: 0.3, loss: 0.2),
+                        .init(moveNumber: 20, win: Float(index % 10) / 10, draw: 0.1, loss: 0.9 - Float(index % 10) / 10),
+                    ],
+                    buckets: [.init(index: index % 10, positions: 12, sumExpected: Double(index % 10) / 10 * 12)],
+                    heldWinStartPly: index % 3 == 0 ? 18 : nil,
+                    heldLossStartPly: index % 4 == 0 ? 22 : nil,
+                    decisive: decisive,
+                    generations: [generation("M\(index % models)", step: (index / models) % 25 * 1000, moves: 20)]
+                )
+            )
+        }
+    }
+
     /// A UTC Gregorian calendar with Monday weeks.
     static var utcCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)

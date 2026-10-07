@@ -66,6 +66,41 @@ enum LichessBotTimeControlOrder {
     }
 }
 
+/// The Time controls pane's rating sparkline (OD-9): the speed's recorded
+/// starting ratings, oldest first, then the account's current rating as the
+/// final point when the account is loaded. Every point is a rating Lichess
+/// reported; nothing is interpolated.
+struct LichessBotRatingSparklineSeries: Sendable, Equatable {
+    let ratings: [Int]
+    let firstDate: Date?
+    let lastDate: Date?
+    let endsWithCurrentRating: Bool
+
+    init(points: [LichessBotRatingPoint], currentRating: Int?) {
+        ratings = points.map(\.rating) + (currentRating.map { [$0] } ?? [])
+        firstDate = points.first?.createdAt
+        lastDate = points.last?.createdAt
+        endsWithCurrentRating = currentRating != nil
+    }
+
+    /// "1402–1561 over 87 rated games, 2026-09-28 to 2026-10-06; last point
+    /// is the current rating".
+    var help: String {
+        guard let low = ratings.min(), let high = ratings.max() else {
+            return "No rated game with a starting rating"
+        }
+        let games = ratings.count - (endsWithCurrentRating ? 1 : 0)
+        var text = "\(low)–\(high) over \(games) rated game\(games == 1 ? "" : "s")"
+        if let firstDate, let lastDate {
+            text += ", \(firstDate.formatted(date: .abbreviated, time: .omitted)) to \(lastDate.formatted(date: .abbreviated, time: .omitted))"
+        }
+        if endsWithCurrentRating {
+            text += "; the last point is the current rating"
+        }
+        return text
+    }
+}
+
 /// A starting rating Lichess reported for one rated game, for the
 /// sparkline (OD-9). Nothing is interpolated.
 struct LichessBotRatingPoint: Sendable, Equatable {

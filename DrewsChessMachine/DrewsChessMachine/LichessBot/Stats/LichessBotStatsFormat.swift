@@ -112,6 +112,14 @@ enum LichessBotStatsFormat {
         String(tallies.flatMap { [$0.wins, $0.draws, $0.losses] }.max() ?? 0).count
     }
 
+    /// The account's current rating in one speed (§3.5): Lichess's number,
+    /// "?" appended while it is provisional; "–" with no rating there or
+    /// before the account has loaded.
+    static func accountRating(_ perf: LichessBotPerfRating?) -> String {
+        guard let rating = perf?.rating else { return missing }
+        return "\(rating)" + (perf?.prov == true ? "?" : "")
+    }
+
     /// "x blown of y held wins (z%)".
     static func held(turned: Int, held: Int, verb: String, noun: String) -> String {
         guard held > 0 else { return "No \(noun)" }

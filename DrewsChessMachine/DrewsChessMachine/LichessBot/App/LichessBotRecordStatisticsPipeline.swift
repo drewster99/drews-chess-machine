@@ -9,6 +9,33 @@ enum LichessBotRecordStatisticsState: Sendable, Equatable {
     case failed(String)
 }
 
+extension LichessBotRecordStatisticsState {
+    /// The snapshot as a list of zero or one item with a constant identity,
+    /// so a view can show it with `ForEach` (no `if` in the body) and keep
+    /// its children's state across recomputes.
+    var readyItems: [LichessBotReadyStatistics] {
+        guard case .ready(let statistics) = self else { return [] }
+        return [LichessBotReadyStatistics(statistics: statistics)]
+    }
+
+    var isLoading: Bool {
+        self == .loading
+    }
+
+    /// The failure text, or nil when not failed.
+    var failureText: String? {
+        guard case .failed(let text) = self else { return nil }
+        return text
+    }
+}
+
+/// A ready snapshot, identified by a constant: there is only ever one, and
+/// a new snapshot must not look like a new view to SwiftUI.
+struct LichessBotReadyStatistics: Identifiable {
+    let statistics: LichessBotRecordStatistics
+    var id: Int { 0 }
+}
+
 /// Why a statistics computation ran, for the session log.
 enum LichessBotRecordStatisticsReason: String, Sendable {
     /// The games index changed (launch, a filed game, a rebuild).
