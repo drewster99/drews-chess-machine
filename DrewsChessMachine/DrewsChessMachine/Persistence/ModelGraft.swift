@@ -377,8 +377,12 @@ extension ModelDerivation {
             trainerCompletedSteps: try SafetensorsModelIO.trainerClock(fromMetadata: sourceMetadata, source: sourceName),
             lineage: sourceLineage,
             derivationHistory: try LineageTracker.ParentFile.derivationHistory(lineage: sourceLineage, metadata: sourceMetadata))
-        let lineage = LineageTracker.untrainedCopyRecord(
-            source: sourceParent, derivation: record, pathKind: .derive, argv: invocationArguments,
+        let lineage = try LineageTracker.untrainedCopyRecord(
+            source: sourceParent, derivation: record,
+            sourceArchitecture: try LineageRecord.AncestorRun.ArchitectureAtDeparture.ifChanged(
+                from: sourceDecoded.architecture, to: target, sourceMetadata: sourceMetadata,
+                sourceFormatVersion: sourceDecoded.architectureFormat.formatVersion, sourceName: sourceName),
+            pathKind: .derive, argv: invocationArguments,
             at: Date(timeIntervalSince1970: TimeInterval(createdAtUnix)))
 
         // Metadata is built, not copied: a graft's file states only what is

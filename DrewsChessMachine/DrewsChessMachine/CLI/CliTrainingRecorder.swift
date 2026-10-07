@@ -311,6 +311,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
 
         enum CodingKeys: String, CodingKey {
             case schema, run, parent, steps, fed, time, parameters, build, invocation, device, rng
+            case configuration
+            case runSeeds = "run_seeds"
             case checkpointSHA256 = "checkpoint_sha256"
         }
 
@@ -327,6 +329,12 @@ final class CliTrainingRecorder: @unchecked Sendable {
             try c.encode(record.invocation, forKey: .invocation)
             try c.encode(record.device, forKey: .device)
             try c.encode(record.rng, forKey: .rng)
+            // The segment's configuration and seeds (review A10). The seeds
+            // are listed on their own: a GUI `--train` row's record has no
+            // trainer snapshot, so no `rng.streams`, and `run_seeds` is its
+            // only seed record.
+            try c.encode(record.configuration, forKey: .configuration)
+            try c.encode(record.runSeeds, forKey: .runSeeds)
             try c.encode(checkpointSHA256, forKey: .checkpointSHA256)
         }
     }

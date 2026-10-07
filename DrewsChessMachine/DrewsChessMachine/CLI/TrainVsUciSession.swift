@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// How `--train-vs-uci` saves and resumes: as `.dcmsession` folders written by
 /// the same `CheckpointManager.saveSession` the GUI uses (exclusive staging,
@@ -248,6 +249,35 @@ enum TrainVsUciSession {
             before = nil
         }
         return TrainedPositionsCount(stepsAtStart: startTrainerSteps, positionsBeforeStart: before, batchSize: batchSize)
+    }
+
+    /// The run's game generation as its lineage configuration records it
+    /// (plan B1, gap 11): the ply cap, the eval-sync cadence, the trainer's
+    /// move selection, and each opponent pool with the SHA-256 of the
+    /// executable its command names (read once, here) and its options
+    /// (values redacted like argv). Engine identities start unrecorded and
+    /// are noted after a handshake (`LineageTracker.noteEngineIdentity`).
+    static func lineageGeneration(config: TrainVsUciConfig,
+                                  trainerMoveSelection: SamplingSchedule) throws -> LineageRecord.VsUciGeneration {
+        let opponents = try config.opponents.map { spec -> LineageRecord.VsUciGeneration.Opponent in
+            let executable = URL(fileURLWithPath: (spec.command as NSString).expandingTildeInPath)
+            let bytes = try Data(contentsOf: executable)
+            let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            return LineageRecord.VsUciGeneration.Opponent(
+                command: spec.command,
+                executableSHA256: digest,
+                count: spec.count,
+                goLimit: spec.goLimit,
+                options: spec.options.map { option in
+                    LineageRecord.VsUciGeneration.Option(
+                        name: option.name,
+                        value: LineageRecord.isSecretOptionName(option.name) ? LineageRecord.redactedValue : option.value)
+                },
+                identity: .unrecorded)
+        }
+        return LineageRecord.VsUciGeneration(
+            maxPliesPerGame: config.maxPliesPerGame, evalSyncEverySteps: config.evalSyncEverySteps,
+            trainerMoveSelection: LineageRecord.MoveSelection(trainerMoveSelection), opponents: opponents)
     }
 
     /// Lower-cased extensions that make a `--checkpoint-stem` name a model

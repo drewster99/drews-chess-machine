@@ -808,15 +808,6 @@ struct UpperContentView: View {
     // and accessed via `trainingParams.<name>`. See TrainingParameters.swift
     // for the canonical definitions, defaults, and persistence.
 
-    /// Last auto-computed step delay (auto-controller state, persisted across
-    /// sessions, intentionally NOT a training parameter). Moved to
-    /// SessionController in Stage 4l — forwarding proxy; the source of truth is
-    /// `SessionController.lastAutoComputedDelayMs`, a `UserDefaults`-backed
-    /// computed property (was `@AppStorage("lastAutoComputedDelayMs")` here).
-    private var lastAutoComputedDelayMs: Int {
-        get { session.lastAutoComputedDelayMs } nonmutating set { session.lastAutoComputedDelayMs = newValue }
-    }
-
     /// Singleton container for all training parameters that were
     /// previously stored as @AppStorage / @State on this view.
     /// Reads (`trainingParams.<name>`) participate in the view's

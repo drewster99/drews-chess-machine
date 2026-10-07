@@ -166,14 +166,23 @@ extension SessionController {
             let promotedAtStep = trainer.completedTrainSteps
             let promotionRecord: Result<LineageRecord, Error>
             do {
+                // The cut is taken here, under the pause, in the same turn
+                // as the record.
                 promotionRecord = .success(try lineageRecordForSave(
-                    at: Date(), trainerCompletedSteps: promotedAtStep,
+                    at: Date(), cut: try takeConfigurationCut(trainer: trainer), trainerCompletedSteps: promotedAtStep,
                     dropoutPhiloxState: nil, dropoutStreamState: nil))
             } catch {
                 promotionRecord = .failure(error)
             }
             recordPromotedChampionOrigin(championID: newChampionID, trainerCompletedSteps: promotedAtStep,
                                          record: promotionRecord)
+            // After the promotion's own record (review NB7).
+            do {
+                try noteChampionChange(trainerStep: promotedAtStep, trigger: .manual)
+            } catch {
+                SessionLogger.shared.log("[LINEAGE] the promotion could not be journalled: \(error.localizedDescription)")
+                trainingBox?.recordError("Promotion journal failed: \(error.localizedDescription)")
+            }
             // Reset game-play stats so the display reflects only the new
             // champion's self-play, mirroring arena promotion; the lineage
             // segment banks what the box counted in the same step. Done

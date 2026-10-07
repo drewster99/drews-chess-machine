@@ -436,6 +436,20 @@ extension SessionController {
                 SessionLogger.shared.log("[CHECKPOINT] Save session aborted at training pause timeout")
                 return
             }
+            // The save's configuration cut, in this main-actor turn under the
+            // training pause (gap 5, review X4): the record's parameters and
+            // journals, and the trainer file's schedule, all describe this
+            // instant, whatever the popover commits during the awaits below.
+            let configurationCut: GuiConfigurationCut
+            do {
+                configurationCut = try takeConfigurationCut(trainer: trainer)
+            } catch {
+                trainingGate.resume()
+                clearInFlight()
+                checkpoint?.setCheckpointStatus("Save failed (configuration cut): \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session failed at the configuration cut: \(error.localizedDescription)")
+                return
+            }
             // The complete resumable trainer state: trainables + BN (fp32
             // masters under mixed precision), momentum velocity, and the
             // completed-step clock + schedule read under the same pause.
@@ -449,8 +463,23 @@ extension SessionController {
             }
             let trainerSnapshot: TrainerResumeSnapshot
             switch trainerExport {
+            case .success(let snapshot) where snapshot.schedule.completedTrainSteps != configurationCut.schedule.completedTrainSteps:
+                // Training is paused, so the clock cannot move between the
+                // cut and the export; a difference is a bug, never written.
+                let error = LineageSegmentError.configurationCutClockMoved(
+                    cut: configurationCut.schedule.completedTrainSteps, exported: snapshot.schedule.completedTrainSteps)
+                trainingGate.resume()
+                clearInFlight()
+                checkpoint?.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session failed: \(error.localizedDescription)")
+                return
             case .success(let snapshot):
-                trainerSnapshot = snapshot
+                // The exported weights, velocity and dropout state, with the
+                // schedule the cut read: the file's flat `trainer_*` keys
+                // then come from the same value as the record's.
+                trainerSnapshot = TrainerResumeSnapshot(trainerWeights: snapshot.trainerWeights,
+                                                        schedule: configurationCut.schedule,
+                                                        dropoutRNG: snapshot.dropoutRNG)
             case .failure(let trainerError):
                 trainingGate.resume()
                 clearInFlight()
@@ -467,7 +496,8 @@ extension SessionController {
             let lineageResult: Result<(run: LineageRecord, champion: LineageRecord, championMetadata: ModelCheckpointMetadata), Error>
             do {
                 let run = try lineageRecordForSave(
-                    at: saveDate, trainerCompletedSteps: trainerSnapshot.schedule.completedTrainSteps,
+                    at: saveDate, cut: configurationCut,
+                    trainerCompletedSteps: trainerSnapshot.schedule.completedTrainSteps,
                     dropoutPhiloxState: trainerSnapshot.dropoutRNG.philoxState,
                     dropoutStreamState: try await trainer.dropoutStreamState())
                 let champion = try Self.championFileLineageRecord(origin: exportedChampionOrigin, at: saveDate)
@@ -808,7 +838,7 @@ extension SessionController {
             case .success:
                 champion.identifier = ModelID(value: file.modelID)
                 // A branch from this champion records the file as its parent.
-                championOrigin = .file(file.lineageParent)
+                adoptLoadedChampionOrigin(file)
                 networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
                 checkpoint?.setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
                 SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
@@ -999,7 +1029,7 @@ extension SessionController {
             case .success:
                 champion.identifier = ModelID(value: loaded.championFile.modelID)
                 // A branch from this champion records its file as the parent.
-                championOrigin = .file(loaded.championFile.lineageParent)
+                adoptLoadedChampionOrigin(loaded.championFile)
                 pendingLoadedSession = loaded
                 pendingLoadedSessionAcceptedReplacements = Set(findings.map(\.id))
                 networkStatus = """
@@ -1254,7 +1284,7 @@ extension SessionController {
             replayRatioAutoAdjust: params.replayRatioAutoAdjust,
             stepDelayMs: params.trainingStepDelayMs,
             selfPlayDelayMs: params.selfPlayDelayMs,
-            lastAutoComputedDelayMs: lastAutoComputedDelayMs,
+            lastAutoComputedDelayMs: try savedAutoComputedDelayMs(),
             // Schema-expansion fields (close the autotrain reproducibility gap
             // — these previously lived only in @AppStorage / @State and so
             // silently picked up the user's current preference on resume rather

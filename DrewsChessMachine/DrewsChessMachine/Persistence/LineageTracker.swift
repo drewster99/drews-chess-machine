@@ -16,6 +16,16 @@
 //  same totals an uninterrupted run would (to the measurement), and the
 //  dashboards no longer need hand-entered bases.
 //
+//  Schema 3: the tracker also holds the segment's configuration (set once by
+//  the path that owns the segment: `configureSegment`), the seeds it trained
+//  under (`noteRunSeed`), and — on the GUI, where a segment outlives Stop,
+//  Continue and "New Session, keep trainer" — the journals of what changed
+//  during it: committed settings changes, champion changes and replay-ratio
+//  starts. A record takes the journals up to a `SaveInputs` cut, so a save
+//  whose own awaits let a later edit land never records that edit; the next
+//  save does. The ancestry a branch or derive carries is built here too, so
+//  every path records it the same way.
+//
 
 import Foundation
 
@@ -102,10 +112,16 @@ final class LineageTracker: @unchecked Sendable {
         case resume(parent: ParentFile, gaps: [ResumeGap], legacyTotals: LegacySessionTotals?)
     }
 
-    enum TrackerError: Error, CustomStringConvertible {
+    enum TrackerError: Error, CustomStringConvertible, LocalizedError {
         case legacyTotalsWithRecordedLineage(parentModelID: String)
         case negativeSegmentCount(what: String, value: Int)
         case noModelID(what: String)
+        case segmentNotConfigured
+        case segmentConfiguredTwice
+        case noRunSeedNoted
+        case noSegmentStartChampion
+        case composedSnapshotHasSeedSettings(ids: [String])
+        case cutBeyondJournal(what: String, cut: Int, count: Int)
 
         var description: String {
             switch self {
@@ -115,8 +131,53 @@ final class LineageTracker: @unchecked Sendable {
                 return "lineage: segment \(what) is negative (\(value))"
             case .noModelID(let what):
                 return "lineage: \(what) has no model ID"
+            case .segmentNotConfigured:
+                return "lineage: a record with training behind it needs the segment's configuration (configureSegment)"
+            case .segmentConfiguredTwice:
+                return "lineage: a segment's configuration is set once, when the segment begins"
+            case .noRunSeedNoted:
+                return "lineage: a record with training behind it needs the run's seed (noteRunSeed)"
+            case .noSegmentStartChampion:
+                return "lineage: a gui segment's record needs its segment_start champion (noteChampionChange)"
+            case .composedSnapshotHasSeedSettings(let ids):
+                return "lineage: a composed parameter snapshot omits the seed settings (\(ids.joined(separator: ", "))); "
+                    + "the run's seed is in rng.streams and run_seeds"
+            case .cutBeyondJournal(let what, let cut, let count):
+                return "lineage: a save cut of \(cut) \(what) entries exceeds the journal's \(count)"
             }
         }
+
+        var errorDescription: String? { description }
+    }
+
+    /// What a segment's configuration holds that does not change while the
+    /// segment runs, set once when it begins (`configureSegment`).
+    struct SegmentConfiguration: Sendable, Equatable {
+        let policyTailPrecision: ChessNetwork.PolicyTailPrecision
+        let budget: LineageRecord.Budget
+        /// Train-vs-UCI only.
+        let vsuci: LineageRecord.VsUciGeneration?
+        /// GUI only: the self-play Dirichlet noise its games use.
+        let selfPlayDirichlet: LineageRecord.Dirichlet?
+        /// Whether the start weights were value-head recentered at load.
+        let startValueHeadRecentered: LineageRecord.Recorded<Bool>
+    }
+
+    /// The journal positions and per-save values one save records — taken
+    /// in the same instant as the save's parameter snapshot (the GUI's
+    /// configuration cut), so the snapshot, the journal it is undone with and
+    /// the derived values describe one moment.
+    struct SaveInputs: Sendable, Equatable {
+        let parameterChangeCount: Int
+        let championChangeCount: Int
+        /// The fed LR/momentum at the save (`LRMomentumCycleReadout`); nil for
+        /// a record with no trainer clock.
+        let scheduleAtSave: LineageRecord.ScheduleAtSave?
+        /// GUI only: the replay-ratio controller's state at the save.
+        let replayRatioAtSave: LineageRecord.ReplayRatio.AtSave?
+        /// The merged training-health alarm summary at the save; nil while
+        /// no monitor reports to this segment.
+        let healthAlarms: TrainingHealthSegmentSummary?
     }
 
     let pathKind: LineageRecord.PathKind
@@ -126,6 +187,8 @@ final class LineageTracker: @unchecked Sendable {
                       notExactItems: [String], continuesUnrecordedHistory: Bool)
     private let parent: LineageRecord.Parent?
     private let segments: [LineageRecord.SegmentSummary]
+    /// The runs these weights descend from (plan S2's table).
+    let ancestry: LineageRecord.Ancestry
     /// How the run's starting weights were drawn, recorded in every record
     /// (`rng.init_seed` / `init_scheme`); nil for a run that started from a
     /// file's weights.
@@ -144,6 +207,20 @@ final class LineageTracker: @unchecked Sendable {
     private let baseWallSec: Double?
     /// Measured trainer-step seconds this segment.
     private let segmentTrainStepSec = SyncBox<Double>(0)
+
+    /// The segment's journals (lock: the box's own; never held while calling
+    /// out). Appended from any thread — the settings observer, the arena,
+    /// the start path — and read by `record`.
+    fileprivate struct Journals: Sendable {
+        var configuration: SegmentConfiguration?
+        var runSeeds: [LineageRecord.RunSeedEntry] = []
+        var parameterChanges: [LineageRecord.ParameterChange] = []
+        var championChanges: [LineageRecord.ChampionChange] = []
+        var replayRatioStarts: [LineageRecord.ReplayRatio.Start] = []
+        /// The summary of the segment's ended health monitors, merged.
+        var endedMonitorsHealthAlarms: TrainingHealthSegmentSummary?
+    }
+    private let journals = SyncBox<Journals>(Journals())
 
     /// The segment index a run records, decided by how it starts: an exact
     /// resume of a run that carries a lineage record continues that run as
@@ -177,6 +254,7 @@ final class LineageTracker: @unchecked Sendable {
             parent = nil
             segments = []
             derivationHistory = []
+            ancestry = .fresh
             baseGames = 0; basePositions = 0; baseTrainStepSec = 0; baseWallSec = 0
         case .branch(let file):
             run = (UUID().uuidString, Self.segmentIndex(exactResumeOf: nil), segmentID, .branch, false, [], false)
@@ -184,6 +262,7 @@ final class LineageTracker: @unchecked Sendable {
             parent = file.recordParent
             segments = []
             derivationHistory = file.derivationHistory
+            ancestry = try Self.ancestry(leaving: file, by: .branch, architectureAtDeparture: nil)
             baseGames = 0; basePositions = 0; baseTrainStepSec = 0; baseWallSec = 0
         case .resume(let file, let gaps, let legacyTotals):
             parent = file.recordParent
@@ -199,6 +278,7 @@ final class LineageTracker: @unchecked Sendable {
                 run = (record.run.lineageRunID, Self.segmentIndex(exactResumeOf: file), segmentID, .resume,
                        exactness.isExact, exactness.tokens, record.run.continuesUnrecordedHistory)
                 segments = record.segments + [LineageRecord.SegmentSummary(of: record)]
+                ancestry = record.ancestry
                 baseGames = record.fed.cumGames
                 basePositions = record.fed.cumPositions
                 baseTrainStepSec = record.time.cumTrainStepSec
@@ -209,6 +289,7 @@ final class LineageTracker: @unchecked Sendable {
                 // session counted itself.
                 run = (UUID().uuidString, Self.segmentIndex(exactResumeOf: file), segmentID, .resume, false, exactness.tokens, true)
                 segments = []
+                ancestry = .unrecordedHistory
                 baseGames = nil
                 basePositions = nil
                 baseTrainStepSec = nil
@@ -217,10 +298,194 @@ final class LineageTracker: @unchecked Sendable {
         }
     }
 
+    /// The ancestry of a run that leaves `file`'s run by `leftBy` (plan S2):
+    /// the file's own ancestry plus its run; for a file with no lineage, an
+    /// unrecorded history and no runs.
+    static func ancestry(leaving file: ParentFile, by leftBy: LineageRecord.AncestorRun.LeftBy,
+                         architectureAtDeparture: LineageRecord.AncestorRun.ArchitectureAtDeparture?) throws
+        -> LineageRecord.Ancestry {
+        guard let record = file.lineage.record else { return .unrecordedHistory }
+        let left = LineageRecord.AncestorRun(
+            lineageRunID: record.run.lineageRunID,
+            leftBy: leftBy,
+            leftAt: file.recordParent,
+            totalsAtDeparture: LineageRecord.AncestorRun.TotalsAtDeparture(of: record),
+            architectureAtDeparture: architectureAtDeparture,
+            initialization: try LineageRecord.AncestorRun.initialization(of: record),
+            segments: record.segments + [LineageRecord.SegmentSummary(of: record)])
+        return LineageRecord.Ancestry(historyBeforeOldestRun: record.ancestry.historyBeforeOldestRun,
+                                      runs: record.ancestry.runs + [left])
+    }
+
     /// Add one measured trainer step.
     func recordTrainingStep(totalMs: Double) {
         segmentTrainStepSec.modify { $0 += totalMs / 1000 }
     }
+
+    // MARK: Segment configuration and journals
+
+    /// Set the segment's fixed configuration, once, when it begins.
+    func configureSegment(_ configuration: SegmentConfiguration) throws {
+        let alreadySet = journals.mutate { journals -> Bool in
+            if journals.configuration != nil { return true }
+            journals.configuration = configuration
+            return false
+        }
+        if alreadySet { throw TrackerError.segmentConfiguredTwice }
+    }
+
+    /// Whether the segment's configuration has been set.
+    var isConfigured: Bool { journals.value.configuration != nil }
+
+    /// Note a seed the run trains under from trainer step `trainerStep`
+    /// (gap 9b): once when the segment begins, and again whenever a start
+    /// that keeps the segment resolves a new one ("New Session, keep
+    /// trainer").
+    func noteRunSeed(_ seed: RunRandomSeed, atTrainerStep trainerStep: Int) {
+        let entry = LineageRecord.RunSeedEntry(
+            fromTrainerStep: trainerStep, masterSeed: seed.masterSeed, seedOrigin: seed.recordedOrigin,
+            streamDerivation: DCMRandomStreams.derivationVersion)
+        journals.modify { $0.runSeeds.append(entry) }
+    }
+
+    /// Record the engine identity of train-vs-UCI opponent pool
+    /// `opponentIndex` (its index in the run's opponent specs) from a
+    /// completed handshake. The pool's first completed handshake wins; a
+    /// later one is not compared (an engine that changed identity mid-run
+    /// would be a different engine at the same path, which the executable
+    /// hash recorded at the start does not cover either).
+    func noteEngineIdentity(opponentIndex: Int, _ identity: LineageRecord.VsUciGeneration.EngineIdentity) {
+        journals.modify { journals in
+            guard let configuration = journals.configuration, let vsuci = configuration.vsuci,
+                  vsuci.opponents.indices.contains(opponentIndex),
+                  case .unrecorded = vsuci.opponents[opponentIndex].identity else { return }
+            var opponents = vsuci.opponents
+            let old = opponents[opponentIndex]
+            opponents[opponentIndex] = LineageRecord.VsUciGeneration.Opponent(
+                command: old.command, executableSHA256: old.executableSHA256, count: old.count,
+                goLimit: old.goLimit, options: old.options, identity: .recorded(identity))
+            journals.configuration = SegmentConfiguration(
+                policyTailPrecision: configuration.policyTailPrecision, budget: configuration.budget,
+                vsuci: LineageRecord.VsUciGeneration(
+                    maxPliesPerGame: vsuci.maxPliesPerGame, evalSyncEverySteps: vsuci.evalSyncEverySteps,
+                    trainerMoveSelection: vsuci.trainerMoveSelection, opponents: opponents),
+                selfPlayDirichlet: configuration.selfPlayDirichlet,
+                startValueHeadRecentered: configuration.startValueHeadRecentered)
+        }
+    }
+
+    /// Journal a committed settings change (gap 4).
+    func journalParameterChange(_ change: LineageRecord.ParameterChange) {
+        journals.modify { $0.parameterChanges.append(change) }
+    }
+
+    /// Re-stamp every journalled change committed after `arenaStartStep` to
+    /// that step, keeping its original step in `restamped_from`: an arena
+    /// promotion rewound the trainer to `arenaStartStep`, and the rewound
+    /// trainer uses those settings from the next step on. Commit order is
+    /// kept, so the last edit of a key still wins.
+    func restampParameterChanges(after arenaStartStep: Int) {
+        journals.modify { journals in
+            journals.parameterChanges = journals.parameterChanges.map { change in
+                guard change.committedAtTrainerStep > arenaStartStep else { return change }
+                return LineageRecord.ParameterChange(
+                    committedAtTrainerStep: arenaStartStep, recordedUnix: change.recordedUnix, id: change.id,
+                    old: change.old, new: change.new,
+                    restampedFrom: change.restampedFrom ?? change.committedAtTrainerStep)
+            }
+        }
+    }
+
+    /// Journal a change of the data-generating champion (B5).
+    func noteChampionChange(_ change: LineageRecord.ChampionChange) {
+        journals.modify { $0.championChanges.append(change) }
+    }
+
+    /// Journal a Play-and-Train start's replay-ratio controller inputs (B6).
+    func noteReplayRatioStart(_ start: LineageRecord.ReplayRatio.Start) {
+        journals.modify { $0.replayRatioStarts.append(start) }
+    }
+
+    /// Fold an ended health monitor's summary into the segment's (alarm
+    /// plan OD-10): a segment spans several monitors (one per GUI start), so
+    /// evaluations and raise counts add, the first raise step is the
+    /// earliest and the severity the highest. The extension point for the
+    /// health monitor; a live monitor's summary is passed per save in
+    /// `SaveInputs.healthAlarms` after being merged with this one.
+    func mergeEndedHealthMonitor(_ summary: TrainingHealthSegmentSummary) {
+        journals.modify { journals in
+            journals.endedMonitorsHealthAlarms = Self.merge(journals.endedMonitorsHealthAlarms, summary)
+        }
+    }
+
+    /// The segment's health-alarm summary with `live` (the running
+    /// monitor's) merged in, without changing the stored one; nil when no
+    /// monitor ever reported.
+    func healthAlarms(withLive live: TrainingHealthSegmentSummary?) -> TrainingHealthSegmentSummary? {
+        let ended = journals.value.endedMonitorsHealthAlarms
+        guard let live else { return ended }
+        return Self.merge(ended, live)
+    }
+
+    static func merge(_ a: TrainingHealthSegmentSummary?, _ b: TrainingHealthSegmentSummary) -> TrainingHealthSegmentSummary {
+        guard let a else { return b }
+        var byRule: [TrainingHealthRule: TrainingHealthSegmentSummary.Raised] = [:]
+        for raised in a.raised + b.raised {
+            if let existing = byRule[raised.rule] {
+                byRule[raised.rule] = TrainingHealthSegmentSummary.Raised(
+                    rule: raised.rule,
+                    firstTrainerStep: min(existing.firstTrainerStep, raised.firstTrainerStep),
+                    highestSeverity: Self.higher(existing.highestSeverity, raised.highestSeverity),
+                    raiseCount: existing.raiseCount + raised.raiseCount)
+            } else {
+                byRule[raised.rule] = raised
+            }
+        }
+        let order = a.raised.map(\.rule) + b.raised.map(\.rule).filter { rule in !a.raised.contains { $0.rule == rule } }
+        return TrainingHealthSegmentSummary(evaluations: a.evaluations + b.evaluations,
+                                            raised: order.compactMap { byRule[$0] })
+    }
+
+    /// The more severe of two alarm severities.
+    private static func higher(_ a: TrainingAlarm.Severity, _ b: TrainingAlarm.Severity) -> TrainingAlarm.Severity {
+        switch (a, b) {
+        case (.critical, _), (_, .critical): return .critical
+        case (.warning, .warning): return .warning
+        }
+    }
+
+    /// The journal positions now, with this save's derived values: what a
+    /// save records when it takes no cut of its own (the CLI paths, whose
+    /// journals never change during a save, and any record composed in one
+    /// main-actor turn).
+    func saveInputs(scheduleAtSave: LineageRecord.ScheduleAtSave?,
+                    replayRatioAtSave: LineageRecord.ReplayRatio.AtSave?,
+                    healthAlarms: TrainingHealthSegmentSummary?) -> SaveInputs {
+        let journals = journals.value
+        return SaveInputs(parameterChangeCount: journals.parameterChanges.count,
+                          championChangeCount: journals.championChanges.count,
+                          scheduleAtSave: scheduleAtSave, replayRatioAtSave: replayRatioAtSave,
+                          healthAlarms: healthAlarms)
+    }
+
+    /// The journals as they stand, to put back if a start that added to them
+    /// fails (`restoreJournals`).
+    struct JournalCheckpoint: Sendable {
+        fileprivate let journals: Journals
+    }
+
+    func checkpointJournals() -> JournalCheckpoint {
+        JournalCheckpoint(journals: journals.value)
+    }
+
+    func restoreJournals(_ checkpoint: JournalCheckpoint) {
+        journals.value = checkpoint.journals
+    }
+
+    /// The journalled settings changes, for tests and the undo derivation.
+    var parameterChanges: [LineageRecord.ParameterChange] { journals.value.parameterChanges }
+    var championChanges: [LineageRecord.ChampionChange] { journals.value.championChanges }
+    var runSeeds: [LineageRecord.RunSeedEntry] { journals.value.runSeeds }
 
     /// The record for a save at `date`.
     ///
@@ -238,6 +503,7 @@ final class LineageTracker: @unchecked Sendable {
     ///     the saved trainer state (its dropout Philox state and stream
     ///     positions), or `.withoutRunStreams` for a save with no run behind
     ///     it.
+    ///   - inputs: the save's journal cut and derived values (`SaveInputs`).
     func record(at date: Date,
                 trainerCompletedSteps: Int?,
                 segmentLocalStep: Int,
@@ -245,14 +511,53 @@ final class LineageTracker: @unchecked Sendable {
                 segmentPositions: Int,
                 corpus: LineageRecord.CorpusPosition?,
                 parameters: LineageRecord.Parameters?,
-                rng: LineageRecord.RNG) throws -> LineageRecord {
+                rng: LineageRecord.RNG,
+                inputs: SaveInputs) throws -> LineageRecord {
         guard segmentGames >= 0 else { throw TrackerError.negativeSegmentCount(what: "games", value: segmentGames) }
         guard segmentPositions >= 0 else { throw TrackerError.negativeSegmentCount(what: "positions", value: segmentPositions) }
         guard segmentLocalStep >= 0 else { throw TrackerError.negativeSegmentCount(what: "steps", value: segmentLocalStep) }
         let stepSec = segmentTrainStepSec.value
         let wallSec = max(0, date.timeIntervalSince(startedAt))
-        return LineageRecord(
-            schema: LineageRecord.currentSchema,
+        let configuration: LineageRecord.RecordedIfTrained<LineageRecord.TrainingConfiguration>
+        let runSeeds: LineageRecord.RecordedIfTrained<[LineageRecord.RunSeedEntry]>
+        if let parameters {
+            let seedIDs = try Self.seedSettingIDs(in: parameters)
+            guard seedIDs.isEmpty else { throw TrackerError.composedSnapshotHasSeedSettings(ids: seedIDs) }
+            let journals = journals.value
+            guard let fixed = journals.configuration else { throw TrackerError.segmentNotConfigured }
+            guard !journals.runSeeds.isEmpty else { throw TrackerError.noRunSeedNoted }
+            guard inputs.parameterChangeCount <= journals.parameterChanges.count else {
+                throw TrackerError.cutBeyondJournal(what: "parameter-change", cut: inputs.parameterChangeCount,
+                                                    count: journals.parameterChanges.count)
+            }
+            guard inputs.championChangeCount <= journals.championChanges.count else {
+                throw TrackerError.cutBeyondJournal(what: "champion-change", cut: inputs.championChangeCount,
+                                                    count: journals.championChanges.count)
+            }
+            let championChanges = Array(journals.championChanges.prefix(inputs.championChangeCount))
+            if pathKind == .gui, championChanges.first?.trigger != .segmentStart {
+                throw TrackerError.noSegmentStartChampion
+            }
+            configuration = .recorded(try LineageRecord.TrainingConfiguration(
+                pathKind: pathKind,
+                policyTailPrecision: fixed.policyTailPrecision.rawValue,
+                budget: fixed.budget,
+                parameterChanges: Array(journals.parameterChanges.prefix(inputs.parameterChangeCount)),
+                championChanges: championChanges,
+                vsuci: fixed.vsuci,
+                selfPlayDirichlet: fixed.selfPlayDirichlet,
+                startValueHeadRecentered: fixed.startValueHeadRecentered,
+                scheduleAtSave: inputs.scheduleAtSave,
+                replayRatio: pathKind == .gui
+                    ? LineageRecord.ReplayRatio(starts: journals.replayRatioStarts, atSave: inputs.replayRatioAtSave)
+                    : nil,
+                healthAlarms: inputs.healthAlarms.map { .recorded($0) } ?? .unrecorded))
+            runSeeds = .recorded(journals.runSeeds)
+        } else {
+            configuration = .notTrained
+            runSeeds = .notTrained
+        }
+        return try LineageRecord(
             run: LineageRecord.Run(
                 lineageRunID: run.lineageRunID,
                 segmentIndex: run.segmentIndex,
@@ -284,22 +589,33 @@ final class LineageTracker: @unchecked Sendable {
                 segmentWallSec: wallSec
             ),
             parameters: parameters,
-            build: .current,
+            configuration: configuration,
+            runSeeds: runSeeds,
+            build: try .current,
             invocation: LineageRecord.Invocation(argv: argv, pathKind: pathKind),
             device: .current,
             rng: rng.withInitialization(initialization),
             segments: segments,
+            ancestry: ancestry,
             derivationHistory: derivationHistory
         )
+    }
+
+    /// The seed-setting ids a snapshot holds (gap 9): a composed snapshot
+    /// holds none, since the run's actual seed is in `rng.streams` and
+    /// `run_seeds`. Carried snapshots are never checked.
+    static func seedSettingIDs(in parameters: LineageRecord.Parameters) throws -> [String] {
+        let values = try ParameterValue.parametersObject(fromJSON: Data(parameters.snapshotJSON.utf8))
+        return LineageRecord.Parameters.excludedParameterIDs.filter { values[$0] != nil }.sorted()
     }
 
     /// The record of the segment as it starts, before it trains or feeds
     /// anything: what the `[RUN]` line reports.
     func startRecord(at date: Date, trainerCompletedSteps: Int?,
-                     parameters: LineageRecord.Parameters?) throws -> LineageRecord {
+                     parameters: LineageRecord.Parameters?, inputs: SaveInputs) throws -> LineageRecord {
         try record(at: date, trainerCompletedSteps: trainerCompletedSteps, segmentLocalStep: 0,
                    segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: parameters,
-                   rng: .withoutRunStreams(dropoutPhiloxState: nil))
+                   rng: .withoutRunStreams(dropoutPhiloxState: nil), inputs: inputs)
     }
 
     /// The run's totals now, for a `results.json` row: the trainer clock,
@@ -342,7 +658,8 @@ final class LineageTracker: @unchecked Sendable {
                                          startedAt: date, segmentStartTrainerStep: nil)
         return try tracker.record(at: date, trainerCompletedSteps: 0, segmentLocalStep: 0,
                                   segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: nil,
-                                  rng: .withoutRunStreams(dropoutPhiloxState: nil))
+                                  rng: .withoutRunStreams(dropoutPhiloxState: nil),
+                                  inputs: tracker.saveInputs(scheduleAtSave: nil, replayRatioAtSave: nil, healthAlarms: nil))
     }
 
     /// The record of a model made from `source` without training —
@@ -351,9 +668,16 @@ final class LineageTracker: @unchecked Sendable {
     /// totals continue from the source's record (or stay unrecorded when the
     /// source predates lineage, step total included). `derivation` is the derive step that made
     /// the copy, appended to the source's derivation history; nil for a copy
-    /// no derivation made.
+    /// no derivation made. `sourceArchitecture` is the source file's
+    /// architecture text and format version when the copy changes the
+    /// architecture (gap 1c), nil when it keeps it.
+    ///
+    /// The copy carries the source's parameters, configuration and run
+    /// seeds verbatim (a carried configuration keeps its own `path_kind`),
+    /// and its ancestry gains the source's run, left by `derive`.
     static func untrainedCopyRecord(source: ParentFile, derivation: ModelDerivation.DerivationRecord?,
-                                    pathKind: LineageRecord.PathKind, argv: [String], at date: Date) -> LineageRecord {
+                                    sourceArchitecture: LineageRecord.AncestorRun.ArchitectureAtDeparture?,
+                                    pathKind: LineageRecord.PathKind, argv: [String], at date: Date) throws -> LineageRecord {
         let sourceRecord = source.lineage.record
         var derivationHistory = source.derivationHistory
         if let derivation {
@@ -368,8 +692,7 @@ final class LineageTracker: @unchecked Sendable {
         // differs on purpose: it continues that very clock, so the clock is
         // its total.)
         let sourceStepTotal = sourceRecord?.steps.cumTrainerStep
-        return LineageRecord(
-            schema: LineageRecord.currentSchema,
+        return try LineageRecord(
             run: LineageRecord.Run(
                 lineageRunID: UUID().uuidString,
                 segmentIndex: 0,
@@ -401,13 +724,16 @@ final class LineageTracker: @unchecked Sendable {
                 segmentWallSec: 0
             ),
             parameters: sourceRecord?.parameters,
-            build: .current,
+            configuration: sourceRecord?.configuration ?? .notTrained,
+            runSeeds: sourceRecord?.runSeeds ?? .notTrained,
+            build: try .current,
             invocation: LineageRecord.Invocation(argv: LineageRecord.redactedArguments(argv), pathKind: pathKind),
             device: .current,
             // The copy has no trainer behind it: there is no dropout state
             // to continue.
             rng: .withoutRunStreams(dropoutPhiloxState: nil),
             segments: [],
+            ancestry: try ancestry(leaving: source, by: .derive, architectureAtDeparture: sourceArchitecture),
             derivationHistory: derivationHistory
         )
     }

@@ -45,6 +45,18 @@ private let uciArbiterIgnoresSIGPIPE: Void = {
 /// `MoveGenerator` the single source of truth for legality.
 actor UCIArbiter {
 
+    /// What an engine says about itself during the handshake: its `id name`
+    /// and `id author` lines, nil for one it did not send. Recorded in a
+    /// train-vs-UCI run's lineage (plan gap 11), so a file says which engine
+    /// its games were played against, not only the executable path.
+    struct EngineIdentity: Sendable, Equatable {
+        let idName: String?
+        let idAuthor: String?
+    }
+
+    /// The identity from the latest completed handshake; nil before one.
+    private(set) var engineIdentity: EngineIdentity?
+
     /// A `setoption name <name> value <value>` pair applied during the
     /// handshake — e.g. `UCI_LimitStrength=true`, `UCI_Elo=1400`.
     struct Option: Sendable, Equatable {
@@ -164,17 +176,40 @@ actor UCIArbiter {
     }
 
     /// Run the `uci` handshake, apply configured options, and confirm
-    /// readiness. Skips over `id` / `option` / `info` lines until
-    /// `uciok`, then applies each option, then `isready`/`readyok`.
-    func handshake() async throws {
+    /// readiness. Collects the `id name` / `id author` lines and skips
+    /// `option` / `info` lines until `uciok`, then applies each option, then
+    /// `isready`/`readyok`. Returns (and keeps) the engine's identity.
+    @discardableResult
+    func handshake() async throws -> EngineIdentity {
         try send("uci")
-        _ = try await awaitLine(where: { $0 == "uciok" }, timeout: config.handshakeTimeout)
+        var idName: String? = nil
+        var idAuthor: String? = nil
+        while true {
+            let line = try await awaitLine(
+                where: { $0 == "uciok" || $0.hasPrefix(Self.idNamePrefix) || $0.hasPrefix(Self.idAuthorPrefix) },
+                timeout: config.handshakeTimeout)
+            if line == "uciok" { break }
+            if line.hasPrefix(Self.idNamePrefix) {
+                idName = String(line.dropFirst(Self.idNamePrefix.count))
+            } else {
+                idAuthor = String(line.dropFirst(Self.idAuthorPrefix.count))
+            }
+        }
+        if idName == nil {
+            SessionLogger.shared.log("[VS-UCI] engine \(config.label) sent no id name")
+        }
+        let identity = EngineIdentity(idName: idName, idAuthor: idAuthor)
         for option in config.options {
             try send(UCIProtocol.setOptionCommand(name: option.name, value: option.value))
         }
         try await syncReady()
+        engineIdentity = identity
         SessionLogger.shared.log("[ARBITER] \(config.label) ready (options: \(config.options.map { "\($0.name)=\($0.value)" }.joined(separator: ", ")))")
+        return identity
     }
+
+    static let idNamePrefix = "id name "
+    static let idAuthorPrefix = "id author "
 
     /// Reset the engine for a new game (`ucinewgame` + `isready`
     /// barrier). Cheap; no process respawn.

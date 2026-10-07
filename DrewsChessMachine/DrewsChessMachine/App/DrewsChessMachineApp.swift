@@ -1111,6 +1111,14 @@ struct DrewsChessMachineApp: App {
             if let pp = parametersPath {
                 do {
                     let cfg = try CliTrainingConfig.loadAndApplyTransiently(path: pp)
+                    // Corpus replay enforces no wall-clock limit (owner
+                    // decision O-21): a file that sets one is refused rather
+                    // than silently ignored.
+                    if let refusal = cfg.corpusReplayRefusal(parametersPath: pp) {
+                        SessionLogger.shared.log("[REPLAY] refused: \(refusal.message)")
+                        FileHandle.standardError.write(Data("error: \(refusal.message)\n".utf8))
+                        Darwin.exit(2)
+                    }
                     if stepLimit == nil { stepLimit = cfg.trainingStepLimit }
                 } catch {
                     FileHandle.standardError.write(Data("error: --parameters load/apply failed: \(error.localizedDescription)\n".utf8))

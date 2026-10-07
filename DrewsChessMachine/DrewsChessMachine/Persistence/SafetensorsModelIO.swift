@@ -46,6 +46,13 @@ enum SafetensorsModelIO {
         /// A trainer-state file's lineage total disagrees with its trainer
         /// clock (`trainer_completed_steps`), on write.
         case lineageStepDisagreesWithTrainerClock(lineageStep: Int?, trainerClock: Int)
+        /// A trainer-state file's lineage parameter snapshot lacks a schedule
+        /// key, or holds a value other than the file's flat `trainer_*`
+        /// schedule (hyperparameter recording plan, gap 5 backstop), on write.
+        case scheduleDisagreesWithLineage(key: String, detail: String)
+        /// A trainer-state file's lineage configuration names another
+        /// policy-tail precision than its flat key, on write.
+        case policyTailDisagreesWithLineage(flat: String, lineage: String)
 
         var description: String {
             switch self {
@@ -74,6 +81,10 @@ enum SafetensorsModelIO {
                 return "safetensors model \(source): no model_id (or an empty one) in __metadata__"
             case .malformedTrainingStep(let raw, let source):
                 return "safetensors model \(source): training_step '\(raw)' is not an integer"
+            case .scheduleDisagreesWithLineage(let key, let detail):
+                return "safetensors model: the lineage parameter snapshot's \(key) disagrees with the trainer schedule the file is written with (\(detail))"
+            case .policyTailDisagreesWithLineage(let flat, let lineage):
+                return "safetensors model: trainer_policy_tail_precision \(flat) disagrees with the lineage configuration's \(lineage)"
             case .lineageStepDisagreesWithTrainerClock(let lineageStep, let trainerClock):
                 return "safetensors model: lineage cum_trainer_step \(lineageStep.map(String.init) ?? "null") must equal the "
                     + "trainer-state file's trainer_completed_steps \(trainerClock)"
@@ -162,9 +173,18 @@ enum SafetensorsModelIO {
                     lineageStep: lineage.steps.cumTrainerStep, trainerClock: schedule.completedTrainSteps)
             }
             for (key, value) in try schedule.metadataEntries() { md[key] = value }
+            // The record's schedule keys are composed from this same value
+            // (gap 5's rule), so a disagreement is a writer that bypassed the
+            // rule; refused, never written.
+            if let parameters = lineage.parameters {
+                try checkScheduleAgrees(parameters, with: schedule)
+            }
         }
         if let precision = metadata.trainerPolicyTailPrecision {
             md[Key.trainerPolicyTailPrecision] = precision.rawValue
+            if let configured = lineage.configuration.value?.policyTailPrecision, configured != precision.rawValue {
+                throw IOError.policyTailDisagreesWithLineage(flat: precision.rawValue, lineage: configured)
+            }
         }
         // Every save marks the value head centered, so a file is recentered
         // at most once in its life and every new file round-trips bit-exactly
@@ -177,6 +197,31 @@ enum SafetensorsModelIO {
         for (key, value) in try lineage.metadataEntries() { md[key] = value }
 
         return try SafetensorsFile.encode(tensors: tensors, metadata: md)
+    }
+
+    /// Refuse a lineage snapshot whose 21 schedule keys are not exactly
+    /// `schedule`'s (compared by each key's declared type, so a whole-number
+    /// `Double` written as a JSON integer is the same value).
+    static func checkScheduleAgrees(_ parameters: LineageRecord.Parameters, with schedule: TrainerScheduleState) throws {
+        let recorded = try ParameterValue.parametersObject(fromJSON: Data(parameters.snapshotJSON.utf8))
+        let expected = try TrainingParametersSnapshot.declaredDefaults(overriding: [:]).adoptingSchedule(schedule).rawValueMap()
+        let keysByID = Dictionary(uniqueKeysWithValues: TrainingParameters.allKeys.map { ($0.id, $0) })
+        for id in TrainingParametersSnapshot.scheduleKeyIDs {
+            guard let key = keysByID[id], let want = expected[id] else {
+                throw IOError.scheduleDisagreesWithLineage(key: id, detail: "not a declared parameter")
+            }
+            guard let raw = recorded[id] else {
+                throw IOError.scheduleDisagreesWithLineage(key: id, detail: "absent from the snapshot")
+            }
+            let have = try canonical(key, raw)
+            guard try have == canonical(key, want) else {
+                throw IOError.scheduleDisagreesWithLineage(key: id, detail: "snapshot \(have.displayText), schedule \(want.displayText)")
+            }
+        }
+    }
+
+    private static func canonical<K: TrainingParameterKey>(_ key: K.Type, _ raw: ParameterValue) throws -> ParameterValue {
+        K.encode(try K.decode(raw))
     }
 
     struct Decoded {
@@ -508,8 +553,8 @@ enum SafetensorsModelIO {
                 throw ReplayResumeError.noCorpusPosition(file: url.lastPathComponent)
             }
             return ReplayResumeMetadata(
-                corpusID: corpus.corpusID,
-                corpusPath: corpus.corpusPath,
+                corpusID: corpus.corpusIdentity.firstCorpusID,
+                corpusPath: corpus.corpusIdentity.firstCorpusPath,
                 nextGameIndex: corpus.nextGameIndex,
                 epoch: corpus.epoch,
                 populatedPlies: corpus.populatedPlies,

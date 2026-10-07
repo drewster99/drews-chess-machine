@@ -414,8 +414,12 @@ enum ModelDerivation {
         // derivation history — the source's plus this step — is written
         // by the record, with the flat `derivation_history` key as its
         // mirror.
-        let lineage = LineageTracker.untrainedCopyRecord(
-            source: sourceParent, derivation: record, pathKind: .derive, argv: invocationArguments,
+        let lineage = try LineageTracker.untrainedCopyRecord(
+            source: sourceParent, derivation: record,
+            sourceArchitecture: try LineageRecord.AncestorRun.ArchitectureAtDeparture.ifChanged(
+                from: source, to: target, sourceMetadata: sourceMetadata,
+                sourceFormatVersion: sourceDecoded.architectureFormat.formatVersion, sourceName: sourceName),
+            pathKind: .derive, argv: invocationArguments,
             at: Date(timeIntervalSince1970: TimeInterval(createdAtUnix)))
         for (key, value) in try lineage.metadataEntries() { metadata[key] = value }
 

@@ -1548,117 +1548,117 @@ public final class TrainingParameters {
 
     // Stored properties — one per parameter. didSet persists to UserDefaults.
     // @Observable instruments these for SwiftUI re-renders.
-    public var entropyBonus: Double { didSet { if !Self.commitAssignment(EntropyBonus.self, value: entropyBonus) { entropyBonus = oldValue } } }
-    public var illegalMassWeight: Double { didSet { if !Self.commitAssignment(IllegalMassWeight.self, value: illegalMassWeight) { illegalMassWeight = oldValue } } }
-    public var policyLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingEpsilon.self, value: policyLabelSmoothingEpsilon) { policyLabelSmoothingEpsilon = oldValue } } }
+    public var entropyBonus: Double { didSet { if !Self.commitAssignment(EntropyBonus.self, value: entropyBonus, oldValue: oldValue) { entropyBonus = oldValue } } }
+    public var illegalMassWeight: Double { didSet { if !Self.commitAssignment(IllegalMassWeight.self, value: illegalMassWeight, oldValue: oldValue) { illegalMassWeight = oldValue } } }
+    public var policyLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingEpsilon.self, value: policyLabelSmoothingEpsilon, oldValue: oldValue) { policyLabelSmoothingEpsilon = oldValue } } }
     /// Stored as the enum rather than its raw value so no use site ever sees
     /// the persisted integer; the `didSet` unwraps it at the persistence
     /// boundary, which is the only place the raw form is meaningful.
     public var policyLabelSmoothingMode: PolicyLabelSmoothingMode {
         didSet {
-            if !Self.commitAssignment(PolicyLabelSmoothingModeParameter.self, value: policyLabelSmoothingMode.rawValue) {
+            if !Self.commitAssignment(PolicyLabelSmoothingModeParameter.self, value: policyLabelSmoothingMode.rawValue, oldValue: oldValue.rawValue) {
                 policyLabelSmoothingMode = oldValue
             }
         }
     }
-    public var policyLabelSmoothingPerMove: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMove.self, value: policyLabelSmoothingPerMove) { policyLabelSmoothingPerMove = oldValue } } }
-    public var policyLabelSmoothingPerMoveCap: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMoveCap.self, value: policyLabelSmoothingPerMoveCap) { policyLabelSmoothingPerMoveCap = oldValue } } }
-    public var valueLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(ValueLabelSmoothingEpsilon.self, value: valueLabelSmoothingEpsilon) { valueLabelSmoothingEpsilon = oldValue } } }
-    public var gradClipMaxNorm: Double { didSet { if !Self.commitAssignment(GradClipMaxNorm.self, value: gradClipMaxNorm) { gradClipMaxNorm = oldValue } } }
-    public var weightDecay: Double { didSet { if !Self.commitAssignment(WeightDecay.self, value: weightDecay) { weightDecay = oldValue } } }
-    public var dropoutRate: Double { didSet { if !Self.commitAssignment(DropoutRate.self, value: dropoutRate) { dropoutRate = oldValue } } }
-    public var policyLossWeight: Double { didSet { if !Self.commitAssignment(PolicyLossWeight.self, value: policyLossWeight) { policyLossWeight = oldValue } } }
-    public var valueLossWeight: Double { didSet { if !Self.commitAssignment(ValueLossWeight.self, value: valueLossWeight) { valueLossWeight = oldValue } } }
-    public var learningRate: Double { didSet { if !Self.commitAssignment(LearningRate.self, value: learningRate) { learningRate = oldValue } } }
-    public var momentumCoeff: Double { didSet { if !Self.commitAssignment(MomentumCoeff.self, value: momentumCoeff) { momentumCoeff = oldValue } } }
-    public var sqrtBatchScalingLR: Bool { didSet { if !Self.commitAssignment(SqrtBatchScalingLR.self, value: sqrtBatchScalingLR) { sqrtBatchScalingLR = oldValue } } }
-    public var signedAdvantageComplementCE: Bool { didSet { if !Self.commitAssignment(SignedAdvantageComplementCE.self, value: signedAdvantageComplementCE) { signedAdvantageComplementCE = oldValue } } }
-    public var lrWarmupSteps: Int { didSet { if !Self.commitAssignment(LRWarmupSteps.self, value: lrWarmupSteps) { lrWarmupSteps = oldValue } } }
-    public var drawPenalty: Double { didSet { if !Self.commitAssignment(DrawPenalty.self, value: drawPenalty) { drawPenalty = oldValue } } }
-    public var selfPlayStartTau: Double { didSet { if !Self.commitAssignment(SelfPlayStartTau.self, value: selfPlayStartTau) { selfPlayStartTau = oldValue } } }
-    public var selfPlayTargetTau: Double { didSet { if !Self.commitAssignment(SelfPlayTargetTau.self, value: selfPlayTargetTau) { selfPlayTargetTau = oldValue } } }
-    public var selfPlayTauDecayPerPly: Double { didSet { if !Self.commitAssignment(SelfPlayTauDecayPerPly.self, value: selfPlayTauDecayPerPly) { selfPlayTauDecayPerPly = oldValue } } }
-    public var selfPlayDrawKeepFraction: Double { didSet { if !Self.commitAssignment(SelfPlayDrawKeepFraction.self, value: selfPlayDrawKeepFraction) { selfPlayDrawKeepFraction = oldValue } } }
-    public var selfPlayMaxPliesPerGame: Int { didSet { if !Self.commitAssignment(SelfPlayMaxPliesPerGame.self, value: selfPlayMaxPliesPerGame) { selfPlayMaxPliesPerGame = oldValue } } }
-    public var recordSelfPlayGames: Bool { didSet { if !Self.commitAssignment(RecordSelfPlayGames.self, value: recordSelfPlayGames) { recordSelfPlayGames = oldValue } } }
-    public var drawWatchPDrawThreshold: Double { didSet { if !Self.commitAssignment(DrawWatchPDrawThreshold.self, value: drawWatchPDrawThreshold) { drawWatchPDrawThreshold = oldValue } } }
-    public var drawWatchTerminateGames: Bool { didSet { if !Self.commitAssignment(DrawWatchTerminateGames.self, value: drawWatchTerminateGames) { drawWatchTerminateGames = oldValue } } }
-    public var drawWatchStreakLength: Int { didSet { if !Self.commitAssignment(DrawWatchStreakLength.self, value: drawWatchStreakLength) { drawWatchStreakLength = oldValue } } }
-    public var arenaStartTau: Double { didSet { if !Self.commitAssignment(ArenaStartTau.self, value: arenaStartTau) { arenaStartTau = oldValue } } }
-    public var arenaTargetTau: Double { didSet { if !Self.commitAssignment(ArenaTargetTau.self, value: arenaTargetTau) { arenaTargetTau = oldValue } } }
-    public var arenaTauDecayPerPly: Double { didSet { if !Self.commitAssignment(ArenaTauDecayPerPly.self, value: arenaTauDecayPerPly) { arenaTauDecayPerPly = oldValue } } }
-    public var replayRatioTarget: Double { didSet { if !Self.commitAssignment(ReplayRatioTarget.self, value: replayRatioTarget) { replayRatioTarget = oldValue } } }
-    public var replayRatioAutoAdjust: Bool { didSet { if !Self.commitAssignment(ReplayRatioAutoAdjust.self, value: replayRatioAutoAdjust) { replayRatioAutoAdjust = oldValue } } }
-    public var selfPlayConcurrency: Int { didSet { if !Self.commitAssignment(SelfPlayConcurrency.self, value: selfPlayConcurrency) { selfPlayConcurrency = oldValue } } }
-    public var trainingStepDelayMs: Int { didSet { if !Self.commitAssignment(TrainingStepDelayMs.self, value: trainingStepDelayMs) { trainingStepDelayMs = oldValue } } }
-    public var selfPlayDelayMs: Int { didSet { if !Self.commitAssignment(SelfPlayDelayMs.self, value: selfPlayDelayMs) { selfPlayDelayMs = oldValue } } }
-    public var trainingBatchSize: Int { didSet { if !Self.commitAssignment(TrainingBatchSize.self, value: trainingBatchSize) { trainingBatchSize = oldValue } } }
-    public var replayBufferCapacity: Int { didSet { if !Self.commitAssignment(ReplayBufferCapacity.self, value: replayBufferCapacity) { replayBufferCapacity = oldValue } } }
-    public var replayBufferMinPositionsBeforeTraining: Int { didSet { if !Self.commitAssignment(ReplayBufferMinPositionsBeforeTraining.self, value: replayBufferMinPositionsBeforeTraining) { replayBufferMinPositionsBeforeTraining = oldValue } } }
-    public var maxPliesFromAnyOneGame: Int { didSet { if !Self.commitAssignment(MaxPliesFromAnyOneGame.self, value: maxPliesFromAnyOneGame) { maxPliesFromAnyOneGame = oldValue } } }
-    public var targetSampledGameLengthPlies: Int { didSet { if !Self.commitAssignment(TargetSampledGameLengthPlies.self, value: targetSampledGameLengthPlies) { targetSampledGameLengthPlies = oldValue } } }
-    public var maxDrawPercentPerBatch: Int { didSet { if !Self.commitAssignment(MaxDrawPercentPerBatch.self, value: maxDrawPercentPerBatch) { maxDrawPercentPerBatch = oldValue } } }
-    public var replayBufferStratifyByMaterial: Bool { didSet { if !Self.commitAssignment(ReplayBufferStratifyByMaterial.self, value: replayBufferStratifyByMaterial) { replayBufferStratifyByMaterial = oldValue } } }
-    public var arenaPromoteThreshold: Double { didSet { if !Self.commitAssignment(ArenaPromoteThreshold.self, value: arenaPromoteThreshold) { arenaPromoteThreshold = oldValue } } }
-    public var arenaGamesPerTournament: Int { didSet { if !Self.commitAssignment(ArenaGamesPerTournament.self, value: arenaGamesPerTournament) { arenaGamesPerTournament = oldValue } } }
-    public var arenaAutoIntervalSec: Double { didSet { if !Self.commitAssignment(ArenaAutoIntervalSec.self, value: arenaAutoIntervalSec) { arenaAutoIntervalSec = oldValue } } }
-    public var candidateProbeIntervalSec: Double { didSet { if !Self.commitAssignment(CandidateProbeIntervalSec.self, value: candidateProbeIntervalSec) { candidateProbeIntervalSec = oldValue } } }
-    public var legalMassCollapseThreshold: Double { didSet { if !Self.commitAssignment(LegalMassCollapseThreshold.self, value: legalMassCollapseThreshold) { legalMassCollapseThreshold = oldValue } } }
-    public var legalMassCollapseGraceSeconds: Double { didSet { if !Self.commitAssignment(LegalMassCollapseGraceSeconds.self, value: legalMassCollapseGraceSeconds) { legalMassCollapseGraceSeconds = oldValue } } }
-    public var legalMassCollapseNoImprovementProbes: Int { didSet { if !Self.commitAssignment(LegalMassCollapseNoImprovementProbes.self, value: legalMassCollapseNoImprovementProbes) { legalMassCollapseNoImprovementProbes = oldValue } } }
-    public var arenaConcurrency: Int { didSet { if !Self.commitAssignment(ArenaConcurrency.self, value: arenaConcurrency) { arenaConcurrency = oldValue } } }
+    public var policyLabelSmoothingPerMove: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMove.self, value: policyLabelSmoothingPerMove, oldValue: oldValue) { policyLabelSmoothingPerMove = oldValue } } }
+    public var policyLabelSmoothingPerMoveCap: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMoveCap.self, value: policyLabelSmoothingPerMoveCap, oldValue: oldValue) { policyLabelSmoothingPerMoveCap = oldValue } } }
+    public var valueLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(ValueLabelSmoothingEpsilon.self, value: valueLabelSmoothingEpsilon, oldValue: oldValue) { valueLabelSmoothingEpsilon = oldValue } } }
+    public var gradClipMaxNorm: Double { didSet { if !Self.commitAssignment(GradClipMaxNorm.self, value: gradClipMaxNorm, oldValue: oldValue) { gradClipMaxNorm = oldValue } } }
+    public var weightDecay: Double { didSet { if !Self.commitAssignment(WeightDecay.self, value: weightDecay, oldValue: oldValue) { weightDecay = oldValue } } }
+    public var dropoutRate: Double { didSet { if !Self.commitAssignment(DropoutRate.self, value: dropoutRate, oldValue: oldValue) { dropoutRate = oldValue } } }
+    public var policyLossWeight: Double { didSet { if !Self.commitAssignment(PolicyLossWeight.self, value: policyLossWeight, oldValue: oldValue) { policyLossWeight = oldValue } } }
+    public var valueLossWeight: Double { didSet { if !Self.commitAssignment(ValueLossWeight.self, value: valueLossWeight, oldValue: oldValue) { valueLossWeight = oldValue } } }
+    public var learningRate: Double { didSet { if !Self.commitAssignment(LearningRate.self, value: learningRate, oldValue: oldValue) { learningRate = oldValue } } }
+    public var momentumCoeff: Double { didSet { if !Self.commitAssignment(MomentumCoeff.self, value: momentumCoeff, oldValue: oldValue) { momentumCoeff = oldValue } } }
+    public var sqrtBatchScalingLR: Bool { didSet { if !Self.commitAssignment(SqrtBatchScalingLR.self, value: sqrtBatchScalingLR, oldValue: oldValue) { sqrtBatchScalingLR = oldValue } } }
+    public var signedAdvantageComplementCE: Bool { didSet { if !Self.commitAssignment(SignedAdvantageComplementCE.self, value: signedAdvantageComplementCE, oldValue: oldValue) { signedAdvantageComplementCE = oldValue } } }
+    public var lrWarmupSteps: Int { didSet { if !Self.commitAssignment(LRWarmupSteps.self, value: lrWarmupSteps, oldValue: oldValue) { lrWarmupSteps = oldValue } } }
+    public var drawPenalty: Double { didSet { if !Self.commitAssignment(DrawPenalty.self, value: drawPenalty, oldValue: oldValue) { drawPenalty = oldValue } } }
+    public var selfPlayStartTau: Double { didSet { if !Self.commitAssignment(SelfPlayStartTau.self, value: selfPlayStartTau, oldValue: oldValue) { selfPlayStartTau = oldValue } } }
+    public var selfPlayTargetTau: Double { didSet { if !Self.commitAssignment(SelfPlayTargetTau.self, value: selfPlayTargetTau, oldValue: oldValue) { selfPlayTargetTau = oldValue } } }
+    public var selfPlayTauDecayPerPly: Double { didSet { if !Self.commitAssignment(SelfPlayTauDecayPerPly.self, value: selfPlayTauDecayPerPly, oldValue: oldValue) { selfPlayTauDecayPerPly = oldValue } } }
+    public var selfPlayDrawKeepFraction: Double { didSet { if !Self.commitAssignment(SelfPlayDrawKeepFraction.self, value: selfPlayDrawKeepFraction, oldValue: oldValue) { selfPlayDrawKeepFraction = oldValue } } }
+    public var selfPlayMaxPliesPerGame: Int { didSet { if !Self.commitAssignment(SelfPlayMaxPliesPerGame.self, value: selfPlayMaxPliesPerGame, oldValue: oldValue) { selfPlayMaxPliesPerGame = oldValue } } }
+    public var recordSelfPlayGames: Bool { didSet { if !Self.commitAssignment(RecordSelfPlayGames.self, value: recordSelfPlayGames, oldValue: oldValue) { recordSelfPlayGames = oldValue } } }
+    public var drawWatchPDrawThreshold: Double { didSet { if !Self.commitAssignment(DrawWatchPDrawThreshold.self, value: drawWatchPDrawThreshold, oldValue: oldValue) { drawWatchPDrawThreshold = oldValue } } }
+    public var drawWatchTerminateGames: Bool { didSet { if !Self.commitAssignment(DrawWatchTerminateGames.self, value: drawWatchTerminateGames, oldValue: oldValue) { drawWatchTerminateGames = oldValue } } }
+    public var drawWatchStreakLength: Int { didSet { if !Self.commitAssignment(DrawWatchStreakLength.self, value: drawWatchStreakLength, oldValue: oldValue) { drawWatchStreakLength = oldValue } } }
+    public var arenaStartTau: Double { didSet { if !Self.commitAssignment(ArenaStartTau.self, value: arenaStartTau, oldValue: oldValue) { arenaStartTau = oldValue } } }
+    public var arenaTargetTau: Double { didSet { if !Self.commitAssignment(ArenaTargetTau.self, value: arenaTargetTau, oldValue: oldValue) { arenaTargetTau = oldValue } } }
+    public var arenaTauDecayPerPly: Double { didSet { if !Self.commitAssignment(ArenaTauDecayPerPly.self, value: arenaTauDecayPerPly, oldValue: oldValue) { arenaTauDecayPerPly = oldValue } } }
+    public var replayRatioTarget: Double { didSet { if !Self.commitAssignment(ReplayRatioTarget.self, value: replayRatioTarget, oldValue: oldValue) { replayRatioTarget = oldValue } } }
+    public var replayRatioAutoAdjust: Bool { didSet { if !Self.commitAssignment(ReplayRatioAutoAdjust.self, value: replayRatioAutoAdjust, oldValue: oldValue) { replayRatioAutoAdjust = oldValue } } }
+    public var selfPlayConcurrency: Int { didSet { if !Self.commitAssignment(SelfPlayConcurrency.self, value: selfPlayConcurrency, oldValue: oldValue) { selfPlayConcurrency = oldValue } } }
+    public var trainingStepDelayMs: Int { didSet { if !Self.commitAssignment(TrainingStepDelayMs.self, value: trainingStepDelayMs, oldValue: oldValue) { trainingStepDelayMs = oldValue } } }
+    public var selfPlayDelayMs: Int { didSet { if !Self.commitAssignment(SelfPlayDelayMs.self, value: selfPlayDelayMs, oldValue: oldValue) { selfPlayDelayMs = oldValue } } }
+    public var trainingBatchSize: Int { didSet { if !Self.commitAssignment(TrainingBatchSize.self, value: trainingBatchSize, oldValue: oldValue) { trainingBatchSize = oldValue } } }
+    public var replayBufferCapacity: Int { didSet { if !Self.commitAssignment(ReplayBufferCapacity.self, value: replayBufferCapacity, oldValue: oldValue) { replayBufferCapacity = oldValue } } }
+    public var replayBufferMinPositionsBeforeTraining: Int { didSet { if !Self.commitAssignment(ReplayBufferMinPositionsBeforeTraining.self, value: replayBufferMinPositionsBeforeTraining, oldValue: oldValue) { replayBufferMinPositionsBeforeTraining = oldValue } } }
+    public var maxPliesFromAnyOneGame: Int { didSet { if !Self.commitAssignment(MaxPliesFromAnyOneGame.self, value: maxPliesFromAnyOneGame, oldValue: oldValue) { maxPliesFromAnyOneGame = oldValue } } }
+    public var targetSampledGameLengthPlies: Int { didSet { if !Self.commitAssignment(TargetSampledGameLengthPlies.self, value: targetSampledGameLengthPlies, oldValue: oldValue) { targetSampledGameLengthPlies = oldValue } } }
+    public var maxDrawPercentPerBatch: Int { didSet { if !Self.commitAssignment(MaxDrawPercentPerBatch.self, value: maxDrawPercentPerBatch, oldValue: oldValue) { maxDrawPercentPerBatch = oldValue } } }
+    public var replayBufferStratifyByMaterial: Bool { didSet { if !Self.commitAssignment(ReplayBufferStratifyByMaterial.self, value: replayBufferStratifyByMaterial, oldValue: oldValue) { replayBufferStratifyByMaterial = oldValue } } }
+    public var arenaPromoteThreshold: Double { didSet { if !Self.commitAssignment(ArenaPromoteThreshold.self, value: arenaPromoteThreshold, oldValue: oldValue) { arenaPromoteThreshold = oldValue } } }
+    public var arenaGamesPerTournament: Int { didSet { if !Self.commitAssignment(ArenaGamesPerTournament.self, value: arenaGamesPerTournament, oldValue: oldValue) { arenaGamesPerTournament = oldValue } } }
+    public var arenaAutoIntervalSec: Double { didSet { if !Self.commitAssignment(ArenaAutoIntervalSec.self, value: arenaAutoIntervalSec, oldValue: oldValue) { arenaAutoIntervalSec = oldValue } } }
+    public var candidateProbeIntervalSec: Double { didSet { if !Self.commitAssignment(CandidateProbeIntervalSec.self, value: candidateProbeIntervalSec, oldValue: oldValue) { candidateProbeIntervalSec = oldValue } } }
+    public var legalMassCollapseThreshold: Double { didSet { if !Self.commitAssignment(LegalMassCollapseThreshold.self, value: legalMassCollapseThreshold, oldValue: oldValue) { legalMassCollapseThreshold = oldValue } } }
+    public var legalMassCollapseGraceSeconds: Double { didSet { if !Self.commitAssignment(LegalMassCollapseGraceSeconds.self, value: legalMassCollapseGraceSeconds, oldValue: oldValue) { legalMassCollapseGraceSeconds = oldValue } } }
+    public var legalMassCollapseNoImprovementProbes: Int { didSet { if !Self.commitAssignment(LegalMassCollapseNoImprovementProbes.self, value: legalMassCollapseNoImprovementProbes, oldValue: oldValue) { legalMassCollapseNoImprovementProbes = oldValue } } }
+    public var arenaConcurrency: Int { didSet { if !Self.commitAssignment(ArenaConcurrency.self, value: arenaConcurrency, oldValue: oldValue) { arenaConcurrency = oldValue } } }
     /// Stored as the enum rather than its raw value so no use site ever sees
     /// the persisted integer; the `didSet` unwraps it at the persistence
     /// boundary, which is the only place the raw form is meaningful.
     public var arenaPromotionCriterion: ArenaPromotionCriterion {
         didSet {
-            if !Self.commitAssignment(ArenaPromotionCriterionParameter.self, value: arenaPromotionCriterion.rawValue) {
+            if !Self.commitAssignment(ArenaPromotionCriterionParameter.self, value: arenaPromotionCriterion.rawValue, oldValue: oldValue.rawValue) {
                 arenaPromotionCriterion = oldValue
             }
         }
     }
-    public var arenaSPRTElo0: Double { didSet { if !Self.commitAssignment(ArenaSPRTElo0.self, value: arenaSPRTElo0) { arenaSPRTElo0 = oldValue } } }
-    public var arenaSPRTElo1: Double { didSet { if !Self.commitAssignment(ArenaSPRTElo1.self, value: arenaSPRTElo1) { arenaSPRTElo1 = oldValue } } }
-    public var arenaSPRTAlpha: Double { didSet { if !Self.commitAssignment(ArenaSPRTAlpha.self, value: arenaSPRTAlpha) { arenaSPRTAlpha = oldValue } } }
-    public var arenaSPRTBeta: Double { didSet { if !Self.commitAssignment(ArenaSPRTBeta.self, value: arenaSPRTBeta) { arenaSPRTBeta = oldValue } } }
-    public var arenaSPRTMinGames: Int { didSet { if !Self.commitAssignment(ArenaSPRTMinGames.self, value: arenaSPRTMinGames) { arenaSPRTMinGames = oldValue } } }
-    public var arenaSPRTMaxGames: Int { didSet { if !Self.commitAssignment(ArenaSPRTMaxGames.self, value: arenaSPRTMaxGames) { arenaSPRTMaxGames = oldValue } } }
-    public var batchStatsInterval: Int { didSet { if !Self.commitAssignment(BatchStatsInterval.self, value: batchStatsInterval) { batchStatsInterval = oldValue } } }
-    public var klProbeInterval: Int { didSet { if !Self.commitAssignment(KLProbeInterval.self, value: klProbeInterval) { klProbeInterval = oldValue } } }
-    public var lrCycleEnabled: Bool { didSet { if !Self.commitAssignment(LRCycleEnabled.self, value: lrCycleEnabled) { lrCycleEnabled = oldValue } } }
-    public var lrCyclePeriodSteps: Int { didSet { if !Self.commitAssignment(LRCyclePeriodSteps.self, value: lrCyclePeriodSteps) { lrCyclePeriodSteps = oldValue } } }
-    public var lrCycleCount: Int { didSet { if !Self.commitAssignment(LRCycleCount.self, value: lrCycleCount) { lrCycleCount = oldValue } } }
-    public var lrCycleMin: Double { didSet { if !Self.commitAssignment(LRCycleMin.self, value: lrCycleMin) { lrCycleMin = oldValue } } }
-    public var lrCycleMax: Double { didSet { if !Self.commitAssignment(LRCycleMax.self, value: lrCycleMax) { lrCycleMax = oldValue } } }
-    public var lrCycleInvert: Bool { didSet { if !Self.commitAssignment(LRCycleInvert.self, value: lrCycleInvert) { lrCycleInvert = oldValue } } }
-    public var momentumCycleEnabled: Bool { didSet { if !Self.commitAssignment(MomentumCycleEnabled.self, value: momentumCycleEnabled) { momentumCycleEnabled = oldValue } } }
-    public var momentumCyclePeriodSteps: Int { didSet { if !Self.commitAssignment(MomentumCyclePeriodSteps.self, value: momentumCyclePeriodSteps) { momentumCyclePeriodSteps = oldValue } } }
-    public var momentumCycleCount: Int { didSet { if !Self.commitAssignment(MomentumCycleCount.self, value: momentumCycleCount) { momentumCycleCount = oldValue } } }
-    public var momentumCycleMin: Double { didSet { if !Self.commitAssignment(MomentumCycleMin.self, value: momentumCycleMin) { momentumCycleMin = oldValue } } }
-    public var momentumCycleMax: Double { didSet { if !Self.commitAssignment(MomentumCycleMax.self, value: momentumCycleMax) { momentumCycleMax = oldValue } } }
-    public var momentumCycleInvert: Bool { didSet { if !Self.commitAssignment(MomentumCycleInvert.self, value: momentumCycleInvert) { momentumCycleInvert = oldValue } } }
-    public var lrCyclePeakEnd: Double { didSet { if !Self.commitAssignment(LRCyclePeakEnd.self, value: lrCyclePeakEnd) { lrCyclePeakEnd = oldValue } } }
-    public var lrCycleTroughEnd: Double { didSet { if !Self.commitAssignment(LRCycleTroughEnd.self, value: lrCycleTroughEnd) { lrCycleTroughEnd = oldValue } } }
-    public var lrCycleDecayHorizonSteps: Int { didSet { if !Self.commitAssignment(LRCycleDecayHorizonSteps.self, value: lrCycleDecayHorizonSteps) { lrCycleDecayHorizonSteps = oldValue } } }
-    public var momentumFollowsLRCycle: Bool { didSet { if !Self.commitAssignment(MomentumFollowsLRCycle.self, value: momentumFollowsLRCycle) { momentumFollowsLRCycle = oldValue } } }
-    public var momentumFollowStartLow: Double { didSet { if !Self.commitAssignment(MomentumFollowStartLow.self, value: momentumFollowStartLow) { momentumFollowStartLow = oldValue } } }
-    public var momentumFollowStartHigh: Double { didSet { if !Self.commitAssignment(MomentumFollowStartHigh.self, value: momentumFollowStartHigh) { momentumFollowStartHigh = oldValue } } }
-    public var momentumFollowEndLow: Double { didSet { if !Self.commitAssignment(MomentumFollowEndLow.self, value: momentumFollowEndLow) { momentumFollowEndLow = oldValue } } }
-    public var momentumFollowEndHigh: Double { didSet { if !Self.commitAssignment(MomentumFollowEndHigh.self, value: momentumFollowEndHigh) { momentumFollowEndHigh = oldValue } } }
-    public var periodicAutosaveIntervalSec: Double { didSet { if !Self.commitAssignment(PeriodicAutosaveIntervalSec.self, value: periodicAutosaveIntervalSec) { periodicAutosaveIntervalSec = oldValue } } }
-    public var maxPeriodicAutosavesKept: Int { didSet { if !Self.commitAssignment(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept) { maxPeriodicAutosavesKept = oldValue } } }
-    public var automaticSavePruningEnabled: Bool { didSet { if !Self.commitAssignment(AutomaticSavePruningEnabled.self, value: automaticSavePruningEnabled) { automaticSavePruningEnabled = oldValue } } }
-    public var sessionSaveIncludeReplayBuffer: Bool { didSet { if !Self.commitAssignment(SessionSaveIncludeReplayBuffer.self, value: sessionSaveIncludeReplayBuffer) { sessionSaveIncludeReplayBuffer = oldValue } } }
+    public var arenaSPRTElo0: Double { didSet { if !Self.commitAssignment(ArenaSPRTElo0.self, value: arenaSPRTElo0, oldValue: oldValue) { arenaSPRTElo0 = oldValue } } }
+    public var arenaSPRTElo1: Double { didSet { if !Self.commitAssignment(ArenaSPRTElo1.self, value: arenaSPRTElo1, oldValue: oldValue) { arenaSPRTElo1 = oldValue } } }
+    public var arenaSPRTAlpha: Double { didSet { if !Self.commitAssignment(ArenaSPRTAlpha.self, value: arenaSPRTAlpha, oldValue: oldValue) { arenaSPRTAlpha = oldValue } } }
+    public var arenaSPRTBeta: Double { didSet { if !Self.commitAssignment(ArenaSPRTBeta.self, value: arenaSPRTBeta, oldValue: oldValue) { arenaSPRTBeta = oldValue } } }
+    public var arenaSPRTMinGames: Int { didSet { if !Self.commitAssignment(ArenaSPRTMinGames.self, value: arenaSPRTMinGames, oldValue: oldValue) { arenaSPRTMinGames = oldValue } } }
+    public var arenaSPRTMaxGames: Int { didSet { if !Self.commitAssignment(ArenaSPRTMaxGames.self, value: arenaSPRTMaxGames, oldValue: oldValue) { arenaSPRTMaxGames = oldValue } } }
+    public var batchStatsInterval: Int { didSet { if !Self.commitAssignment(BatchStatsInterval.self, value: batchStatsInterval, oldValue: oldValue) { batchStatsInterval = oldValue } } }
+    public var klProbeInterval: Int { didSet { if !Self.commitAssignment(KLProbeInterval.self, value: klProbeInterval, oldValue: oldValue) { klProbeInterval = oldValue } } }
+    public var lrCycleEnabled: Bool { didSet { if !Self.commitAssignment(LRCycleEnabled.self, value: lrCycleEnabled, oldValue: oldValue) { lrCycleEnabled = oldValue } } }
+    public var lrCyclePeriodSteps: Int { didSet { if !Self.commitAssignment(LRCyclePeriodSteps.self, value: lrCyclePeriodSteps, oldValue: oldValue) { lrCyclePeriodSteps = oldValue } } }
+    public var lrCycleCount: Int { didSet { if !Self.commitAssignment(LRCycleCount.self, value: lrCycleCount, oldValue: oldValue) { lrCycleCount = oldValue } } }
+    public var lrCycleMin: Double { didSet { if !Self.commitAssignment(LRCycleMin.self, value: lrCycleMin, oldValue: oldValue) { lrCycleMin = oldValue } } }
+    public var lrCycleMax: Double { didSet { if !Self.commitAssignment(LRCycleMax.self, value: lrCycleMax, oldValue: oldValue) { lrCycleMax = oldValue } } }
+    public var lrCycleInvert: Bool { didSet { if !Self.commitAssignment(LRCycleInvert.self, value: lrCycleInvert, oldValue: oldValue) { lrCycleInvert = oldValue } } }
+    public var momentumCycleEnabled: Bool { didSet { if !Self.commitAssignment(MomentumCycleEnabled.self, value: momentumCycleEnabled, oldValue: oldValue) { momentumCycleEnabled = oldValue } } }
+    public var momentumCyclePeriodSteps: Int { didSet { if !Self.commitAssignment(MomentumCyclePeriodSteps.self, value: momentumCyclePeriodSteps, oldValue: oldValue) { momentumCyclePeriodSteps = oldValue } } }
+    public var momentumCycleCount: Int { didSet { if !Self.commitAssignment(MomentumCycleCount.self, value: momentumCycleCount, oldValue: oldValue) { momentumCycleCount = oldValue } } }
+    public var momentumCycleMin: Double { didSet { if !Self.commitAssignment(MomentumCycleMin.self, value: momentumCycleMin, oldValue: oldValue) { momentumCycleMin = oldValue } } }
+    public var momentumCycleMax: Double { didSet { if !Self.commitAssignment(MomentumCycleMax.self, value: momentumCycleMax, oldValue: oldValue) { momentumCycleMax = oldValue } } }
+    public var momentumCycleInvert: Bool { didSet { if !Self.commitAssignment(MomentumCycleInvert.self, value: momentumCycleInvert, oldValue: oldValue) { momentumCycleInvert = oldValue } } }
+    public var lrCyclePeakEnd: Double { didSet { if !Self.commitAssignment(LRCyclePeakEnd.self, value: lrCyclePeakEnd, oldValue: oldValue) { lrCyclePeakEnd = oldValue } } }
+    public var lrCycleTroughEnd: Double { didSet { if !Self.commitAssignment(LRCycleTroughEnd.self, value: lrCycleTroughEnd, oldValue: oldValue) { lrCycleTroughEnd = oldValue } } }
+    public var lrCycleDecayHorizonSteps: Int { didSet { if !Self.commitAssignment(LRCycleDecayHorizonSteps.self, value: lrCycleDecayHorizonSteps, oldValue: oldValue) { lrCycleDecayHorizonSteps = oldValue } } }
+    public var momentumFollowsLRCycle: Bool { didSet { if !Self.commitAssignment(MomentumFollowsLRCycle.self, value: momentumFollowsLRCycle, oldValue: oldValue) { momentumFollowsLRCycle = oldValue } } }
+    public var momentumFollowStartLow: Double { didSet { if !Self.commitAssignment(MomentumFollowStartLow.self, value: momentumFollowStartLow, oldValue: oldValue) { momentumFollowStartLow = oldValue } } }
+    public var momentumFollowStartHigh: Double { didSet { if !Self.commitAssignment(MomentumFollowStartHigh.self, value: momentumFollowStartHigh, oldValue: oldValue) { momentumFollowStartHigh = oldValue } } }
+    public var momentumFollowEndLow: Double { didSet { if !Self.commitAssignment(MomentumFollowEndLow.self, value: momentumFollowEndLow, oldValue: oldValue) { momentumFollowEndLow = oldValue } } }
+    public var momentumFollowEndHigh: Double { didSet { if !Self.commitAssignment(MomentumFollowEndHigh.self, value: momentumFollowEndHigh, oldValue: oldValue) { momentumFollowEndHigh = oldValue } } }
+    public var periodicAutosaveIntervalSec: Double { didSet { if !Self.commitAssignment(PeriodicAutosaveIntervalSec.self, value: periodicAutosaveIntervalSec, oldValue: oldValue) { periodicAutosaveIntervalSec = oldValue } } }
+    public var maxPeriodicAutosavesKept: Int { didSet { if !Self.commitAssignment(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept, oldValue: oldValue) { maxPeriodicAutosavesKept = oldValue } } }
+    public var automaticSavePruningEnabled: Bool { didSet { if !Self.commitAssignment(AutomaticSavePruningEnabled.self, value: automaticSavePruningEnabled, oldValue: oldValue) { automaticSavePruningEnabled = oldValue } } }
+    public var sessionSaveIncludeReplayBuffer: Bool { didSet { if !Self.commitAssignment(SessionSaveIncludeReplayBuffer.self, value: sessionSaveIncludeReplayBuffer, oldValue: oldValue) { sessionSaveIncludeReplayBuffer = oldValue } } }
     /// Stored as the enum; the raw value appears only at the persistence
     /// boundary (see `RandomSeedMode`).
     public var randomSeedMode: RandomSeedMode {
         didSet {
-            if !Self.commitAssignment(RandomSeedModeParameter.self, value: randomSeedMode.rawValue) {
+            if !Self.commitAssignment(RandomSeedModeParameter.self, value: randomSeedMode.rawValue, oldValue: oldValue.rawValue) {
                 randomSeedMode = oldValue
             }
         }
     }
-    public var randomSeed: UInt64 { didSet { if !Self.commitAssignment(RandomSeed.self, value: randomSeed) { randomSeed = oldValue } } }
+    public var randomSeed: UInt64 { didSet { if !Self.commitAssignment(RandomSeed.self, value: randomSeed, oldValue: oldValue) { randomSeed = oldValue } } }
 
     /// Stored preferences found unusable at launch (wrong type or outside the
     /// declared range). The app starts on each one's declared default (a
@@ -2462,7 +2462,8 @@ public final class TrainingParameters {
     /// a value the next launch would not see.) Validation runs even when
     /// persistence is suppressed, so a transient CLI override is held to the
     /// same range.
-    private nonisolated static func commitAssignment<K: TrainingParameterKey>(_ key: K.Type, value: K.Value) -> Bool {
+    private nonisolated static func commitAssignment<K: TrainingParameterKey>(_ key: K.Type, value: K.Value,
+                                                                            oldValue: K.Value) -> Bool {
         let raw = K.encode(value)
         do {
             try K.definition.validate(raw)
@@ -2472,6 +2473,7 @@ public final class TrainingParameters {
                 // out-of-range value in memory for this run. Never persisted:
                 // it is the session's value, not an app setting, and the
                 // UserDefaults load would reject it on the next launch anyway.
+                notifyRunChangeObserver(K.self, old: K.encode(oldValue), new: raw)
                 return true
             }
             let message = "[PARAM-REJECTED] \(error.localizedDescription); assignment reverted to the previous value"
@@ -2484,9 +2486,42 @@ public final class TrainingParameters {
         if !assigningRunHold {
             runHeldPriorValues.removeValue(forKey: K.id)
         }
+        // Before the persistence early return, so suppressed assignments
+        // (held values released, CLI loads) are seen too.
+        notifyRunChangeObserver(K.self, old: K.encode(oldValue), new: raw)
         if suppressPersistence { return true }
         store(raw, forKey: K.id, in: .standard)
         return true
+    }
+
+    /// Called with `(id, old, new)` for every committed change of a
+    /// setting while a GUI lineage segment is running, so the segment's
+    /// record journals live edits (hyperparameter recording plan, gap 4).
+    /// Installed and removed by `SessionController` on the main actor.
+    nonisolated static let runChangeObserver = SyncBox<(@Sendable (String, ParameterValue, ParameterValue) -> Void)?>(nil)
+
+    /// Tell the run-change observer about a committed assignment — copied
+    /// out of its box and called after the box's lock is released, so the
+    /// observer (which takes its journal's own lock) never runs under
+    /// another lock. Skipped: an unchanged value; the revert of a rejected
+    /// assignment (its "old" value is the rejected one, which never took
+    /// effect); a resume's run-only holds; the seed settings, which no
+    /// running run reads; and the keys a run captures at its start, whose
+    /// edits take effect only at the next start, where the recapture is
+    /// journalled instead.
+    private nonisolated static func notifyRunChangeObserver<K: TrainingParameterKey>(
+        _ key: K.Type, old: ParameterValue, new: ParameterValue
+    ) {
+        guard old != new, !assigningRunHold else { return }
+        guard !LineageRecord.Parameters.excludedParameterIDs.contains(K.id),
+              !RunStartParameterCapture.capturedKeyIDs.contains(K.id) else { return }
+        do {
+            try K.definition.validate(old)
+        } catch {
+            guard admittingSessionValueOutsideDeclaredRange else { return }
+        }
+        guard let observer = runChangeObserver.value else { return }
+        observer(K.id, old, new)
     }
 
     // MARK: Registry

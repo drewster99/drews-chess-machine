@@ -154,6 +154,22 @@ extension SessionController {
             cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
             return
         }
+        // The arena-start configuration cut (review N2), in this main-actor
+        // turn under the training pause, before the detached export below:
+        // its clock is the one that export reads. A promotion's record and
+        // its post-promotion trainer file describe the trainer as of this
+        // cut — the state a promotion rewinds to — not a settings edit made
+        // during the tournament, which reaches the next save's journal.
+        let arenaStartCut: GuiConfigurationCut
+        do {
+            arenaStartCut = try takeConfigurationCut(trainer: trainer)
+        } catch {
+            trainingBox?.recordError("Arena aborted: \(error.localizedDescription)")
+            SessionLogger.shared.log("[ARENA] aborted — \(error.localizedDescription)")
+            trainingGate.resume()
+            cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+            return
+        }
         // Capture trainer weights here and hold them through the
         // rest of the arena. At arena end we use them to autosave
         // the session without needing another training pause
@@ -513,10 +529,14 @@ extension SessionController {
                     // and the run's record reads the sampler, the game
                     // serial and the fed counts as they stand here.
                     resetSelfPlayGameStatsForNewChampion()
+                    // The rewound trainer uses every setting committed during
+                    // the tournament from the arena-start step on: those
+                    // journal entries are re-stamped to it (P4-1).
+                    lineageTracker?.restampParameterChanges(after: trainerSnapshotCompletedSteps)
                     let record: Result<LineageRecord, Error>
                     do {
                         record = .success(try lineageRecordForSave(
-                            at: Date(), trainerCompletedSteps: trainerSnapshotCompletedSteps,
+                            at: Date(), cut: arenaStartCut, trainerCompletedSteps: trainerSnapshotCompletedSteps,
                             dropoutPhiloxState: trainerSnapshotDropoutState,
                             dropoutStreamState: try await trainer.dropoutStreamState()))
                     } catch {
@@ -526,6 +546,15 @@ extension SessionController {
                     recordPromotedChampionOrigin(championID: champion.identifier,
                                                  trainerCompletedSteps: trainerSnapshotCompletedSteps,
                                                  record: record)
+                    // After the promotion's own record (review NB7): the
+                    // champion's origin never lists itself, and the trainer's
+                    // next save is the first record with the entry.
+                    do {
+                        try noteChampionChange(trainerStep: trainerSnapshotCompletedSteps, trigger: .arena)
+                    } catch {
+                        SessionLogger.shared.log("[LINEAGE] the promotion could not be journalled: \(error.localizedDescription)")
+                        trainingBox?.recordError("Promotion journal failed: \(error.localizedDescription)")
+                    }
                 } catch {
                     trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
                 }
@@ -733,11 +762,10 @@ extension SessionController {
                 trainingStep: promotionSaveStep,
                 parentModelID: championID,
                 notes: "Trainer lineage at arena-start pause with optimizer velocity",
-                schedule: TrainerScheduleState(
-                    completedTrainSteps: promotionSaveTrainerStep,
-                    lrWarmupSteps: trainer.lrWarmupSteps,
-                    lrMomentumCycle: trainer.lrMomentumCycle
-                ),
+                // The arena-start cut's schedule (review P3-1), the one the
+                // promotion record composes its schedule keys from; its clock
+                // is `promotionSaveTrainerStep` (training was paused).
+                schedule: arenaStartCut.schedule,
                 policyTailPrecision: trainer.policyTailPrecision
             )
             let saveDate = Date()

@@ -85,6 +85,18 @@ struct CliTrainingConfig: Sendable {
         )
     }
 
+    /// Why corpus replay refuses this file, or nil when it does not: replay
+    /// enforces no wall-clock limit (owner decision O-21, gap 11) — its runs
+    /// are budgeted in steps and epochs, so a run's end never depends on
+    /// machine speed — and a `training_time_limit` it silently ignored would
+    /// read as one it honoured. (A JSON `null` for the key is already refused
+    /// by the loader, as no parameter kind reads it.)
+    func corpusReplayRefusal(parametersPath: String) -> CLIRunRefusal? {
+        guard trainingTimeLimitSec != nil else { return nil }
+        return CLIRunRefusal(message: "corpus replay enforces no wall-clock limit; remove \(Self.trainingTimeLimitKey) "
+            + "from \(parametersPath) (use training_step_limit, --training-step-limit or --epochs)")
+    }
+
     /// Human-readable single-line summary for the `[APP]` banner —
     /// shows what the runtime actually picked up, so a typo in a
     /// key name (which would currently stay silent until apply time)

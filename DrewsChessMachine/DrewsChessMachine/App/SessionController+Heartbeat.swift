@@ -286,7 +286,7 @@ extension SessionController {
             let snap = await rc.asyncSnapshot()
             replayRatioSnapshot = snap
             if snap.autoAdjust {
-                lastAutoComputedDelayMs = snap.computedDelayMs
+                setSavedAutoComputedDelayMs(snap.computedDelayMs)
             }
             // Outer integral compensator. See the doc comment on
             // `effectiveReplayRatioTarget` for full rationale; in

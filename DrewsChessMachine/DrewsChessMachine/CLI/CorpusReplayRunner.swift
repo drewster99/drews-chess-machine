@@ -58,7 +58,7 @@ struct ReplayParams: Sendable {
     init(_ parameters: TrainingParametersSnapshot) throws {
         self.parameters = parameters
         trainer = TrainerHyperparameters(parameters)
-        lineageParameters = try LineageRecord.Parameters(values: parameters.rawValueMap())
+        lineageParameters = try LineageRecord.Parameters(values: parameters.lineageValues())
         trainingBatchSize = parameters.trainingBatchSize
         replayBufferCapacity = parameters.replayBufferCapacity
         replayRatioTarget = parameters.replayRatioTarget
@@ -1166,7 +1166,9 @@ enum CorpusReplayRunner {
         // single-corpus case; resume matches on corpus id, treats path as hint).
         var shardURLs: [URL] = []
         var resumeCorpusID = ""
-        var resumeCorpusPath = ""
+        // Every corpus fed, in feed order, with its sealed-shard count: the
+        // records name them all (gap 7), not only the first.
+        var corpusEntries: [LineageRecord.CorpusIdentity.CorpusEntry] = []
         // Read-only: replay never modifies a corpus. `GameCorpus.open` would
         // run crash recovery on any `.open` shard — truncating, sealing,
         // renaming or deleting it — which corrupts the live shard of a
@@ -1178,7 +1180,9 @@ enum CorpusReplayRunner {
             let corpus = try GameCorpus.openReadOnly(directory: dir)
             let urls = corpus.sealedShardURLs
             shardURLs.append(contentsOf: urls)
-            if di == 0 { resumeCorpusID = corpus.corpusID; resumeCorpusPath = dir.path }
+            if di == 0 { resumeCorpusID = corpus.corpusID }
+            corpusEntries.append(LineageRecord.CorpusIdentity.CorpusEntry(
+                corpusID: corpus.corpusID, corpusPath: dir.path, shardCount: urls.count))
             emit("[REPLAY] corpus \(corpus.corpusID): \(urls.count) sealed shard(s)")
             if !corpus.ignoredOpenShardURLs.isEmpty {
                 let names = corpus.ignoredOpenShardURLs.map(\.lastPathComponent).joined(separator: ", ")
@@ -1238,8 +1242,9 @@ enum CorpusReplayRunner {
         // from the start of the run's lineage, not of this segment: an exact
         // resume continues the saved run's epoch count, so it needs `--epochs`
         // above the epoch it was saved in (checked below).
-        let stepLimit = config.stepLimit
-        let epochLimit: Int? = config.epochs ?? (stepLimit == nil ? 1 : nil)
+        let budget = config.resolvedBudget
+        let stepLimit = budget.trainingStepLimit
+        let epochLimit = budget.epochLimit
         // An exact resume's buffer fill as saved, which the rebuilt buffer
         // must match; nil when it cannot be checked (logged where decided).
         var expectedRebuiltBufferPositions: Int? = nil
@@ -1314,7 +1319,7 @@ enum CorpusReplayRunner {
                     resumeGaps.append(.params)
                 }
                 let environment = ResumeGap.environmentGaps(
-                    writtenBy: parentRecord, runningBuild: .current, runningDevice: .current,
+                    writtenBy: parentRecord, runningBuild: try .current, runningDevice: .current,
                     runningFingerprint: try await BehaviorFingerprint.compute(
                         for: .init(arch: arch, policyTailPrecision: config.policyTailPrecision)))
                 for line in environment.logLines { emit(line) }
@@ -1417,6 +1422,11 @@ enum CorpusReplayRunner {
         // --resume-exact this is the refeed start; the run continues from
         // `reconstructUntil` once the buffer is rebuilt.
         let startGlobalIndex = cumGames[startShardCursor] + startWithinShardSkip
+        // Where this segment's training feed begins (gap 7, D7): an exact
+        // resume continues at its saved position after the refeed; any other
+        // start at the resolved start game.
+        let segmentFeedStart = LineageRecord.FeedPoint(epoch: startEpoch,
+                                                       nextGameIndex: reconstructUntil ?? startGlobalIndex)
 
         // One exactness decision for the resume (plan C3): logged once,
         // recorded in the segment's lineage, and refused unless
@@ -1543,9 +1553,17 @@ enum CorpusReplayRunner {
         let lineageTracker = try LineageTracker(
             start: lineageStart, pathKind: .replay, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
+        try lineageTracker.configureSegment(LineageTracker.SegmentConfiguration(
+            policyTailPrecision: trainer.policyTailPrecision, budget: budget, vsuci: nil, selfPlayDirichlet: nil,
+            startValueHeadRecentered: .recorded(try LineageTracker.startValueHeadRecentered(of: startModelFile))))
+        lineageTracker.noteRunSeed(runSeed, atTrainerStep: trainer.completedTrainSteps)
         emit(RunProvenanceLine.line(
-            record: try lineageTracker.startRecord(at: Date(), trainerCompletedSteps: trainer.completedTrainSteps,
-                                                   parameters: p.lineageParameters),
+            record: try lineageTracker.startRecord(
+                at: Date(), trainerCompletedSteps: trainer.completedTrainSteps, parameters: p.lineageParameters,
+                inputs: lineageTracker.saveInputs(
+                    scheduleAtSave: LRMomentumCycleReadout.scheduleAtSave(
+                        inForce: p.parameters, completedTrainSteps: trainer.completedTrainSteps),
+                    replayRatioAtSave: nil, healthAlarms: nil)),
             seed: runSeed))
 
         // Export the trainer's complete state and overwrite the rolling
@@ -1566,7 +1584,6 @@ enum CorpusReplayRunner {
         var enumeratedSaveFailures = TrainerSaveFailureStreak(what: "enumerated checkpoint save")
         func saveTrainerModel(step: Int, reason: String,
                               nextGameIndex: Int, shard: Int, epoch: Int, populatedPlies: Int,
-                              corpusID: String, corpusPath: String,
                               segmentGames: Int, segmentPositions: Int,
                               feedAheadPositions: Int) async throws {
             // Rolling save (overwrites the output file). `encoded` is reused by the
@@ -1608,9 +1625,9 @@ enum CorpusReplayRunner {
                     segmentLocalStep: step,
                     segmentGames: segmentGames,
                     segmentPositions: segmentPositions,
-                    corpus: LineageRecord.CorpusPosition(
-                        corpusID: corpusID, corpusPath: corpusPath, epoch: epoch,
-                        nextGameIndex: nextGameIndex, shard: shard,
+                    corpus: try LineageRecord.CorpusPosition(
+                        corpusIdentity: .listed(corpusEntries), segmentStart: .recorded(segmentFeedStart),
+                        epoch: epoch, nextGameIndex: nextGameIndex, shard: shard,
                         populatedPlies: populatedPlies, bufferCapacity: p.replayBufferCapacity,
                         feedAheadPositions: feedAheadPositions, feedPerStep: perStepFeed,
                         shardSHA256: shardSHA256),
@@ -1618,7 +1635,11 @@ enum CorpusReplayRunner {
                     rng: LineageRecord.RNG(
                         dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams,
                         behaviorFingerprint: try await BehaviorFingerprint.compute(
-                            for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))))
+                            for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))),
+                    inputs: lineageTracker.saveInputs(
+                        scheduleAtSave: LRMomentumCycleReadout.scheduleAtSave(
+                            inForce: p.parameters, completedTrainSteps: snapshot.schedule.completedTrainSteps),
+                        replayRatioAtSave: nil, healthAlarms: nil))
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(saveDate.timeIntervalSince1970),
@@ -2010,7 +2031,6 @@ enum CorpusReplayRunner {
                 try await saveTrainerModel(step: step, reason: "autosave",
                     nextGameIndex: rp.nextGame, shard: rp.shard,
                     epoch: rp.epoch, populatedPlies: buffer.count,
-                    corpusID: resumeCorpusID, corpusPath: resumeCorpusPath,
                     segmentGames: feedTally.games - reconstructionFed.games,
                     segmentPositions: feedTally.positions - reconstructionFed.positions,
                     feedAheadPositions: feedAheadPositions(atStep: step))
@@ -2038,7 +2058,6 @@ enum CorpusReplayRunner {
         try await saveTrainerModel(step: step, reason: finalReason,
             nextGameIndex: finalResume.nextGame, shard: finalResume.shard,
             epoch: finalResume.epoch, populatedPlies: buffer.count,
-            corpusID: resumeCorpusID, corpusPath: resumeCorpusPath,
             segmentGames: feedTally.games - reconstructionFed.games,
             segmentPositions: feedTally.positions - reconstructionFed.positions,
             feedAheadPositions: feedAheadPositions(atStep: step))

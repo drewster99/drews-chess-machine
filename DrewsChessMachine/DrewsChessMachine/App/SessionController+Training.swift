@@ -50,6 +50,18 @@ extension SessionController {
                 return
             }
         }
+        // The saved auto-computed replay-ratio delay (O-20): read before
+        // anything starts, so a stored value of the wrong type refuses the
+        // start visibly instead of being coerced or treated as absent.
+        var savedAutoDelayMs: Int?
+        do {
+            savedAutoDelayMs = try savedAutoComputedDelayMs()
+        } catch {
+            let message = "Play and Train not started: \(error.localizedDescription)"
+            SessionLogger.shared.log("[PARAM] \(error.localizedDescription)")
+            checkpoint?.setCheckpointStatus(message, kind: .error)
+            return
+        }
         // Begin a new training segment for cumulative wall-time
         // tracking. Closed via `closeActiveTrainingSegment` on Stop or
         // at save time. Don't try to open one if the previous Stop
@@ -148,12 +160,14 @@ extension SessionController {
         if continueMode, let existingSeed = runRandomSeed, let existingSerials = selfPlayGameSerials {
             runSeed = existingSeed
             gameSerials = existingSerials
+            runSeedStartKind = .continued
             SessionLogger.shared.log("[RUN-SEED] continuing seed=\(runSeed.masterSeed) (next self-play game serial \(gameSerials.nextSerial), arenas started \(arenasStartedThisRun))")
         } else if let streams = pendingLoadedSession.flatMap(Self.resumableRunStreams(of:)),
                   let nextSerial = streams.nextGameSerial, let arenasStarted = streams.arenasStarted,
                   let inherited = Self.inheritedRunSeed(streams: streams, commandLineSeed: commandLineSeed) {
             runSeed = inherited
             gameSerials = GameSerialCounter(firstSerial: nextSerial)
+            runSeedStartKind = .resolvedOrInherited
             runRandomSeed = runSeed
             selfPlayGameSerials = gameSerials
             arenasStartedThisRun = arenasStarted
@@ -187,6 +201,7 @@ extension SessionController {
             runRandomSeed = runSeed
             selfPlayGameSerials = gameSerials
             arenasStartedThisRun = 0
+            runSeedStartKind = .resolvedOrInherited
             for line in runSeed.parameterNotes { SessionLogger.shared.log(line) }
         }
         let buffer: ReplayBuffer
@@ -371,9 +386,10 @@ extension SessionController {
             // controller state, not a parameter.
             if let autoDelay = rs.lastAutoComputedDelayMs {
                 SessionLogger.shared.log(
-                    "[RESUME-PARAM] last_auto_computed_delay_ms: \(lastAutoComputedDelayMs) -> \(autoDelay) (from session)"
+                    "[RESUME-PARAM] last_auto_computed_delay_ms: \(savedAutoDelayMs.map(String.init) ?? "none") -> \(autoDelay) (from session)"
                 )
-                lastAutoComputedDelayMs = autoDelay
+                setSavedAutoComputedDelayMs(autoDelay)
+                savedAutoDelayMs = autoDelay
             }
         } else {
             // Fresh session — no resumed steps to subtract.
@@ -492,13 +508,18 @@ extension SessionController {
             arena: arSchedule
         )
         samplingScheduleBox = scheduleBox
+        // The controller's starting delay and its source, logged here and
+        // recorded in the segment's lineage when the start is noted (B6).
+        let initialDelay = ReplayRatioInitialDelay.resolve(
+            autoAdjust: TrainingParameters.shared.replayRatioAutoAdjust, savedAutoDelayMs: savedAutoDelayMs,
+            trainingStepDelayMs: TrainingParameters.shared.trainingStepDelayMs)
+        SessionLogger.shared.log(initialDelay.logLine)
+        replayRatioStart = initialDelay
         let ratioController = ReplayRatioController(
             batchSize: runCapture.trainingBatchSize,
             targetRatio: TrainingParameters.shared.replayRatioTarget,
             autoAdjust: TrainingParameters.shared.replayRatioAutoAdjust,
-            initialDelayMs: TrainingParameters.shared.replayRatioAutoAdjust
-            ? lastAutoComputedDelayMs
-            : TrainingParameters.shared.trainingStepDelayMs,
+            initialDelayMs: initialDelay.delayMs,
             maxTrainingStepDelayMs: UpperContentView.stepDelayMaxMs,
             maxSelfPlayDelayMs: UpperContentView.selfPlayDelayMaxMs
         )

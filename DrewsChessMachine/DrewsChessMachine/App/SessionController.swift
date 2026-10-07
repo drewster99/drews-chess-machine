@@ -205,6 +205,15 @@ final class SessionController {
     /// Where the champion's current weights came from; nil when there is no
     /// champion, or its weights are still awaiting a load.
     @ObservationIgnored var championOrigin: ChampionOrigin?
+    /// How the latest Play-and-Train start got its run seed — set where the
+    /// seed is resolved, read when the segment's start is noted
+    /// (`noteSegmentStart`), so a "New Session, keep trainer" start records
+    /// its new seed and a Continue records none. Not displayed.
+    @ObservationIgnored var runSeedStartKind: RunSeedStartKind?
+    /// The replay-ratio controller inputs of the latest start (B6), set
+    /// where the controller is built and recorded when the segment's start
+    /// is noted, at the trainer's restored clock. Not displayed.
+    @ObservationIgnored var replayRatioStart: ReplayRatioInitialDelay.Resolved?
 
     /// Rolling-window game-diversity tracker for self-play. Fed by every
     /// self-play worker at game end; snapshot polled by the heartbeat for
@@ -428,10 +437,24 @@ final class SessionController {
     /// `UserDefaults`-backed. Not a training parameter — intentionally NOT in
     /// `TrainingParameters`. Not read during `body`, so a plain computed
     /// (non-observable) UserDefaults accessor is fine.
-    var lastAutoComputedDelayMs: Int {
-        get { UserDefaults.standard.object(forKey: "lastAutoComputedDelayMs") as? Int ?? 50 }
-        set { UserDefaults.standard.set(newValue, forKey: "lastAutoComputedDelayMs") }
+    ///
+    /// nil when no auto delay was ever computed (owner decision O-20: no
+    /// silent first-launch value — the controller then starts from
+    /// `training_step_delay_ms`, `ReplayRatioInitialDelay`). A stored value
+    /// of another type is an error, never coerced or treated as absent.
+    func savedAutoComputedDelayMs() throws -> Int? {
+        guard let stored = UserDefaults.standard.object(forKey: Self.lastAutoComputedDelayMsKey) else { return nil }
+        guard let delay = stored as? Int else {
+            throw ReplayRatioInitialDelay.StoredDelayError.notAnInteger(storedType: String(describing: type(of: stored)))
+        }
+        return delay
     }
+
+    func setSavedAutoComputedDelayMs(_ delay: Int) {
+        UserDefaults.standard.set(delay, forKey: Self.lastAutoComputedDelayMsKey)
+    }
+
+    nonisolated static let lastAutoComputedDelayMsKey = "lastAutoComputedDelayMs"
 
     // MARK: - Session-runtime boxes + replay-ratio compensator (Stage 4f)
 
@@ -1224,6 +1247,8 @@ final class SessionController {
         runStartStateReplacedByLatestStart = nil
         lineageFedCarry = LineageFedCarry()
         checkpoint?.runResumeExactness = nil
+        // The segment's settings journal ends with it.
+        TrainingParameters.runChangeObserver.value = nil
     }
 
     /// The actual network construction. Runs on a detached `.userInitiated`

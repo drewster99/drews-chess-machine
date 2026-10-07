@@ -269,7 +269,7 @@ enum TrainVsUciRunner {
                         resumeGaps.append(.params)
                     }
                     let environment = ResumeGap.environmentGaps(
-                        writtenBy: parentRecord, runningBuild: .current, runningDevice: .current,
+                        writtenBy: parentRecord, runningBuild: try .current, runningDevice: .current,
                         runningFingerprint: try await BehaviorFingerprint.compute(
                             for: .init(arch: arch, policyTailPrecision: ChessNetwork.PolicyTailPrecision.process)))
                     for line in environment.logLines { emit(line) }
@@ -455,12 +455,27 @@ enum TrainVsUciRunner {
         emit("[VS-UCI-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
             + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
 
+        // The trainer's move selection, handed to the driver and recorded
+        // from this one value (plan B1).
+        let trainerMoveSelection: SamplingSchedule = .argmax
         let lineageTracker = try LineageTracker(
             start: lineageStart, pathKind: .vsuci, argv: CommandLine.arguments,
             startedAt: Date(), segmentStartTrainerStep: trainer.completedTrainSteps)
+        try lineageTracker.configureSegment(LineageTracker.SegmentConfiguration(
+            policyTailPrecision: trainer.policyTailPrecision,
+            budget: LineageRecord.Budget(trainingStepLimit: config.stepLimit, trainingTimeLimitSec: config.timeLimitSec,
+                                         epochLimit: nil),
+            vsuci: try TrainVsUciSession.lineageGeneration(config: config, trainerMoveSelection: trainerMoveSelection),
+            selfPlayDirichlet: nil,
+            startValueHeadRecentered: .recorded(try LineageTracker.startValueHeadRecentered(of: startModelFile))))
+        lineageTracker.noteRunSeed(runSeed, atTrainerStep: trainer.completedTrainSteps)
         emit(RunProvenanceLine.line(
-            record: try lineageTracker.startRecord(at: Date(), trainerCompletedSteps: trainer.completedTrainSteps,
-                                                   parameters: p.lineageParameters),
+            record: try lineageTracker.startRecord(
+                at: Date(), trainerCompletedSteps: trainer.completedTrainSteps, parameters: p.lineageParameters,
+                inputs: lineageTracker.saveInputs(
+                    scheduleAtSave: LRMomentumCycleReadout.scheduleAtSave(
+                        inForce: p.parameters, completedTrainSteps: trainer.completedTrainSteps),
+                    replayRatioAtSave: nil, healthAlarms: nil)),
             seed: runSeed))
         // session.json's positions trained: this run's steps at its batch,
         // on top of what a record says about the steps before it.
@@ -470,8 +485,12 @@ enum TrainVsUciRunner {
 
         // Build the opponent pool: one UCIArbiter per instance.
         var opponents: [TrainVsUciDriver.Opponent] = []
-        for spec in config.opponents {
+        // Which `config.opponents` spec each instance runs, for recording the
+        // pool's engine identity.
+        var opponentSpecIndices: [Int] = []
+        for (specIndex, spec) in config.opponents.enumerated() {
             for k in 1...max(1, spec.count) {
+                opponentSpecIndices.append(specIndex)
                 let label = "\(spec.kind)#\(k)"
                 let arbiterConfig = UCIArbiter.Configuration(
                     command: URL(fileURLWithPath: (spec.command as NSString).expandingTildeInPath),
@@ -510,7 +529,7 @@ enum TrainVsUciRunner {
             // DCM side plays deterministic best-move, exactly like the `--uci`
             // engine's default (`Temperature=0` → `.argmax`). Game variety must
             // come from start positions, not temperature (see `.argmax` doc).
-            schedule: .argmax,
+            schedule: trainerMoveSelection,
             maxPliesPerGame: config.maxPliesPerGame,
             randomStreams: runSeed.streams,
             gameSerials: gameSerials,
@@ -557,6 +576,15 @@ enum TrainVsUciRunner {
                 policyTailPrecision: trainer.policyTailPrecision)
             // Games and plies the driver flushed into the buffer.
             let slots = driver.statsSnapshot()
+            // Each pool's engine identity, from its first instance that has
+            // completed a handshake (unrecorded until one has).
+            for (instance, opponent) in opponents.enumerated() {
+                if let identity = await opponent.arbiter.engineIdentity {
+                    lineageTracker.noteEngineIdentity(
+                        opponentIndex: opponentSpecIndices[instance],
+                        LineageRecord.VsUciGeneration.EngineIdentity(idName: identity.idName, idAuthor: identity.idAuthor))
+                }
+            }
             let saveDate = Date()
             let lineage = try lineageTracker.record(
                 at: saveDate,
@@ -569,7 +597,11 @@ enum TrainVsUciRunner {
                 rng: LineageRecord.RNG(
                     dropoutPhiloxState: snapshot.dropoutRNG.philoxState, streams: streams,
                     behaviorFingerprint: try await BehaviorFingerprint.compute(
-                        for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))))
+                        for: .init(arch: arch, policyTailPrecision: trainer.policyTailPrecision))),
+                inputs: lineageTracker.saveInputs(
+                    scheduleAtSave: LRMomentumCycleReadout.scheduleAtSave(
+                        inForce: p.parameters, completedTrainSteps: snapshot.schedule.completedTrainSteps),
+                    replayRatioAtSave: nil, healthAlarms: nil))
             return TrainerSave(snapshot: snapshot, metadata: metadata, lineage: lineage, savedAt: saveDate)
         }
 
@@ -638,7 +670,7 @@ enum TrainVsUciRunner {
                     // The play network was just synced from the trainer, so
                     // it holds exactly the weights the run's record
                     // describes; a model file carries no trainer state.
-                    championLineage: save.lineage.withoutTrainerState(),
+                    championLineage: try save.lineage.withoutTrainerState(),
                     architecture: arch,
                     replayBuffer: bufferForSave,
                     chartSnapshot: nil,
