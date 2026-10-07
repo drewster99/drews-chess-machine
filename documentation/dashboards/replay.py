@@ -859,11 +859,46 @@ def freeze(run, cfg, meta, rolling_metadata):
         import shutil; shutil.copy2(src, dst)
     return cum, dst
 
+def rolling_file_segment_refusal(cfg, src):
+    """Why the rolling file `src` may not be filed under the registry's latest
+    segment, or None when it may.
+
+    A resumed segment keeps `--out-model`, and the app replaces the rolling file
+    only when it holds the start model's state, so until the new segment's first
+    save the file is the previous segment's final state. Filing it at the latest
+    segment's base plus its segment step would put the previous segment's weights
+    at a cum_step the latest segment has not reached, and that row would never be
+    replaced. So a file with a lineage record is filed only when the latest
+    segment names it: by `segment_id` when the segment has one, else by
+    `model_id`. A segment naming neither cannot be checked and is refused. A file
+    written before lineage records carries no identity to check and is filed as
+    before."""
+    facts = dcm_lineage.checkpoint_facts(src)
+    if facts is None:
+        return None
+    sg = cfg["segments"][-1]
+    if sg.get("segment_id"):
+        if sg["segment_id"] == facts["segment_id"]:
+            return None
+        return (f"the rolling file is lineage segment {facts['segment_id']}, but the latest registry segment "
+                f"is {sg['segment_id']}")
+    model_id = dcm_lineage.read_metadata(src).get("model_id")
+    if sg.get("model_id"):
+        if sg["model_id"] == model_id:
+            return None
+        return (f"the rolling file is model {model_id}, but the latest registry segment is model "
+                f"{sg['model_id']}")
+    return (f"the latest registry segment names neither a segment_id nor a model_id, so the rolling file "
+            f"(lineage segment {facts['segment_id']}, model {model_id}) cannot be shown to be its state")
+
 def track(run):
     cfg = REG["runs"][run]
     src = os.path.join(MODELS, cfg["out_model"])
     if not os.path.exists(src):
         print(f"{run}: out-model not found ({cfg['out_model']})"); return
+    refusal = rolling_file_segment_refusal(cfg, src)
+    if refusal is not None:
+        print(f"{run}: not tracked: {refusal}; run derive-registry", file=sys.stderr); return
     meta = meta_step_of(src)
     base = cfg["segments"][-1]["cumstep_base"]; cum = base + meta
     rows, snapshot = read_csv_for_update(run)
@@ -967,8 +1002,9 @@ def probe_backfill(run, verbose=True):
     Two checkpoint sources:
       • enumerated  <stem>-replay-step<N>.safetensors  — app-side (--enumerate-
         checkpoints), cum = its segment's base + its segment step (the name's N
-        before format v11; from v11 N is the trainer step and the segment step is
-        the record's segment_local_step);
+        before format v11; from v11 N is the trainer step, the segment step is
+        the record's segment_local_step, and the file is filed only under the
+        registry segment whose `model_id` it carries);
       • legacy      <...>-step<cum>-frozen.safetensors  — cum-named tracker snapshots
         (pre-enumeration runs, and this run's earlier segments).
 
@@ -999,7 +1035,11 @@ def probe_backfill(run, verbose=True):
     # comes from the record — and since a resumed segment then writes under the same
     # stem as the segments before it, a glob whose files carry more than one model_id
     # holds several segments' files: its v11 files are failures, never filed (those
-    # segments are placed by `segment_id`, via derive-registry).
+    # segments are placed by `segment_id`, via derive-registry). Nor is one model_id
+    # enough: until a resumed segment saves its first step file, the glob it owns
+    # holds only the earlier segments' files, which would be filed at the new
+    # segment's base. So a v11 file is filed here only under the registry segment
+    # whose `model_id` it carries.
     for si, eg in enum_specs(cfg):
         eprefix, esuffix = eg.split("*")
         ebase = cfg["segments"][si]["cumstep_base"]
@@ -1018,12 +1058,18 @@ def probe_backfill(run, verbose=True):
                 continue
             found.append((f, name, n, metadata.get("model_id"), reading))
         model_ids = {model_id for _, _, _, model_id, _ in found}
+        segment_model_id = cfg["segments"][si].get("model_id")
         for f, name, n, model_id, reading in found:
             if reading.basis != dcm_lineage.BASIS_TRAINER_STEP:
                 filled += _backfill_one(cfg, st, rows, by, ebase + n, f, name, verbose, failures, segment=si)
             elif len(model_ids) > 1:
                 failures.append((name, f"this stem holds several segments' files (model_ids {sorted(model_ids)}); "
                                        f"give the segments their segment_id with derive-registry"))
+            elif segment_model_id is None or segment_model_id != model_id:
+                failures.append((name, f"a format v11 file (model_id {model_id}) is filed only under the "
+                                       f"registry segment whose model_id it carries, and segment {si} names "
+                                       f"{segment_model_id}; give the segments their segment_id with "
+                                       f"derive-registry"))
             elif reading.segment_step is None:
                 failures.append((name, "a format v11 file without a segment step"))
             else:
@@ -1296,19 +1342,28 @@ def _ckpt_index(dirs):
 
 
 def _named_file_is_v11(dirs, model):
-    """Whether the file a probe record names (`model`, a path or a name) is found in
-    one of `dirs` with a header at architecture format v11 or later. A file not
-    found there is not judged."""
+    """(is_v11, refusal) for the file a probe record names (`model`, a path or a
+    name): whether it is found in one of `dirs` with a header at architecture
+    format v11 or later. A file not found there is not judged: (False, None). A
+    file found there whose header cannot be read, or whose format is newer than
+    these tools, cannot be judged either, and its record cannot be filed safely:
+    (False, the reason), which the caller reports as that record's rejection
+    rather than letting one bad header end the whole import."""
     name = os.path.basename(model)
     if not name:
-        return False
+        return False, None
     for d in dirs:
         path = os.path.join(os.path.expanduser(d), name)
         if os.path.isfile(path):
-            version = dcm_arch.checked_format_version(
-                dcm_lineage.read_metadata(path).get(dcm_lineage.FORMAT_VERSION_KEY))
-            return version is not None and version >= dcm_lineage.TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION
-    return False
+            try:
+                version = dcm_arch.checked_format_version(
+                    dcm_lineage.read_metadata(path).get(dcm_lineage.FORMAT_VERSION_KEY))
+            # ArchitectureError and LineageError are ValueErrors.
+            except (OSError, ValueError, struct.error) as error:
+                return False, f"{name}: header cannot be read to tell its step basis ({error})"
+            return (version is not None and version >= dcm_lineage.TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION,
+                    None)
+    return False, None
 
 
 def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
@@ -1327,10 +1382,14 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
     minted-per-segment ID makes that class of error impossible to import silently.
     Mismatches are reported and skipped, never written.
 
-    The bundle monitor was retired before architecture format v11, so every record
-    names a file whose name step is the segment step. A record whose file is found
-    in `ckpt_dirs` at format v11 (its name step is a trainer step, and filing it at
-    `cumstep_base + name step` would double-count) is refused and reported.
+    Records also come from probe_loop.sh (experiments/probe_record.py), which from
+    architecture format v11 probes files whose name step is the trainer step. Such a
+    record states its `step_basis` and `segment_step`, and is filed at
+    `cumstep_base + segment_step`; one stating a basis but no segment step is
+    refused. A record without `step_basis` predates the field: its name step is the
+    segment step, unless its file is found in `ckpt_dirs` at format v11 (filing it at
+    `cumstep_base + name step` would double-count), in which case it is refused and
+    reported, as is one whose file there has an unreadable header.
 
     Idempotent on cum_step, same as `track`."""
     cfg = REG["runs"][run]
@@ -1381,12 +1440,39 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
             if verbose:
                 print(f"  REJECT step{meta}: modelID {got_id} != segment {segment} {want_id}")
             continue
-        if ckpt_dirs and _named_file_is_v11(ckpt_dirs, d.get("model", "")):
-            rejected += 1
-            print(f"  REJECT step{meta}: {os.path.basename(d.get('model', ''))} is a format v11 file, whose "
-                  f"name carries the trainer step; this importer files name steps as segment steps",
-                  file=sys.stderr)
-            continue
+        # Where the record sits on the segment's axis. A record that states its step
+        # basis (probe_record.py writes it with the file's step reading) is placed by
+        # its `segment_step`, the segment step `dcm_lineage.step_reading` read from
+        # the file — from format v11 the name's step is the trainer step, and filing
+        # it at `cumstep_base + name step` would count the segment's start twice. A
+        # record without a basis predates the field: its name step is taken as the
+        # segment step, unless its file is found in `ckpt_dirs` at format v11.
+        basis = d.get("step_basis")
+        if basis is not None:
+            segment_step = d.get("segment_step")
+            if basis not in dcm_lineage.STEP_BASES:
+                rejected += 1
+                print(f"  REJECT step{meta}: unknown step basis {basis!r}", file=sys.stderr)
+                continue
+            if not isinstance(segment_step, int) or isinstance(segment_step, bool) or segment_step < 0:
+                rejected += 1
+                print(f"  REJECT step{meta}: the record's step basis is {basis} but it states no segment step "
+                      f"(segment_step {segment_step!r}), so it has no place on the segment's axis",
+                      file=sys.stderr)
+                continue
+            meta = segment_step
+        elif ckpt_dirs:
+            v11, why = _named_file_is_v11(ckpt_dirs, d.get("model", ""))
+            if why is not None:
+                rejected += 1
+                print(f"  REJECT step{meta}: {why}", file=sys.stderr)
+                continue
+            if v11:
+                rejected += 1
+                print(f"  REJECT step{meta}: {os.path.basename(d.get('model', ''))} is a format v11 file, "
+                      f"whose name carries the trainer step; this importer files name steps as segment "
+                      f"steps", file=sys.stderr)
+                continue
         cum = base + meta
         if cum in by:
             skipped += 1
