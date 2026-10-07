@@ -1,4 +1,5 @@
 import Metal
+import MetalPerformanceShadersGraph
 import XCTest
 @testable import DrewsChessMachine
 
@@ -51,9 +52,11 @@ final class AnalysisSnapshotCutTests: XCTestCase {
         XCTAssertEqual(state.names, (network.trainableVariables + network.bnRunningStatsVariables).map { $0.operation.name })
         XCTAssertEqual(state.trainableCount, network.trainableVariables.count)
         XCTAssertEqual(state.completedSteps, 7)
-        XCTAssertEqual(Self.bits(state.weights), Self.bits(try await network.exportWeights()))
+        let exported = try await network.exportWeights()
+        XCTAssertEqual(Self.bits(state.weights), Self.bits(exported))
         let masters = try XCTUnwrap(state.masters, "a bf16 trainer keeps fp32 masters")
-        XCTAssertEqual(Self.bits(masters), Self.bits(try await trainer.readMasterValues()))
+        let readMasters = try await trainer.readMasterValues()
+        XCTAssertEqual(Self.bits(masters), Self.bits(readMasters))
         XCTAssertEqual(state.velocity.count, state.trainableCount)
     }
 

@@ -129,7 +129,8 @@ final class AnalysisInitReferenceTests: XCTestCase {
         let storedMean = storedBias.reduce(0.0) { $0 + Double($1) } / Double(storedBias.count)
         let prior = NetworkArchitecture.wdlBiasPrior(drawProbability: 0.5)
         let priorMean = prior.reduce(0.0) { $0 + Double($1) } / Double(prior.count)
-        let offset = try XCTUnwrap(try await audit(arch).staticChecks.valueHeadOffset)
+        let audited = try await audit(arch)
+        let offset = try XCTUnwrap(audited.staticChecks.valueHeadOffset)
         XCTAssertEqual(offset.biasInitMean, storedMean)
         XCTAssertEqual(offset.biasInitMean, priorMean, accuracy: 0.004)
         do {
