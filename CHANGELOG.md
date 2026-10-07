@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-06 — Lichess bot: decline reasons from the event stream are recognized
+
+- Bug: the event stream's `declineReasonKey` is the reason's name lowercased (`nobot`, `timecontrol`, `toofast`, `tooslow`), while `LichessBotDeclineReason`'s raw values are the decline POST's camelCase (`noBot`, `timeControl`, …). `LichessBotDeclineReasonRecord(reasonKey:)` matched by raw value, so those declines were recorded as `.unrecognized`: the Challenge Outcomes card showed them as extra "other" rows while their own rows read 0. The protocol logs to date hold 39 `nobot`, 19 `timecontrol` and 4 `toofast` declines of DCM's own challenges (plus 1 `timecontrol`, 1 `toofast` and 1 `tooslow` event for incoming challenges DCM declined); `challenge-outcomes.json` held 21 `nobot`, 6 `timecontrol` and 2 `toofast` as unrecognized. The matchmaking cool-down (recorded for every decline whatever its reason) and the casual resend (`casual` is the same in both spellings) were not affected.
+- `LichessBotDeclineReason(lichessKey:)`: the one mapping from a key Lichess sends, case-insensitive (one dictionary derived from `allCases`). The record and the controller's two `casual` checks use it; the decline POST still sends the camelCase raw value.
+- `LichessBotDeclineReasonRecord` decodes a stored `.unrecognized` key that names a reason as `.known`; the stored shape is unchanged and nothing is rewritten.
+- New tests: `LichessBotDeclineReasonKeyTests`.
+
 ## 2026-10-06 — Lichess bot challenge log P1: entry schema, writer, reader, ledger
 
 - `Data/LichessBotChallengeLog.swift`: `LichessBotChallengeLogEntry` (`schemaVersion` 1, time, build, event) and its 12 event cases with their supporting types; the writer `LichessBotChallengeLog` (`F_FULLFSYNC` per append, the folder of a new day file too, timed syncs, torn tails recorded as `unterminatedLineCut`); the reader (newer-build lines skipped and counted, a corrupt day file left out with file and line, an unterminated tail dropped).
