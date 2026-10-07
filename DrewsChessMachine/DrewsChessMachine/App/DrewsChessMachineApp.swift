@@ -142,6 +142,12 @@ struct DrewsChessMachineApp: App {
         // variant) followed by `_exit(0)`.
         Self.handleDefaultsFlagsIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: offline training-health replay (--replay-health-log).
+        // Parses saved session logs and runs the real training-health
+        // evaluator over them, synchronously on the launching thread; no
+        // GUI, no GPU, no writes. Exits.
+        Self.handleReplayHealthLogIfPresent(rawArgs: rawArgs)
+
         // Pre-flight: handle the offline replay-buffer analyzer flag.
         // Same pattern as the defaults-emitter flags — exits the process
         // before any SwiftUI / Metal init. Reads the saved
@@ -681,7 +687,7 @@ struct DrewsChessMachineApp: App {
                     .disabled(!commandHub.realTraining || !commandHub.isArenaRunning)
                 Divider()
                 Button("Promote Trainee Now") { commandHub.promoteTrainerNow() }
-                    .disabled(!commandHub.realTraining || commandHub.isArenaRunning)
+                    .disabled(!commandHub.realTraining || commandHub.isArenaRunning || commandHub.trainingSuspended)
             }
 
             // Chess menu — human-vs-network play. The user picks the
@@ -1932,6 +1938,14 @@ struct DrewsChessMachineApp: App {
     /// optional companions (`--numerics-corpus <shard>`, `--numerics-out
     /// <dir>`, `--numerics-static-only`) and hands control to
     /// `NumericsAuditCLI.runAndExit`, which never returns.
+    /// `--replay-health-log <log> [<log> …] [--learning-grace-steps N]
+    /// [--lr-warmup-steps N] [--segment-step-as-trainer-step]`: see
+    /// `TrainingHealthReplayCLI`. Never returns when the flag is present.
+    private static func handleReplayHealthLogIfPresent(rawArgs: [String]) {
+        guard rawArgs.contains(TrainingHealthReplayCLI.flag) else { return }
+        TrainingHealthReplayCLI.runAndExit(arguments: rawArgs)
+    }
+
     private static func handleAnalyzeNumericsIfPresent(rawArgs: [String]) {
         let flag = "--analyze-numerics"
         guard rawArgs.contains(flag) else { return }

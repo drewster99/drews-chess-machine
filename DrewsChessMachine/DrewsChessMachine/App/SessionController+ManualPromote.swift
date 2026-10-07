@@ -46,6 +46,14 @@ extension SessionController {
             onRefuseMenuAction("An arena is running. Wait for it to finish, then try again.")
             return
         }
+        // A suspended trainer must not become the champion (OD-5): after a
+        // divergence its weights may be non-finite, after a health stop they
+        // are damaged by the rule's own measure — the same reason arenas
+        // skip while suspended.
+        if let trainingSuspension {
+            onRefuseMenuAction(trainingSuspension.refusalReason)
+            return
+        }
         if checkpoint?.checkpointSaveInFlight == true {
             onRefuseMenuAction("A save is in progress. Wait for it to finish, then try again.")
             return

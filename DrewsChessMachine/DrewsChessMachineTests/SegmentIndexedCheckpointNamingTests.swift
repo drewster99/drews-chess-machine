@@ -1,52 +1,28 @@
 import XCTest
 @testable import DrewsChessMachine
 
-/// Step-enumerated checkpoint names carry the writing segment's lineage
-/// index (determinism plan C1 #26): a resumed segment's step files never
-/// share a name with an earlier segment's, and segment 0 keeps the names
-/// runs have always written.
+/// Step-enumerated checkpoint names written now carry the trainer step and
+/// no segment marker (a run's first segment keeps the names runs have always
+/// written); the `-seg<k>` names resumed segments wrote before that are
+/// still recognized under any stem, so a rolling `--out-model` is never named
+/// like one; and the lineage records still take the segment index from one
+/// rule.
 final class SegmentIndexedCheckpointNamingTests: XCTestCase {
 
     private let root = URL(fileURLWithPath: "/tmp/dcm-segment-naming")
 
-    private func naming(_ rolling: String, _ runTag: String, segment: Int) -> EnumeratedCheckpointNaming {
+    private func naming(_ rolling: String, _ runTag: String) -> EnumeratedCheckpointNaming {
         EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent(rolling), runTag: runTag, segmentIndex: segment)
+            rollingOutputURL: root.appendingPathComponent(rolling), runTag: runTag)
     }
 
     func testSegmentZeroKeepsTheExistingNames() {
-        XCTAssertEqual(naming("run-replay-latest.safetensors", "replay", segment: 0).fileName(step: 41000),
+        XCTAssertEqual(naming("run-replay-latest.safetensors", "replay").fileName(trainerStep: 41000),
                        "run-replay-step41000.safetensors")
-        XCTAssertEqual(naming("run-vsuci-latest.safetensors", "vsuci", segment: 0).fileName(step: 7),
+        XCTAssertEqual(naming("run-vsuci-latest.safetensors", "vsuci").fileName(trainerStep: 7),
                        "run-vsuci-step7.safetensors")
-        XCTAssertEqual(naming("plain.safetensors", "replay", segment: 0).fileName(step: 3),
+        XCTAssertEqual(naming("plain.safetensors", "replay").fileName(trainerStep: 3),
                        "plain-step3.safetensors")
-    }
-
-    func testALaterSegmentsNamesCarryItsIndex() {
-        XCTAssertEqual(naming("run-replay-latest.safetensors", "replay", segment: 3).fileName(step: 41000),
-                       "run-replay-seg3-step41000.safetensors")
-        XCTAssertEqual(naming("run-vsuci-latest.safetensors", "vsuci", segment: 1).fileName(step: 7),
-                       "run-vsuci-seg1-step7.safetensors")
-        XCTAssertEqual(naming("plain.safetensors", "replay", segment: 2).fileName(step: 3),
-                       "plain-seg2-step3.safetensors")
-    }
-
-    func testEachSegmentParsesOnlyItsOwnStepFiles() {
-        let first = naming("run-replay-latest.safetensors", "replay", segment: 0)
-        let second = naming("run-replay-latest.safetensors", "replay", segment: 1)
-        let eleventh = naming("run-replay-latest.safetensors", "replay", segment: 10)
-        XCTAssertEqual(first.step(ofFileName: "run-replay-step1000.safetensors"), 1000)
-        XCTAssertNil(first.step(ofFileName: "run-replay-seg1-step1000.safetensors"))
-        XCTAssertEqual(second.step(ofFileName: "run-replay-seg1-step1000.safetensors"), 1000)
-        XCTAssertNil(second.step(ofFileName: "run-replay-step1000.safetensors"))
-        XCTAssertNil(second.step(ofFileName: "run-replay-seg10-step1000.safetensors"))
-        XCTAssertEqual(eleventh.step(ofFileName: "run-replay-seg10-step1000.safetensors"), 1000)
-        XCTAssertNil(eleventh.step(ofFileName: "run-replay-seg1-step1000.safetensors"))
-        // Segment 0 never writes a marker, so no segment owns a `-seg0-` name
-        // built from this stem.
-        XCTAssertNil(first.step(ofFileName: "run-replay-seg0-step1000.safetensors"))
-        XCTAssertNil(second.step(ofFileName: "run-replay-seg01-step1000.safetensors"))
     }
 
     func testSegmentStepFilesAreRecognizedUnderAnyStem() {
@@ -90,9 +66,5 @@ final class SegmentIndexedCheckpointNamingTests: XCTestCase {
             segmentGames: 0, segmentPositions: 0, corpus: nil, parameters: nil,
             rng: .withoutRunStreams(dropoutPhiloxState: nil), inputs: resumed.testInputs)
         XCTAssertEqual(secondRecord.run.segmentIndex, LineageTracker.segmentIndex(exactResumeOf: firstParent))
-        XCTAssertEqual(
-            naming("run-replay-latest.safetensors", "replay",
-                   segment: secondRecord.run.segmentIndex).fileName(step: 1000),
-            "run-replay-seg1-step1000.safetensors")
     }
 }

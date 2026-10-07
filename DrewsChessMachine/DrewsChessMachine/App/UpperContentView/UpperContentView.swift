@@ -396,15 +396,6 @@ struct UpperContentView: View {
     // `trainingBatchSize` (demo-training batch size) moved to
     // `SessionController` in Stage 4g — `SessionController.trainingBatchSize`.
 
-    /// Number of training steps at the start of a Play-and-Train
-    /// session for which the `[STATS]` line fires on every step.
-    /// After this many steps the STATS ticker switches to a 60 s
-    /// time-based cadence. The bootstrap window covers the first
-    /// few minutes of training — long enough to see the initial
-    /// loss curve shape without flooding the log once training
-    /// settles.
-    nonisolated static let bootstrapStatsStepCount: Int = 500
-
     // The training-alarm thresholds, divergence-streak detector, and the
     // banner / beep state moved to `TrainingAlarmController` (held below as
     // `@State private var trainingAlarm`). `policyEntropyAlarmThreshold` lives
@@ -974,6 +965,7 @@ struct UpperContentView: View {
             sweepRunning: sweepRunning,
             realTraining: realTraining,
             isArenaRunning: session.isArenaRunning,
+            trainingSuspended: session.trainingSuspension != nil,
             checkpointSaveInFlight: checkpoint.checkpointSaveInFlight,
             isTrainingOnce: isTrainingOnce,
             isEvaluating: isEvaluating,
@@ -1137,6 +1129,8 @@ struct UpperContentView: View {
                     onDismiss: { trainingAlarm.dismiss() }
                 )
             }
+            // Always mounted; hidden (opacity 0, zero frame) while empty.
+            TrainingHealthAlarmList(alarmController: trainingAlarm)
             cumulativeStatusBar
             busyRowWithDialogs
             boardAndTextRow
@@ -2440,6 +2434,7 @@ struct UpperContentView: View {
         commandHub.sweepRunning = sweepRunning
         commandHub.realTraining = realTraining
         commandHub.isArenaRunning = session.isArenaRunning
+        commandHub.trainingSuspended = session.trainingSuspension != nil
         commandHub.checkpointSaveInFlight = checkpoint.checkpointSaveInFlight
         commandHub.pendingLoadedSessionExists = pendingLoadedSession != nil
         commandHub.canResumeFromAutosave = canResumeFromAutosave

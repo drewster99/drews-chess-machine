@@ -11,7 +11,7 @@ Two things differ from replay.py and are handled here:
     step — the registered run kept only a rolling `-latest` checkpoint (no
     per-1000-step frozen files to re-probe), so the JSONL is the trajectory's
     source of truth. Current builds save `.dcmsession` folders instead of the
-    rolling file (`…-vsuci-periodic/-final/-abort`, trainer state in
+    rolling file (`…-vsuci-periodic/-final/-abort/-health-stop`, trainer state in
     `trainer.safetensors`) and, with --enumerate-checkpoints, `-vsuci-step<N>`
     files; --derive-registry reads both.
   * training-side metrics (loss/pLoss/vLoss/gNorm/ms) are parsed from the
@@ -35,10 +35,17 @@ REG = json.load(open(os.path.join(HERE, "vsuci_registry.json")))
 LOGS = os.path.expanduser(REG["logs_dir"])
 DATA = os.path.join(HERE, "data")
 
+# A [VS-UCI] step line. `pLogitMean=` / `vLogitMean=` sit between `playedP=` and
+# `gNorm=` in lines from builds that log them and are absent from older ones, so
+# both forms match. `trainerStep=` trails the line (after `mom=` and an optional
+# `lrCyc…`), so it is found by its own search (TRAINER_STEP_RE) on a matched line.
 STEP_RE = re.compile(
-    r"^(\d\d):(\d\d):(\d\d)\.\d+\s+\[VS-UCI\] step=(\d+) loss=([\d.]+) pLoss=([-\d.]+) "
-    r"vLoss=([-\d.]+) pEnt=([-\d.]+|--) playedP=([-\d.]+|--) gNorm=([-\d.]+) "
-    r"lr=([\d.e-]+) ms=([\d.]+) buf=(\d+)")
+    r"^(?P<hh>\d\d):(?P<mm>\d\d):(?P<ss>\d\d)\.\d+\s+\[VS-UCI\] step=(?P<step>\d+) "
+    r"loss=(?P<loss>[\d.]+) pLoss=(?P<pLoss>[-\d.]+) "
+    r"vLoss=(?P<vLoss>[-\d.]+) pEnt=(?:[-\d.]+|--) playedP=(?:[-\d.]+|--) "
+    r"(?:pLogitMean=(?:[-\d.]+|--) vLogitMean=(?:[-\d.]+|--) )?gNorm=(?P<gNorm>[-\d.]+) "
+    r"lr=(?:[\d.e-]+) ms=(?P<ms>[\d.]+) buf=(?:\d+)")
+TRAINER_STEP_RE = re.compile(r" trainerStep=(\d+)")
 
 
 def parse_segment(log_path, seg_index, cfg):
@@ -54,6 +61,10 @@ def parse_segment(log_path, seg_index, cfg):
         wall-clock excess beyond that is time the process was not running at all
         (system sleep/suspend) and is dropped. This is provable from the data,
         needs no configuration, and is a no-op on a segment that never slept.
+        The bound uses the later line's single-step `ms`; with time-based step
+        lines hundreds of steps apart (the cadence after trainer step 1000) it
+        rests on that one step's duration, a coarser bound than with lines every
+        50 steps.
 
       throttle rescale (only inside declared windows) — a clock-throttled step
         and a genuinely slow step are indistinguishable by duration, and seg1
@@ -74,14 +85,16 @@ def parse_segment(log_path, seg_index, cfg):
             m = STEP_RE.match(line)
             if not m:
                 continue
-            sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+            sec = int(m.group("hh")) * 3600 + int(m.group("mm")) * 60 + int(m.group("ss"))
             if prev is not None and sec < prev:
                 day += 86400
             prev = sec
-            pts.append((sec + day, int(m.group(4)), dict(
-                ms=float(m.group(12)), loss=float(m.group(5)),
-                pLoss=float(m.group(6)), vLoss=float(m.group(7)),
-                gNorm=float(m.group(10)))))
+            trainer = TRAINER_STEP_RE.search(line)
+            pts.append((sec + day, int(m.group("step")), dict(
+                ms=float(m.group("ms")), loss=float(m.group("loss")),
+                pLoss=float(m.group("pLoss")), vLoss=float(m.group("vLoss")),
+                gNorm=float(m.group("gNorm")),
+                trainerStep=int(trainer.group(1)) if trainer else None)))
 
     def throttled(step):
         return any(w["from_step"] <= step <= w["to_step"] for w in windows)
@@ -106,6 +119,28 @@ def nearest_at(per_step, meta):
     """Metrics for the largest logged meta_step <= meta (per-50 log vs per-1000 marks)."""
     cands = [k for k in per_step if k <= meta]
     return per_step[max(cands)] if cands else None
+
+
+def marks_of(per_step):
+    """[(meta_step, metrics)] of a segment's 1000-step marks, in step order.
+
+    A log whose step lines carry `trainerStep=` (builds that write lines on the
+    trainer-step cadence, which saves and names checkpoints at trainer-step
+    multiples of 1000) gives a mark at each line whose trainer step is a multiple
+    of 1000 — a resumed segment's marks then sit where its checkpoints are, not at
+    segment multiples of 1000. A log whose lines carry no `trainerStep=` (every
+    registered run's) keeps the marks at segment multiples of 1000, each taking the
+    nearest line at or below it, as before."""
+    if any(met["trainerStep"] is not None for met in per_step.values()):
+        return [(meta, met) for meta, met in sorted(per_step.items())
+                if met["trainerStep"] is not None and met["trainerStep"] % 1000 == 0]
+    seg_max = max(per_step) if per_step else 0
+    marks = []
+    for meta in range(1000, seg_max + 1, 1000):
+        met = nearest_at(per_step, meta)
+        if met:
+            marks.append((meta, met))
+    return marks
 
 
 def load_probes(path):
@@ -140,11 +175,7 @@ def build(key, cfg):
     for si, seg in enumerate(segs):
         per_step, total = parse_segment(os.path.join(LOGS, seg["log"]), si, cfg)
         base = seg["cumstep_base"]
-        seg_max = max(per_step) if per_step else 0
-        for meta in range(1000, seg_max + 1, 1000):
-            met = nearest_at(per_step, meta)
-            if not met:
-                continue
+        for position, (meta, met) in enumerate(marks_of(per_step)):
             cum = base + meta
             pr = probes.get(cum, {})
             rows.append({
@@ -156,7 +187,10 @@ def build(key, cfg):
                 "loss": met["loss"], "pLoss": met["pLoss"], "vLoss": met["vLoss"],
                 "legalMass": "", "pIllM": "", "bn1Mean": "", "gNorm": met["gNorm"],
                 "sae2": "", "eff_alpha": "", "pLogit_mean": "", "pLogit_peak": "",
-                "frozen_file": "", "note": (seg["label"] if meta == 1000 else ""),
+                # The segment's label on its first mark: meta 1000 on a log without
+                # trainerStep= (as before), the first trainer-step mark otherwise.
+                "frozen_file": "", "note": (seg["label"] if (meta == 1000 if met["trainerStep"] is None
+                                                             else position == 0) else ""),
             })
         elapsed_base += total
     return rows

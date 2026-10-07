@@ -379,7 +379,9 @@ extension SessionController {
         // junk and could overwrite the user's last-session pointer. The banner
         // stays up; the user can still save manually if they want it for
         // debugging.
-        if trainingSuspendedByDivergence {
+        // A health-alarm suspension does not gate it: its weights are
+        // finite, and a save is useful for forensics (`TrainingSuspension`).
+        if trainingSuspension?.skipsPeriodicAutosave == true {
             return
         }
         let now = Date()
@@ -648,7 +650,7 @@ extension SessionController {
         // sample would only churn the banner (and its recovery path could
         // eventually clear a divergence-titled banner). The chart keeps
         // appending so live self-play data still plots.
-        if !trainingSuspendedByDivergence {
+        if trainingSuspension?.skipsHeartbeatAlarmEvaluation != true {
             trainingAlarm?.evaluate(from: sample)
         }
     }

@@ -88,22 +88,22 @@ final class TrainVsUciSessionTests: XCTestCase {
         let start = tempDir.appendingPathComponent("champ.safetensors")
         let base = try TrainVsUciSession.enumeratedNamingBase(
             checkpointStem: nil, startSource: .modelFile(start), runModelID: "20261003-1-AbCd")
-        let naming = EnumeratedCheckpointNaming(rollingOutputURL: base, runTag: EnumeratedCheckpointNaming.trainVsUciRunTag, segmentIndex: 0)
-        XCTAssertEqual(naming.url(step: 1000), tempDir.appendingPathComponent("champ-vsuci-step1000.safetensors"))
+        let naming = EnumeratedCheckpointNaming(rollingOutputURL: base, runTag: EnumeratedCheckpointNaming.trainVsUciRunTag)
+        XCTAssertEqual(naming.url(trainerStep: 1000), tempDir.appendingPathComponent("champ-vsuci-step1000.safetensors"))
 
         let fresh = try TrainVsUciSession.enumeratedNamingBase(
             checkpointStem: nil, startSource: nil, runModelID: "20261003-1-AbCd")
         XCTAssertEqual(
-            EnumeratedCheckpointNaming(rollingOutputURL: fresh, runTag: EnumeratedCheckpointNaming.trainVsUciRunTag, segmentIndex: 0)
-                .url(step: 2000),
+            EnumeratedCheckpointNaming(rollingOutputURL: fresh, runTag: EnumeratedCheckpointNaming.trainVsUciRunTag)
+                .url(trainerStep: 2000),
             CheckpointPaths.modelsDir.appendingPathComponent("20261003-1-AbCd-vsuci-step2000.safetensors"))
 
         let explicit = try TrainVsUciSession.enumeratedNamingBase(
             checkpointStem: tempDir.appendingPathComponent("sf100-resume2").path,
             startSource: .session(tempDir), runModelID: "20261003-1-AbCd")
         XCTAssertEqual(
-            EnumeratedCheckpointNaming(rollingOutputURL: explicit, runTag: EnumeratedCheckpointNaming.trainVsUciRunTag, segmentIndex: 0)
-                .url(step: 3000),
+            EnumeratedCheckpointNaming(rollingOutputURL: explicit, runTag: EnumeratedCheckpointNaming.trainVsUciRunTag)
+                .url(trainerStep: 3000),
             tempDir.appendingPathComponent("sf100-resume2-vsuci-step3000.safetensors"))
     }
 
@@ -128,8 +128,8 @@ final class TrainVsUciSessionTests: XCTestCase {
         let naming = EnumeratedCheckpointNaming(
             rollingOutputURL: try TrainVsUciSession.enumeratedNamingBase(
                 checkpointStem: stem, startSource: nil, runModelID: "20261003-1-AbCd"),
-            runTag: EnumeratedCheckpointNaming.trainVsUciRunTag, segmentIndex: 0)
-        XCTAssertEqual(naming.url(step: 1000), tempDir.appendingPathComponent("sf100-lr0.5-vsuci-step1000.safetensors"))
+            runTag: EnumeratedCheckpointNaming.trainVsUciRunTag)
+        XCTAssertEqual(naming.url(trainerStep: 1000), tempDir.appendingPathComponent("sf100-lr0.5-vsuci-step1000.safetensors"))
         for named in ["run.DCMMODEL", "run.dcmsession", "run.SafeTensors"] {
             let path = tempDir.appendingPathComponent(named).path
             XCTAssertThrowsError(try TrainVsUciSession.enumeratedNamingBase(

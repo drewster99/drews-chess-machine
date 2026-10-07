@@ -217,8 +217,9 @@ final class LineageTracker: @unchecked Sendable {
         var parameterChanges: [LineageRecord.ParameterChange] = []
         var championChanges: [LineageRecord.ChampionChange] = []
         var replayRatioStarts: [LineageRecord.ReplayRatio.Start] = []
-        /// The summary of the segment's ended health monitors, merged.
-        var endedMonitorsHealthAlarms: TrainingHealthSegmentSummary?
+        /// The summary of the segment's ended health monitors, merged; empty
+        /// until the first one ends.
+        var endedMonitorsHealthAlarms: TrainingHealthSegmentSummary = .empty
     }
     private let journals = SyncBox<Journals>(Journals())
 
@@ -406,52 +407,27 @@ final class LineageTracker: @unchecked Sendable {
         journals.modify { $0.replayRatioStarts.append(start) }
     }
 
-    /// Fold an ended health monitor's summary into the segment's (alarm
-    /// plan OD-10): a segment spans several monitors (one per GUI start), so
-    /// evaluations and raise counts add, the first raise step is the
-    /// earliest and the severity the highest. The extension point for the
-    /// health monitor; a live monitor's summary is passed per save in
-    /// `SaveInputs.healthAlarms` after being merged with this one.
+    /// Fold an ended health monitor's summary into the segment's stored one
+    /// (`configuration.health_alarms`, alarm plan OD-10). A GUI segment spans
+    /// several monitors — every start makes one, and a Continue or
+    /// keep-trainer start stays in the segment — so the monitor a start
+    /// replaces is folded in here, once, at the replacement. A new
+    /// segment's tracker starts from `.empty`, so nothing carries across a
+    /// segment boundary.
     func mergeEndedHealthMonitor(_ summary: TrainingHealthSegmentSummary) {
         journals.modify { journals in
-            journals.endedMonitorsHealthAlarms = Self.merge(journals.endedMonitorsHealthAlarms, summary)
+            journals.endedMonitorsHealthAlarms = journals.endedMonitorsHealthAlarms.merging(summary)
         }
     }
 
-    /// The segment's health-alarm summary with `live` (the running
-    /// monitor's) merged in, without changing the stored one; nil when no
-    /// monitor ever reported.
+    /// The segment's summary for a save: the stored one with `live` (the
+    /// running monitor's summary) merged in, without storing it — the live
+    /// monitor is folded in only when it ends. Nil when there is no live
+    /// monitor to describe the segment's monitoring, so the record says
+    /// unrecorded rather than stating a summary no monitor produced.
     func healthAlarms(withLive live: TrainingHealthSegmentSummary?) -> TrainingHealthSegmentSummary? {
-        let ended = journals.value.endedMonitorsHealthAlarms
-        guard let live else { return ended }
-        return Self.merge(ended, live)
-    }
-
-    static func merge(_ a: TrainingHealthSegmentSummary?, _ b: TrainingHealthSegmentSummary) -> TrainingHealthSegmentSummary {
-        guard let a else { return b }
-        var byRule: [TrainingHealthRule: TrainingHealthSegmentSummary.Raised] = [:]
-        for raised in a.raised + b.raised {
-            if let existing = byRule[raised.rule] {
-                byRule[raised.rule] = TrainingHealthSegmentSummary.Raised(
-                    rule: raised.rule,
-                    firstTrainerStep: min(existing.firstTrainerStep, raised.firstTrainerStep),
-                    highestSeverity: Self.higher(existing.highestSeverity, raised.highestSeverity),
-                    raiseCount: existing.raiseCount + raised.raiseCount)
-            } else {
-                byRule[raised.rule] = raised
-            }
-        }
-        let order = a.raised.map(\.rule) + b.raised.map(\.rule).filter { rule in !a.raised.contains { $0.rule == rule } }
-        return TrainingHealthSegmentSummary(evaluations: a.evaluations + b.evaluations,
-                                            raised: order.compactMap { byRule[$0] })
-    }
-
-    /// The more severe of two alarm severities.
-    private static func higher(_ a: TrainingAlarm.Severity, _ b: TrainingAlarm.Severity) -> TrainingAlarm.Severity {
-        switch (a, b) {
-        case (.critical, _), (_, .critical): return .critical
-        case (.warning, .warning): return .warning
-        }
+        guard let live else { return nil }
+        return journals.value.endedMonitorsHealthAlarms.merging(live)
     }
 
     /// The journal positions now, with this save's derived values: what a

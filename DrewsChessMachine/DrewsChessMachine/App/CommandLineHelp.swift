@@ -123,6 +123,14 @@ enum CommandLineHelp {
                                       fp32/bf16/fp16 fitness of weights and activations, head offsets,
                                       ties and cross-entropy. JSON per checkpoint (default: the analyses
                                       folder), one summary line each to stdout, then exit.
+      --replay-health-log <log> [<log> ...] [--learning-grace-steps <n>] [--lr-warmup-steps <n>]
+                         [--segment-step-as-trainer-step]
+                                      Run the training-health rules over saved session logs (read only; no
+                                      GUI, no GPU) and print the [HEALTH] / [ALARM] health lines they would
+                                      have written, then a per-rule summary. Logs given together are one
+                                      continuing evaluator. Declared-default settings, every action log.
+                                      --segment-step-as-trainer-step: for logs whose step rows carry no
+                                      trainerStep=. Exit 0, or 2 on an unreadable or malformed log.
       --derive-model --from <model.safetensors> <operation> <value> [--group <index>]... --out <new.safetensors>
                                       Write a new model copied bit-exact from --from except the tensors the
                                       operation re-initializes, with a fresh ModelID, parent_model_id and a
@@ -156,6 +164,11 @@ enum CommandLineHelp {
                                       Replay only reads the corpus: unsealed .open shards are skipped (and
                                       listed in a warning), never recovered or modified -- recover them
                                       with --validate-corpus <dir> --fix.
+                                      Training-health alarms run on every step ([HEALTH] / [ALARM] health
+                                      lines; training_health_* parameters). Exit status: 0 done, 2 refused
+                                      at launch, 33 failed, 35 stopped by a training-health alarm whose
+                                      training_health_action_<rule> stops the run (after the final save,
+                                      tagged health-stop). The same statuses apply to --train-vs-uci.
       --out-model <path>              Destination for the rolling trainer-model file (overwritten by this
                                       run's saves); a .safetensors extension is appended if you don't supply
                                       one (corpus replay only). Checked before training: never the
@@ -255,7 +268,8 @@ enum CommandLineHelp {
       --out-session-dir <folder>      Where session folders are saved (default: the app's Sessions folder).
                                       Every save is a new .dcmsession folder, written and verified like the
                                       GUI's: on the periodic_autosave_interval_sec cadence and at the end
-                                      (…-vsuci-periodic / -vsuci-final / -vsuci-abort). The GUI does not
+                                      (…-vsuci-periodic / -vsuci-final / -vsuci-abort / -vsuci-health-stop,
+                                      the last when a training-health alarm stopped the run). The GUI does not
                                       load them; resume one with --start-model <folder> --resume-exact.
       --save-replay-buffer            Include replay_buffer.bin in every session save (several GB), so an
                                       exact resume restores the buffer instead of refilling it.

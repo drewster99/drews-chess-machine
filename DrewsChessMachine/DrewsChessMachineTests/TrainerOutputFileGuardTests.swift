@@ -342,36 +342,36 @@ final class TrainerOutputFileGuardTests: XCTestCase {
 
     func testEnumeratedNamesMatchTheHistoricalScheme() {
         let replay = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("20260702-Qeu8-replay-latest.safetensors"), runTag: "replay", segmentIndex: 0)
-        XCTAssertEqual(replay.fileName(step: 41000), "20260702-Qeu8-replay-step41000.safetensors")
+            rollingOutputURL: root.appendingPathComponent("20260702-Qeu8-replay-latest.safetensors"), runTag: "replay")
+        XCTAssertEqual(replay.fileName(trainerStep: 41000), "20260702-Qeu8-replay-step41000.safetensors")
         let vsuci = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("foo-vsuci-latest.safetensors"), runTag: "vsuci", segmentIndex: 0)
-        XCTAssertEqual(vsuci.fileName(step: 7), "foo-vsuci-step7.safetensors")
+            rollingOutputURL: root.appendingPathComponent("foo-vsuci-latest.safetensors"), runTag: "vsuci")
+        XCTAssertEqual(vsuci.fileName(trainerStep: 7), "foo-vsuci-step7.safetensors")
         let plain = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("foo.safetensors"), runTag: "replay", segmentIndex: 0)
-        XCTAssertEqual(plain.fileName(step: 3000), "foo-step3000.safetensors")
+            rollingOutputURL: root.appendingPathComponent("foo.safetensors"), runTag: "replay")
+        XCTAssertEqual(plain.fileName(trainerStep: 3000), "foo-step3000.safetensors")
     }
 
     func testEnumeratedNameParsingAcceptsExactlyThisStemsStepFiles() {
         let naming = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("20260702-Qeu8-replay-latest.safetensors"), runTag: "replay", segmentIndex: 0)
-        XCTAssertEqual(naming.step(ofFileName: "20260702-Qeu8-replay-step41000.safetensors"), 41000)
-        XCTAssertEqual(naming.step(ofFileName: "20260702-Qeu8-replay-step0.safetensors"), 0)
+            rollingOutputURL: root.appendingPathComponent("20260702-Qeu8-replay-latest.safetensors"), runTag: "replay")
+        XCTAssertEqual(naming.trainerStep(ofFileName: "20260702-Qeu8-replay-step41000.safetensors"), 41000)
+        XCTAssertEqual(naming.trainerStep(ofFileName: "20260702-Qeu8-replay-step0.safetensors"), 0)
         // A resumed segment's own stem, a sibling run, markers and padding are not this stem's files.
-        XCTAssertNil(naming.step(ofFileName: "20260702-Qeu8-resume2-replay-step41000.safetensors"))
-        XCTAssertNil(naming.step(ofFileName: "20260702-Qeu8e5-replay-step41000.safetensors"))
-        XCTAssertNil(naming.step(ofFileName: "20260702-Qeu8-replay-step49374-DO-NOT-RESUME.safetensors"))
-        XCTAssertNil(naming.step(ofFileName: "20260702-Qeu8-replay-step041000.safetensors"))
-        XCTAssertNil(naming.step(ofFileName: "20260702-Qeu8-replay-latest.safetensors"))
-        XCTAssertNil(naming.step(ofFileName: "20260702-Qeu8-replay-step.safetensors"))
+        XCTAssertNil(naming.trainerStep(ofFileName: "20260702-Qeu8-resume2-replay-step41000.safetensors"))
+        XCTAssertNil(naming.trainerStep(ofFileName: "20260702-Qeu8e5-replay-step41000.safetensors"))
+        XCTAssertNil(naming.trainerStep(ofFileName: "20260702-Qeu8-replay-step49374-DO-NOT-RESUME.safetensors"))
+        XCTAssertNil(naming.trainerStep(ofFileName: "20260702-Qeu8-replay-step041000.safetensors"))
+        XCTAssertNil(naming.trainerStep(ofFileName: "20260702-Qeu8-replay-latest.safetensors"))
+        XCTAssertNil(naming.trainerStep(ofFileName: "20260702-Qeu8-replay-step.safetensors"))
     }
 
     func testEnumeratedNameParsingRoundTripsAStemThatRepeatsTheMarker() {
         // The default --out-model when the start model is itself a rolling file.
         let naming = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("a-replay-latest-replay-latest.safetensors"), runTag: "replay", segmentIndex: 0)
-        let name = naming.fileName(step: 5000)
-        XCTAssertEqual(naming.step(ofFileName: name), 5000)
+            rollingOutputURL: root.appendingPathComponent("a-replay-latest-replay-latest.safetensors"), runTag: "replay")
+        let name = naming.fileName(trainerStep: 5000)
+        XCTAssertEqual(naming.trainerStep(ofFileName: name), 5000)
     }
 
     func testAnyStemParserRecognizesEveryEnumeratedShape() {
@@ -386,9 +386,9 @@ final class TrainerOutputFileGuardTests: XCTestCase {
         for rollingName in rollingNames {
             for runTag in EnumeratedCheckpointNaming.allRunTags {
                 let naming = EnumeratedCheckpointNaming(
-                    rollingOutputURL: root.appendingPathComponent(rollingName), runTag: runTag, segmentIndex: 0)
+                    rollingOutputURL: root.appendingPathComponent(rollingName), runTag: runTag)
                 for step in [0, 7, 41000] {
-                    let name = naming.fileName(step: step)
+                    let name = naming.fileName(trainerStep: step)
                     XCTAssertEqual(EnumeratedCheckpointNaming.step(ofEnumeratedFileNameUnderAnyStem: name), step, name)
                 }
             }
@@ -416,52 +416,52 @@ final class TrainerOutputFileGuardTests: XCTestCase {
 
     func testStemWithReachableStepFilesRefusesTheRun() throws {
         let rolling = root.appendingPathComponent("v5-cont-replay-latest.safetensors")
-        let naming = EnumeratedCheckpointNaming(rollingOutputURL: rolling, runTag: "replay", segmentIndex: 0)
+        let naming = EnumeratedCheckpointNaming(rollingOutputURL: rolling, runTag: "replay")
         for step in [1000, 2000, 336610] {
-            try Data("segment 1".utf8).write(to: naming.url(step: step))
+            try Data("segment 1".utf8).write(to: naming.url(trainerStep: step))
         }
         // No step limit: every step is reachable.
         XCTAssertThrowsError(try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(
-            naming: naming, stepLimit: nil)) { error in
+            naming: naming, segmentStartTrainerStep: 0, stepLimit: nil)) { error in
             guard case .enumeratedStepsAlreadyPresent(let firstPath, let count, _, _, let suggestion)?
                     = error as? TrainerOutputFileError else {
                 return XCTFail("expected enumeratedStepsAlreadyPresent, got \(error)")
             }
-            XCTAssertEqual(firstPath, naming.url(step: 1000).path)
+            XCTAssertEqual(firstPath, naming.url(trainerStep: 1000).path)
             XCTAssertEqual(count, 3)
             XCTAssertTrue(suggestion.contains("v5-cont-resumeN-replay-latest.safetensors"), suggestion)
         }
         // A step limit below every existing step reaches none of them.
-        XCTAssertNoThrow(try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(naming: naming, stepLimit: 999))
+        XCTAssertNoThrow(try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(naming: naming, segmentStartTrainerStep: 0, stepLimit: 999))
         XCTAssertEqual(
-            try TrainerOutputFileGuard.reachableEnumeratedCheckpoints(naming: naming, stepLimit: 2000).map(\.step),
+            try TrainerOutputFileGuard.reachableEnumeratedCheckpoints(naming: naming, segmentStartTrainerStep: 0, stepLimit: 2000).map(\.step),
             [1000, 2000])
     }
 
     func testNewSegmentStemPassesThePreflight() throws {
         let old = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("v5-cont-replay-latest.safetensors"), runTag: "replay", segmentIndex: 0)
-        try Data("segment 1".utf8).write(to: old.url(step: 1000))
+            rollingOutputURL: root.appendingPathComponent("v5-cont-replay-latest.safetensors"), runTag: "replay")
+        try Data("segment 1".utf8).write(to: old.url(trainerStep: 1000))
         let resumed = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("v5-cont-resume2-replay-latest.safetensors"), runTag: "replay", segmentIndex: 0)
-        XCTAssertNoThrow(try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(naming: resumed, stepLimit: nil))
+            rollingOutputURL: root.appendingPathComponent("v5-cont-resume2-replay-latest.safetensors"), runTag: "replay")
+        XCTAssertNoThrow(try TrainerOutputFileGuard.requireNoReachableEnumeratedCheckpoints(naming: resumed, segmentStartTrainerStep: 0, stepLimit: nil))
     }
 
     func testMissingOutputDirectoryHasNoStepFiles() throws {
         let naming = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("not-yet/run-replay-latest.safetensors"), runTag: "replay", segmentIndex: 0)
-        XCTAssertEqual(try TrainerOutputFileGuard.reachableEnumeratedCheckpoints(naming: naming, stepLimit: nil), [])
+            rollingOutputURL: root.appendingPathComponent("not-yet/run-replay-latest.safetensors"), runTag: "replay")
+        XCTAssertEqual(try TrainerOutputFileGuard.reachableEnumeratedCheckpoints(naming: naming, segmentStartTrainerStep: 0, stepLimit: nil), [])
     }
 
     // MARK: Enumerated writer
 
     func testEnumeratedWriteNeverOverwritesAnotherRunsFile() throws {
         let naming = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("run-replay-latest.safetensors"), runTag: "replay", segmentIndex: 0)
-        let earlier = naming.url(step: 1000)
+            rollingOutputURL: root.appendingPathComponent("run-replay-latest.safetensors"), runTag: "replay")
+        let earlier = naming.url(trainerStep: 1000)
         try Data("earlier segment".utf8).write(to: earlier)
         let writer = EnumeratedCheckpointWriter(naming: naming)
-        XCTAssertThrowsError(try writer.write(Data("this run".utf8), step: 1000)) { error in
+        XCTAssertThrowsError(try writer.write(Data("this run".utf8), trainerStep: 1000)) { error in
             XCTAssertEqual(error as? TrainerOutputFileError,
                            .enumeratedCheckpointExists(path: earlier.path, step: 1000))
         }
@@ -471,35 +471,35 @@ final class TrainerOutputFileGuardTests: XCTestCase {
 
     func testEnumeratedWriteNeverReplacesAFolder() throws {
         let naming = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("run-replay-latest.safetensors"), runTag: "replay", segmentIndex: 0)
-        let folder = naming.url(step: 2000)
+            rollingOutputURL: root.appendingPathComponent("run-replay-latest.safetensors"), runTag: "replay")
+        let folder = naming.url(trainerStep: 2000)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try Data("keep".utf8).write(to: folder.appendingPathComponent("keep.txt"))
         let writer = EnumeratedCheckpointWriter(naming: naming)
-        XCTAssertThrowsError(try writer.write(Data("this run".utf8), step: 2000))
+        XCTAssertThrowsError(try writer.write(Data("this run".utf8), trainerStep: 2000))
         XCTAssertTrue(isDirectory(folder))
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("keep.txt").path))
     }
 
     func testFinalSaveOnTheLastAutosaveStepReplacesThisRunsOwnFile() throws {
         let naming = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("run-replay-latest.safetensors"), runTag: "replay", segmentIndex: 0)
+            rollingOutputURL: root.appendingPathComponent("run-replay-latest.safetensors"), runTag: "replay")
         let writer = EnumeratedCheckpointWriter(naming: naming)
-        let first = try writer.write(Data("autosave".utf8), step: 5000)
+        let first = try writer.write(Data("autosave".utf8), trainerStep: 5000)
         XCTAssertEqual(first.outcome, .created)
-        let second = try writer.write(Data("final".utf8), step: 5000)
+        let second = try writer.write(Data("final".utf8), trainerStep: 5000)
         XCTAssertEqual(second.outcome, .replacedThisRunsEarlierSave)
-        XCTAssertEqual(try Data(contentsOf: naming.url(step: 5000)), Data("final".utf8))
+        XCTAssertEqual(try Data(contentsOf: naming.url(trainerStep: 5000)), Data("final".utf8))
     }
 
     func testOwnFileSwappedOutUnderTheRunIsNotReplaced() throws {
         let naming = EnumeratedCheckpointNaming(
-            rollingOutputURL: root.appendingPathComponent("run-replay-latest.safetensors"), runTag: "replay", segmentIndex: 0)
+            rollingOutputURL: root.appendingPathComponent("run-replay-latest.safetensors"), runTag: "replay")
         let writer = EnumeratedCheckpointWriter(naming: naming)
-        _ = try writer.write(Data("autosave".utf8), step: 5000)
-        let url = naming.url(step: 5000)
+        _ = try writer.write(Data("autosave".utf8), trainerStep: 5000)
+        let url = naming.url(trainerStep: 5000)
         try swapInAnotherFile(at: url, contents: "someone else")
-        XCTAssertThrowsError(try writer.write(Data("final".utf8), step: 5000)) { error in
+        XCTAssertThrowsError(try writer.write(Data("final".utf8), trainerStep: 5000)) { error in
             XCTAssertEqual(error as? FileSafetyError, .fileChangedSinceWritten(path: url.path))
         }
         XCTAssertEqual(try Data(contentsOf: url), Data("someone else".utf8))

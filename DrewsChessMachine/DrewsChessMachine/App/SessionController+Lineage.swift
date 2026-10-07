@@ -495,7 +495,7 @@ extension SessionController {
                 scheduleAtSave: LRMomentumCycleReadout.scheduleAtSave(
                     inForce: inForce.adoptingSchedule(schedule), completedTrainSteps: schedule.completedTrainSteps),
                 replayRatioAtSave: atSave,
-                healthAlarms: tracker.healthAlarms(withLive: nil)))
+                healthAlarms: tracker.healthAlarms(withLive: trainingHealthMonitor?.segmentSummary())))
     }
 
     /// The running segment's lineage now, for `results.json`: its record as

@@ -96,9 +96,16 @@ def _st_load(path, want=None):
         return out
 
 def meta_step_of(path):
-    with open(path, "rb") as f:
-        n = struct.unpack("<Q", f.read(8))[0]
-        return int(json.loads(f.read(n))["__metadata__"]["training_step"])
+    """A checkpoint's segment step — the registry axis's `meta_step` — read through
+    `dcm_lineage.step_reading`: before architecture format v11 a corpus-replay file's
+    `training_step`, from v11 its lineage record's `segment_local_step` (its
+    `training_step` is then the trainer step). A file whose segment step is unknown is
+    an error naming it, never a guess."""
+    name = os.path.basename(path)
+    reading = dcm_lineage.step_reading(dcm_lineage.read_metadata(path), name)
+    if reading.segment_step is None:
+        raise dcm_lineage.LineageError(f"{name}: states no segment step (step basis {reading.basis})")
+    return reading.segment_step
 
 def internals(path):
     """bn1Mean, Σαeff² and the per-block effective ReZero α of one checkpoint.
@@ -290,8 +297,12 @@ def _metrics_at(logname, meta_step, stale_tol=1500):
     never written. Repeating the last-known line for every checkpoint in such a window is
     exactly what produced the flat, identical-valued "notch" artifacts (e.g. nt8y's
     pLoss/vLoss step during the 2026-07-06 disk-full). Blank is honest: no data, so the
-    charts skip it rather than drawing a stale plateau. Normal logging is every ~60 s
-    (~170 steps here), so 1500 only ever trips on a genuine multi-interval gap."""
+    charts skip it rather than drawing a stale plateau. Older builds logged every 50
+    segment steps; builds from the trainer-step cadence log every 50 trainer steps
+    through 1000, at every trainer-step multiple of 1000 (where every checkpoint is, so
+    a checkpoint's own line is there), and on the first diagnostics step past each
+    `step_line_interval_sec` (180 s by default). Lines are therefore at most 1000 steps
+    apart, and 1500 only ever trips on a genuine gap."""
     li = log_index(logname)
     st = _nearest_at_or_below(li.m_steps, meta_step)
     if st is None or meta_step - st > stale_tol:
@@ -526,12 +537,17 @@ def has_step(rows, cum):
 # ---------- enumerated checkpoints (app-side --enumerate-checkpoints) ----------
 # The corpus-replay runner, when launched with --enumerate-checkpoints, writes a
 # step-numbered copy of the weights next to the rolling out-model on every save:
-#   <stem>-replay-step<N>.safetensors   (N = the segment-local training step).
-# That makes the tracker's old habit of minting its OWN cum-named "-frozen" copies
-# redundant — the app already preserves every step. So for enumerated runs we probe
-# the app's files in place and map their local step N to the run-cumulative axis via
-# the latest segment's cumstep_base (cum = base + N). Legacy (pre-enumeration) runs
-# still fall back to the "-frozen" snapshots, so mini2b/coxw/v5/… are unaffected.
+#   <stem>-replay-step<N>.safetensors
+# Before architecture format v11, N was the segment-local training step (and a resumed
+# segment k > 0 wrote <stem>-replay-seg<k>-step<N>); from v11, N is the TRAINER step
+# (the header's training_step) and every segment of a run continues one series under
+# its stem. That makes the tracker's old habit of minting its OWN cum-named "-frozen"
+# copies redundant — the app already preserves every step. So for enumerated runs we
+# probe the app's files in place and map each to the run-cumulative axis via its
+# segment's cumstep_base: cum = base + the file's SEGMENT step (`meta_step_of`; the
+# name's step before v11, the record's segment_local_step from v11). Legacy
+# (pre-enumeration) runs still fall back to the "-frozen" snapshots, so
+# mini2b/coxw/v5/… are unaffected.
 def enum_glob(cfg):
     # `or ""` not `.get(k, "")`: legacy runs (v5, t97x) carry an explicit
     # "out_model": null, so .get returns None and the membership test raises.
@@ -558,9 +574,13 @@ def enum_specs(cfg):
     A segment carrying a `segment_id` (filled by `derive-registry` from the files'
     lineage records) is not listed here: its checkpoints are found by that id in
     their headers (`lineage_checkpoints`), not by name. That is also the only way a
-    resumed lineage segment's files are found: the app names a segment k > 0's step
-    files `<stem>-replay-seg<k>-step<N>`, which these `-replay-step*` globs never
-    match, so such a segment needs its `segment_id` (run `derive-registry`)."""
+    resumed lineage segment's files are found: before format v11 the app named a
+    segment k > 0's step files `<stem>-replay-seg<k>-step<N>`, which these
+    `-replay-step*` globs never match; from v11 a resumed segment writes
+    `<stem>-replay-step<trainer step>` under the same stem as the segments before
+    it, so one stem's glob can hold several segments' files — the glob scan refuses
+    those rather than file them (`probe_backfill`), and such a segment needs its
+    `segment_id` (run `derive-registry`)."""
     segs = cfg.get("segments", [])
     run_glob = enum_glob(cfg)
     specs = []
@@ -604,7 +624,9 @@ def lineage_checkpoints(cfg):
     """[(segment_index, path, segment_local_step)] for every segment carrying a
     `segment_id`: the files whose lineage record names that segment — identity
     from the header, never the filename. A file whose `training_step` disagrees
-    with its record's `segment_local_step` is a contradiction and raises."""
+    with its record is a contradiction and raises: before format v11 it must equal
+    the record's `segment_local_step` (the CLI files' segment step), from v11 the
+    record's `cum_trainer_step` (the trainer step) when the record holds one."""
     wanted = {sg["segment_id"]: si for si, sg in enumerate(cfg.get("segments", [])) if sg.get("segment_id")}
     if not wanted:
         return []
@@ -615,9 +637,14 @@ def lineage_checkpoints(cfg):
         if si is None:
             continue
         local = f.record["steps"]["segment_local_step"]
-        if int(f.metadata["training_step"]) != local:
-            raise dcm_lineage.LineageError(f"{f.name}: training_step {f.metadata['training_step']} but its "
-                                           f"lineage record's segment_local_step is {local}")
+        reading = dcm_lineage.step_reading(f.metadata, f.name)
+        if reading.basis == dcm_lineage.BASIS_TRAINER_STEP:
+            expected, what = f.record["steps"]["cum_trainer_step"], "cum_trainer_step"
+        else:
+            expected, what = local, "segment_local_step"
+        if expected is not None and reading.stated_training_step != expected:
+            raise dcm_lineage.LineageError(f"{f.name}: training_step {f.metadata.get('training_step')} but its "
+                                           f"lineage record's {what} is {expected}")
         out.append((si, f.path, local))
     return sorted(out, key=lambda t: (t[0], t[2]))
 
@@ -715,14 +742,21 @@ def discover_enum_stems(cfg, run=None, verbose=True):
                 with open(p, "rb") as f:
                     n = struct.unpack("<Q", f.read(8))[0]
                     m = json.loads(f.read(n)).get("__metadata__", {})
-                ids.add(m.get("model_id")); steps.append(int(m["training_step"]))
+                # The segment step (`dcm_lineage.step_reading`): the name's step
+                # before format v11, the record's segment_local_step from v11.
+                segment_step = dcm_lineage.step_reading(m, os.path.basename(p)).segment_step
+                if segment_step is None:
+                    raise ValueError("no segment step")
+                ids.add(m.get("model_id")); steps.append(segment_step)
                 if m.get("created_at_unix"):
                     times.append(int(m["created_at_unix"]))
             except (OSError, ValueError, KeyError, struct.error) as error:
                 print(f"  [warn] {os.path.basename(p)}: header unreadable ({error}); "
                       f"not used to place stem {stem}", file=sys.stderr)
         if len(ids) > 1:
-            refused.append((stem, "spans %d model_ids %s" % (len(ids), sorted(ids))))
+            refused.append((stem, "spans %d model_ids %s (from format v11 a resumed segment writes "
+                            "under its run's stem; place those segments by segment_id with "
+                            "derive-registry)" % (len(ids), sorted(ids))))
             continue
         if not steps:
             continue
@@ -789,21 +823,36 @@ def discover_enum_stems(cfg, run=None, verbose=True):
 
 
 def enum_path(cfg, n):
+    """The enumerated checkpoint named for step `n` (the name's step: the segment
+    step before format v11, the trainer step from v11)."""
     om = cfg.get("out_model", "")
     return (os.path.join(MODELS, om.replace("-replay-latest", f"-replay-step{n}"))
             if "-replay-latest" in om else None)
 
 # ---------- track ----------
-def freeze(run, cfg, meta):
+def freeze(run, cfg, meta, rolling_metadata):
     """Return (cum, checkpoint_path) for this mark. Prefer the app's enumerated
     checkpoint for the exact step (no copy — it's already preserved on disk);
     otherwise fall back to copying the rolling out-model into a cum-named -frozen
-    snapshot (legacy runs, or a mark taken between enumerated saves)."""
+    snapshot (legacy runs, or a mark taken between enumerated saves).
+
+    `meta` is the rolling file's segment step and `rolling_metadata` its header.
+    The enumerated file is named by the rolling file's stated `training_step` (the
+    segment step before format v11, the trainer step from v11), and it is used only
+    when its own header holds the rolling file's `model_id` and `training_step` —
+    the same state — never by name alone."""
     base = cfg["segments"][-1]["cumstep_base"]
     cum = base + meta
-    ep = enum_path(cfg, meta)
+    stated = rolling_metadata.get("training_step")
+    ep = enum_path(cfg, stated) if stated is not None else None
     if ep and os.path.exists(ep):
-        return cum, ep
+        enumerated = dcm_lineage.read_metadata(ep)
+        if (enumerated.get("model_id") == rolling_metadata.get("model_id")
+                and enumerated.get("training_step") == stated):
+            return cum, ep
+        print(f"{run}: {os.path.basename(ep)} holds model {enumerated.get('model_id')} at step "
+              f"{enumerated.get('training_step')}, not the rolling file's {rolling_metadata.get('model_id')} at "
+              f"{stated}; freezing the rolling file instead", file=sys.stderr)
     src = os.path.join(MODELS, cfg["out_model"])
     dst = os.path.join(MODELS, cfg["frozen_glob"].replace("step*", f"step{cum}"))
     if not os.path.exists(dst):
@@ -820,7 +869,7 @@ def track(run):
     rows, snapshot = read_csv_for_update(run)
     if has_step(rows, cum):
         print(f"{run}: cum_step {cum} already tracked (meta {meta}) — no-op"); return
-    cum, frozen = freeze(run, cfg, meta)
+    cum, frozen = freeze(run, cfg, meta, dcm_lineage.read_metadata(src))
     pr = probe(frozen)
     cells = internals_cells(frozen)
     st = SegTime(cfg["segments"], run); elapsed, clock, m2, si = st.elapsed_and_clock(cum)
@@ -917,7 +966,9 @@ def probe_backfill(run, verbose=True):
 
     Two checkpoint sources:
       • enumerated  <stem>-replay-step<N>.safetensors  — app-side (--enumerate-
-        checkpoints), local step N, cum = latest-segment base + N;
+        checkpoints), cum = its segment's base + its segment step (the name's N
+        before format v11; from v11 N is the trainer step and the segment step is
+        the record's segment_local_step);
       • legacy      <...>-step<cum>-frozen.safetensors  — cum-named tracker snapshots
         (pre-enumeration runs, and this run's earlier segments).
 
@@ -940,20 +991,44 @@ def probe_backfill(run, verbose=True):
         failures += [(name, f"no readable lineage, so it may be one of this run's checkpoints: {message}")
                      for name, message in sorted(unreadable.items())]
 
-    # (a) enumerated app-side checkpoints. One glob PER SEGMENT: the step in an
-    # enumerated filename is segment-local, so it only becomes a cumulative step
-    # against its own segment's base. Mapping every match onto one base would be
-    # wrong the moment two segments' files sit in the same directory.
+    # (a) enumerated app-side checkpoints. One glob PER SEGMENT: a file's segment
+    # step only becomes a cumulative step against its own segment's base. Mapping
+    # every match onto one base would be wrong the moment two segments' files sit in
+    # the same directory. Before format v11 the name's step is the segment step, as
+    # it always was; from v11 the name carries the trainer step and the segment step
+    # comes from the record — and since a resumed segment then writes under the same
+    # stem as the segments before it, a glob whose files carry more than one model_id
+    # holds several segments' files: its v11 files are failures, never filed (those
+    # segments are placed by `segment_id`, via derive-registry).
     for si, eg in enum_specs(cfg):
         eprefix, esuffix = eg.split("*")
         ebase = cfg["segments"][si]["cumstep_base"]
+        found = []
         for f in sorted(glob.glob(os.path.join(MODELS, eg))):
             name = os.path.basename(f)
             try:
                 n = int(name[len(eprefix):len(name) - len(esuffix)])
             except ValueError:
                 continue
-            filled += _backfill_one(cfg, st, rows, by, ebase + n, f, name, verbose, failures, segment=si)
+            try:
+                metadata = dcm_lineage.read_metadata(f)
+                reading = dcm_lineage.step_reading(metadata, name)
+            except (OSError, ValueError, struct.error) as error:
+                failures.append((name, f"cannot file: {error}"))
+                continue
+            found.append((f, name, n, metadata.get("model_id"), reading))
+        model_ids = {model_id for _, _, _, model_id, _ in found}
+        for f, name, n, model_id, reading in found:
+            if reading.basis != dcm_lineage.BASIS_TRAINER_STEP:
+                filled += _backfill_one(cfg, st, rows, by, ebase + n, f, name, verbose, failures, segment=si)
+            elif len(model_ids) > 1:
+                failures.append((name, f"this stem holds several segments' files (model_ids {sorted(model_ids)}); "
+                                       f"give the segments their segment_id with derive-registry"))
+            elif reading.segment_step is None:
+                failures.append((name, "a format v11 file without a segment step"))
+            else:
+                filled += _backfill_one(cfg, st, rows, by, ebase + reading.segment_step, f, name, verbose,
+                                        failures, segment=si)
 
     # (a') checkpoints of segments identified by lineage `segment_id`, found by
     # their headers; the segment-local step comes from the record.
@@ -1187,14 +1262,17 @@ def migrate_v5(allow_shrink=False):
 
 # ---------- import probes recorded outside the tracker ----------
 def _ckpt_index(dirs):
-    """Map (model_id, training_step) -> path over every .safetensors in `dirs`.
+    """Map (model_id, segment step) -> path over every .safetensors in `dirs`.
 
-    Keyed by METADATA, never by filename. The corpus-replay runner numbers its
-    enumerated checkpoints per segment, restarting at 1 on every resume, so across
-    the v5 lineage five segments competed for the same names and later runs
+    Keyed by METADATA, never by filename. Before format v11 the corpus-replay runner
+    numbered its enumerated checkpoints per segment, restarting at 1 on every resume,
+    so across the v5 lineage five segments competed for the same names and later runs
     overwrote earlier ones in place — four distinct files have been called
     `v5-cont-replay-step1000.safetensors`. Only the header's `model_id` (minted per
-    segment) plus `training_step` names a checkpoint uniquely."""
+    segment) plus its step names a checkpoint uniquely. The step is the segment step
+    from `dcm_lineage.step_reading` (before v11 the header's `training_step`, as
+    always; from v11 the record's `segment_local_step`), so rows looked up by their
+    `meta_step` find files of either era."""
     out = {}
     unreadable = []
     for d in dirs:
@@ -1203,9 +1281,10 @@ def _ckpt_index(dirs):
                 with open(p, "rb") as f:
                     n = struct.unpack("<Q", f.read(8))[0]
                     m = json.loads(f.read(n)).get("__metadata__", {})
-                mid, ts = m.get("model_id"), m.get("training_step")
-                if mid and ts is not None:
-                    out.setdefault((mid, int(ts)), p)
+                mid = m.get("model_id")
+                segment_step = dcm_lineage.step_reading(m, os.path.basename(p)).segment_step
+                if mid and segment_step is not None:
+                    out.setdefault((mid, segment_step), p)
             except (OSError, ValueError, KeyError, struct.error) as error:
                 unreadable.append((p, error))   # absent from the index, and reported below
     if unreadable:
@@ -1214,6 +1293,22 @@ def _ckpt_index(dirs):
         for p, error in unreadable[:10]:
             print(f"  {os.path.basename(p)}: {error}", file=sys.stderr)
     return out
+
+
+def _named_file_is_v11(dirs, model):
+    """Whether the file a probe record names (`model`, a path or a name) is found in
+    one of `dirs` with a header at architecture format v11 or later. A file not
+    found there is not judged."""
+    name = os.path.basename(model)
+    if not name:
+        return False
+    for d in dirs:
+        path = os.path.join(os.path.expanduser(d), name)
+        if os.path.isfile(path):
+            version = dcm_arch.checked_format_version(
+                dcm_lineage.read_metadata(path).get(dcm_lineage.FORMAT_VERSION_KEY))
+            return version is not None and version >= dcm_lineage.TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION
+    return False
 
 
 def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
@@ -1231,6 +1326,11 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
     month-old files and published a fabricated curve from them; requiring the
     minted-per-segment ID makes that class of error impossible to import silently.
     Mismatches are reported and skipped, never written.
+
+    The bundle monitor was retired before architecture format v11, so every record
+    names a file whose name step is the segment step. A record whose file is found
+    in `ckpt_dirs` at format v11 (its name step is a trainer step, and filing it at
+    `cumstep_base + name step` would double-count) is refused and reported.
 
     Idempotent on cum_step, same as `track`."""
     cfg = REG["runs"][run]
@@ -1280,6 +1380,12 @@ def import_probes(run, jsonl, segment, ckpt_dirs=(), verbose=True):
             rejected += 1
             if verbose:
                 print(f"  REJECT step{meta}: modelID {got_id} != segment {segment} {want_id}")
+            continue
+        if ckpt_dirs and _named_file_is_v11(ckpt_dirs, d.get("model", "")):
+            rejected += 1
+            print(f"  REJECT step{meta}: {os.path.basename(d.get('model', ''))} is a format v11 file, whose "
+                  f"name carries the trainer step; this importer files name steps as segment steps",
+                  file=sys.stderr)
             continue
         cum = base + meta
         if cum in by:

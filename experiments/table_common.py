@@ -93,6 +93,42 @@ def buffer_plies_per_game(log_name):
     return result
 
 
+def buffer_plies_per_game_by_trainer_step(log_name):
+    """{trainer step: average plies per game in the replay buffer} at every trainer step
+    that is a multiple of 1000 — the steps a run saves at, and the steps new probe
+    records carry as `step` (from architecture format v11 a checkpoint's name and
+    `training_step` are the trainer step), so the two join directly.
+
+    The same buffer arithmetic as `buffer_plies_per_game`, over the `[REPLAY]` lines
+    that carry `trainerStep=` (lines from builds before that field are not read). Kept
+    separate from `buffer_plies_per_game`, whose segment-step keys the dated experiment
+    tables use: for a resumed segment the two keys differ by the segment's start."""
+    feed = []
+    steps = []
+    pattern = re.compile(r"\[REPLAY\] step=\d+ .* plies=(\d+) games=(\d+)")
+    trainer_pattern = re.compile(r" trainerStep=(\d+)")
+    with open(os.path.join(LOGS, log_name), errors="replace") as handle:
+        for line in handle:
+            match = pattern.search(line)
+            trainer = trainer_pattern.search(line) if match else None
+            if match and trainer:
+                plies, games = int(match.group(1)), int(match.group(2))
+                feed.append((int(trainer.group(1)), plies, games))
+                steps.append(int(trainer.group(1)))
+    plies_axis = [plies for _, plies, _ in feed]
+    if plies_axis != sorted(plies_axis) or steps != sorted(steps):
+        raise ValueError(f"{log_name}: [REPLAY] plies= or trainerStep= values are not increasing; "
+                         f"more than one run in this log?")
+    result = {}
+    for trainer_step, plies, games in feed:
+        if trainer_step % 1000:
+            continue
+        games_at_boundary = games_fed_at(feed, plies_axis, plies - BUFFER)
+        if games_at_boundary is not None:
+            result[trainer_step] = BUFFER / (games - games_at_boundary)
+    return result
+
+
 def games_fed_at(feed, plies_axis, plies):
     """Games fed when the feed stood at `plies`, interpolated between bracketing lines;
     None when `plies` lies outside the logged range."""

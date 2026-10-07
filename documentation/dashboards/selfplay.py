@@ -58,8 +58,10 @@ BASELINE_STEP = 1000
 BASELINE_PELO = 450
 
 # A launch is a FRESH restart (steps= counter returned to ~1) iff its first
-# [STATS] step is at/below this bound. The trainer logs one line PER STEP across
-# an initial window at least this large, so a genuinely fresh launch is
+# [STATS] step is at/below this bound. Every launch logs a [STATS] line at its
+# first observed trainer step (older builds logged one line per step across an
+# initial window of 500; builds on the shared trainer-step cadence log the first
+# step, then every 50 trainer steps through 1000), so a genuinely fresh launch is
 # guaranteed to emit a first line at/below the bound — while a session RESUME
 # rewinds to the saved step (typically many thousands) and must overwrite in
 # place, not be offset. Keying off this absolute near-start bound (rather than a
@@ -321,7 +323,9 @@ def build_run(key, cfg, allow_shrink=False):
         put_pelo(BASELINE_STEP, BASELINE_STEP, BASELINE_PELO, "", "baseline (random-init anchor)")
 
     # Sample every ~1000 cum-steps to match the replay tracker's cadence. The raw
-    # sources are far denser — [STATS] telemetry is ~per-60s and the in-training
+    # sources are far denser — [STATS] telemetry is ~per-60s on older builds (every
+    # 50 trainer steps through 1000, every 1000, and ~per-180s by default on builds
+    # with the shared trainer-step cadence) and the in-training
     # probe pElo curve is ~per-25-steps — which is what bloated the embedded
     # dashboard. Bucket rows by nearest 1000-step boundary and emit one row per
     # bucket.
