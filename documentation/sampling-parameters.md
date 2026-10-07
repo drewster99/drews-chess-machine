@@ -52,7 +52,10 @@ self-play and arena schedules are identical.
 
 The hardcoded `SamplingSchedule.selfPlay` / `.arena` constants in
 `MPSChessPlayer.swift` (start **2.0**, decay 0.03 / 0.04, floor 0.4 / 0.2)
-are now only fallbacks — the live runtime uses the parameter values above.
+are not used for temperature at runtime: `.selfPlay` supplies only the
+self-play Dirichlet config (`.alphaZero`, via `buildSelfPlaySchedule`), and
+`.arena` appears only in tests. A missing `SamplingScheduleBox` falls back to
+`buildArenaSchedule()` (the live parameters), not to these constants.
 
 ### Self-play schedule rationale
 
@@ -137,7 +140,7 @@ a snapshot can always be traced back to the weights it came from. Each
   generation forked from the new champion (`…-Ab9q` → `…-Ab9q-1` →
   `…-Ab9q-2`…). So both lineages converge on the arena-validated
   weights, then the trainer immediately forks off again to mutate.
-- **`Engine ▸ Promote Trainee Now`** (manual, no arena) follows the
+- **`Train ▸ Promote Trainee Now`** (manual, no arena) follows the
   *same rule* as arena promotion, just keyed on the trainer's *current*
   weights rather than an arena-start snapshot: the champion inherits the
   trainer's current ID and the trainer forks a fresh next generation
