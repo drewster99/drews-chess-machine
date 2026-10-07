@@ -21,9 +21,10 @@ import Foundation
 // copied here.
 //
 // Per-section aggregates: stem / tower blocks / policy / value
-// each get totalElementCount, totalL2Norm and totalInitL2Norm over their
-// trainable tensors (BN running statistics, which are not weights, are
-// reported apart as runningStatsL2Norm), and totalL2RatioToInit. Lets you
+// each get totalElementCount (every element, BN running statistics
+// included), and totalL2Norm and totalInitL2Norm over their trainable
+// tensors only (BN running statistics, which are not weights, are reported
+// apart as runningStatsL2Norm), and totalL2RatioToInit. Lets you
 // eyeball "block 5 is unusually quiet compared to its neighbors" at a
 // glance.
 //

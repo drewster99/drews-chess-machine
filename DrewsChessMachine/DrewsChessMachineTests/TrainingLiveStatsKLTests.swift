@@ -5,9 +5,10 @@ import XCTest
 /// `[STATS]` `kl=` field and the Policy KL charts — on every step that
 /// carries them. The probe runs when the completed-step count is a multiple
 /// of `kl_probe_interval` (trainer steps 1, 101, 201, …) while diagnostics
-/// run on multiples of `batch_stats_interval` (50, 100, …); `recordStep`
-/// once appended KL only on diagnostics steps, so after step 1 every probe
-/// value was dropped and the charts stayed blank.
+/// run on multiples of `batch_stats_interval` (default 10); `recordStep`
+/// once appended KL only on diagnostics steps, which under the defaults no
+/// probe step is, so every probe value was dropped and the charts stayed
+/// blank.
 final class TrainingLiveStatsKLTests: XCTestCase {
 
     private func makeTiming(hasDiagnostics: Bool, klMean: Double?, klStdDev: Double?) -> TrainStepTiming {

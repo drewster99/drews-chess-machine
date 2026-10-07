@@ -887,9 +887,9 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             // gated on `hasDiagnostics`: the probe runs when the completed
             // step count is a multiple of `kl_probe_interval` (trainer steps
             // 1, 101, 201, …) and diagnostics on multiples of
-            // `batch_stats_interval` (50, 100, …), so the two almost never
-            // coincide — gated, every probe value after the first was
-            // dropped and the KL charts stayed blank. Steps without a probe
+            // `batch_stats_interval` (default 10), so under the defaults the
+            // two never coincide — gated, every probe value, step 1's
+            // included, was dropped and the KL charts stayed blank. Steps without a probe
             // carry nil, and a failed readback a non-finite value; neither is
             // appended, so a sparse metric never looks dense.
             if let klMean = timing.klMean, klMean.isFinite {

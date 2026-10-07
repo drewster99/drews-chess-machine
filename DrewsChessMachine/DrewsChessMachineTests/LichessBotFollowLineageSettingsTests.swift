@@ -23,7 +23,12 @@ final class LichessBotFollowLineageSettingsTests: XCTestCase {
         let result = try LichessBotSettingsStore.loadReporting(from: defaults)
         XCTAssertNil(result.settings.model.followedLineage)
         XCTAssertEqual(result.settings.model.lineageCheckIntervalSeconds, LichessBotModelSettings().lineageCheckIntervalSeconds)
-        XCTAssertEqual(result.filledFromDefaults, ["model.lineageCheckIntervalSeconds"])
+        XCTAssertEqual(result.filledFromDefaults, [
+            "challenge.botGamesReservedForChallengeQueue", "challenge.botGamesReservedForIncoming",
+            "matchmaking.noBotDeclineBlockDays", "matchmaking.preferNotRecentlyContacted",
+            "matchmaking.ratedCasualDeclineBlockDays", "matchmaking.recentContactHours",
+            "matchmaking.specificDeclineBlockDays", "model.lineageCheckIntervalSeconds",
+        ])
         XCTAssertEqual(result.ignoredSavedKeys, [])
         XCTAssertEqual(result.settings.model.source, .file)
         XCTAssertEqual(result.settings.challenge.maxConcurrentGames, 12, "everything saved is kept")

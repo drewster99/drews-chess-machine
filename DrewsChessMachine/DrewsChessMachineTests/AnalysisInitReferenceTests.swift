@@ -75,7 +75,12 @@ final class AnalysisInitReferenceTests: XCTestCase {
 
         let valueHead = try ValueHeadAnalyzer.run(snapshot: snapshot, modelLabel: snapshot.modelLabel)
         let bias = try XCTUnwrap(valueHead.fc2Bias)
-        XCTAssertEqual(bias.initial, NetworkArchitecture.wdlBiasPrior(drawProbability: 0.5).map(Double.init))
+        // The prior as the model stores it: rounded to its compute dtype.
+        let storedPrior = try XCTUnwrap(snapshot.values(named: "value_wdl_fc2_bias")).map(Double.init)
+        XCTAssertEqual(bias.initial, storedPrior)
+        for (stored, prior) in zip(storedPrior, NetworkArchitecture.wdlBiasPrior(drawProbability: 0.5)) {
+            XCTAssertEqual(stored, Double(prior), accuracy: 0.004)
+        }
         XCTAssertEqual(bias.delta, [0, 0, 0])
     }
 

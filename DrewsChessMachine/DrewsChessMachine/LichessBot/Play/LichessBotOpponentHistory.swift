@@ -125,7 +125,7 @@ struct LichessBotOpponentHistory: Sendable, Equatable {
 
     /// One game's opponent and start, from the games index or a live game.
     struct GameStart: Sendable, Equatable {
-        /// Lowercased.
+        /// Any case; lowercased when the history is built.
         let opponentID: String
         let at: Date
     }
