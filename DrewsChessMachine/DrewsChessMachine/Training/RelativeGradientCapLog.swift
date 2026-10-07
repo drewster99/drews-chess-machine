@@ -64,3 +64,47 @@ enum RelativeGradientCapLogFormat {
         return " gNormMax=\(maxText) clips=\(summary.clipped)" + String(format: " gCap=%.4f", fedCap)
     }
 }
+
+/// What one step line reports about the steps since the previous line: the
+/// largest pre-clip norm, how many were clipped, and the fed cap of the
+/// line's own step. Shared by `[REPLAY]`, `[VS-UCI]` and `[STATS]` and by the
+/// `results.json` rows written at the same ticks.
+struct GradientCapStepLineReading: Sendable, Equatable {
+    let maxPreClipNorm: Float?
+    let clipped: Int
+    let steps: Int
+    let fedCap: Float
+
+    /// ` gNormMax=… clips=… gCap=…`.
+    var logFields: String {
+        RelativeGradientCapLogFormat.stepLineFields(
+            summary: (maxPreClipNorm: maxPreClipNorm, clipped: clipped, steps: steps), fedCap: fedCap)
+    }
+}
+
+/// The trainer steps a run's step lines have covered, so each line
+/// summarizes exactly the steps since the previous one — the blind spot of
+/// every-50-step lines (E-0020: the precursor clip landed on an unlogged
+/// step) closes because an unlogged spike shows in the next line's
+/// `gNormMax=`.
+struct GradientCapStepLineWindow: Sendable {
+    /// The trainer step the previous line (or the run start) covered.
+    private(set) var lastCoveredTrainerStep: Int
+
+    init(startTrainerStep: Int) {
+        lastCoveredTrainerStep = startTrainerStep
+    }
+
+    /// The reading for the steps after the previous line through
+    /// `trainerStep`, from the trainer's `history`; advances the window.
+    mutating func take(history: GradientNormHistory, throughTrainerStep trainerStep: Int,
+                       fedCap: Float) -> GradientCapStepLineReading {
+        let lower = lastCoveredTrainerStep + 1
+        let summary = lower <= trainerStep
+            ? history.summary(trainerSteps: lower...trainerStep)
+            : (maxPreClipNorm: nil, clipped: 0, steps: 0)
+        lastCoveredTrainerStep = max(lastCoveredTrainerStep, trainerStep)
+        return GradientCapStepLineReading(maxPreClipNorm: summary.maxPreClipNorm, clipped: summary.clipped,
+                                          steps: summary.steps, fedCap: fedCap)
+    }
+}

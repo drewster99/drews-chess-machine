@@ -1710,6 +1710,11 @@ public extension TrainingParametersSnapshot {
     var policyLabelSmoothingPerMoveCap: Double { value(for: PolicyLabelSmoothingPerMoveCap.self) }
     var valueLabelSmoothingEpsilon: Double { value(for: ValueLabelSmoothingEpsilon.self) }
     var gradClipMaxNorm: Double { value(for: GradClipMaxNorm.self) }
+    var relativeGradClipMode: Int { value(for: RelativeGradClipMode.self) }
+    var relativeGradClipMultiple: Double { value(for: RelativeGradClipMultiple.self) }
+    var relativeGradClipWindowSteps: Int { value(for: RelativeGradClipWindowSteps.self) }
+    var relativeGradClipMinHistorySteps: Int { value(for: RelativeGradClipMinHistorySteps.self) }
+    var relativeGradClipFloor: Double { value(for: RelativeGradClipFloor.self) }
     var weightDecay: Double { value(for: WeightDecay.self) }
     var dropoutRate: Double { value(for: DropoutRate.self) }
     var policyLossWeight: Double { value(for: PolicyLossWeight.self) }
@@ -1878,6 +1883,11 @@ public final class TrainingParameters {
     public var policyLabelSmoothingPerMoveCap: Double { didSet { if !Self.commitAssignment(PolicyLabelSmoothingPerMoveCap.self, value: policyLabelSmoothingPerMoveCap, oldValue: oldValue) { policyLabelSmoothingPerMoveCap = oldValue } } }
     public var valueLabelSmoothingEpsilon: Double { didSet { if !Self.commitAssignment(ValueLabelSmoothingEpsilon.self, value: valueLabelSmoothingEpsilon, oldValue: oldValue) { valueLabelSmoothingEpsilon = oldValue } } }
     public var gradClipMaxNorm: Double { didSet { if !Self.commitAssignment(GradClipMaxNorm.self, value: gradClipMaxNorm, oldValue: oldValue) { gradClipMaxNorm = oldValue } } }
+    public var relativeGradClipMode: Int { didSet { if !Self.commitAssignment(RelativeGradClipMode.self, value: relativeGradClipMode, oldValue: oldValue) { relativeGradClipMode = oldValue } } }
+    public var relativeGradClipMultiple: Double { didSet { if !Self.commitAssignment(RelativeGradClipMultiple.self, value: relativeGradClipMultiple, oldValue: oldValue) { relativeGradClipMultiple = oldValue } } }
+    public var relativeGradClipWindowSteps: Int { didSet { if !Self.commitAssignment(RelativeGradClipWindowSteps.self, value: relativeGradClipWindowSteps, oldValue: oldValue) { relativeGradClipWindowSteps = oldValue } } }
+    public var relativeGradClipMinHistorySteps: Int { didSet { if !Self.commitAssignment(RelativeGradClipMinHistorySteps.self, value: relativeGradClipMinHistorySteps, oldValue: oldValue) { relativeGradClipMinHistorySteps = oldValue } } }
+    public var relativeGradClipFloor: Double { didSet { if !Self.commitAssignment(RelativeGradClipFloor.self, value: relativeGradClipFloor, oldValue: oldValue) { relativeGradClipFloor = oldValue } } }
     public var weightDecay: Double { didSet { if !Self.commitAssignment(WeightDecay.self, value: weightDecay, oldValue: oldValue) { weightDecay = oldValue } } }
     public var dropoutRate: Double { didSet { if !Self.commitAssignment(DropoutRate.self, value: dropoutRate, oldValue: oldValue) { dropoutRate = oldValue } } }
     public var policyLossWeight: Double { didSet { if !Self.commitAssignment(PolicyLossWeight.self, value: policyLossWeight, oldValue: oldValue) { policyLossWeight = oldValue } } }
@@ -2013,6 +2023,11 @@ public final class TrainingParameters {
         self.policyLabelSmoothingPerMoveCap = Self.read(PolicyLabelSmoothingPerMoveCap.self)
         self.valueLabelSmoothingEpsilon = Self.read(ValueLabelSmoothingEpsilon.self)
         self.gradClipMaxNorm = Self.read(GradClipMaxNorm.self)
+        self.relativeGradClipMode = Self.read(RelativeGradClipMode.self)
+        self.relativeGradClipMultiple = Self.read(RelativeGradClipMultiple.self)
+        self.relativeGradClipWindowSteps = Self.read(RelativeGradClipWindowSteps.self)
+        self.relativeGradClipMinHistorySteps = Self.read(RelativeGradClipMinHistorySteps.self)
+        self.relativeGradClipFloor = Self.read(RelativeGradClipFloor.self)
         self.weightDecay = Self.read(WeightDecay.self)
         self.dropoutRate = Self.read(DropoutRate.self)
         self.policyLossWeight = Self.read(PolicyLossWeight.self)
@@ -2128,6 +2143,11 @@ public final class TrainingParameters {
         v[PolicyLabelSmoothingPerMoveCap.id] = PolicyLabelSmoothingPerMoveCap.encode(policyLabelSmoothingPerMoveCap)
         v[ValueLabelSmoothingEpsilon.id] = ValueLabelSmoothingEpsilon.encode(valueLabelSmoothingEpsilon)
         v[GradClipMaxNorm.id] = GradClipMaxNorm.encode(gradClipMaxNorm)
+        v[RelativeGradClipMode.id] = RelativeGradClipMode.encode(relativeGradClipMode)
+        v[RelativeGradClipMultiple.id] = RelativeGradClipMultiple.encode(relativeGradClipMultiple)
+        v[RelativeGradClipWindowSteps.id] = RelativeGradClipWindowSteps.encode(relativeGradClipWindowSteps)
+        v[RelativeGradClipMinHistorySteps.id] = RelativeGradClipMinHistorySteps.encode(relativeGradClipMinHistorySteps)
+        v[RelativeGradClipFloor.id] = RelativeGradClipFloor.encode(relativeGradClipFloor)
         v[WeightDecay.id] = WeightDecay.encode(weightDecay)
         v[DropoutRate.id] = DropoutRate.encode(dropoutRate)
         v[PolicyLossWeight.id] = PolicyLossWeight.encode(policyLossWeight)
@@ -2275,6 +2295,16 @@ public final class TrainingParameters {
             try ValueLabelSmoothingEpsilon.definition.validate(raw); valueLabelSmoothingEpsilon = try ValueLabelSmoothingEpsilon.decode(raw)
         case GradClipMaxNorm.id:
             try GradClipMaxNorm.definition.validate(raw); gradClipMaxNorm = try GradClipMaxNorm.decode(raw)
+        case RelativeGradClipMode.id:
+            try RelativeGradClipMode.definition.validate(raw); relativeGradClipMode = try RelativeGradClipMode.decode(raw)
+        case RelativeGradClipMultiple.id:
+            try RelativeGradClipMultiple.definition.validate(raw); relativeGradClipMultiple = try RelativeGradClipMultiple.decode(raw)
+        case RelativeGradClipWindowSteps.id:
+            try RelativeGradClipWindowSteps.definition.validate(raw); relativeGradClipWindowSteps = try RelativeGradClipWindowSteps.decode(raw)
+        case RelativeGradClipMinHistorySteps.id:
+            try RelativeGradClipMinHistorySteps.definition.validate(raw); relativeGradClipMinHistorySteps = try RelativeGradClipMinHistorySteps.decode(raw)
+        case RelativeGradClipFloor.id:
+            try RelativeGradClipFloor.definition.validate(raw); relativeGradClipFloor = try RelativeGradClipFloor.decode(raw)
         case WeightDecay.id:
             try WeightDecay.definition.validate(raw); weightDecay = try WeightDecay.decode(raw)
         case DropoutRate.id:
@@ -2949,6 +2979,11 @@ public final class TrainingParameters {
         PolicyLabelSmoothingPerMoveCap.self,
         ValueLabelSmoothingEpsilon.self,
         GradClipMaxNorm.self,
+        RelativeGradClipMode.self,
+        RelativeGradClipMultiple.self,
+        RelativeGradClipWindowSteps.self,
+        RelativeGradClipMinHistorySteps.self,
+        RelativeGradClipFloor.self,
         WeightDecay.self,
         DropoutRate.self,
         PolicyLossWeight.self,

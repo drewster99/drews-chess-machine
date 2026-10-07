@@ -804,6 +804,19 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let policyEntropy: Double?
         let policyIllegalMassPenalty: Double?
         let gradGlobalNorm: Double?
+        /// Relative gradient cap, filled by every training path at its step
+        /// line (`recordGradientCap`): the largest pre-clip norm and the
+        /// clipped-step count since the previous line, and this line's fed
+        /// cap; nil (omitted) on a row that recorded none.
+        var gradNormMax: Double? = nil
+        var gradClipEvents: Int? = nil
+        var gradClipCap: Double? = nil
+        /// The relative cap's five settings in effect at this row.
+        var relativeGradClipMode: Int? = nil
+        var relativeGradClipMultiple: Double? = nil
+        var relativeGradClipWindowSteps: Int? = nil
+        var relativeGradClipMinHistorySteps: Int? = nil
+        var relativeGradClipFloor: Double? = nil
         let policyHeadWeightNorm: Double?
         let policyLogitAbsMax: Double?
         let playedMoveProb: Double?
@@ -984,6 +997,14 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case policyEntropy = "policy_entropy"
             case policyIllegalMassPenalty = "policy_illegal_mass_penalty"
             case gradGlobalNorm = "grad_global_norm"
+            case gradNormMax = "grad_norm_max"
+            case gradClipEvents = "grad_clip_events"
+            case gradClipCap = "grad_clip_cap"
+            case relativeGradClipMode = "relative_grad_clip_mode"
+            case relativeGradClipMultiple = "relative_grad_clip_multiple"
+            case relativeGradClipWindowSteps = "relative_grad_clip_window_steps"
+            case relativeGradClipMinHistorySteps = "relative_grad_clip_min_history_steps"
+            case relativeGradClipFloor = "relative_grad_clip_floor"
             case policyHeadWeightNorm = "policy_head_weight_norm"
             case policyLogitAbsMax = "policy_logit_abs_max"
             case playedMoveProb = "played_move_prob"
@@ -1165,6 +1186,20 @@ final class CliTrainingRecorder: @unchecked Sendable {
 // MARK: - Stats lines for non-self-play CLI runs
 
 extension CliTrainingRecorder.StatsLine {
+    /// Fill the relative gradient cap's fields from the step line's reading
+    /// and the configuration the trainer ran under.
+    mutating func recordGradientCap(_ reading: GradientCapStepLineReading,
+                                    configuration: RelativeGradientCapConfiguration) {
+        gradNormMax = reading.maxPreClipNorm.map(Double.init)
+        gradClipEvents = reading.clipped
+        gradClipCap = Double(reading.fedCap)
+        relativeGradClipMode = configuration.mode.rawValue
+        relativeGradClipMultiple = configuration.multiple
+        relativeGradClipWindowSteps = configuration.windowSteps
+        relativeGradClipMinHistorySteps = configuration.minimumHistorySteps
+        relativeGradClipFloor = configuration.floor
+    }
+
     /// Build a stats line for a CLI training run that has **no self-play loop
     /// and no arena** — corpus replay (`--replay-corpus`) and train-vs-UCI
     /// (`--train-vs-uci`).
