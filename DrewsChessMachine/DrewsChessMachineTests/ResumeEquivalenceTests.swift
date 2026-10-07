@@ -87,7 +87,7 @@ final class ResumeEquivalenceTests: XCTestCase {
     /// carry: a residual block with ReZero and an SE block, batch norm,
     /// dropout sites, both heads. fp32, so the determinism probe can find a
     /// training step bit-reproducible.
-    static let architecture = NetworkArchitecture(
+    nonisolated static let architecture = NetworkArchitecture(
         inputEncoding: .basic30, channels: 16, numBlocks: 1, stemConvKernelSize: 3,
         activationFunction: .relu, blockActivationStyle: .pre,
         blockSkipMerge: .cleanAdd, blockUseRezero: true, rezeroAlphaInit: 0.5,

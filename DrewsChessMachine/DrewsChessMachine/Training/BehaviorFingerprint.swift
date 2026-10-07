@@ -447,8 +447,10 @@ enum BehaviorFingerprint {
 }
 
 /// Where the fingerprint's seeded draws come from: the run streams'
-/// derivation. Production uses `DCMRandomStreams`.
-protocol FingerprintStreamSource {
+/// derivation. Production uses `DCMRandomStreams`. A source is used only
+/// through its metatype, which `computeUncached` hands to the
+/// fingerprint's dispatch queue, so the metatype must be sendable.
+protocol FingerprintStreamSource: SendableMetatype {
     associatedtype Streams: FingerprintStreams
     static func streams(masterSeed: UInt64) -> Streams
 }
