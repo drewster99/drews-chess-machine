@@ -47,6 +47,19 @@ final class LichessBotChallengeLogRecorder {
     /// reconstruction's cutoff, and the line between "played before origins
     /// were recorded" and "not recorded". Nil when no log existed at load.
     private(set) var liveLogFirstEntryAt: Date?
+    /// What the load read, for the Challenge Log window's footer; nil until
+    /// loaded, and when the read failed (the ledger's load status says why).
+    private(set) var loadedFiles: LoadedFiles?
+
+    /// The day files a load read: how many, their complete lines, and the
+    /// lines a newer build wrote (skipped). Files left out are in the
+    /// ledger's load status.
+    struct LoadedFiles: Equatable {
+        let fileCount: Int
+        let lineCount: Int
+        let byteCount: Int
+        let skippedNewerLines: Int
+    }
 
     /// Facts recorded while the ledger is nil, in order.
     @ObservationIgnored private var eventsAwaitingLedger: [LichessBotChallengeLogEntry] = []
@@ -128,6 +141,8 @@ final class LichessBotChallengeLogRecorder {
             let contents = try await log.readAll()
             loaded = LichessBotChallengeLedger(contents: contents)
             liveLogFirstEntryAt = contents.liveLogFirstEntryAt
+            loadedFiles = LoadedFiles(fileCount: contents.filesRead.count, lineCount: contents.lineCount,
+                                      byteCount: contents.byteCount, skippedNewerLines: contents.skippedNewerLines)
             let elapsed = ContinuousClock.now - start
             let milliseconds = Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15
             SessionLogger.shared.log("[LICHESS-BOT] challenge log loaded: files=\(contents.filesRead.count) lines=\(contents.lineCount) bytes=\(contents.byteCount) ms=\(String(format: "%.1f", milliseconds)) skipped_newer=\(contents.skippedNewerLines) files_left_out=\(contents.filesLeftOut.count)")

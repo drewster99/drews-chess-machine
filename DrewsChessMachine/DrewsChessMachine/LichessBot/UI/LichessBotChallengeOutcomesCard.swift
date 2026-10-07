@@ -15,7 +15,7 @@ struct LichessBotChallengeOutcomesCard: View {
     }
 
     var body: some View {
-        GroupBox("Outgoing challenges, last 24 h") {
+        GroupBox(content: {
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Challenge outcomes haven't loaded.")
@@ -44,7 +44,17 @@ struct LichessBotChallengeOutcomesCard: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-        }
+        }, label: {
+            HStack {
+                Text("Outgoing challenges, last 24 h")
+                Spacer()
+                Button("Challenge Log…") {
+                    LichessBotChallengeLogWindowController.open(controller: controller)
+                }
+                .controlSize(.small)
+                .help("Every challenge DCM sent or received, with how each ended")
+            }
+        })
     }
 
     private static func rows(_ summary: LichessBotChallengeOutcomeLog.Summary?) -> [Row] {
