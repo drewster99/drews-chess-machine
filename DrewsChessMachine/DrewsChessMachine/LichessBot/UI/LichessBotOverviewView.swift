@@ -284,6 +284,14 @@ struct LichessBotModelCard: View {
                 Text(controller.generation.map { "snapshot \($0.snapshotAt.formatted(date: .omitted, time: .standard))" } ?? "")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                LichessBotLineageFollowStatusView(
+                    followed: controller.settings.model.followedLineage,
+                    status: controller.lineageFollowStatus,
+                    playingGenerationID: controller.generation?.generationID,
+                    isRunning: controller.isRunning,
+                    checkNow: { await controller.checkFollowedLineageNow() }
+                )
+                .shown(controller.settings.model.source == .followLineage)
                 LichessBotModelSwitchStatusView(controller: controller)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
