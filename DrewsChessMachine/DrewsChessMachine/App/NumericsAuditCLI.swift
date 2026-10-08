@@ -86,7 +86,7 @@ enum NumericsAuditCLI {
                 let label = "file:\(target.lastPathComponent)"
                 let auditPositions = positions
                 let initialization = file.safetensorsProvenance?.lineage.record?.rng.initialization
-                let result = try syncWait {
+                let result = try runBlocking {
                     // The reference's names are the builder's, in export
                     // (= plan) order, which is how `weights` is laid out.
                     let reference = try await initReferences.reference(architecture: arch, initialization: initialization)
@@ -210,29 +210,5 @@ enum NumericsAuditCLI {
         }
     }
 
-    /// Bridge async → sync for this pre-flight path (mirrors
-    /// `ProbeModelCLI.syncWait`): the main thread waits on a semaphore while
-    /// the work runs in its own task.
-    private static func syncWait<T: Sendable>(_ work: @Sendable @escaping () async throws -> T) throws -> T {
-        let box = NumericsAuditSyncBox<T>()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task.detached(priority: .userInitiated) {
-            do { box.success = try await work() }
-            catch { box.failure = error }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        if let error = box.failure { throw error }
-        guard let success = box.success else {
-            preconditionFailure("NumericsAuditCLI.syncWait: result box carried neither success nor failure")
-        }
-        return success
-    }
 }
 
-/// The result slot `syncWait` hands across threads; written once by the task
-/// before the semaphore is signalled, read after the wait returns.
-private final class NumericsAuditSyncBox<T>: @unchecked Sendable {
-    var success: T?
-    var failure: Error?
-}

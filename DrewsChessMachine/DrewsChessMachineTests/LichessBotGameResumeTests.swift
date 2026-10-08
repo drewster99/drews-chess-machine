@@ -168,4 +168,33 @@ final class LichessBotGameResumeTests: XCTestCase {
         // journal already held.
         XCTAssertEqual(replayed.unseenChatLines(in: [LichessBotFetchedChatLine(text: "hello there", user: "bob"), LichessBotFetchedChatLine(text: "Hi!", user: Self.botID)]), [])
     }
+
+    /// A refusal explained as the game's end withdraws only its own (the
+    /// latest matching) rejection anomaly, live and replayed from the journal.
+    func testARefusalAfterTheGameEndedWithdrawsItsAnomalyLiveAndReplayed() throws {
+        let events: [LichessBotGameEvent] = [
+            .moveRejected(ply: 0, uci: "e2e4", error: "400 not your turn"),
+            .moveRejected(ply: 2, uci: "d2d4", error: "400 not your turn"),
+            .moveRejected(ply: 2, uci: "d2d4", error: "400 game already over"),
+            .moveRefusedAfterGameEnded(ply: 2, uci: "d2d4", status: LichessBotOpenValue(.draw)),
+        ]
+        let live = LichessBotLiveGame(id: "g1", startedAt: Self.start, ourAccountID: Self.botID)
+        for event in events {
+            live.apply(event)
+        }
+        XCTAssertEqual(live.anomalies.map(\.text), [
+            "move e2e4 at ply 0 rejected: 400 not your turn",
+            "move d2d4 at ply 2 rejected: 400 not your turn",
+        ])
+
+        let journal = try make([header()] + events.compactMap(LichessBotJournal.event(for:)))
+        let replayed = LichessBotLiveGame(id: "g1", startedAt: journal.firstJournaledAt, ourAccountID: Self.botID)
+        replayed.replay(journal)
+        XCTAssertEqual(replayed.anomalies, live.anomalies)
+        for game in [live, replayed] {
+            XCTAssertTrue(game.transcript.contains {
+                $0.title.hasPrefix("the game ended (draw) before Lichess took d2d4 at ply 2") && !$0.isProblem
+            })
+        }
+    }
 }

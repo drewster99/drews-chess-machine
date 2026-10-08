@@ -177,7 +177,7 @@ enum ProbeModelCLI {
         for target in targets {
             let outcome: ProbeOutcome
             do {
-                outcome = try syncWait {
+                outcome = try runBlocking {
                     try await probeOne(weightFileURL: target, set: set, includePositions: wantPositions)
                 }
             } catch {
@@ -488,16 +488,17 @@ enum ProbeModelCLI {
         let primary: [TacticalProbe] = set == .wide ? [] : LichessProbeData.largeSet
         let wide: [TacticalProbe] = set == .set200 ? [] : LichessProbeData.wideSet
         let probes = primary + wide
-        let encoding = network.inputEncoding
-        var input = [Float]()
-        input.reserveCapacity(probes.count * BoardEncoder.tensorLength(for: encoding))
-        for probe in probes {
-            input.append(contentsOf: BoardEncoder.encode(probe.state, encoding: encoding))
-        }
+        let input = TacticalProbeRunner.encodedBoards(probes, encoding: network.inputEncoding)
 
         let batch = await TacticalProbeRunner.runBatch(probes, encodedInput: input, against: network)
         guard batch.results.count == probes.count else {
             throw ProbeModelError.resultCountMismatch(have: batch.results.count, want: probes.count)
+        }
+        // A broken network's positions are errors, not wrong answers: stop
+        // this checkpoint with an error line instead of a summary that would
+        // read as "0 correct".
+        guard batch.nonFinitePositions == 0 else {
+            throw ProbeModelError.nonFiniteOutputs(positions: batch.nonFinitePositions, of: probes.count)
         }
 
         // Per-position logit-abs-max aligns 1:1 with `batch.results`; an
@@ -645,6 +646,7 @@ enum ProbeModelCLI {
     private enum ProbeModelError: Swift.Error, CustomStringConvertible {
         case weightCountTooSmall(have: Int, need: Int)
         case resultCountMismatch(have: Int, want: Int)
+        case nonFiniteOutputs(positions: Int, of: Int)
 
         var description: String {
             switch self {
@@ -652,29 +654,11 @@ enum ProbeModelCLI {
                 return "weight file has \(have) tensors but the network needs at least \(need)"
             case .resultCountMismatch(let have, let want):
                 return "batched probe returned \(have) results for \(want) probes"
+            case .nonFiniteOutputs(let positions, let of):
+                return "\(positions) of \(of) positions have non-finite policy logits or value outputs"
             }
         }
     }
 
-    /// Bridge async → sync (mirrors `ArchSweepCLI.syncWait`).
-    private static func syncWait<T>(_ work: @Sendable @escaping () async throws -> T) throws -> T {
-        let box = ProbeModelSyncBox<T>()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task.detached(priority: .userInitiated) {
-            do { box.success = try await work() }
-            catch { box.failure = error }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        if let error = box.failure { throw error }
-        guard let success = box.success else {
-            preconditionFailure("ProbeModelCLI.syncWait: result box carried neither success nor failure")
-        }
-        return success
-    }
 }
 
-private final class ProbeModelSyncBox<T>: @unchecked Sendable {
-    var success: T?
-    var failure: Error?
-}

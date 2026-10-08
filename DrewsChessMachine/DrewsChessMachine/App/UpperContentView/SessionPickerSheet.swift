@@ -21,7 +21,7 @@ struct SessionPickerSheet: View {
             Divider()
             HStack(spacing: 0) {
                 list
-                    .frame(minWidth: 820)
+                    .frame(minWidth: 900)
                 Divider()
                 detail
                     .frame(width: 360)
@@ -29,7 +29,7 @@ struct SessionPickerSheet: View {
             Divider()
             footer
         }
-        .frame(minWidth: 1240, minHeight: 560)
+        .frame(minWidth: 1320, minHeight: 560)
     }
 
     // MARK: Header
@@ -259,9 +259,13 @@ struct SessionPickerRow: View {
                 .frame(width: 70, alignment: .trailing)
             Text(arenaSummary)
                 .frame(width: 60, alignment: .trailing)
-            // The trainer file's own results (what the probe's pElo
-            // described before; a manifest from before them has none).
+            // The trainer file's own results (a save from before them has
+            // none), then the probe's last-tick pElo before the save, which
+            // every save with a probe history has.
             ModelTestSetSummaryCells(summary: manifest.trainerTestSets ?? .notRecorded, textStyle: .caption)
+            Text("tick \(manifest.latestPEloWide.map { String(format: "%.0f", $0) } ?? "—")")
+                .frame(width: 70, alignment: .leading)
+                .help("Wide-set pElo of the last probe tick before the save (the trainer as it was then, not necessarily the saved weights)")
             Text(manifest.buildNumber.map(String.init) ?? "—")
                 .frame(width: 46, alignment: .trailing)
             Text(diskString)

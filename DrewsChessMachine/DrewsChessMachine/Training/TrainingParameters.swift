@@ -2557,8 +2557,8 @@ public final class TrainingParameters {
     ///
     /// The singleton is `@MainActor`, which makes it unreachable from the
     /// pre-flight CLI paths — and, worse, actively dangerous from any thread
-    /// the main actor might need: `SweepCLI`/`ProbeModelCLI`-style `syncWait`
-    /// helpers block the calling thread on a semaphore while a detached task
+    /// the main actor might need: `runBlocking` (the CLI paths' bridge)
+    /// blocks the calling thread on a semaphore while a detached task
     /// runs, so an `await TrainingParameters.shared.…` from inside one can
     /// never complete and deadlocks the process.
     ///

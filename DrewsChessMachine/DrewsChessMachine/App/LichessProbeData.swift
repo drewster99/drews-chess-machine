@@ -60,7 +60,7 @@ enum LichessProbeData {
     static var modelFileTestSets: [ProbeTestSet] { [set200, wide] }
 
     /// The ~4,435-puzzle WIDE longitudinal probe set (rating 400–3200,
-    /// flat per-100 density 550–2800, mate-weighted), from the bundled
+    /// flat per-100 density 550–2849, mate-weighted), from the bundled
     /// `lichess_probes_wide.json`. Runs in parallel with `largeSet` as a
     /// fixed long-term yardstick — the 200-set is left completely
     /// untouched. See `LichessProbeWatcher`.

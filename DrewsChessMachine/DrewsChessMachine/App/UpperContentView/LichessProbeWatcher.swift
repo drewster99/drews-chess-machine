@@ -344,11 +344,7 @@ final class LichessProbeWatcher {
         if let wideProbes {
             probes += wideProbes
         }
-        var input = [Float]()
-        input.reserveCapacity(probes.count * BoardEncoder.tensorLength(for: encoding))
-        for probe in probes {
-            input.append(contentsOf: BoardEncoder.encode(probe.state, encoding: encoding))
-        }
+        let input = TacticalProbeRunner.encodedBoards(probes, encoding: encoding)
         combinedProbes = probes
         combinedInput = input
         return (probes, input, primaryCount)

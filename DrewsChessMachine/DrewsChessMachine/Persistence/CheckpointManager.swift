@@ -1300,18 +1300,20 @@ enum CheckpointManager {
             }
         }
 
-        let testSetResults = await testSetEvaluator.evaluateForSave(
-            weights: weights, architecture: architecture, file: filename)
-        let encoded = try SafetensorsModelIO.encode(
+        // Every encoding check first, so a file that can't be written never
+        // costs an evaluation.
+        let prepared = try SafetensorsModelIO.prepare(
             modelID: modelID,
             createdAtUnix: createdAtUnix,
             metadata: metadata,
             weights: weights,
             architecture: architecture,
             includesVelocity: false,
-            lineage: lineage,
-            testSetResults: testSetResults
+            lineage: lineage
         )
+        let testSetResults = await testSetEvaluator.evaluateForSave(
+            weights: weights, architecture: architecture, file: filename)
+        let encoded = try prepared.encoded(testSetResults: testSetResults)
 
         do {
             try staging.handle.write(contentsOf: encoded)
@@ -1508,6 +1510,31 @@ enum CheckpointManager {
         // 2. As ground truth for the post-fsync round-trip verify
         //    further down — concurrent self-play appends may have
         //    already advanced the live ring past that state by then.
+        // Every check the model files' encoding makes, before the replay
+        // buffer (gigabytes) is written: only the test-set results, evaluated
+        // after the buffer so held self-play doesn't wait on them, join later.
+        let championFile = try SafetensorsModelIO.prepare(
+            modelID: championID,
+            createdAtUnix: championCreatedAtUnix,
+            metadata: championMetadata,
+            weights: championWeights,
+            architecture: architecture,
+            includesVelocity: false,
+            lineage: championLineage
+        )
+        // Trainer file = base weights (trainables + BN running stats) followed by
+        // optimizer velocity (one per trainable, trainable order) — named
+        // opt.<trainable>.velocity by SafetensorsModelIO.
+        let trainerFile = try SafetensorsModelIO.prepare(
+            modelID: trainerID,
+            createdAtUnix: trainerCreatedAtUnix,
+            metadata: trainerMetadata,
+            weights: trainerWeights,
+            architecture: architecture,
+            includesVelocity: true,
+            lineage: lineage
+        )
+
         var writtenSnap: ReplayBuffer.StateSnapshot? = nil
         if let replayBuffer, wantsReplayBuffer {
             do {
@@ -1531,30 +1558,8 @@ enum CheckpointManager {
         let trainerTestSetResults = await testSetEvaluator.evaluateForSave(
             weights: trainerWeights, architecture: architecture,
             file: "\(dirName)/\(SessionCheckpointLayout.trainerURL(in: tmpDirURL).lastPathComponent)")
-        let championEncoded = try SafetensorsModelIO.encode(
-            modelID: championID,
-            createdAtUnix: championCreatedAtUnix,
-            metadata: championMetadata,
-            weights: championWeights,
-            architecture: architecture,
-            includesVelocity: false,
-            lineage: championLineage,
-            testSetResults: championTestSetResults
-        )
-
-        // Trainer file = base weights (trainables + BN running stats) followed by
-        // optimizer velocity (one per trainable, trainable order) — named
-        // opt.<trainable>.velocity by SafetensorsModelIO.
-        let trainerEncoded = try SafetensorsModelIO.encode(
-            modelID: trainerID,
-            createdAtUnix: trainerCreatedAtUnix,
-            metadata: trainerMetadata,
-            weights: trainerWeights,
-            architecture: architecture,
-            includesVelocity: true,
-            lineage: lineage,
-            testSetResults: trainerTestSetResults
-        )
+        let championEncoded = try championFile.encoded(testSetResults: championTestSetResults)
+        let trainerEncoded = try trainerFile.encoded(testSetResults: trainerTestSetResults)
         do {
             try championEncoded.write(to: championTmpURL, options: [.atomic])
             try trainerEncoded.write(to: trainerTmpURL, options: [.atomic])

@@ -152,7 +152,7 @@ enum TrainVsUciRunner {
         let result: Result
         do {
             result = try withExtendedLifetime(sigSource) {
-                try syncWait {
+                try runBlocking {
                     try await runTraining(config: config, params: params, executableDigests: executableDigests,
                                           abort: abort)
                 }
@@ -785,18 +785,18 @@ enum TrainVsUciRunner {
             }
             do {
                 let save = try await trainerSave(step: step, reason: reason)
-                let testSetResults = await ModelTestSetEvaluator.modelFiles.evaluateForSave(
-                    weights: save.snapshot.trainerWeights, architecture: arch,
-                    file: "enumerated checkpoint, trainer step \(save.snapshot.schedule.completedTrainSteps)")
-                let encoded = try SafetensorsModelIO.encode(
+                let prepared = try SafetensorsModelIO.prepare(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(save.savedAt.timeIntervalSince1970),
                     metadata: save.metadata,
                     weights: save.snapshot.trainerWeights,
                     architecture: arch,
                     includesVelocity: true,
-                    lineage: save.lineage,
-                    testSetResults: testSetResults)
+                    lineage: save.lineage)
+                let testSetResults = await ModelTestSetEvaluator.modelFiles.evaluateForSave(
+                    weights: save.snapshot.trainerWeights, architecture: arch,
+                    file: "enumerated checkpoint, trainer step \(save.snapshot.schedule.completedTrainSteps)")
+                let encoded = try prepared.encoded(testSetResults: testSetResults)
                 let savedTrainerStep = save.snapshot.schedule.completedTrainSteps
                 let written = try enumeratedWriter.write(encoded, trainerStep: savedTrainerStep)
                 enumeratedSaveFailures.recordSuccess()
@@ -1136,28 +1136,5 @@ enum TrainVsUciRunner {
 
         let totalGames = driver.statsSnapshot().reduce(0) { $0 + $1.gamesCompleted }
         return Result(steps: step, gamesCompleted: totalGames, healthStop: healthStop)
-    }
-
-    // MARK: - async→sync bridge (mirrors CorpusReplayRunner.syncWait)
-
-    private final class SyncBoxRef<T>: @unchecked Sendable {
-        var success: T?
-        var failure: Error?
-    }
-
-    private static func syncWait<T>(_ work: @Sendable @escaping () async throws -> T) throws -> T {
-        let box = SyncBoxRef<T>()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task.detached(priority: .userInitiated) {
-            do { box.success = try await work() }
-            catch { box.failure = error }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        if let error = box.failure { throw error }
-        guard let success = box.success else {
-            preconditionFailure("TrainVsUciRunner.syncWait: result box carried neither success nor failure")
-        }
-        return success
     }
 }

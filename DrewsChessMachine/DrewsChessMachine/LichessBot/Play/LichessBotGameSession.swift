@@ -514,9 +514,12 @@ actor LichessBotGameSession {
             }
         }
 
-        // The first state after a refused move: the refusal raced the
-        // game's end when this state has the game over with no move after
-        // the refused ply. Any other state leaves it a disagreement.
+        // The first state after a refused move that replays onto this
+        // client's moves (a divergence throws above and leaves the refusal
+        // pending for the resync's state; a list that isn't ours can't
+        // explain it): the refusal raced the game's end when this state has
+        // the game over with no move after the refused ply. Any other state
+        // leaves it a disagreement.
         if let refusal = refusalAwaitingNextState {
             refusalAwaitingNextState = nil
             if state.status.isLive == false, state.moveTokens.count == refusal.ply {
@@ -898,6 +901,12 @@ actor LichessBotGameSession {
                 if rejections >= Self.maximumRejectionsPerPly {
                     // Moves that keep being refused mean the game is not in
                     // the state this client believes; never keep racing.
+                    // Not deferred to the next state the way a 1st or 2nd
+                    // refusal is (`refusalAwaitingNextState`): the two before
+                    // it were each followed by a live state, so this is
+                    // already a disagreement; the bot stops moving, and a game
+                    // that happened to end during this last POST stays
+                    // reported as a rejection.
                     await stopMoving("\(rejections) moves rejected at ply \(ply) (last: \(error.localizedDescription))")
                     return
                 }

@@ -1088,7 +1088,7 @@ struct DrewsChessMachineApp: App {
         // thread), applying a --parameters file first. Everything below the
         // snapshot is plain Sendable data, so the off-actor replay task never
         // touches the @MainActor singleton (which would deadlock against the
-        // syncWait semaphore held on this thread).
+        // `runBlocking` semaphore held on this thread).
         let params: ReplayParams = MainActor.assumeIsolated {
             if let pp = parametersPath {
                 do {

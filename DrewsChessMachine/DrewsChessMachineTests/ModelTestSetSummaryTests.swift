@@ -17,7 +17,7 @@ final class ModelTestSetSummaryTests: XCTestCase {
     }
 
     private static let evaluated = ModelTestSetResultsField.evaluated(ModelTestSetResults(
-        evaluatedAtUnix: 1_791_414_697, build: 2427, policyTailPrecision: "mixed_final_projection",
+        evaluatedAtUnix: 1_791_414_697, build: 2427, policyTailPrecision: .mixedFinalProjection,
         sets: [set(id: "200", positions: 200, top1: 99, top5: 170), set(id: "wide", positions: 4435)]))
 
     // MARK: - Summary
@@ -50,7 +50,7 @@ final class ModelTestSetSummaryTests: XCTestCase {
             XCTAssertTrue(summary.line.contains(phrase), summary.line)
             XCTAssertEqual(summary.help, summary.line)
         }
-        let empty = ModelTestSetResultsField.evaluated(ModelTestSetResults(evaluatedAtUnix: 1, build: 1, policyTailPrecision: "x", sets: []))
+        let empty = ModelTestSetResultsField.evaluated(ModelTestSetResults(evaluatedAtUnix: 1, build: 1, policyTailPrecision: .mixedFinalProjection, sets: []))
         guard case .unreadable = ModelTestSetSummary(.recorded(empty)) else { return XCTFail("a record without sets is unreadable") }
     }
 

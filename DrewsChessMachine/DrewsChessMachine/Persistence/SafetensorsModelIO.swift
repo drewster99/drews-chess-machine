@@ -160,7 +160,7 @@ enum SafetensorsModelIO {
     /// Encode a model file to safetensors bytes. `weights` order must match
     /// `tensorNames(for:includesVelocity:)`. `testSetResults` is the
     /// evaluation of these same weights (`ModelTestSetEvaluating`); it is
-    /// required so no writer can leave it out.
+    /// required so no writer can leave it out. `prepare` + `encoded`.
     static func encode(
         modelID: String,
         createdAtUnix: Int64,
@@ -171,27 +171,73 @@ enum SafetensorsModelIO {
         lineage: LineageRecord,
         testSetResults: ModelTestSetResultsField
     ) throws -> Data {
+        try prepare(modelID: modelID, createdAtUnix: createdAtUnix, metadata: metadata, weights: weights,
+                    architecture: architecture, includesVelocity: includesVelocity, lineage: lineage)
+            .encoded(testSetResults: testSetResults)
+    }
+
+    /// A model file checked and described, missing only its test-set
+    /// results: the one input a writer computes (on the GPU) after the
+    /// others are fixed. `encode` is `prepare` + `encoded`; every check that
+    /// doesn't read the results belongs in `prepare`, so a writer that must
+    /// fail before slow work (`CheckpointManager.saveSession`, before the
+    /// replay buffer; every writer, before its evaluation) runs exactly the
+    /// checks every writer runs. Holds the validated inputs, not the
+    /// laid-out tensors, so it costs no copy while the slow work runs.
+    struct PreparedModelFile {
+        fileprivate let weights: [[Float]]
+        fileprivate let names: [String]
+        fileprivate let plan: [WeightTensorSpec]
+        fileprivate let metadata: [String: String]
+
+        /// The file's bytes, with `testSetResults` (the evaluation of these
+        /// weights).
+        func encoded(testSetResults: ModelTestSetResultsField) throws -> Data {
+            var tensors: [SafetensorsTensor] = []
+            tensors.reserveCapacity(weights.count)
+            for (i, w) in weights.enumerated() {
+                if i < plan.count {
+                    // Base model tensors: store in PyTorch state_dict layout so the
+                    // file is load_state_dict-ready (FC weights transposed to
+                    // [out,in], biases 1-D; conv OIHW + BN [C] already match).
+                    let (shape, data) = SafetensorsModelIO.toTorchLayout(kind: plan[i].kind, nativeShape: plan[i].shape, data: w)
+                    tensors.append(SafetensorsTensor(name: names[i], shape: shape, data: data))
+                } else {
+                    // Optimizer velocity (trainer file): DCM-internal optimizer state,
+                    // not part of a torch state_dict — stored 1-D in native order.
+                    tensors.append(SafetensorsTensor(name: names[i], shape: [w.count], data: w))
+                }
+            }
+            var md = metadata
+            md[ModelTestSetResultsField.metadataKey] = try testSetResults.metadataValue()
+            return try SafetensorsFile.encode(tensors: tensors, metadata: md)
+        }
+    }
+
+    /// Every check `encode` makes and the metadata it writes, except the
+    /// test-set results (`PreparedModelFile`).
+    static func prepare(
+        modelID: String,
+        createdAtUnix: Int64,
+        metadata: ModelCheckpointMetadata,
+        weights: [[Float]],
+        architecture: NetworkArchitecture,
+        includesVelocity: Bool,
+        lineage: LineageRecord
+    ) throws -> PreparedModelFile {
         let names = tensorNames(for: architecture, includesVelocity: includesVelocity)
         guard weights.count == names.count else {
             throw IOError.tensorCountMismatch(weights: weights.count, names: names.count)
         }
         let plan = architecture.weightTensorPlan()
-        var tensors: [SafetensorsTensor] = []
-        tensors.reserveCapacity(weights.count)
-        for (i, w) in weights.enumerated() {
-            if i < plan.count {
-                // Base model tensors: store in PyTorch state_dict layout so the
-                // file is load_state_dict-ready (FC weights transposed to
-                // [out,in], biases 1-D; conv OIHW + BN [C] already match).
-                let (shape, data) = Self.toTorchLayout(kind: plan[i].kind, nativeShape: plan[i].shape, data: w)
-                tensors.append(SafetensorsTensor(name: names[i], shape: shape, data: data))
-            } else {
-                // Optimizer velocity (trainer file): DCM-internal optimizer state,
-                // not part of a torch state_dict — stored 1-D in native order.
-                tensors.append(SafetensorsTensor(name: names[i], shape: [w.count], data: w))
-            }
+        // Each tensor's size against the plan: a short linear tensor would
+        // trap in the torch-layout transpose and a long one be truncated,
+        // and a velocity tensor (written 1-D) would never be checked at all.
+        let expectedCounts = plan.map(\.elementCount)
+            + (includesVelocity ? architecture.trainableTensorPlan().map(\.elementCount) : [])
+        for (i, w) in weights.enumerated() where w.count != expectedCounts[i] {
+            throw IOError.tensorShapeMismatch(name: names[i], expected: expectedCounts[i], got: w.count)
         }
-
         var md: [String: String] = [
             Key.formatVersion: formatVersion,
             Key.modelID: modelID,
@@ -244,9 +290,8 @@ enum SafetensorsModelIO {
 
         // The file's lineage: the record's JSON plus its derived flat mirrors.
         for (key, value) in try lineage.metadataEntries() { md[key] = value }
-        md[ModelTestSetResultsField.metadataKey] = try testSetResults.metadataValue()
 
-        return try SafetensorsFile.encode(tensors: tensors, metadata: md)
+        return PreparedModelFile(weights: weights, names: names, plan: plan, metadata: md)
     }
 
     /// Refuse a lineage snapshot whose 21 schedule keys are not exactly

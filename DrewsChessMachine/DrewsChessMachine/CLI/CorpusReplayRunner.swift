@@ -20,7 +20,7 @@ final class ReplayAbortFlag: @unchecked Sendable {
 /// (corpus replay or train-vs-UCI) needs. Captured on the main actor (from
 /// `TrainingParameters.shared`) before the run starts, then passed into the
 /// off-actor GPU work — so the detached task never touches the `@MainActor`
-/// singleton (which would deadlock against the `syncWait` semaphore held on
+/// singleton (which would deadlock against the `runBlocking` semaphore held on
 /// the main thread).
 ///
 /// Every trainer-level parameter travels as one `TrainerHyperparameters`,
@@ -1064,11 +1064,11 @@ enum CorpusReplayRunner {
         // run. `sigSource` is otherwise unused after `resume()`, and in a
         // Release build ARC may shorten its lifetime to that last use and
         // deallocate it — a released signal source stops delivering, silently
-        // breaking Ctrl-C while we're parked in `syncWait`.
+        // breaking Ctrl-C while we're parked in `runBlocking`.
         let result: Result
         do {
             result = try withExtendedLifetime(sigSource) {
-                try syncWait {
+                try runBlocking {
                     try await runReplay(config: config, params: params, abort: abort)
                 }
             }
@@ -1791,21 +1791,21 @@ enum CorpusReplayRunner {
                         // segment is one process), so its summary is the
                         // segment's.
                         healthAlarms: trainingHealth.monitor.segmentSummary()))
-                // Evaluated once: the rolling file and the enumerated copy
-                // are these same bytes.
-                let testSetResults = await ModelTestSetEvaluator.modelFiles.evaluateForSave(
-                    weights: weights, architecture: arch,
-                    file: "trainer step \(snapshot.schedule.completedTrainSteps) (\(outModelURL.lastPathComponent))")
-                encoded = try SafetensorsModelIO.encode(
+                // Every encoding check before the evaluation; evaluated once:
+                // the rolling file and the enumerated copy are these same bytes.
+                let prepared = try SafetensorsModelIO.prepare(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(saveDate.timeIntervalSince1970),
                     metadata: metadata,
                     weights: weights,
                     architecture: arch,
                     includesVelocity: true,
-                    lineage: lineage,
-                    testSetResults: testSetResults
+                    lineage: lineage
                 )
+                let testSetResults = await ModelTestSetEvaluator.modelFiles.evaluateForSave(
+                    weights: weights, architecture: arch,
+                    file: "trainer step \(snapshot.schedule.completedTrainSteps) (\(outModelURL.lastPathComponent))")
+                encoded = try prepared.encoded(testSetResults: testSetResults)
                 savedTrainerStep = snapshot.schedule.completedTrainSteps
                 try FileManager.default.createDirectory(
                     at: outModelURL.deletingLastPathComponent(),
@@ -2354,28 +2354,5 @@ enum CorpusReplayRunner {
         return Result(steps: step, positionsFed: feedTally.positions, gamesFed: feedTally.games,
                       gamesRejected: feedTally.rejected, gamesSkipped: feedTally.skipped,
                       epochs: epochsCompleted, healthStop: healthStop)
-    }
-
-    // MARK: - async→sync bridge (mirrors SweepCLI.syncWait)
-
-    private final class SyncBoxRef<T>: @unchecked Sendable {
-        var success: T?
-        var failure: Error?
-    }
-
-    private static func syncWait<T>(_ work: @Sendable @escaping () async throws -> T) throws -> T {
-        let box = SyncBoxRef<T>()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task.detached(priority: .userInitiated) {
-            do { box.success = try await work() }
-            catch { box.failure = error }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        if let error = box.failure { throw error }
-        guard let success = box.success else {
-            preconditionFailure("CorpusReplayRunner.syncWait: result box carried neither success nor failure")
-        }
-        return success
     }
 }

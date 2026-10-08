@@ -1,3 +1,4 @@
+import os
 import XCTest
 @testable import DrewsChessMachine
 
@@ -44,13 +45,6 @@ final class ModelTestSetWritersTests: XCTestCase {
         return ModelTestSetResultsField.reading(fromMetadata: metadata)
     }
 
-    /// `field` as a file holds it: through its JSON text and back (JSON
-    /// writes a Double to about 16 significant digits, so a fresh evaluation
-    /// is compared with a file in its written form).
-    private static func asWritten(_ field: ModelTestSetResultsField) throws -> ModelTestSetResultsInFile {
-        ModelTestSetResultsField.reading(fromMetadata: [ModelTestSetResultsField.metadataKey: try field.metadataValue()])
-    }
-
     private static func evaluatedSets(_ reading: ModelTestSetResultsInFile, file: StaticString = #filePath, line: UInt = #line) -> [ModelTestSetResults.SetResult]? {
         guard case .recorded(.evaluated(let results)) = reading else {
             XCTFail("expected evaluated results, got \(reading)", file: file, line: line)
@@ -60,7 +54,7 @@ final class ModelTestSetWritersTests: XCTestCase {
     }
 
     private static let evaluatedFixture = ModelTestSetResultsField.evaluated(ModelTestSetResults(
-        evaluatedAtUnix: 1_791_414_697, build: 1, policyTailPrecision: "mixed_final_projection",
+        evaluatedAtUnix: 1_791_414_697, build: 1, policyTailPrecision: .mixedFinalProjection,
         sets: [ModelTestSetResults.SetResult(
             id: "fixture", title: "Fixture", description: "d", fingerprintSHA256: String(repeating: "b", count: 64),
             positions: 10, top1Correct: 4, top5Correct: 8, avgCorrectProbability: 0.25, avgCorrectRank: 2.5,
@@ -122,8 +116,8 @@ final class ModelTestSetWritersTests: XCTestCase {
 
         let championAgain = await Self.smallEvaluator.evaluate(weights: loaded.championFile.weights, architecture: .current)
         let trainerAgain = await Self.smallEvaluator.evaluate(weights: loaded.trainerFile.weights, architecture: .current)
-        XCTAssertEqual(championSets, Self.evaluatedSets(try Self.asWritten(championAgain)))
-        XCTAssertEqual(trainerSets, Self.evaluatedSets(try Self.asWritten(trainerAgain)))
+        XCTAssertEqual(championSets, Self.evaluatedSets(.recorded(championAgain)))
+        XCTAssertEqual(trainerSets, Self.evaluatedSets(.recorded(trainerAgain)))
         XCTAssertNotEqual(championSets, trainerSets, "two different networks")
         XCTAssertEqual(championSets.map(\.id), ["lichess-200", "lichess-wide"])
     }
@@ -163,15 +157,90 @@ final class ModelTestSetWritersTests: XCTestCase {
         XCTAssertEqual(try Self.reading(url), .recorded(failed))
     }
 
-    /// Evaluating reads the weights and nothing else: the same weights give
-    /// the same results twice, and the array handed in is unchanged.
-    func testAnEvaluationIsAPureRead() async throws {
-        let weights = try await ChessMPSNetwork(.randomWeights(initSeed: 8)).exportWeights()
-        let copy = weights
-        let first = await Self.smallEvaluator.evaluate(weights: weights, architecture: .current)
-        let second = await Self.smallEvaluator.evaluate(weights: weights, architecture: .current)
+    /// Probe isolation (plan validation 6): evaluating a trainer's exported
+    /// state (velocity included, which the evaluator ignores) leaves the
+    /// trainer's weights, velocity, schedule, dropout state and gradient-norm
+    /// history as they were; the same weights evaluate the same twice.
+    func testAnEvaluationLeavesTheTrainerUntouchedAndRepeats() async throws {
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 41), arch: .current, initialization: .seeded(initSeed: 8))
+        _ = try await trainer.trainStep(batchSize: 8)
+        let before = try await trainer.exportResumeSnapshot()
+        let first = await Self.smallEvaluator.evaluate(weights: before.trainerWeights, architecture: .current)
+        let second = await Self.smallEvaluator.evaluate(weights: before.trainerWeights, architecture: .current)
+        let after = try await trainer.exportResumeSnapshot()
+        XCTAssertNotNil(Self.evaluatedSets(.recorded(first)))
         XCTAssertEqual(Self.evaluatedSets(.recorded(first)), Self.evaluatedSets(.recorded(second)))
-        XCTAssertEqual(weights, copy)
+        XCTAssertEqual(after.trainerWeights, before.trainerWeights)
+        XCTAssertEqual(after.schedule, before.schedule)
+        XCTAssertEqual(after.dropoutRNG, before.dropoutRNG)
+        XCTAssertEqual(after.gradNormHistory, before.gradNormHistory)
+    }
+
+    /// A trainer file that can't be encoded fails the save before the replay
+    /// buffer is written and before any evaluation: every encoding check runs
+    /// first (`SafetensorsModelIO.prepare`).
+    func testAnUnencodableTrainerFileFailsBeforeTheReplayBufferIsWritten() async throws {
+        let base = NetworkArchitecture.current.weightTensorPlan().map { [Float](repeating: 0.01, count: $0.elementCount) }
+        let trainer = Array((base + Self.velocity(for: base)).dropLast())
+        var state = try minimalState(sessionID: "20261007-1-CHMP", championID: "20261007-1-CHMP", trainerID: "20261007-2-TRNR")
+        state.hasReplayBuffer = true
+        let buffer = ReplayBuffer(capacity: 8, inputEncoding: NetworkArchitecture.current.inputEncoding, sampler: DCMRandom(seed: 1))
+        let evaluator = FixtureTestSetEvaluator()
+        let bufferWrites = OSAllocatedUnfairLock(initialState: 0)
+        let meta = ModelCheckpointMetadata(creator: "manual", trainingStep: 1, parentModelID: "", notes: "unencodable")
+        do {
+            _ = try await CheckpointManager.saveSession(
+                championWeights: base, championID: "20261007-1-CHMP", championMetadata: meta, championCreatedAtUnix: 1_790_000_000,
+                trainerWeights: trainer, trainerID: "20261007-2-TRNR", trainerMetadata: meta, trainerCreatedAtUnix: 1_790_000_001,
+                state: state, lineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil),
+                championLineage: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil),
+                testSetEvaluator: evaluator, replayBuffer: buffer, trigger: "unittest", sessionsDirectory: tempDir,
+                onReplayBufferWritten: { bufferWrites.withLock { $0 += 1 } })
+            XCTFail("a trainer file one velocity tensor short must not save")
+        } catch SafetensorsModelIO.IOError.tensorCountMismatch {
+            // Expected.
+        }
+        XCTAssertEqual(bufferWrites.withLock { $0 }, 0, "the replay buffer must not be written")
+        XCTAssertTrue(evaluator.evaluatedWeights.isEmpty, "no evaluation of a file that can't be written")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: tempDir.path), [])
+    }
+
+    /// A tensor of the wrong size is refused with its name, instead of a
+    /// short linear tensor trapping in the torch-layout transpose or a long
+    /// one being truncated, and a velocity tensor is checked too.
+    func testAWrongSizedTensorIsRefusedByName() throws {
+        let arch = NetworkArchitecture.current
+        let plan = arch.weightTensorPlan()
+        let base = plan.map { [Float](repeating: 0.01, count: $0.elementCount) }
+        let lineage = try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil)
+        let meta = ModelCheckpointMetadata(creator: "test", trainingStep: nil, parentModelID: "", notes: "sizes")
+        let linear = try XCTUnwrap(plan.firstIndex { $0.kind == .linear })
+        for longer in [false, true] {
+            var weights = base
+            if longer {
+                weights[linear].append(0)
+            } else {
+                weights[linear].removeLast()
+            }
+            XCTAssertThrowsError(try SafetensorsModelIO.prepare(
+                modelID: "20261007-1-SIZE", createdAtUnix: 1, metadata: meta, weights: weights,
+                architecture: arch, includesVelocity: false, lineage: lineage)) { error in
+                guard case SafetensorsModelIO.IOError.tensorShapeMismatch(let name, _, _) = error else {
+                    return XCTFail("\(error)")
+                }
+                XCTAssertEqual(name, plan[linear].name)
+            }
+        }
+        var withVelocity = base + Self.velocity(for: base)
+        withVelocity[withVelocity.count - 1].append(0)
+        XCTAssertThrowsError(try SafetensorsModelIO.prepare(
+            modelID: "20261007-1-SIZE", createdAtUnix: 1, metadata: meta, weights: withVelocity,
+            architecture: arch, includesVelocity: true, lineage: lineage)) { error in
+            guard case SafetensorsModelIO.IOError.tensorShapeMismatch(let name, _, _) = error else {
+                return XCTFail("\(error)")
+            }
+            XCTAssertTrue(name.hasPrefix("opt."), name)
+        }
     }
 
     // MARK: - Derive and graft
@@ -260,6 +329,6 @@ final class ModelTestSetWritersTests: XCTestCase {
         XCTAssertEqual(sets.map(\.positions), [200, 4435])
         let file = try CheckpointManager.loadModelFile(at: outModel)
         let again = await ModelTestSetEvaluator.modelFiles.evaluate(weights: file.weights, architecture: file.architecture)
-        XCTAssertEqual(sets, Self.evaluatedSets(try Self.asWritten(again)))
+        XCTAssertEqual(sets, Self.evaluatedSets(.recorded(again)))
     }
 }

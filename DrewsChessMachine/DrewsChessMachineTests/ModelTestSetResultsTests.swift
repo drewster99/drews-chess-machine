@@ -17,7 +17,7 @@ final class ModelTestSetResultsTests: XCTestCase {
     }
 
     private static func results(_ sets: [ModelTestSetResults.SetResult]) -> ModelTestSetResults {
-        ModelTestSetResults(evaluatedAtUnix: 1_791_414_697, build: 2427, policyTailPrecision: "mixed_final_projection", sets: sets)
+        ModelTestSetResults(evaluatedAtUnix: 1_791_414_697, build: 2427, policyTailPrecision: .mixedFinalProjection, sets: sets)
     }
 
     private static func read(_ field: ModelTestSetResultsField) throws -> ModelTestSetResultsInFile {
@@ -104,10 +104,7 @@ final class ModelTestSetResultsTests: XCTestCase {
         XCTAssertEqual(results.build, BuildInfo.buildNumber)
 
         let probes = small200.probes + smallWide.probes
-        var input: [Float] = []
-        for probe in probes {
-            input.append(contentsOf: BoardEncoder.encode(probe.state, encoding: network.inputEncoding))
-        }
+        let input = TacticalProbeRunner.encodedBoards(probes, encoding: network.inputEncoding)
         let batch = await TacticalProbeRunner.runBatch(probes, encodedInput: input, against: network)
         let slices = [Array(batch.results[0..<40]), Array(batch.results[40..<100])]
         for (set, direct) in zip(results.sets, slices) {
@@ -141,6 +138,66 @@ final class ModelTestSetResultsTests: XCTestCase {
         for _ in 0..<20 {
             XCTAssertEqual(LichessProbeHistory.aggregates(from: results).map(\.theme), expected)
         }
+    }
+
+    /// A network whose forward pass is non-finite fails the evaluation, and
+    /// every position is an error, instead of the uniform-fallback numbers a
+    /// NaN softmax used to produce.
+    func testNonFiniteOutputsFailTheEvaluation() async throws {
+        let set = Self.subset(LichessProbeData.set200, count: 20)
+        let network = try ChessMPSNetwork(.randomWeights(initSeed: 3))
+        let poisoned = try await network.exportWeights().map { [Float](repeating: .nan, count: $0.count) }
+
+        let field = await ModelTestSetEvaluator(testSets: [set]).evaluate(weights: poisoned, architecture: network.network.arch)
+        guard case .failed(let reason) = field else { return XCTFail("expected failure, got \(field)") }
+        XCTAssertTrue(reason.contains("20 of 20 positions have non-finite policy logits or value outputs"), reason)
+
+        try await network.network.loadWeights(poisoned)
+        let input = TacticalProbeRunner.encodedBoards(set.probes, encoding: network.inputEncoding)
+        let batch = await TacticalProbeRunner.runBatch(set.probes, encodedInput: input, against: network)
+        XCTAssertEqual(batch.nonFinitePositions, 20)
+        XCTAssertTrue(batch.results.allSatisfy { $0.verdict == .error })
+    }
+
+    func testTheSharedEncoderIsTheBoardsInOrder() {
+        let probes = Array(LichessProbeData.set200.probes.prefix(5))
+        let expected = probes.flatMap { BoardEncoder.encode($0.state, encoding: .basic24) }
+        XCTAssertEqual(TacticalProbeRunner.encodedBoards(probes, encoding: .basic24), expected)
+    }
+
+    // MARK: - Reuse of an identical evaluation
+
+    /// Identical base weights under an equal architecture are evaluated once:
+    /// a trainer file (velocity attached) after its champion reuses the
+    /// champion's evaluation; one changed float, another architecture or a
+    /// failed evaluation does not reuse.
+    func testIdenticalBaseWeightsReuseTheEvaluation() async throws {
+        let evaluator = ModelTestSetEvaluator(testSets: [Self.subset(LichessProbeData.set200, count: 8)])
+        let arch = NetworkArchitecture.current
+        let base = try await ChessMPSNetwork(.randomWeights(initSeed: 21)).exportWeights()
+        let velocity = arch.trainableTensorPlan().map { [Float](repeating: 0.25, count: $0.elementCount) }
+
+        let first = await evaluator.resultsForSave(weights: base, architecture: arch, file: "champion.safetensors")
+        XCTAssertEqual(first.source, .evaluatedForThisFile)
+        let second = await evaluator.resultsForSave(weights: base + velocity, architecture: arch, file: "trainer.safetensors")
+        XCTAssertEqual(second.source, .reusedFrom(file: "champion.safetensors"))
+        XCTAssertEqual(second.field, first.field)
+
+        var changed = base
+        changed[0][0] = changed[0][0].nextUp
+        let third = await evaluator.resultsForSave(weights: changed, architecture: arch, file: "changed.safetensors")
+        XCTAssertEqual(third.source, .evaluatedForThisFile)
+
+        var otherArch = arch
+        otherArch.blockGroups[0].count += 1
+        let tooFew = await evaluator.resultsForSave(weights: base, architecture: otherArch, file: "other.safetensors")
+        XCTAssertEqual(tooFew.source, .evaluatedForThisFile)
+        guard case .failed = tooFew.field else { return XCTFail("the other architecture's tensors are missing") }
+        let again = await evaluator.resultsForSave(weights: base, architecture: otherArch, file: "other.safetensors")
+        XCTAssertEqual(again.source, .evaluatedForThisFile, "a failure is never reused")
+
+        let remembered = await evaluator.resultsForSave(weights: base, architecture: arch, file: "x")
+        XCTAssertEqual(remembered.source, .reusedFrom(file: "champion.safetensors"), "still remembered")
     }
 
     func testAnErroredPositionFailsTheSetInsteadOfCountingAsWrong() {

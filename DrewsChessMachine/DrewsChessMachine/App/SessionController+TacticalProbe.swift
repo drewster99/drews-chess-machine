@@ -146,7 +146,7 @@ enum ProbeVerdict: String, Codable, Sendable {
     case correctButFlat        // expected move ranked #1 AND combined prob <  0.5
     case correctInTop5         // expected move ranked 2..5
     case wrong                 // expected move ranked >5 or not found in legals
-    case error                 // forward pass failed / network missing
+    case error                 // forward pass failed / network missing / non-finite outputs
 }
 
 /// One probe's full result. The top-5 list is *legal-masked-and-
@@ -209,17 +209,25 @@ enum ProbeBookmoveNLL {
 
 // MARK: - Tactical Probe — Analysis (pure, no SessionController)
 
-/// Given the raw 4864-cell policy softmax for `state`, mask to legal
+/// Given the raw 4864 policy logits for `state`, softmax, mask to legal
 /// moves, renormalize, and assemble a `ProbeResult`. Pure function —
 /// no side effects, no logging.
 ///
 /// `acceptableMoves` is the fixture's stated correct-answer set.
 /// `wdl` is the value head's distribution from a separate forward pass.
+///
+/// Nil when any logit or W/D/L value is non-finite (±inf included: from
+/// this graph an infinite logit is an overflow, not a certainty). The
+/// uniform fallback below would otherwise turn a NaN softmax into a
+/// plausible-looking result; callers record such a position as `.error`.
 private func buildProbeResult(
     probe: TacticalProbe,
-    rawPolicy: [Float],
+    rawLogits: [Float],
     wdl: (win: Float, draw: Float, loss: Float)
-) -> ProbeResult {
+) -> ProbeResult? {
+    guard wdl.win.isFinite, wdl.draw.isFinite, wdl.loss.isFinite,
+          rawLogits.allSatisfy({ $0.isFinite }) else { return nil }
+    let rawPolicy = ChessRunner.softmax(rawLogits)
     let state = probe.state
     let legals = MoveGenerator.legalMoves(for: state)
 
@@ -368,9 +376,11 @@ static func run(_ probe: TacticalProbe, against net: ChessMPSNetwork) async -> P
         wdl = (0, 0, 0)
     }
 
-    let rawLogits = logitsBox.take()
-    let rawPolicy = ChessRunner.softmax(rawLogits)
-    return buildProbeResult(probe: probe, rawPolicy: rawPolicy, wdl: wdl)
+    guard let result = buildProbeResult(probe: probe, rawLogits: logitsBox.take(), wdl: wdl) else {
+        SessionLogger.shared.log("[TACTICAL] '\(probe.name)': non-finite policy logits or value outputs; recorded as an error")
+        return errorResult(for: probe)
+    }
+    return result
 }
 
 /// Batched sibling of `run(_:against:)`. Evaluates an ENTIRE probe
@@ -402,13 +412,19 @@ static func run(_ probe: TacticalProbe, against net: ChessMPSNetwork) async -> P
 /// Returns the per-position results plus a timing split so the caller
 /// can log probe cost: `gpuMs` covers the batched forward + readback
 /// copy (the `evaluateBatched` call), `postMs` covers the CPU fold
-/// (softmax + legal-mask + `buildProbeResult`) over all positions.
+/// (softmax + legal-mask + `buildProbeResult`) over all positions, which
+/// runs on `foldQueue`, never on the cooperative pool.
+///
+/// `nonFinitePositions` counts positions whose logits or W/D/L were
+/// non-finite; each is an `.error` result (`buildProbeResult`), and the
+/// count is logged once. Their `logitAbsMaxPerPos` entry ignores the
+/// non-finite values.
 static func runBatch(
     _ probes: [TacticalProbe],
     encodedInput: [Float],
     against net: ChessMPSNetwork
-) async -> (results: [ProbeResult], gpuMs: Double, postMs: Double, logitAbsMaxPerPos: [Float]) {
-    guard !probes.isEmpty else { return ([], 0, 0, []) }
+) async -> (results: [ProbeResult], gpuMs: Double, postMs: Double, logitAbsMaxPerPos: [Float], nonFinitePositions: Int) {
+    guard !probes.isEmpty else { return ([], 0, 0, [], 0) }
     let policySize = ChessNetwork.policySize
 
     let readback = BatchReadbackBox()
@@ -425,7 +441,7 @@ static func runBatch(
         SessionLogger.shared.log(
             "[TACTICAL] evaluateBatched failed for \(probes.count)-probe battery: \(error)"
         )
-        return (probes.map { Self.errorResult(for: $0) }, Self.msSince(gpuStart), 0, [])
+        return (probes.map { Self.errorResult(for: $0) }, Self.msSince(gpuStart), 0, [], 0)
     }
     let gpuMs = Self.msSince(gpuStart)
 
@@ -438,9 +454,49 @@ static func runBatch(
             + " policy=\(policyFlat.count) expected=\(probes.count * policySize)"
             + " wdl=\(wdlFlat.count) — battery errored"
         )
-        return (probes.map { Self.errorResult(for: $0) }, gpuMs, 0, [])
+        return (probes.map { Self.errorResult(for: $0) }, gpuMs, 0, [], 0)
     }
 
+    let folded = await withCheckedContinuation { continuation in
+        Self.foldQueue.async {
+            continuation.resume(returning: Self.foldBatch(probes, policyFlat: policyFlat, wdlFlat: wdlFlat))
+        }
+    }
+    if folded.nonFinitePositions > 0 {
+        SessionLogger.shared.log(
+            "[TACTICAL] \(folded.nonFinitePositions) of \(probes.count) positions have non-finite policy logits or value outputs; recorded as errors"
+        )
+    }
+    return (folded.results, gpuMs, folded.postMs, folded.logitAbsMaxPerPos, folded.nonFinitePositions)
+}
+
+/// The CPU fold of `runBatch` (softmax, legal mask, `buildProbeResult`
+/// per position): long synchronous work, so it runs on this queue, never
+/// on the cooperative pool (CLAUDE.md concurrency invariants). Concurrent:
+/// the fold is pure, so a probe tick and a model save never wait on each
+/// other here.
+private static let foldQueue = DispatchQueue(label: "TacticalProbeRunner.fold", qos: .userInitiated, attributes: .concurrent)
+
+/// Every probe's board, in `probes` order: `runBatch`'s `encodedInput`.
+/// The one encoder for a battery (probe watcher, `--probe-model`, model
+/// file evaluation). Synchronous CPU work: call it off the cooperative pool
+/// where it is repeated.
+static func encodedBoards(_ probes: [TacticalProbe], encoding: InputEncoding) -> [Float] {
+    var input: [Float] = []
+    input.reserveCapacity(probes.count * BoardEncoder.tensorLength(for: encoding))
+    for probe in probes {
+        input.append(contentsOf: BoardEncoder.encode(probe.state, encoding: encoding))
+    }
+    return input
+}
+
+private static func foldBatch(
+    _ probes: [TacticalProbe],
+    policyFlat: [Float],
+    wdlFlat: [Float]
+) -> (results: [ProbeResult], postMs: Double, logitAbsMaxPerPos: [Float], nonFinitePositions: Int) {
+    dispatchPrecondition(condition: .onQueue(Self.foldQueue))
+    let policySize = ChessNetwork.policySize
     let postStart = DispatchTime.now().uptimeNanoseconds
     var results: [ProbeResult] = []
     results.reserveCapacity(probes.count)
@@ -452,6 +508,7 @@ static func runBatch(
     // Callers aggregate (mean / peak) over whichever subset they report.
     var logitAbsMaxPerPos: [Float] = []
     logitAbsMaxPerPos.reserveCapacity(probes.count)
+    var nonFinitePositions = 0
     for (j, probe) in probes.enumerated() {
         let pLo = j * policySize
         let rawLogits = Array(policyFlat[pLo..<pLo + policySize])
@@ -461,13 +518,16 @@ static func runBatch(
             if a > posMax { posMax = a }
         }
         logitAbsMaxPerPos.append(posMax)
-        let rawPolicy = ChessRunner.softmax(rawLogits)
         let wLo = j * 3
         let wdl = (win: wdlFlat[wLo], draw: wdlFlat[wLo + 1], loss: wdlFlat[wLo + 2])
-        results.append(buildProbeResult(probe: probe, rawPolicy: rawPolicy, wdl: wdl))
+        if let result = buildProbeResult(probe: probe, rawLogits: rawLogits, wdl: wdl) {
+            results.append(result)
+        } else {
+            nonFinitePositions += 1
+            results.append(Self.errorResult(for: probe))
+        }
     }
-    let postMs = Self.msSince(postStart)
-    return (results, gpuMs, postMs, logitAbsMaxPerPos)
+    return (results, Self.msSince(postStart), logitAbsMaxPerPos, nonFinitePositions)
 }
 
 /// Monotonic elapsed milliseconds since a `DispatchTime` uptime mark.

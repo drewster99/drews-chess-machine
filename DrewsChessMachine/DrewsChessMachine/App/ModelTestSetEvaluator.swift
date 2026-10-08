@@ -1,30 +1,60 @@
+import CryptoKit
 import Foundation
+import os
 
 /// Evaluates a model's weights on the puzzle test sets, for the results every
 /// model file carries (`ModelTestSetResultsField`). A protocol so tests can
 /// write files without spending a GPU evaluation per save.
 protocol ModelTestSetEvaluating: Sendable {
     /// Evaluate `weights` (base tensors first; a trainer file's trailing
-    /// velocity tensors are ignored) built as `architecture`. Never throws:
-    /// a failure is the `.failed` result, so the caller's save goes ahead.
+    /// velocity tensors are ignored) built as `architecture`. Always a fresh
+    /// evaluation. Never throws: a failure is the `.failed` result, so the
+    /// caller's save goes ahead.
     func evaluate(weights: [[Float]], architecture: NetworkArchitecture) async -> ModelTestSetResultsField
+
+    /// The results for a file about to be written: `evaluate`, or an earlier
+    /// evaluation of bit-identical base weights under an equal architecture
+    /// (`ModelTestSetEvaluator` remembers its last few). `file` names the
+    /// file, for a later reuse's log line.
+    func resultsForSave(weights: [[Float]], architecture: NetworkArchitecture, file: String) async
+        -> (field: ModelTestSetResultsField, source: ModelTestSetResultsSource)
+}
+
+/// Where a file's results came from.
+enum ModelTestSetResultsSource: Sendable, Equatable {
+    case evaluatedForThisFile
+    /// Bit-identical base weights under an equal architecture were evaluated
+    /// for `file` earlier in this process (that save may not have finished).
+    case reusedFrom(file: String)
 }
 
 extension ModelTestSetEvaluating {
-    /// `evaluate`, for a file about to be written: logs one
-    /// `[CHECKPOINT] test sets <file>` line with the time it took and the
-    /// results or the failure. Every writer goes through here.
+    func resultsForSave(weights: [[Float]], architecture: NetworkArchitecture, file: String) async
+        -> (field: ModelTestSetResultsField, source: ModelTestSetResultsSource) {
+        (await evaluate(weights: weights, architecture: architecture), .evaluatedForThisFile)
+    }
+
+    /// `resultsForSave`, logging one `[CHECKPOINT] test sets <file>` line with
+    /// the time it took (and the reused evaluation, if any) and the results
+    /// or the failure. Every writer goes through here.
     func evaluateForSave(weights: [[Float]], architecture: NetworkArchitecture, file: String) async -> ModelTestSetResultsField {
         let start = DispatchTime.now().uptimeNanoseconds
-        let field = await evaluate(weights: weights, architecture: architecture)
-        let ms = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+        let (field, source) = await resultsForSave(weights: weights, architecture: architecture, file: file)
+        let ms = String(format: "%.0f", Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
         let tag: String
         if case .failed = field {
             tag = "[CHECKPOINT-ERR]"
         } else {
             tag = "[CHECKPOINT]"
         }
-        SessionLogger.shared.log("\(tag) test sets \(file) (\(String(format: "%.0f", ms)) ms): \(field.logSummary)")
+        let how: String
+        switch source {
+        case .evaluatedForThisFile:
+            how = "\(ms) ms"
+        case .reusedFrom(let origin):
+            how = "\(ms) ms, reused the evaluation made for \(origin): identical base weights"
+        }
+        SessionLogger.shared.log("\(tag) test sets \(file) (\(how)): \(field.logSummary)")
         return field
     }
 }
@@ -34,42 +64,44 @@ extension ModelTestSetEvaluating {
 /// batched forward (`TacticalProbeRunner.runBatch`, the probe watcher's and
 /// `--probe-model`'s path) and folds each set with `ProbeBatterySummary`.
 ///
-/// A network is built per evaluation rather than cached: the evaluator then
-/// holds no state, so concurrent saves (a session's champion and trainer
-/// files) can't load weights into one network under each other, and a save
-/// costs one graph build (the save's own verification builds one too).
+/// A network is built per evaluation rather than cached, so two saves
+/// running at once (a GUI save and a post-promotion save, say) can't load
+/// weights into one network under each other. The cost is one graph build
+/// per evaluated file, beside the save's own verification build.
+///
+/// `resultsForSave` reuses an evaluation of bit-identical base weights
+/// (`ModelTestSetMemo`): a train-vs-UCI or post-promotion session's champion
+/// is its trainer's base weights, a train-vs-UCI final save writes the same
+/// weights three times, and a GUI champion is unchanged across periodic
+/// saves until a promotion.
 ///
 /// Probe isolation (CLAUDE.md): it reads only the weights handed to it, on
 /// its own network; argmax and softmax only, no random draws.
 struct ModelTestSetEvaluator: ModelTestSetEvaluating {
     let testSets: [ProbeTestSet]
+    /// This evaluator's own memo: its test sets are part of every key.
+    private let memo = ModelTestSetMemo()
+
+    init(testSets: [ProbeTestSet]) {
+        self.testSets = testSets
+    }
 
     /// The evaluator every model-file writer uses: the bundled sets
     /// (`LichessProbeData.modelFileTestSets`).
     static let modelFiles = ModelTestSetEvaluator(testSets: LichessProbeData.modelFileTestSets)
 
-    /// Graph builds are long synchronous work; they run here, never on the
-    /// cooperative pool.
+    /// Graph builds and board encoding are long synchronous work; they run
+    /// here, never on the cooperative pool.
     private static let buildQueue = DispatchQueue(label: "ModelTestSetEvaluator.build", qos: .userInitiated)
 
     /// A synchronous `ModelTestSetEvaluation` for the command-line writers
-    /// that assemble a file synchronously (`--derive-model`, graft). It
-    /// blocks the calling thread until the evaluation ends, so it must be
-    /// called from a plain thread (the CLI's main thread), never from a
-    /// Swift-concurrency task.
+    /// that assemble a file synchronously (`--derive-model`, graft); see
+    /// `runBlocking` for where it may be called.
     func blockingEvaluation(file: String) -> ModelTestSetEvaluation {
         { weights, architecture in
-            let box = BlockingEvaluationBox()
-            let done = DispatchSemaphore(value: 0)
-            Task.detached(priority: .userInitiated) {
-                box.field = await self.evaluateForSave(weights: weights, architecture: architecture, file: file)
-                done.signal()
+            try runBlocking {
+                await self.evaluateForSave(weights: weights, architecture: architecture, file: file)
             }
-            done.wait()
-            guard let field = box.field else {
-                preconditionFailure("ModelTestSetEvaluator.blockingEvaluation: the evaluation ended without a result")
-            }
-            return field
         }
     }
 
@@ -81,11 +113,29 @@ struct ModelTestSetEvaluator: ModelTestSetEvaluating {
         }
     }
 
+    func resultsForSave(weights: [[Float]], architecture: NetworkArchitecture, file: String) async
+        -> (field: ModelTestSetResultsField, source: ModelTestSetResultsSource) {
+        let key = await ModelTestSetMemo.Key(weights: weights, architecture: architecture)
+        if let key, let hit = memo.results(for: key) {
+            return (.evaluated(hit.results), .reusedFrom(file: hit.file))
+        }
+        let field = await evaluate(weights: weights, architecture: architecture)
+        // Only a success is remembered: a failure may be transient.
+        if let key, case .evaluated(let results) = field {
+            memo.remember(results, for: key, file: file)
+        }
+        return (field, .evaluatedForThisFile)
+    }
+
     private func results(weights: [[Float]], architecture: NetworkArchitecture) async throws -> ModelTestSetResults {
         guard !testSets.isEmpty else { throw EvaluationError.noTestSets }
-        let network: ChessMPSNetwork = try await withCheckedThrowingContinuation { continuation in
+        let probes = testSets.flatMap(\.probes)
+        let (network, input): (ChessMPSNetwork, [Float]) = try await withCheckedThrowingContinuation { continuation in
             Self.buildQueue.async {
-                continuation.resume(with: Result { try ChessMPSNetwork(.overwrittenByLoad, arch: architecture) })
+                continuation.resume(with: Result {
+                    let network = try ChessMPSNetwork(.overwrittenByLoad, arch: architecture)
+                    return (network, TacticalProbeRunner.encodedBoards(probes, encoding: network.inputEncoding))
+                })
             }
         }
         network.network.commandQueue.label = "ModelTestSetEvaluator"
@@ -95,16 +145,12 @@ struct ModelTestSetEvaluator: ModelTestSetEvaluating {
         }
         try await network.network.loadWeights(Array(weights.prefix(baseCount)))
 
-        let probes = testSets.flatMap(\.probes)
-        let encoding = network.inputEncoding
-        var input: [Float] = []
-        input.reserveCapacity(probes.count * BoardEncoder.tensorLength(for: encoding))
-        for probe in probes {
-            input.append(contentsOf: BoardEncoder.encode(probe.state, encoding: encoding))
-        }
         let batch = await TacticalProbeRunner.runBatch(probes, encodedInput: input, against: network)
         guard batch.results.count == probes.count else {
             throw EvaluationError.resultCountMismatch(have: batch.results.count, want: probes.count)
+        }
+        guard batch.nonFinitePositions == 0 else {
+            throw EvaluationError.nonFiniteOutputs(positions: batch.nonFinitePositions, of: probes.count)
         }
 
         var sets: [ModelTestSetResults.SetResult] = []
@@ -117,7 +163,7 @@ struct ModelTestSetEvaluator: ModelTestSetEvaluating {
         return ModelTestSetResults(
             evaluatedAtUnix: Int64(Date().timeIntervalSince1970),
             build: BuildInfo.buildNumber,
-            policyTailPrecision: architecture.policyTailPrecision.rawValue,
+            policyTailPrecision: architecture.policyTailPrecision,
             sets: sets
         )
     }
@@ -170,6 +216,7 @@ struct ModelTestSetEvaluator: ModelTestSetEvaluating {
         case noTestSets
         case tooFewTensors(have: Int, need: Int)
         case resultCountMismatch(have: Int, want: Int)
+        case nonFiniteOutputs(positions: Int, of: Int)
         case emptySet(String)
         case positionsErrored(set: String, errored: Int, of: Int)
         case positionsWithoutRank(set: String, missing: Int)
@@ -184,6 +231,8 @@ struct ModelTestSetEvaluator: ModelTestSetEvaluating {
                 return "the weights have \(have) tensors but the network needs at least \(need)"
             case .resultCountMismatch(let have, let want):
                 return "the batched evaluation returned \(have) results for \(want) positions"
+            case .nonFiniteOutputs(let positions, let of):
+                return "\(positions) of \(of) positions have non-finite policy logits or value outputs"
             case .emptySet(let id):
                 return "test set \(id) has no positions"
             case .positionsErrored(let set, let errored, let of):
@@ -222,8 +271,76 @@ struct ProbeBatterySummary {
     }
 }
 
-/// Hands a detached evaluation's result back to the blocked thread; the
-/// semaphore orders the write before the read.
-private final class BlockingEvaluationBox: @unchecked Sendable {
-    var field: ModelTestSetResultsField?
+/// The last few evaluations an evaluator made, keyed by architecture and a
+/// SHA-256 of the base weights (`ModelTestSetEvaluator.resultsForSave`). A
+/// digest, not the weights: an entry costs a few KB, not a model's size.
+/// Most recently used last; `capacity` covers a session's champion and
+/// trainer plus a GUI champion unchanged across periodic saves. Two
+/// concurrent misses on one key both evaluate (correct, occasionally
+/// redundant).
+final class ModelTestSetMemo: Sendable {
+    static let capacity = 4
+
+    struct Key: Equatable, Sendable {
+        let architecture: NetworkArchitecture
+        let baseWeightsSHA256: [UInt8]
+
+        /// Nil when `weights` lacks the architecture's base tensors (the
+        /// evaluation then fails, and nothing is remembered).
+        init?(weights: [[Float]], architecture: NetworkArchitecture) async {
+            let baseCount = architecture.weightTensorPlan().count
+            guard weights.count >= baseCount else { return nil }
+            self.architecture = architecture
+            self.baseWeightsSHA256 = await withCheckedContinuation { continuation in
+                Self.digestQueue.async {
+                    continuation.resume(returning: Self.digest(weights.prefix(baseCount)))
+                }
+            }
+        }
+
+        /// SHA-256 hashing of a model's weights is long synchronous work.
+        private static let digestQueue = DispatchQueue(label: "ModelTestSetMemo.digest", qos: .userInitiated)
+
+        /// Each tensor's length and raw bytes, so bit patterns decide (+0 and
+        /// -0 differ; identical NaNs match).
+        private static func digest(_ tensors: ArraySlice<[Float]>) -> [UInt8] {
+            var hasher = SHA256()
+            for tensor in tensors {
+                withUnsafeBytes(of: UInt64(tensor.count).littleEndian) { hasher.update(bufferPointer: $0) }
+                tensor.withUnsafeBytes { hasher.update(bufferPointer: $0) }
+            }
+            return Array(hasher.finalize())
+        }
+    }
+
+    struct Hit: Sendable {
+        let results: ModelTestSetResults
+        let file: String
+    }
+
+    private struct Entry: Sendable {
+        let key: Key
+        let hit: Hit
+    }
+
+    private let entries = OSAllocatedUnfairLock<[Entry]>(initialState: [])
+
+    func results(for key: Key) -> Hit? {
+        entries.withLock { list in
+            guard let index = list.lastIndex(where: { $0.key == key }) else { return nil }
+            let entry = list.remove(at: index)
+            list.append(entry)
+            return entry.hit
+        }
+    }
+
+    func remember(_ results: ModelTestSetResults, for key: Key, file: String) {
+        entries.withLock { list in
+            list.removeAll { $0.key == key }
+            list.append(Entry(key: key, hit: Hit(results: results, file: file)))
+            if list.count > Self.capacity {
+                list.removeFirst(list.count - Self.capacity)
+            }
+        }
+    }
 }

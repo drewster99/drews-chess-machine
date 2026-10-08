@@ -80,7 +80,7 @@ enum UCIEngine {
             // Explicit `--model`: load eagerly. An explicit path that fails to
             // resolve is a hard error — the user named a specific file.
             do {
-                let loaded = try syncWait { try await UCIModelLoader.resolveAndLoad(explicitPath: path) }
+                let loaded = try runBlocking { try await UCIModelLoader.resolveAndLoad(explicitPath: path) }
                 session.apply(loaded)
                 SessionLogger.shared.log(
                     "[UCI] model loaded (--model): id=\(loaded.modelID) source=\(loaded.sourceLabel) params=\(loaded.parameterCount) arch=\(loaded.archSummary)"
@@ -371,7 +371,7 @@ enum UCIEngine {
         // is what keeps a GUI-launched engine playable with no CLI args.
         if session.source == nil {
             do {
-                let loaded = try syncWait { try await UCIModelLoader.resolveAndLoad(explicitPath: nil) }
+                let loaded = try runBlocking { try await UCIModelLoader.resolveAndLoad(explicitPath: nil) }
                 session.apply(loaded)
                 SessionLogger.shared.log("[UCI] go: lazy-loaded default model \(loaded.modelID) params=\(loaded.parameterCount)")
                 respond("info string loaded model=\(loaded.modelID) params=\(loaded.parameterCount) arch=\(loaded.archSummary)")
@@ -390,7 +390,7 @@ enum UCIEngine {
         let state = engine.state
         let encoding = source.inputEncoding
         // Encode via the shared seam, which threads `engine.recentStates` as
-        // history. Returns a `let`, so the @Sendable closure passed to syncWait
+        // history. Returns a `let`, so the @Sendable closure passed to `runBlocking`
         // below captures an immutable value (Swift 6 strict concurrency rejects
         // captures of `var`s in concurrently-executing closures).
         let encoded = encodedBoardForGo(engine: engine, encoding: encoding)
@@ -409,7 +409,7 @@ enum UCIEngine {
         let value: Float
         do {
             let dest = PolicyDestination(UnsafeMutableBufferPointer(start: policyPtr, count: policySize))
-            value = try syncWait { try await source.evaluate(encodedBoard: encoded, intoPolicy: dest) }
+            value = try runBlocking { try await source.evaluate(encodedBoard: encoded, intoPolicy: dest) }
         } catch {
             // Inference failed — Metal crash, OOM, whatever. UCI has
             // no error response shape, so surface the failure as the
@@ -558,7 +558,7 @@ enum UCIEngine {
             return
         }
         do {
-            let loaded = try syncWait { try await UCIModelLoader.resolveAndLoad(explicitPath: trimmed) }
+            let loaded = try runBlocking { try await UCIModelLoader.resolveAndLoad(explicitPath: trimmed) }
             session.apply(loaded)
             SessionLogger.shared.log("[UCI] setoption Model -> \(loaded.modelID) (\(loaded.resolvedPath))")
             respond("info string loaded model=\(loaded.modelID) params=\(loaded.parameterCount) arch=\(loaded.archSummary)")
@@ -592,41 +592,5 @@ enum UCIEngine {
         SessionLogger.shared.log("[UCI->GUI] \(line)")
     }
 
-    /// Bridge an async throwing call to the synchronous protocol
-    /// loop. Same shape as `ChessMPSNetwork.calibrateBNRunningStats`
-    /// uses for its sync init wrapper: a detached Task at user-
-    /// initiated priority writes the result into a holder and signals
-    /// a semaphore; the calling thread waits, then reads the holder.
-    private static func syncWait<T>(_ work: @Sendable @escaping () async throws -> T) throws -> T {
-        let box = SyncWaitResultBox<T>()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task.detached(priority: .userInitiated) {
-            do {
-                box.success = try await work()
-            } catch {
-                box.failure = error
-            }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        if let error = box.failure {
-            throw error
-        }
-        guard let success = box.success else {
-            preconditionFailure("UCIEngine.syncWait: SyncWaitResultBox carried neither success nor failure")
-        }
-        return success
-    }
 }
 
-/// Result/error holder for `UCIEngine.syncWait`. Lives at file scope
-/// because generic classes can't be nested inside generic functions
-/// in Swift. `@unchecked Sendable` because the Task writes the box
-/// exactly once before the semaphore signal and the calling thread
-/// reads it exactly once after the wait — the explicit happens-
-/// before edge of the semaphore covers what the type system can't
-/// see.
-private final class SyncWaitResultBox<T>: @unchecked Sendable {
-    var success: T?
-    var failure: Error?
-}

@@ -241,4 +241,63 @@ final class TrainVsUciSessionTests: XCTestCase {
         XCTAssertNil(state.withLineage(gui).guiLoadRefusal)
         XCTAssertNil(state.guiLoadRefusal, "a state with no lineage (a pre-lineage GUI session) is not refused")
     }
+
+    /// Each file of a train-vs-UCI session save records the test-set results
+    /// of its own weights at the run's architecture (not `.current`), the
+    /// trainer's velocity ignored: equal to a fresh evaluation of what loads.
+    func testASessionSaveCarriesTestSetResultsAtTheRunsArchitecture() async throws {
+        let arch = ResumeEquivalenceTests.architecture
+        let parameters = TrainingParameters.shared.snapshot()
+        let hyperparameters = TrainerHyperparameters(parameters)
+        let trainer = try ChessTrainer(
+            dropoutStream: DCMRandom(seed: 11), hyperparameters: hyperparameters, arch: arch,
+            initialization: .seeded(initSeed: 11))
+        let snapshot = try await trainer.exportResumeSnapshot()
+        let baseCount = trainer.network.trainableVariables.count + trainer.network.bnRunningStatsVariables.count
+        let started = Date(timeIntervalSince1970: 1_800_000_000)
+        let tracker = try LineageTracker(
+            start: .fresh(initialization: .forTests, naming: .unnamedWithoutPreset), pathKind: .vsuci,
+            argv: ["DrewsChessMachine", "--train-vs-uci"], startedAt: started, segmentStartTrainerStep: 0)
+        let saved = started.addingTimeInterval(120)
+        let lineage = try tracker.record(
+            at: saved, trainerCompletedSteps: snapshot.schedule.completedTrainSteps,
+            segmentLocalStep: 0, segmentGames: 3, segmentPositions: 150, corpus: nil,
+            parameters: nil, rng: .withoutRunStreams(dropoutPhiloxState: snapshot.dropoutRNG.philoxState),
+            inputs: tracker.testInputs)
+        let state = TrainVsUciSession.sessionState(
+            sessionID: "20261003-8-TeSt", savedAt: saved, runStart: started,
+            trainerCompletedSteps: snapshot.schedule.completedTrainSteps, trainedPositions: 0,
+            parameters: parameters, hyperparameters: hyperparameters, arch: arch,
+            bufferSnapshot: nil, maxPliesPerGame: 400)
+        let set = LichessProbeData.set200
+        let evaluator = ModelTestSetEvaluator(testSets: [ProbeTestSet(
+            id: set.id, title: set.title, description: set.description,
+            fingerprintSHA256: set.fingerprintSHA256, probes: Array(set.probes.prefix(16)))])
+        let url = try await CheckpointManager.saveSession(
+            championWeights: Array(snapshot.trainerWeights.prefix(baseCount)), championID: "20261003-8-TeSt",
+            championMetadata: ModelCheckpointMetadata(creator: "train-vs-uci", trainingStep: 0, parentModelID: "", notes: "test"),
+            championCreatedAtUnix: Int64(saved.timeIntervalSince1970),
+            trainerWeights: snapshot.trainerWeights, trainerID: "20261003-8-TeSt",
+            trainerMetadata: ModelCheckpointMetadata.trainerFile(
+                creator: "train-vs-uci", trainingStep: 0, parentModelID: "", notes: "test", schedule: snapshot.schedule),
+            trainerCreatedAtUnix: Int64(saved.timeIntervalSince1970),
+            state: state, lineage: lineage, championLineage: try lineage.withoutTrainerState(), architecture: arch,
+            testSetEvaluator: evaluator, trigger: TrainVsUciSession.SaveKind.periodic.diskTag, at: saved,
+            sessionsDirectory: tempDir.appendingPathComponent("Sessions", isDirectory: true))
+
+        let loaded = try CheckpointManager.loadSession(at: url)
+        for (fileURL, weights) in [(SessionCheckpointLayout.championURL(in: url), loaded.championFile.weights),
+                                   (SessionCheckpointLayout.trainerURL(in: url), loaded.trainerFile.weights)] {
+            let (_, metadata) = try SafetensorsFile.decode(try Data(contentsOf: fileURL))
+            guard case .recorded(.evaluated(let recorded)) = ModelTestSetResultsField.reading(fromMetadata: metadata) else {
+                XCTFail("\(fileURL.lastPathComponent) carries no evaluation")
+                continue
+            }
+            guard case .evaluated(let fresh) = await evaluator.evaluate(weights: weights, architecture: arch) else {
+                XCTFail("a fresh evaluation failed")
+                continue
+            }
+            XCTAssertEqual(recorded.sets, fresh.sets, fileURL.lastPathComponent)
+        }
+    }
 }

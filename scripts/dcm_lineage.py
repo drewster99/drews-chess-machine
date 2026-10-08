@@ -838,14 +838,14 @@ TEST_SET_RESULTS_SCHEMA = 1
 
 def test_set_results(metadata):
     """The file's puzzle test-set results, read as the app reads them
-    (`ModelTestSetResultsField.reading`, Persistence/ModelTestSetResults.swift).
-    Returns one of:
+    (`ModelTestSetResultsField.reading`, Persistence/ModelTestSetResults.swift):
+    the same required keys and types, the same refusals. Returns one of:
 
     - ("not_recorded", None): no `dcm_test_set_results` key (written before
       test-set results);
-    - ("unreadable", reason): the value doesn't parse, or is a schema this
-      reader doesn't know; reported, never fatal (the results are
-      informational);
+    - ("unreadable", reason): the value doesn't parse, is a schema this
+      reader doesn't know, or lacks a required key; reported, never fatal
+      (the results are informational);
     - ("failed", reason): the writer's evaluation failed and it said why;
     - ("evaluated", record): the record, with `sets` (each: id, title,
       description, fingerprint_sha256, positions, top1_correct, top5_correct,
@@ -861,25 +861,68 @@ def test_set_results(metadata):
         value = json.loads(raw)
     except ValueError as error:
         return ("unreadable", f"{TEST_SET_RESULTS_KEY} does not parse: {error}")
+    try:
+        return _checked_test_set_results(value)
+    except _TestSetResultsError as error:
+        return ("unreadable", f"{TEST_SET_RESULTS_KEY}: {error}")
+
+
+class _TestSetResultsError(Exception):
+    pass
+
+
+def _field(holder, key, kind, where):
+    """`holder[key]`, required and of `kind` (bool is never an int here, as in
+    Swift's decoder)."""
+    if not isinstance(holder, dict) or key not in holder:
+        raise _TestSetResultsError(f"{where} lacks {key}")
+    value = holder[key]
+    kinds = kind if isinstance(kind, tuple) else (kind,)
+    if isinstance(value, bool) or not isinstance(value, kinds):
+        raise _TestSetResultsError(f"{where}.{key} is not {'/'.join(k.__name__ for k in kinds)}")
+    return value
+
+
+def _checked_test_set_results(value):
     if not isinstance(value, dict):
-        return ("unreadable", f"{TEST_SET_RESULTS_KEY} is not a JSON object")
-    if value.get("schema") != TEST_SET_RESULTS_SCHEMA:
-        return ("unreadable", f"{TEST_SET_RESULTS_KEY} schema {value.get('schema')!r} is not one this reader reads "
-                              f"({TEST_SET_RESULTS_SCHEMA})")
-    status = value.get("status")
+        raise _TestSetResultsError("not a JSON object")
+    schema = _field(value, "schema", int, "record")
+    if schema != TEST_SET_RESULTS_SCHEMA:
+        raise _TestSetResultsError(f"schema {schema} is not one this reader reads ({TEST_SET_RESULTS_SCHEMA})")
+    status = _field(value, "status", str, "record")
     if status == "failed":
-        reason = value.get("reason")
-        if not isinstance(reason, str):
-            return ("unreadable", f"{TEST_SET_RESULTS_KEY}: a failed record without a reason")
-        return ("failed", reason)
+        return ("failed", _field(value, "reason", str, "record"))
     if status != "evaluated":
-        return ("unreadable", f"{TEST_SET_RESULTS_KEY}: unknown status {status!r}")
-    sets = value.get("sets")
-    if not isinstance(sets, list):
-        return ("unreadable", f"{TEST_SET_RESULTS_KEY}: an evaluated record without sets")
-    for entry in sets:
-        if not isinstance(entry, dict) or (entry.get("pelo") is None) == (entry.get("pelo_bound") is None):
-            return ("unreadable", f"{TEST_SET_RESULTS_KEY}: a set must state exactly one of pelo and pelo_bound")
+        raise _TestSetResultsError(f"unknown status {status!r}")
+    _field(value, "evaluated_at_unix", int, "record")
+    _field(value, "build", int, "record")
+    _field(value, "policy_tail_precision", str, "record")
+    sets = _field(value, "sets", list, "record")
+    number = (int, float)
+    for index, entry in enumerate(sets):
+        where = f"sets[{index}]"
+        for key in ("id", "title", "description", "fingerprint_sha256"):
+            _field(entry, key, str, where)
+        for key in ("positions", "top1_correct", "top5_correct"):
+            _field(entry, key, int, where)
+        for key in ("avg_correct_probability", "avg_correct_rank", "nll"):
+            _field(entry, key, number, where)
+        if "pelo" not in entry or "pelo_bound" not in entry:
+            raise _TestSetResultsError(f"{where} lacks pelo or pelo_bound")
+        pelo, bound = entry["pelo"], entry["pelo_bound"]
+        if pelo is not None and bound is None:
+            if isinstance(pelo, bool) or not isinstance(pelo, number):
+                raise _TestSetResultsError(f"{where}.pelo is not a number")
+        elif pelo is None and bound in ("all_correct", "all_wrong"):
+            pass
+        else:
+            raise _TestSetResultsError(f"{where} must state exactly one of pelo and pelo_bound (all_correct/all_wrong)")
+        for theme_index, theme in enumerate(_field(entry, "themes", list, where)):
+            theme_where = f"{where}.themes[{theme_index}]"
+            _field(theme, "id", str, theme_where)
+            _field(theme, "title", str, theme_where)
+            _field(theme, "correct", int, theme_where)
+            _field(theme, "total", int, theme_where)
     return ("evaluated", value)
 
 

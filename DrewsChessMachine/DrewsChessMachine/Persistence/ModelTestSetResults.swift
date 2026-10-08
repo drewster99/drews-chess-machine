@@ -100,7 +100,7 @@ enum ModelTestSetResultsField: Equatable, Sendable {
                 field = .evaluated(ModelTestSetResults(
                     evaluatedAtUnix: try container.decode(Int64.self, forKey: .evaluatedAtUnix),
                     build: try container.decode(Int.self, forKey: .build),
-                    policyTailPrecision: try container.decode(String.self, forKey: .policyTailPrecision),
+                    policyTailPrecision: try container.decode(PolicyTailPrecisionSetting.self, forKey: .policyTailPrecision),
                     sets: try container.decode([ModelTestSetResults.SetResult].self, forKey: .sets)
                 ))
             }
@@ -135,12 +135,15 @@ enum ModelTestSetResultsInFile: Equatable, Sendable {
 /// The results of one evaluation: every test set, in
 /// `LichessProbeData.modelFileTestSets` order.
 struct ModelTestSetResults: Equatable, Sendable {
+    /// When the evaluation ran. A file whose base weights were already
+    /// evaluated in this process reuses that evaluation (`ModelTestSetMemo`),
+    /// so this can predate the file.
     let evaluatedAtUnix: Int64
     /// The app build that evaluated (results can shift with the probe code).
     let build: Int
     /// The policy tail the evaluating network was built with (the file's
     /// own, `NetworkArchitecture.policyTailPrecision`).
-    let policyTailPrecision: String
+    let policyTailPrecision: PolicyTailPrecisionSetting
     let sets: [SetResult]
 
     /// The set with the most positions (ties: the first), the one a picker

@@ -38,7 +38,7 @@ enum SweepCLI {
 
         let rows: [SweepRow]
         do {
-            rows = try syncWait {
+            rows = try runBlocking {
                 // Fresh trainer ⇒ fresh `ChessNetwork` (built in the init), so
                 // no resetNetwork / model load is needed.
                 let trainer = try ChessTrainer(
@@ -55,7 +55,7 @@ enum SweepCLI {
                 // tool you would reach for to measure its cost.
                 //
                 // Read nonisolated, NOT via `TrainingParameters.shared`: this
-                // closure runs inside `syncWait`, which blocks its caller on a
+                // closure runs inside `runBlocking`, which blocks its caller on a
                 // semaphore, so awaiting the `@MainActor` singleton here
                 // deadlocks the process outright.
                 trainer.klProbeInterval = TrainingParameters.persistedValue(KLProbeInterval.self)
@@ -132,28 +132,5 @@ enum SweepCLI {
         }
     }
 
-    /// Bridge async → sync (mirrors `UCIEngine.syncWait`): run `work` on a
-    /// detached task, block the pre-flight thread on a semaphore, rethrow.
-    private static func syncWait<T>(_ work: @Sendable @escaping () async throws -> T) throws -> T {
-        let box = SweepSyncBox<T>()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task.detached(priority: .userInitiated) {
-            do { box.success = try await work() }
-            catch { box.failure = error }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        if let error = box.failure { throw error }
-        guard let success = box.success else {
-            preconditionFailure("SweepCLI.syncWait: result box carried neither success nor failure")
-        }
-        return success
-    }
 }
 
-/// Result/error holder for `SweepCLI.syncWait`, mutated from the detached task
-/// and read after the semaphore — so the unchecked-Sendable conformance is safe.
-private final class SweepSyncBox<T>: @unchecked Sendable {
-    var success: T?
-    var failure: Error?
-}

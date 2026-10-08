@@ -111,7 +111,7 @@ enum NewModelCLI {
         do {
             // Build with random weights (includes the BN warmup forward) and
             // export the persistent tensors, off the main actor.
-            let (weights, buildTimeMs) = try syncWait { () async throws -> ([[Float]], Double) in
+            let (weights, buildTimeMs) = try runBlocking { () async throws -> ([[Float]], Double) in
                 let net = try ChessMPSNetwork(.randomWeights(initSeed: initSeed), arch: arch)
                 return (try await net.network.exportWeights(), net.buildTimeMs)
             }
@@ -137,10 +137,7 @@ enum NewModelCLI {
                     + "BN warm-up under policy tail precision \(arch.policyTailPrecision.rawValue)"
             )
             let mintDate = Date()
-            let testSetResults = try syncWait { () async throws -> ModelTestSetResultsField in
-                await ModelTestSetEvaluator.modelFiles.evaluateForSave(weights: weights, architecture: arch, file: outURL.lastPathComponent)
-            }
-            let encoded = try SafetensorsModelIO.encode(
+            let prepared = try SafetensorsModelIO.prepare(
                 modelID: modelID,
                 createdAtUnix: Int64(mintDate.timeIntervalSince1970),
                 metadata: metadata,
@@ -148,9 +145,12 @@ enum NewModelCLI {
                 architecture: arch,
                 includesVelocity: false,
                 lineage: try LineageTracker.mintRecord(pathKind: .newModel, argv: CommandLine.arguments,
-                                                       initialization: initialization, naming: naming, at: mintDate),
-                testSetResults: testSetResults
+                                                       initialization: initialization, naming: naming, at: mintDate)
             )
+            let testSetResults = try runBlocking { () async throws -> ModelTestSetResultsField in
+                await ModelTestSetEvaluator.modelFiles.evaluateForSave(weights: weights, architecture: arch, file: outURL.lastPathComponent)
+            }
+            let encoded = try prepared.encoded(testSetResults: testSetResults)
             try FileManager.default.createDirectory(
                 at: outURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
@@ -185,24 +185,5 @@ enum NewModelCLI {
         Darwin.exit(0)
     }
 
-    private static func syncWait<T>(_ work: @Sendable @escaping () async throws -> T) throws -> T {
-        let box = NewModelSyncBox<T>()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task.detached(priority: .userInitiated) {
-            do { box.success = try await work() }
-            catch { box.failure = error }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        if let error = box.failure { throw error }
-        guard let success = box.success else {
-            preconditionFailure("NewModelCLI.syncWait: result box carried neither success nor failure")
-        }
-        return success
-    }
 }
 
-private final class NewModelSyncBox<T>: @unchecked Sendable {
-    var success: T?
-    var failure: Error?
-}

@@ -124,7 +124,7 @@ enum ArchSweepCLI {
                 emit(["event": "build", "blocks": n, "params": arch.parameterCount, "buildMs": buildMs])
 
                 for s in 1...steps {
-                    let timing = try syncWait { try await trainer.trainStep(batchSize: batch) }
+                    let timing = try runBlocking { try await trainer.trainStep(batchSize: batch) }
                     emit([
                         "event": "step", "blocks": n, "step": s,
                         "totalMs": timing.totalMs, "gpuRunMs": timing.gpuRunMs,
@@ -141,25 +141,5 @@ enum ArchSweepCLI {
         Darwin.exit(0)
     }
 
-    /// Bridge async → sync (mirrors `SweepCLI.syncWait`).
-    private static func syncWait<T>(_ work: @Sendable @escaping () async throws -> T) throws -> T {
-        let box = ArchSweepSyncBox<T>()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task.detached(priority: .userInitiated) {
-            do { box.success = try await work() }
-            catch { box.failure = error }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        if let error = box.failure { throw error }
-        guard let success = box.success else {
-            preconditionFailure("ArchSweepCLI.syncWait: result box carried neither success nor failure")
-        }
-        return success
-    }
 }
 
-private final class ArchSweepSyncBox<T>: @unchecked Sendable {
-    var success: T?
-    var failure: Error?
-}

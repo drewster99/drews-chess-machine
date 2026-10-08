@@ -55,7 +55,12 @@ class TestSetResultsTests(unittest.TestCase):
     def test_unreadable_values_are_reported_not_raised(self):
         for raw in ["not json", "[]", json.dumps({"schema": 2, "status": "failed", "reason": "r"}),
                     json.dumps({"schema": 1, "status": "maybe"}), json.dumps({"schema": 1, "status": "failed"}),
-                    evaluated(pelo=None, pelo_bound=None), evaluated(pelo=1.0, pelo_bound="all_wrong")]:
+                    evaluated(pelo=None, pelo_bound=None), evaluated(pelo=1.0, pelo_bound="all_wrong"),
+                    evaluated(pelo=None, pelo_bound="maybe"),
+                    json.dumps({"schema": True, "status": "failed", "reason": "r"}),
+                    evaluated().replace('"build":2427,', ''),
+                    evaluated().replace('"pelo_bound":null,', ''),
+                    evaluated().replace('"top1_correct":99', '"top1_correct":"99"')]:
             kind, reason = dcm_lineage.test_set_results({KEY: raw})
             self.assertEqual(kind, "unreadable", raw)
             self.assertIsInstance(reason, str)
