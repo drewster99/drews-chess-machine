@@ -475,6 +475,11 @@ private struct PeriodAccumulator {
         // game, which is quadratic in the games of one model.
         groups[model.facts.modelID, default: ModelLineAccumulator(createdAt: row.createdAt)].add(row, ourScore: ourScore, mixed: mixed)
         checkpoints[model.key, default: (model.facts, ModelLineAccumulator(createdAt: row.createdAt))].line.add(row, ourScore: ourScore, mixed: mixed)
+        // The label names how the weights were trained when any of the
+        // key's games says (an older game's played file may be gone).
+        if checkpoints[model.key]?.facts.trainingHistory == nil, model.facts.trainingHistory != nil {
+            checkpoints[model.key]?.facts = model.facts
+        }
     }
 
     private mutating func addOpponentStrength(_ row: LichessBotGameSummary, ourScore: Double) {
@@ -554,6 +559,7 @@ private struct PeriodAccumulator {
                 trainingStep: entry.facts.trainingStep,
                 lineageRunID: entry.facts.lineageRunID,
                 cumTrainerStep: entry.facts.cumTrainerStep,
+                trainingHistory: entry.facts.trainingHistory,
                 line: entry.line.line
             ))
         }

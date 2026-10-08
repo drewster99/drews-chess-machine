@@ -78,7 +78,7 @@ final class LichessBotGenerationLineageFactsTests: XCTestCase {
             let generation = LichessBotGenerationFacts(
                 sourceKind: .followLineage, modelID: "SEG\(segment)", trainingStep: step,
                 fileSHA256: String(repeating: sha, count: 32), lineageRunID: "RUN-P", segmentIndex: segment,
-                cumTrainerStep: nil, ourMoves: 10)
+                cumTrainerStep: nil, trainingHistory: nil, ourMoves: 10)
             for game in 0..<30 {
                 serial += 1
                 rows.append(try Fixtures.row(

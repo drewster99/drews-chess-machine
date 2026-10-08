@@ -171,10 +171,13 @@ final class LichessBotRecordStore: Sendable {
         // The journal has left InProgress/: the game is filed whatever happens
         // next. A throw here would send the game back to the reconciler to be
         // filed again from a journal that is gone.
-        let summary = LichessBotGameSummary(record: filing.game.record)
+        let record = filing.game.record
         let recordURL = filing.game.recordURL
         do {
             try await indexQueue.run {
+                // On the index queue: a generation recorded before generations
+                // kept their training history reads the played file's header.
+                let summary = LichessBotGameSummary(record: record, playedFiles: LichessBotPlayedFileHistories())
                 _ = try LichessBotIndex.upsert(summary, recordURL: recordURL, in: directory)
             }
             return filing.game

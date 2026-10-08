@@ -90,6 +90,15 @@ struct SessionPickerSheet: View {
                         .font(.callout)
                         .lineLimit(1)
                 }
+                // How the newest save's trainer was trained: a run trains by
+                // one path, so it names the run's method and what it came from.
+                if let method = group.sessions.first.flatMap({ model.trainingHistories[$0.id]?.trainer?.displayText }) {
+                    Text(method)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help("The newest save's trainer was trained by \(method)")
+                }
             }
             if let arch = group.architectureSummary {
                 Text(arch)
@@ -125,7 +134,9 @@ struct SessionPickerSheet: View {
                     detailSection("Run", [
                         ("Name", m.modelNaming.map(ModelNaming.compactText)),
                         ("Champion", m.championID),
+                        ("Champion trained by", model.trainingHistories[m.id]?.champion?.displayText),
                         ("Trainer", m.trainerID),
+                        ("Trainer trained by", model.trainingHistories[m.id]?.trainer?.displayText),
                         ("Steps", m.trainingSteps.map { $0.formatted() }),
                         ("Active training", m.elapsedTrainingSec.map(Self.formatHMS)),
                         ("Games emitted", m.emittedGames.map { $0.formatted() }),

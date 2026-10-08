@@ -124,6 +124,7 @@ enum LichessBotStatsFixtures {
         sha: String? = nil,
         lineageRunID: String? = nil,
         cumTrainerStep: Int? = nil,
+        trainingHistory: ModelTrainingHistory? = nil,
         moves: Int
     ) -> LichessBotGenerationFacts {
         LichessBotGenerationFacts(
@@ -134,6 +135,7 @@ enum LichessBotStatsFixtures {
             lineageRunID: lineageRunID,
             segmentIndex: nil,
             cumTrainerStep: cumTrainerStep,
+            trainingHistory: trainingHistory,
             ourMoves: moves
         )
     }

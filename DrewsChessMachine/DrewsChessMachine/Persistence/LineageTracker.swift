@@ -333,6 +333,15 @@ final class LineageTracker: @unchecked Sendable {
                                       runs: record.ancestry.runs + [left])
     }
 
+    /// How the trainer this segment trains was trained: the ancestor runs'
+    /// and the earlier segments' methods, then this segment's path
+    /// (`ModelTrainingHistory`, oldest first).
+    var trainingHistory: ModelTrainingHistory {
+        let earlier = ancestry.runs.flatMap(\.segments) + segments
+        return ModelTrainingHistory(methods: earlier.compactMap(ModelTrainingHistory.method(of:))
+            + [ModelTrainingMethod(pathKind: pathKind)].compactMap { $0 })
+    }
+
     /// Add one measured trainer step.
     func recordTrainingStep(totalMs: Double) {
         segmentTrainStepSec.modify { $0 += totalMs / 1000 }

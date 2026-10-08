@@ -107,7 +107,8 @@ final class LichessBotFakeModelProvider: LichessBotModelProvider, @unchecked Sen
             weights: weights,
             architecture: network.arch,
             modelID: "20260928-1-TEST",
-            trainingStep: nil
+            trainingStep: nil,
+            trainingHistory: .unknown
         ))
     }
 

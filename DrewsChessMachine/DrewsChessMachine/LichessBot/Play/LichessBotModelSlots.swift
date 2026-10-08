@@ -7,6 +7,9 @@ struct LichessBotWeightsSnapshot: Sendable {
     let architecture: NetworkArchitecture
     let modelID: String
     let trainingStep: Int?
+    /// How the weights were trained, as far as their source records it
+    /// (`ModelTrainingHistory`); recorded with every game they play.
+    let trainingHistory: ModelTrainingHistory
 }
 
 /// Where champion and trainer weights come from. The app implements this
@@ -144,7 +147,8 @@ struct LichessBotBuiltModel: Sendable {
             filePath: filePath,
             fileSHA256: fileSHA256,
             valueHeadRecenteredOnLoad: valueHeadRecenteredOnLoad,
-            lineage: lineage
+            lineage: lineage,
+            trainingHistory: snapshot.trainingHistory
         )
         return LichessBotModelGeneration(info: info, network: network)
     }
@@ -163,6 +167,7 @@ struct LichessBotBuiltModel: Sendable {
             }
             line += " arch=\(snapshot.architecture.architectureSummary)"
         }
+        line += " trained=\(snapshot.trainingHistory.logText)"
         if let loadNote {
             line += " (\(loadNote))"
         }
@@ -344,7 +349,8 @@ struct LichessBotModelFileLoader: Sendable {
                         // The file's trainer step where it records one, else
                         // the step it states (`ModelFileStepReading`) — the
                         // same kind of number the live sources pass.
-                        trainingStep: file.trainingStepReading.trainerStepOrStatedStep
+                        trainingStep: file.trainingStepReading.trainerStepOrStatedStep,
+                        trainingHistory: file.trainingHistory
                     )
                     guard let centering = file.valueHeadCentering else {
                         throw LichessBotModelError.valueHeadCenteringUnknown(url.path)

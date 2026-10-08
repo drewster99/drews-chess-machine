@@ -15,6 +15,10 @@ import Observation
 final class SessionPickerModel {
 
     private(set) var manifests: [SessionManifest] = []
+    /// How each listed session's champion and trainer were trained, read
+    /// from their model files' headers during the scan, by folder name.
+    /// Never cached with the manifest: the files are the source.
+    private(set) var trainingHistories: [String: SessionTrainingHistories] = [:]
     private(set) var isScanning = false
     private(set) var scannedCount = 0
     private(set) var totalCount = 0
@@ -95,6 +99,7 @@ final class SessionPickerModel {
         let generation = scanGeneration
         isScanning = true
         manifests = []
+        trainingHistories = [:]
         scannedCount = 0
         totalCount = 0
         scanDirectory = directory
@@ -123,8 +128,10 @@ final class SessionPickerModel {
 
             for url in folders {
                 let manifest = SessionManifest.resolve(sessionFolder: url)
+                let histories = SessionTrainingHistories(sessionFolder: url)
                 Task { @MainActor in
                     guard let self, self.scanGeneration == generation else { return }
+                    self.trainingHistories[manifest.id] = histories
                     self.manifests.append(manifest)
                     self.scannedCount += 1
                     // Compare against the captured count, not
@@ -137,5 +144,18 @@ final class SessionPickerModel {
                 }
             }
         }
+    }
+}
+
+/// How a session's two model files were trained (`ModelTrainingHistory`);
+/// nil for a file that is missing or doesn't read.
+struct SessionTrainingHistories: Sendable, Equatable {
+    let champion: ModelTrainingHistory?
+    let trainer: ModelTrainingHistory?
+
+    /// Reads both files' headers. Off the main actor: the scan's queue.
+    init(sessionFolder url: URL) {
+        champion = ModelTrainingHistory.ofModelFile(at: SessionCheckpointLayout.championURL(in: url), logTag: "[SESSION-INDEX]")
+        trainer = ModelTrainingHistory.ofModelFile(at: SessionCheckpointLayout.trainerURL(in: url), logTag: "[SESSION-INDEX]")
     }
 }

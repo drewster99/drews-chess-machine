@@ -57,7 +57,7 @@ final class LichessBotHoldableModelProvider: LichessBotModelProvider, @unchecked
         championSnapshots.modify { $0 += 1 }
         await waitIfHeld()
         guard let modelID = championID.value else { throw LichessBotModelError.noChampion }
-        return LichessBotWeightsSnapshot(weights: weights, architecture: architecture, modelID: modelID, trainingStep: nil)
+        return LichessBotWeightsSnapshot(weights: weights, architecture: architecture, modelID: modelID, trainingStep: nil, trainingHistory: .unknown)
     }
 
     func trainerSnapshot() async throws -> LichessBotWeightsSnapshot {
@@ -67,7 +67,7 @@ final class LichessBotHoldableModelProvider: LichessBotModelProvider, @unchecked
         }
         await waitIfHeld()
         guard trainerExists.value else { throw LichessBotModelError.noTrainer }
-        return LichessBotWeightsSnapshot(weights: weights, architecture: architecture, modelID: Self.trainerModelID, trainingStep: step)
+        return LichessBotWeightsSnapshot(weights: weights, architecture: architecture, modelID: Self.trainerModelID, trainingStep: step, trainingHistory: ModelTrainingHistory(methods: [.selfPlay]))
     }
 }
 

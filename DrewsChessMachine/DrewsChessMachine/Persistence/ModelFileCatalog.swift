@@ -29,6 +29,11 @@ struct ModelFileEntry: Sendable, Identifiable, Equatable {
     /// The header's test-set results, summarized (`ModelTestSetSummary`).
     /// The catalog always sets it; nil only for an entry built elsewhere.
     var testSets: ModelTestSetSummary? = nil
+    /// How the weights were trained (`ModelTrainingHistory`), from the
+    /// lineage record or, without one, the creator; unknown when the record
+    /// does not decode. The catalog always sets it; nil only for an entry
+    /// built elsewhere.
+    var trainingHistory: ModelTrainingHistory? = nil
 }
 
 /// What a model file's header says about its lineage (follow-lineage plan
@@ -288,15 +293,20 @@ enum ModelFileCatalog {
         // record, or the format version, trainer clock or derivation history
         // read with it) makes the lineage unreadable, not the file.
         let lineage: ModelFileLineageFacts
+        let trainingHistory: ModelTrainingHistory
+        let creator = metadata["creator"].flatMap { $0.isEmpty ? nil : $0 }
         do {
-            switch try SafetensorsModelIO.readParentFile(fromMetadata: metadata, source: name).lineage {
+            let presence = try SafetensorsModelIO.readParentFile(fromMetadata: metadata, source: name).lineage
+            switch presence {
             case .recorded(let record):
                 lineage = .recorded(ModelFileLineagePosition(record: record))
             case .unrecorded(let formatVersion):
                 lineage = .unrecorded(formatVersion: formatVersion)
             }
+            trainingHistory = ModelTrainingHistory(lineage: presence, creator: creator)
         } catch {
             lineage = .unreadable(reason: String(describing: error))
+            trainingHistory = .unknown
         }
         return ModelFileEntry(
             url: url,
@@ -306,10 +316,11 @@ enum ModelFileCatalog {
             architectureLabel: label,
             fileModifiedAt: modified,
             parentModelID: metadata["parent_model_id"].flatMap { $0.isEmpty ? nil : $0 },
-            creator: metadata["creator"].flatMap { $0.isEmpty ? nil : $0 },
+            creator: creator,
             contentSHA256: metadata[SafetensorsFile.contentHashKey],
             lineage: lineage,
-            testSets: ModelTestSetSummary(ModelTestSetResultsField.reading(fromMetadata: metadata))
+            testSets: ModelTestSetSummary(ModelTestSetResultsField.reading(fromMetadata: metadata)),
+            trainingHistory: trainingHistory
         )
     }
 
@@ -349,7 +360,8 @@ enum ModelFileCatalog {
             contentSHA256: nil,
             lineage: .unrecorded(formatVersion: ArchitectureFormat.unversionedLegacyVersion),
             // The legacy format predates test-set results.
-            testSets: .notRecorded
+            testSets: .notRecorded,
+            trainingHistory: file.trainingHistory
         )
     }
 

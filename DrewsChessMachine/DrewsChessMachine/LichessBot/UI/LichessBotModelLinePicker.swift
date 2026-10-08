@@ -74,7 +74,10 @@ struct LichessBotModelLinePicker: View {
             }
         }
         .padding(20)
-        .frame(width: 1100, height: 760)
+        // Widened by the training method column
+        // (`LichessBotModelFileRow.trainingMethodWidth`), so the other
+        // columns keep the room they had before it.
+        .frame(width: 1100 + LichessBotModelFileRow.trainingMethodWidth, height: 760)
         .task {
             await load()
         }
@@ -257,7 +260,8 @@ struct LichessBotUnreadableModelFilesSection: View {
 }
 
 /// One model file's identity and strength: model ID, training step, date,
-/// its largest test set's figures (`ModelTestSetSummary`), architecture.
+/// how it was trained (`ModelTrainingHistory`; blank when unknown), its
+/// largest test set's figures (`ModelTestSetSummary`), architecture.
 struct LichessBotModelFileRow: View {
     let file: ModelFileEntry
     let showsModelID: Bool
@@ -276,6 +280,10 @@ struct LichessBotModelFileRow: View {
                 .font(.system(.callout, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .frame(width: 140, alignment: .leading)
+            Text(file.trainingHistory?.displayText ?? "")
+                .font(.callout)
+                .frame(width: Self.trainingMethodWidth, alignment: .leading)
+                .help(file.trainingHistory?.displayText.map { "Trained by \($0)" } ?? "Training method not recorded")
             ModelTestSetSummaryCells(summary: file.testSets ?? .notRecorded, textStyle: .callout)
             Text(file.architectureLabel)
                 .font(.callout)
@@ -284,6 +292,10 @@ struct LichessBotModelFileRow: View {
         .lineLimit(1)
         .help(file.url.lastPathComponent)
     }
+
+    /// Wide enough for a two-method chain ("corpus replay → self-play");
+    /// a longer one truncates, with the whole chain in the tooltip.
+    static let trainingMethodWidth: CGFloat = 190
 
     /// Fixed-width local date and time, so the column never wraps.
     private static let dateFormatter: DateFormatter = {

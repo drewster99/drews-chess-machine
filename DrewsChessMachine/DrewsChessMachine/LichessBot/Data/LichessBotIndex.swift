@@ -37,7 +37,20 @@ struct LichessBotGameSummary: Sendable, Codable, Equatable {
     /// and the statistics count such a row as "no move data".
     let facts: LichessBotGameFacts?
 
+    /// The row the record alone states (a generation's training history is
+    /// the one it recorded).
     init(record: LichessBotGameRecord) {
+        self.init(record: record, trainingHistory: \.trainingHistory)
+    }
+
+    /// The row the index files: a generation recorded before generations
+    /// kept their training history takes the played file's
+    /// (`LichessBotPlayedFileHistories`).
+    init(record: LichessBotGameRecord, playedFiles: LichessBotPlayedFileHistories) {
+        self.init(record: record, trainingHistory: playedFiles.history(of:))
+    }
+
+    init(record: LichessBotGameRecord, trainingHistory: (LichessBotGenerationInfo) -> ModelTrainingHistory?) {
         gameID = record.gameID
         createdAt = record.createdAt
         speed = record.setup.speed
@@ -63,7 +76,7 @@ struct LichessBotGameSummary: Sendable, Codable, Equatable {
         reconciliation = record.reconciliation.outcome
         anomalyCount = record.anomalies.count
         origin = record.origin
-        facts = LichessBotGameFacts(record: record)
+        facts = LichessBotGameFacts(record: record, trainingHistory: trainingHistory)
     }
 }
 
@@ -78,10 +91,11 @@ enum LichessBotIndex {
     /// Bumped by one for each change to a row, so a stored index from an
     /// older build is rebuilt from the records once: 3, `origin`
     /// (challenge-log plan §3.5); 4, `facts`
-    /// (`LICHESS_BOT_RECORD_STATS_PLAN.md` §4.2). Bump it again whenever
+    /// (`LICHESS_BOT_RECORD_STATS_PLAN.md` §4.2); 5, each generation's
+    /// `trainingHistory` (`MODEL_TRAINING_METHOD_PLAN.md`). Bump it again whenever
     /// `LichessBotSelfAssessmentDefinition`'s thresholds change: the facts
     /// are reduced with them, so rows of the old thresholds must not be kept.
-    static let schemaVersion = 4
+    static let schemaVersion = 5
 
     /// A record file the index left out because it doesn't decode.
     struct UnreadableRecord: Sendable, Codable, Equatable {
@@ -170,9 +184,10 @@ enum LichessBotIndex {
         let files = try recordFiles(in: directory)
         var rows: [LichessBotGameSummary] = []
         var unreadable: [UnreadableRecord] = []
+        let playedFiles = LichessBotPlayedFileHistories()
         for file in files {
             do {
-                rows.append(LichessBotGameSummary(record: try readRecord(at: file.url)))
+                rows.append(LichessBotGameSummary(record: try readRecord(at: file.url), playedFiles: playedFiles))
             } catch {
                 unreadable.append(UnreadableRecord(path: file.url.path, error: String(describing: error)))
             }

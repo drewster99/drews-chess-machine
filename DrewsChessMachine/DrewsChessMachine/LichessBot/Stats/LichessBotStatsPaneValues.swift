@@ -153,19 +153,24 @@ struct LichessBotModelCheckpointStatistics: Sendable, Equatable, Identifiable {
     let trainingStep: Int?
     let lineageRunID: String?
     let cumTrainerStep: Int?
+    /// How the weights were trained; nil when no game of the key says.
+    let trainingHistory: ModelTrainingHistory?
     let line: LichessBotModelRecordLine
 
     var id: LichessBotModelKey { key }
 
-    /// "step 5,000 · cum 120,000 · Model file · ab12cd34": the training
-    /// step, the lineage's cumulative step when recorded, the source, and a
-    /// file's hash prefix.
+    /// "step 5,000 · cum 120,000 · Model file · ab12cd34 · corpus replay":
+    /// the training step, the lineage's cumulative step when recorded, the
+    /// source, a file's hash prefix, and how the weights were trained when
+    /// known.
     var label: String {
-        Self.label(key: key, sourceKind: sourceKind, trainingStep: trainingStep, cumTrainerStep: cumTrainerStep)
+        Self.label(key: key, sourceKind: sourceKind, trainingStep: trainingStep, cumTrainerStep: cumTrainerStep,
+                   trainingHistory: trainingHistory)
     }
 
     /// The checkpoint label, shared with the Model filter's choices.
-    static func label(key: LichessBotModelKey, sourceKind: LichessBotModelSourceKind, trainingStep: Int?, cumTrainerStep: Int?) -> String {
+    static func label(key: LichessBotModelKey, sourceKind: LichessBotModelSourceKind, trainingStep: Int?, cumTrainerStep: Int?,
+                      trainingHistory: ModelTrainingHistory?) -> String {
         var parts: [String] = []
         if let trainingStep {
             parts.append("step \(trainingStep.formatted())")
@@ -176,6 +181,9 @@ struct LichessBotModelCheckpointStatistics: Sendable, Equatable, Identifiable {
         parts.append(sourceKind.displayName)
         if case .file(let sha256) = key {
             parts.append(String(sha256.prefix(8)))
+        }
+        if let method = trainingHistory?.displayText {
+            parts.append(method)
         }
         return parts.joined(separator: " · ")
     }

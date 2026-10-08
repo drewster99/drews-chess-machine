@@ -78,6 +78,11 @@ struct LichessBotGenerationFacts: Sendable, Codable, Equatable {
     let lineageRunID: String?
     let segmentIndex: Int?
     let cumTrainerStep: Int?
+    /// How the weights were trained (`ModelTrainingHistory`): the record's
+    /// own, or for a record written before generations kept it, the played
+    /// file's when the index could read it (`LichessBotPlayedFileHistories`);
+    /// nil when neither says.
+    let trainingHistory: ModelTrainingHistory?
     /// DCM moves this generation decided (moves in the final move list,
     /// so a decision whose move was taken back does not count).
     let ourMoves: Int
@@ -195,11 +200,20 @@ struct LichessBotGameFacts: Sendable, Codable, Equatable {
         self.streamReconnects = streamReconnects
     }
 
+    /// The facts the record alone states: a generation's training history
+    /// is the one it recorded.
     init(record: LichessBotGameRecord) {
+        self.init(record: record, trainingHistory: \.trainingHistory)
+    }
+
+    /// The facts of `record`, each generation's training history from
+    /// `trainingHistory` (the index's: the recorded one, else the played
+    /// file's).
+    init(record: LichessBotGameRecord, trainingHistory: (LichessBotGenerationInfo) -> ModelTrainingHistory?) {
         localDrawCondition = record.outcome.localDrawCondition
         let standard = record.setup.variant == "standard"
             && LichessBotPositionTracker.isStandardStart(record.setup.initialFen)
-        moves = standard ? LichessBotGameMoveFacts(record: record) : nil
+        moves = standard ? LichessBotGameMoveFacts(record: record, trainingHistory: trainingHistory) : nil
         openingECO = record.openingECO
         openingName = record.openingName
         rejectedMoves = record.rejectedMoves.count
@@ -208,7 +222,13 @@ struct LichessBotGameFacts: Sendable, Codable, Equatable {
 }
 
 extension LichessBotGameMoveFacts {
+    /// The move facts the record alone states (see
+    /// `LichessBotGameFacts.init(record:)`).
     init(record: LichessBotGameRecord) {
+        self.init(record: record, trainingHistory: \.trainingHistory)
+    }
+
+    init(record: LichessBotGameRecord, trainingHistory: (LichessBotGenerationInfo) -> ModelTrainingHistory?) {
         typealias Definition = LichessBotSelfAssessmentDefinition
         let ourMoves = record.moves.filter(\.ours).sorted { $0.ply < $1.ply }
         let decided = ourMoves.compactMap { move in move.decision.map { (ply: move.ply, decision: $0) } }
@@ -280,6 +300,7 @@ extension LichessBotGameMoveFacts {
                 lineageRunID: generation.lineage?.lineageRunID,
                 segmentIndex: generation.lineage?.segmentIndex,
                 cumTrainerStep: generation.lineage?.cumTrainerStep,
+                trainingHistory: trainingHistory(generation),
                 ourMoves: moves
             )
         }

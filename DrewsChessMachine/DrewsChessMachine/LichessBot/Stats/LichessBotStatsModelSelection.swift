@@ -40,14 +40,14 @@ struct LichessBotStatsModelChoice: Sendable, Equatable, Identifiable {
     let key: LichessBotModelKey
     let modelID: String
     /// The checkpoint label the Models pane uses (step, cumulative step,
-    /// source, file hash prefix).
+    /// source, file hash prefix, training method).
     let checkpointLabel: String
     let games: Int
     let lastGame: Date
 
     var id: LichessBotModelKey { key }
 
-    /// "20261006-43-a89C · step 5,000 · Model file · ab12cd34 (95 games)".
+    /// "20261006-43-a89C · step 5,000 · Model file · ab12cd34 · corpus replay (95 games)".
     var menuLabel: String {
         "\(modelID) · \(checkpointLabel) (\(games) game\(games == 1 ? "" : "s"))"
     }
@@ -61,6 +61,11 @@ struct LichessBotStatsModelChoice: Sendable, Equatable, Identifiable {
             if var entry = byKey[model.key] {
                 entry.games += 1
                 entry.last = max(entry.last, row.createdAt)
+                // Named by how the weights were trained when any of the
+                // key's games says (an older game's played file may be gone).
+                if entry.facts.trainingHistory == nil, model.facts.trainingHistory != nil {
+                    entry.facts = model.facts
+                }
                 byKey[model.key] = entry
             } else {
                 byKey[model.key] = (model.facts, 1, row.createdAt)
@@ -72,7 +77,8 @@ struct LichessBotStatsModelChoice: Sendable, Equatable, Identifiable {
                 modelID: entry.facts.modelID,
                 checkpointLabel: LichessBotModelCheckpointStatistics.label(
                     key: key, sourceKind: entry.facts.sourceKind,
-                    trainingStep: entry.facts.trainingStep, cumTrainerStep: entry.facts.cumTrainerStep),
+                    trainingStep: entry.facts.trainingStep, cumTrainerStep: entry.facts.cumTrainerStep,
+                    trainingHistory: entry.facts.trainingHistory),
                 games: entry.games,
                 lastGame: entry.last)
         }.sorted { lhs, rhs in

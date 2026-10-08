@@ -59,11 +59,15 @@ final class LichessBotSessionModelProvider: LichessBotModelProvider {
         guard !before.awaitingOrigin else {
             throw LichessBotSessionModelError.championChangedDuringExport
         }
+        // Read with the identity: an origin recorded since changes it, and
+        // the check below refuses the export.
+        let trainingHistory = session.championOrigin?.trainingHistory ?? .unknown
         let weights = try await champion.exportWeights()
         guard session.network === champion, session.championWeightIdentity == before, champion.identifier == identifier else {
             throw LichessBotSessionModelError.championChangedDuringExport
         }
-        return LichessBotWeightsSnapshot(weights: weights, architecture: champion.arch, modelID: "\(identifier)", trainingStep: nil)
+        return LichessBotWeightsSnapshot(weights: weights, architecture: champion.arch, modelID: "\(identifier)", trainingStep: nil,
+                                         trainingHistory: trainingHistory)
     }
 
     func trainerSnapshot() async throws -> LichessBotWeightsSnapshot {
@@ -79,10 +83,14 @@ final class LichessBotSessionModelProvider: LichessBotModelProvider {
         guard !before.awaitingIdentity else {
             throw LichessBotSessionModelError.trainerChangedDuringExport
         }
+        // The segment training this trainer; none before its first
+        // Play-and-Train start (a trainer only forked or restored so far).
+        let trainingHistory = session.lineageTracker?.trainingHistory ?? .unknown
         let export = try await trainer.exportWeightsWithCompletedSteps()
         guard trainer.weightIdentityState == before, trainer.identifier == identifier else {
             throw LichessBotSessionModelError.trainerChangedDuringExport
         }
-        return LichessBotWeightsSnapshot(weights: export.weights, architecture: trainer.arch, modelID: "\(identifier)", trainingStep: export.completedSteps)
+        return LichessBotWeightsSnapshot(weights: export.weights, architecture: trainer.arch, modelID: "\(identifier)", trainingStep: export.completedSteps,
+                                         trainingHistory: trainingHistory)
     }
 }

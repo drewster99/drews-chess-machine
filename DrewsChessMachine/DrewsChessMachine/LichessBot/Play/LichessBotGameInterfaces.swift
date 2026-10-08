@@ -52,6 +52,11 @@ struct LichessBotGenerationInfo: Sendable, Equatable, Codable {
     /// sources, files written before lineage records, and records written
     /// before this field existed (the default keeps them decoding).
     var lineage: LichessBotGenerationLineage? = nil
+    /// How the weights were trained, as far as their source records it
+    /// (`ModelTrainingHistory`). Nil in records written before this field
+    /// existed (the default keeps them decoding); the index then reads it
+    /// from the played file (`LichessBotPlayedFileHistories`).
+    var trainingHistory: ModelTrainingHistory? = nil
 
     /// The weights this generation was built from, comparable with the
     /// settings' `LichessBotModelSettings.generationSource`.

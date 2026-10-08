@@ -36,6 +36,17 @@ extension SessionController {
         /// parent a run from the champion branches from, and how its weights
         /// reached this process (B9).
         case file(LineageTracker.ParentFile, startWeights: ChampionStartWeights)
+
+        /// How the champion's weights were trained: none for weights built
+        /// here; for a file or a promotion, its lineage record's history.
+        /// A file before lineage records reads unknown: the parent keeps its
+        /// lineage, not the `creator` that would name a CLI writer.
+        var trainingHistory: ModelTrainingHistory {
+            switch self {
+            case .built: return .unknown
+            case .file(let source, _): return ModelTrainingHistory(lineage: source.lineage, creator: nil)
+            }
+        }
     }
 
     /// How the champion's weights relate to `championOrigin` and its
