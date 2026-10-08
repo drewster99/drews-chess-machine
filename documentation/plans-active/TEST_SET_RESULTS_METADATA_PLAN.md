@@ -1,7 +1,7 @@
 # Test-set results in model-file metadata — plan
 
-**Status: proposed (2026-10-07), awaiting the owner's go-ahead.** Nothing here
-is implemented yet.
+**Status: decisions settled (2026-10-07, owner); awaiting "start".** Nothing
+here is implemented yet.
 
 ## Goal
 
@@ -79,7 +79,9 @@ optimizer, buffer or stream state.
 
 A save already exports its weights under its pauses (the GUI's one consistent
 cut). The evaluator runs **after** those pauses are released, on the exported
-arrays. Encoding and writing the file follow. So self-play and training pause
+arrays, and **before** the file is encoded: the results go into the header of
+the one and only write. There is no save → read back → probe → rewrite pass
+(the owner's preference). Encoding and writing the file follow. So self-play and training pause
 no longer than they do today, and a save takes about 0.5–1.5 s longer per file
 probed.
 
@@ -187,7 +189,25 @@ fields so a regenerated set keeps them.
 - `scripts/dcm_lineage.py` gets a reader (`test_set_results(path)`), so the
   dashboards can use embedded results instead of re-probing.
 
-## Open decisions (owner)
+## Decisions (owner, 2026-10-07)
+
+- **Both session files.** A session save evaluates and writes results into
+  **both** `champion.safetensors` and `trainer.safetensors`, each from its own
+  weights.
+- **Probe before writing** (preference, met by D2): the results go into the
+  only write of each file.
+- **O-1 Probe failure:** as recommended — save anyway, with the failure
+  recorded and logged.
+- **O-2 Session picker:** must show at least the summary elements (set
+  id/title, pElo, NLL, top-1 %, top-5 % of the largest set). Implementation
+  choice: the list row shows the trainer's (what today's pElo column
+  describes); the detail shows the champion's and the trainer's side by side.
+- **O-3:** every model write carries the results (derive, graft and
+  `--new-model` included).
+- **O-4:** no backfill of existing files now.
+- **O-5:** the 9 hand-built tactical positions are left out.
+
+## Open decisions as first proposed
 
 - **O-1 Probe failure.** Recommend: save anyway, record `failed` with the
   reason, log it, and raise the existing checkpoint-status warning in the
