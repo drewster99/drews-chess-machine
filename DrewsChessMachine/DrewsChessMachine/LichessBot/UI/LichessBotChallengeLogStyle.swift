@@ -2,17 +2,21 @@ import SwiftUI
 
 /// The one place a Challenge Log row's values become words and glyphs
 /// (challenge-log plan §3.9). Every state, sender and source is said
-/// explicitly, never left blank. Glyphs for directions and senders come from
-/// `LichessBotGameOriginStyle`, so they mean the same as on games.
+/// explicitly, never left blank. Sender glyphs and labels come from
+/// `LichessBotGameOriginStyle`, so they mean the same as on games; the
+/// direction is a word (IN / OUT), easier to scan down the column than an
+/// arrow (owner, 2026-10-07).
 enum LichessBotChallengeLogStyle {
 
     // MARK: Direction
 
-    static func directionSystemImage(_ direction: LichessBotChallengeLogDirection?) -> String {
+    /// The Direction column's cell; `directionText` is its tooltip. A row
+    /// with no recorded direction shows the log's "not recorded" dash.
+    static func directionLabel(_ direction: LichessBotChallengeLogDirection?) -> String {
         switch direction {
-        case .outgoing?: return LichessBotGameOriginStyle.systemImage(for: .outgoingSenderNotRecorded)
-        case .incoming?: return LichessBotGameOriginStyle.systemImage(for: .incoming)
-        case nil: return LichessBotGameOriginStyle.systemImage(for: .unknown)
+        case .outgoing?: return "OUT"
+        case .incoming?: return "IN"
+        case nil: return "–"
         }
     }
 

@@ -16,7 +16,8 @@ struct LichessBotChallengeLogTable: View {
             }
             .width(min: 200, ideal: 220)
             TableColumn("Direction") { row in
-                Image(systemName: LichessBotChallengeLogStyle.directionSystemImage(row.direction))
+                Text(LichessBotChallengeLogStyle.directionLabel(row.direction))
+                    .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(row.direction == nil ? Color.secondary : Color.primary)
                     .help(LichessBotChallengeLogStyle.directionText(row.direction))
                     .accessibilityLabel(LichessBotChallengeLogStyle.directionText(row.direction))

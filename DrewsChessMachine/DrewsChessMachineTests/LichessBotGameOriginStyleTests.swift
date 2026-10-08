@@ -263,9 +263,9 @@ final class LichessBotGameOriginStyleTests: XCTestCase {
         XCTAssertEqual(LogStyle.initiativeText(.reconstructedSender(.attributed(sender: .byOperator, confidence: .inferredFromAbsence))), "Operator (sheet or resend)≈")
         XCTAssertEqual(LogStyle.initiativeText(.decided(.decline(reason: .tooFast, rule: "r"))), "DCM: decline (tooFast)")
         XCTAssertEqual(LogStyle.initiativeHelp(.decided(.decline(reason: .tooFast, rule: "too fast for me"))), "DCM declined it: too fast for me")
-        XCTAssertEqual(LogStyle.directionSystemImage(.incoming), Style.systemImage(for: .incoming))
-        XCTAssertEqual(LogStyle.directionSystemImage(.outgoing), Style.systemImage(for: .outgoingSenderNotRecorded))
-        XCTAssertEqual(LogStyle.directionSystemImage(nil), Style.systemImage(for: .unknown))
+        XCTAssertEqual(LogStyle.directionLabel(.incoming), "IN")
+        XCTAssertEqual(LogStyle.directionLabel(.outgoing), "OUT")
+        XCTAssertEqual(LogStyle.directionLabel(nil), "–")
         for kind in LichessBotChallengeLogStateKind.allCases {
             XCTAssertFalse(LogStyle.label(kind).isEmpty)
         }
