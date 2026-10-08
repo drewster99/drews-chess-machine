@@ -68,6 +68,10 @@ enum LichessBotStatsStyle {
     /// it a short card left the pane no room, so changing Show or Period
     /// seemed to do nothing.
     static let paneMinimumHeight: CGFloat = 220
+    /// The Model filter's menu button: wide enough for a model ID and a
+    /// short checkpoint label, never so wide it pushes the other pickers
+    /// off a narrow card (the full label is in the menu).
+    static let modelPickerMaximumWidth: CGFloat = 360
     static let columnSpacing: CGFloat = 18
     static let rowSpacing: CGFloat = 5
     static let sectionSpacing: CGFloat = 10

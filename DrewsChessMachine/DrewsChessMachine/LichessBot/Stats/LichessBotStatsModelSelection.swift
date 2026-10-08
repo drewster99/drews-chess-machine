@@ -9,6 +9,19 @@ enum LichessBotStatsModelSelection: Sendable, Hashable, Codable {
     case all
     case model(LichessBotModelKey)
 
+    /// For a log line computed under this selection: nothing for every
+    /// model, else " model=<id>@step<n>" or " model=file:<hash prefix>".
+    var logSuffix: String {
+        switch self {
+        case .all:
+            return ""
+        case .model(.file(let sha256)):
+            return " model=file:\(sha256.prefix(8))"
+        case .model(.snapshot(let sourceKind, let modelID, let trainingStep)):
+            return " model=\(modelID)@step\(trainingStep.map(String.init) ?? "-")(\(sourceKind.rawValue))"
+        }
+    }
+
     /// Whether `row` counts. A game with no recorded model counts only for
     /// `.all`.
     func includes(_ row: LichessBotGameSummary) -> Bool {

@@ -293,11 +293,11 @@ final class LichessBotRecordStatisticsPipeline {
             } catch {
                 outcome = .failure(error)
             }
-            self?.apply(outcome, request: request, reason: reason)
+            self?.apply(outcome, request: request, reason: reason, model: model)
         }
     }
 
-    private func apply(_ outcome: Result<(LichessBotRecordStatistics, Double, [LichessBotStatsModelChoice]), Error>, request: Int, reason: LichessBotRecordStatisticsReason) {
+    private func apply(_ outcome: Result<(LichessBotRecordStatistics, Double, [LichessBotStatsModelChoice]), Error>, request: Int, reason: LichessBotRecordStatisticsReason, model: LichessBotStatsModelSelection) {
         guard request == requestCount else { return }
         appliedOutcomeCount += 1
         switch outcome {
@@ -318,7 +318,10 @@ final class LichessBotRecordStatisticsPipeline {
             // index change must still get its line.
             if indexLogPending {
                 indexLogPending = false
-                SessionLogger.shared.log(LichessBotRecordStatsLogLine.text(statistics, reason: LichessBotRecordStatisticsReason.index.rawValue, milliseconds: milliseconds))
+                // The numbers are the selected model's when a model is
+                // selected; the line says which.
+                SessionLogger.shared.log(LichessBotRecordStatsLogLine.text(statistics, reason: LichessBotRecordStatisticsReason.index.rawValue, milliseconds: milliseconds)
+                    + model.logSuffix)
             }
         case .failure(let error):
             if isShutDown, error is LichessBotFileQueueError {

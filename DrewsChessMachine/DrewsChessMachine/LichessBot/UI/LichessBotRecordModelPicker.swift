@@ -18,7 +18,7 @@ struct LichessBotRecordModelPicker: View {
                 Text("Remembered model (loading)").tag(LichessBotStatsModelSelection.model(key))
             }
         }
-        .frame(maxWidth: 360)
+        .frame(maxWidth: LichessBotStatsStyle.modelPickerMaximumWidth)
         .help("Count only the games a model played: the model that chose most of DCM's moves in the game (a mid-game switch counts for the majority model). Applies to every pane and the period table.")
     }
 

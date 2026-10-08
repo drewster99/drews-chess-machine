@@ -43,6 +43,12 @@ final class LichessBotStatsModelFilterTests: XCTestCase {
         XCTAssertEqual(choices.first?.menuLabel, "B · step 2,000 · \(LichessBotModelSourceKind.trainerSnapshot.displayName) (2 games)")
     }
 
+    func testTheLogSuffixNamesTheSelection() {
+        XCTAssertEqual(LichessBotStatsModelSelection.all.logSuffix, "")
+        XCTAssertEqual(LichessBotStatsModelSelection.model(Self.key("B", step: 2000)).logSuffix, " model=B@step2000(trainerSnapshot)")
+        XCTAssertEqual(LichessBotStatsModelSelection.model(.file(sha256: "ab12cd34ef")).logSuffix, " model=file:ab12cd34")
+    }
+
     func testTheSelectionRoundTripsThroughJSON() throws {
         for selection in [LichessBotStatsModelSelection.all, .model(Self.key("A", step: 1000)), .model(.file(sha256: "ab12"))] {
             XCTAssertEqual(try JSONDecoder().decode(LichessBotStatsModelSelection.self, from: JSONEncoder().encode(selection)), selection)
