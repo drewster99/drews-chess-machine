@@ -227,7 +227,8 @@ extension ModelDerivation {
     }
 
     /// Graft the model in `sourceData` onto `fresh.architecture`. Pure: no
-    /// file, log or GPU work (`fresh` was built beforehand). `targetPreset`
+    /// file, log or GPU work of its own (`fresh` was built beforehand; the
+    /// grafted weights' test-set results come from `testSetEvaluation`). `targetPreset`
     /// is the target's preset name, nil for a target given as an
     /// architecture file; `newName` renames the output
     /// (`ModelNaming.ofGraft`).
@@ -243,7 +244,8 @@ extension ModelDerivation {
         createdAtUnix: Int64,
         build: String,
         invocationArguments: [String],
-        renamedTo newName: String?
+        renamedTo newName: String?,
+        testSetEvaluation: ModelTestSetEvaluation
     ) throws -> GraftResult {
         let (sourceTensors, sourceMetadata) = try SafetensorsFile.decode(sourceData)
         let parentModelID = try requirePlainModelSource(tensors: sourceTensors, metadata: sourceMetadata,
@@ -415,6 +417,7 @@ extension ModelDerivation {
             metadata[ValueHeadRecentering.metadataKey] = marker
         }
         for (key, value) in try lineage.metadataEntries() { metadata[key] = value }
+        metadata = try ModelTestSetResultsField.metadata(metadata, addingResultsFor: outputTensors, evaluation: testSetEvaluation)
 
         let data = try SafetensorsFile.encode(tensors: outputTensors, metadata: metadata)
 

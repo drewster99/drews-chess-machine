@@ -1791,6 +1791,11 @@ enum CorpusReplayRunner {
                         // segment is one process), so its summary is the
                         // segment's.
                         healthAlarms: trainingHealth.monitor.segmentSummary()))
+                // Evaluated once: the rolling file and the enumerated copy
+                // are these same bytes.
+                let testSetResults = await ModelTestSetEvaluator.modelFiles.evaluateForSave(
+                    weights: weights, architecture: arch,
+                    file: "trainer step \(snapshot.schedule.completedTrainSteps) (\(outModelURL.lastPathComponent))")
                 encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(saveDate.timeIntervalSince1970),
@@ -1798,7 +1803,8 @@ enum CorpusReplayRunner {
                     weights: weights,
                     architecture: arch,
                     includesVelocity: true,
-                    lineage: lineage
+                    lineage: lineage,
+                    testSetResults: testSetResults
                 )
                 savedTrainerStep = snapshot.schedule.completedTrainSteps
                 try FileManager.default.createDirectory(

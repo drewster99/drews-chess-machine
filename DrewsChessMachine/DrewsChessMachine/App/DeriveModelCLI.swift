@@ -229,7 +229,8 @@ enum DeriveModelCLI {
                 createdAtUnix: Int64(Date().timeIntervalSince1970),
                 build: "\(BuildInfo.buildNumber) (\(BuildInfo.gitHash)\(BuildInfo.gitDirty ? "*" : ""))",
                 invocationArguments: CommandLine.arguments,
-                renamedTo: newName)
+                renamedTo: newName,
+                testSetEvaluation: ModelTestSetEvaluator.modelFiles.blockingEvaluation(file: outURL.lastPathComponent))
         } catch {
             SessionLogger.shared.log("[DERIVE] refused \(sourceURL.lastPathComponent): \(error)")
             SessionLogger.shared.shutdown()
@@ -366,7 +367,8 @@ enum DeriveModelCLI {
                 createdAtUnix: Int64(Date().timeIntervalSince1970),
                 build: "\(BuildInfo.buildNumber) (\(BuildInfo.gitHash)\(BuildInfo.gitDirty ? "*" : ""))",
                 invocationArguments: CommandLine.arguments,
-                renamedTo: newName)
+                renamedTo: newName,
+                testSetEvaluation: ModelTestSetEvaluator.modelFiles.blockingEvaluation(file: outURL.lastPathComponent))
         } catch {
             SessionLogger.shared.log("[DERIVE] graft refused \(sourceURL.lastPathComponent): \(error)")
             SessionLogger.shared.shutdown()

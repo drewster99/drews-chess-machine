@@ -1253,6 +1253,11 @@ enum CheckpointManager {
     /// Runs synchronously in the caller's task context. Callers
     /// should invoke via `Task.detached` to keep MPSGraph work off
     /// the main actor.
+    ///
+    /// `testSetEvaluator` evaluates `weights` before the file is encoded,
+    /// so the results go into the file's one write
+    /// (`ModelTestSetResultsField`); a failed evaluation is recorded, never
+    /// fatal.
     static func saveModel(
         weights: [[Float]],
         modelID: String,
@@ -1260,6 +1265,7 @@ enum CheckpointManager {
         metadata: ModelCheckpointMetadata,
         architecture: NetworkArchitecture = .current,
         lineage: LineageRecord,
+        testSetEvaluator: any ModelTestSetEvaluating,
         trigger: String,
         at date: Date = Date(),
         modelsDirectory: URL = CheckpointPaths.modelsDir
@@ -1294,6 +1300,8 @@ enum CheckpointManager {
             }
         }
 
+        let testSetResults = await testSetEvaluator.evaluateForSave(
+            weights: weights, architecture: architecture, file: filename)
         let encoded = try SafetensorsModelIO.encode(
             modelID: modelID,
             createdAtUnix: createdAtUnix,
@@ -1301,7 +1309,8 @@ enum CheckpointManager {
             weights: weights,
             architecture: architecture,
             includesVelocity: false,
-            lineage: lineage
+            lineage: lineage,
+            testSetResults: testSetResults
         )
 
         do {
@@ -1377,6 +1386,12 @@ enum CheckpointManager {
     /// it does not run when the save writes no buffer or fails before the
     /// write completes.
     ///
+    /// `testSetEvaluator` evaluates the champion's and the trainer's weights
+    /// before their files are encoded, so each file carries its own
+    /// weights' results in its one write (`ModelTestSetResultsField`). The
+    /// replay buffer is written first, so a caller holding self-play paused
+    /// until `onReplayBufferWritten` doesn't wait for the evaluations.
+    ///
     /// `sessionsDirectory` is the canonical `Sessions/` folder in the
     /// app; tests pass a temporary folder.
     static func saveSession(
@@ -1392,6 +1407,7 @@ enum CheckpointManager {
         lineage: LineageRecord,
         championLineage: LineageRecord,
         architecture: NetworkArchitecture = .current,
+        testSetEvaluator: any ModelTestSetEvaluating,
         replayBuffer: ReplayBuffer? = nil,
         chartSnapshot: ChartCoordinatorSnapshot? = nil,
         trigger: String,
@@ -1446,37 +1462,6 @@ enum CheckpointManager {
             }
         }
 
-        // Encode the model files before writing anything into the
-        // staging directory; an encoding failure exits through the
-        // cleanup above. session.json is encoded LATER — after the
-        // replay buffer has been written — so its
-        // `replayBuffer*` counters can be derived from the snapshot
-        // the buffer write captured atomically under its own lock,
-        // rather than from a stale snapshot the caller took before
-        // self-play paused. See the writtenSnap section below.
-        let championEncoded = try SafetensorsModelIO.encode(
-            modelID: championID,
-            createdAtUnix: championCreatedAtUnix,
-            metadata: championMetadata,
-            weights: championWeights,
-            architecture: architecture,
-            includesVelocity: false,
-            lineage: championLineage
-        )
-
-        // Trainer file = base weights (trainables + BN running stats) followed by
-        // optimizer velocity (one per trainable, trainable order) — named
-        // opt.<trainable>.velocity by SafetensorsModelIO.
-        let trainerEncoded = try SafetensorsModelIO.encode(
-            modelID: trainerID,
-            createdAtUnix: trainerCreatedAtUnix,
-            metadata: trainerMetadata,
-            weights: trainerWeights,
-            architecture: architecture,
-            includesVelocity: true,
-            lineage: lineage
-        )
-
         let championTmpURL = SessionCheckpointLayout.championURL(in: tmpDirURL)
         let trainerTmpURL = SessionCheckpointLayout.trainerURL(in: tmpDirURL)
         let stateTmpURL = SessionCheckpointLayout.stateURL(in: tmpDirURL)
@@ -1494,13 +1479,6 @@ enum CheckpointManager {
         // `state.hasChartData` nil — load-time code falls back to the
         // existing behavior (chart pane starts fresh).
         let wantsChartData = chartSnapshot != nil
-
-        do {
-            try championEncoded.write(to: championTmpURL, options: [.atomic])
-            try trainerEncoded.write(to: trainerTmpURL, options: [.atomic])
-        } catch {
-            throw CheckpointManagerError.writeFailed(tmpDirURL, error)
-        }
 
         // Optional replay-buffer dump. Written only when the caller
         // passes a buffer AND the state flags `hasReplayBuffer == true`.
@@ -1538,6 +1516,50 @@ enum CheckpointManager {
                 throw CheckpointManagerError.writeFailed(bufferTmpURL, error)
             }
             onReplayBufferWritten?()
+        }
+
+        // The model files, after the buffer (see `testSetEvaluator` above).
+        // Each file's weights are evaluated first, so its results are in
+        // its only write. session.json is encoded later still, so its
+        // `replayBuffer*` counters come from the snapshot the buffer write
+        // captured atomically under its own lock (the writtenSnap section
+        // above), not from a stale snapshot the caller took before
+        // self-play paused.
+        let championTestSetResults = await testSetEvaluator.evaluateForSave(
+            weights: championWeights, architecture: architecture,
+            file: "\(dirName)/\(SessionCheckpointLayout.championURL(in: tmpDirURL).lastPathComponent)")
+        let trainerTestSetResults = await testSetEvaluator.evaluateForSave(
+            weights: trainerWeights, architecture: architecture,
+            file: "\(dirName)/\(SessionCheckpointLayout.trainerURL(in: tmpDirURL).lastPathComponent)")
+        let championEncoded = try SafetensorsModelIO.encode(
+            modelID: championID,
+            createdAtUnix: championCreatedAtUnix,
+            metadata: championMetadata,
+            weights: championWeights,
+            architecture: architecture,
+            includesVelocity: false,
+            lineage: championLineage,
+            testSetResults: championTestSetResults
+        )
+
+        // Trainer file = base weights (trainables + BN running stats) followed by
+        // optimizer velocity (one per trainable, trainable order) — named
+        // opt.<trainable>.velocity by SafetensorsModelIO.
+        let trainerEncoded = try SafetensorsModelIO.encode(
+            modelID: trainerID,
+            createdAtUnix: trainerCreatedAtUnix,
+            metadata: trainerMetadata,
+            weights: trainerWeights,
+            architecture: architecture,
+            includesVelocity: true,
+            lineage: lineage,
+            testSetResults: trainerTestSetResults
+        )
+        do {
+            try championEncoded.write(to: championTmpURL, options: [.atomic])
+            try trainerEncoded.write(to: trainerTmpURL, options: [.atomic])
+        } catch {
+            throw CheckpointManagerError.writeFailed(tmpDirURL, error)
         }
 
         // Optional chart-data dump. Two plain-JSON files

@@ -842,6 +842,7 @@ extension SessionController {
                         lineage: promotionLineage,
                         championLineage: championLineage,
                         architecture: promotedArch,
+                        testSetEvaluator: ModelTestSetEvaluator.modelFiles,
                         replayBuffer: bufferForAutosave,
                         chartSnapshot: chartSnapshotForAutosave,
                         trigger: SessionSaveTrigger.promotionDiskTag,

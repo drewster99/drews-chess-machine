@@ -120,6 +120,7 @@ extension SessionController {
                         metadata: metadata,
                         architecture: championArch,
                         lineage: lineage,
+                        testSetEvaluator: ModelTestSetEvaluator.modelFiles,
                         trigger: "manual"
                     )
                     return .success(url)
@@ -608,6 +609,7 @@ extension SessionController {
                         lineage: lineage,
                         championLineage: championLineage,
                         architecture: sessionArch,
+                        testSetEvaluator: ModelTestSetEvaluator.modelFiles,
                         replayBuffer: bufferForSave,
                         chartSnapshot: chartSnapshotForSave,
                         trigger: diskTag,

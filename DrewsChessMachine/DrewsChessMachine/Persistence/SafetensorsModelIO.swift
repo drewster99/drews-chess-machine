@@ -158,7 +158,9 @@ enum SafetensorsModelIO {
     }
 
     /// Encode a model file to safetensors bytes. `weights` order must match
-    /// `tensorNames(for:includesVelocity:)`.
+    /// `tensorNames(for:includesVelocity:)`. `testSetResults` is the
+    /// evaluation of these same weights (`ModelTestSetEvaluating`); it is
+    /// required so no writer can leave it out.
     static func encode(
         modelID: String,
         createdAtUnix: Int64,
@@ -166,7 +168,8 @@ enum SafetensorsModelIO {
         weights: [[Float]],
         architecture: NetworkArchitecture,
         includesVelocity: Bool,
-        lineage: LineageRecord
+        lineage: LineageRecord,
+        testSetResults: ModelTestSetResultsField
     ) throws -> Data {
         let names = tensorNames(for: architecture, includesVelocity: includesVelocity)
         guard weights.count == names.count else {
@@ -241,6 +244,7 @@ enum SafetensorsModelIO {
 
         // The file's lineage: the record's JSON plus its derived flat mirrors.
         for (key, value) in try lineage.metadataEntries() { md[key] = value }
+        md[ModelTestSetResultsField.metadataKey] = try testSetResults.metadataValue()
 
         return try SafetensorsFile.encode(tensors: tensors, metadata: md)
     }

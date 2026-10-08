@@ -10,6 +10,25 @@ protocol ModelTestSetEvaluating: Sendable {
     func evaluate(weights: [[Float]], architecture: NetworkArchitecture) async -> ModelTestSetResultsField
 }
 
+extension ModelTestSetEvaluating {
+    /// `evaluate`, for a file about to be written: logs one
+    /// `[CHECKPOINT] test sets <file>` line with the time it took and the
+    /// results or the failure. Every writer goes through here.
+    func evaluateForSave(weights: [[Float]], architecture: NetworkArchitecture, file: String) async -> ModelTestSetResultsField {
+        let start = DispatchTime.now().uptimeNanoseconds
+        let field = await evaluate(weights: weights, architecture: architecture)
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+        let tag: String
+        if case .failed = field {
+            tag = "[CHECKPOINT-ERR]"
+        } else {
+            tag = "[CHECKPOINT]"
+        }
+        SessionLogger.shared.log("\(tag) test sets \(file) (\(String(format: "%.0f", ms)) ms): \(field.logSummary)")
+        return field
+    }
+}
+
 /// The production evaluator. Builds a fresh inference network from the
 /// weights' own architecture, loads the weights, runs every set in one
 /// batched forward (`TacticalProbeRunner.runBatch`, the probe watcher's and
@@ -25,9 +44,34 @@ protocol ModelTestSetEvaluating: Sendable {
 struct ModelTestSetEvaluator: ModelTestSetEvaluating {
     let testSets: [ProbeTestSet]
 
+    /// The evaluator every model-file writer uses: the bundled sets
+    /// (`LichessProbeData.modelFileTestSets`).
+    static let modelFiles = ModelTestSetEvaluator(testSets: LichessProbeData.modelFileTestSets)
+
     /// Graph builds are long synchronous work; they run here, never on the
     /// cooperative pool.
     private static let buildQueue = DispatchQueue(label: "ModelTestSetEvaluator.build", qos: .userInitiated)
+
+    /// A synchronous `ModelTestSetEvaluation` for the command-line writers
+    /// that assemble a file synchronously (`--derive-model`, graft). It
+    /// blocks the calling thread until the evaluation ends, so it must be
+    /// called from a plain thread (the CLI's main thread), never from a
+    /// Swift-concurrency task.
+    func blockingEvaluation(file: String) -> ModelTestSetEvaluation {
+        { weights, architecture in
+            let box = BlockingEvaluationBox()
+            let done = DispatchSemaphore(value: 0)
+            Task.detached(priority: .userInitiated) {
+                box.field = await self.evaluateForSave(weights: weights, architecture: architecture, file: file)
+                done.signal()
+            }
+            done.wait()
+            guard let field = box.field else {
+                preconditionFailure("ModelTestSetEvaluator.blockingEvaluation: the evaluation ended without a result")
+            }
+            return field
+        }
+    }
 
     func evaluate(weights: [[Float]], architecture: NetworkArchitecture) async -> ModelTestSetResultsField {
         do {
@@ -176,4 +220,10 @@ struct ProbeBatterySummary {
         }
         puzzleElo = LichessProbeHistory.mlePuzzleElo(pairs: pairs)
     }
+}
+
+/// Hands a detached evaluation's result back to the blocked thread; the
+/// semaphore orders the write before the read.
+private final class BlockingEvaluationBox: @unchecked Sendable {
+    var field: ModelTestSetResultsField?
 }

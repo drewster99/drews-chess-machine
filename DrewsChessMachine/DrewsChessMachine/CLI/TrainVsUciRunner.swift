@@ -751,6 +751,7 @@ enum TrainVsUciRunner {
                     // describes; a model file carries no trainer state.
                     championLineage: try save.lineage.withoutTrainerState(),
                     architecture: arch,
+                    testSetEvaluator: ModelTestSetEvaluator.modelFiles,
                     replayBuffer: bufferForSave,
                     chartSnapshot: nil,
                     trigger: kind.diskTag,
@@ -784,6 +785,9 @@ enum TrainVsUciRunner {
             }
             do {
                 let save = try await trainerSave(step: step, reason: reason)
+                let testSetResults = await ModelTestSetEvaluator.modelFiles.evaluateForSave(
+                    weights: save.snapshot.trainerWeights, architecture: arch,
+                    file: "enumerated checkpoint, trainer step \(save.snapshot.schedule.completedTrainSteps)")
                 let encoded = try SafetensorsModelIO.encode(
                     modelID: config.runModelID,
                     createdAtUnix: Int64(save.savedAt.timeIntervalSince1970),
@@ -791,7 +795,8 @@ enum TrainVsUciRunner {
                     weights: save.snapshot.trainerWeights,
                     architecture: arch,
                     includesVelocity: true,
-                    lineage: save.lineage)
+                    lineage: save.lineage,
+                    testSetResults: testSetResults)
                 let savedTrainerStep = save.snapshot.schedule.completedTrainSteps
                 let written = try enumeratedWriter.write(encoded, trainerStep: savedTrainerStep)
                 enumeratedSaveFailures.recordSuccess()

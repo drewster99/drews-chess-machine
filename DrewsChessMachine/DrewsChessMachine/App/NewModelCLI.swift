@@ -137,6 +137,9 @@ enum NewModelCLI {
                     + "BN warm-up under policy tail precision \(arch.policyTailPrecision.rawValue)"
             )
             let mintDate = Date()
+            let testSetResults = try syncWait { () async throws -> ModelTestSetResultsField in
+                await ModelTestSetEvaluator.modelFiles.evaluateForSave(weights: weights, architecture: arch, file: outURL.lastPathComponent)
+            }
             let encoded = try SafetensorsModelIO.encode(
                 modelID: modelID,
                 createdAtUnix: Int64(mintDate.timeIntervalSince1970),
@@ -145,7 +148,8 @@ enum NewModelCLI {
                 architecture: arch,
                 includesVelocity: false,
                 lineage: try LineageTracker.mintRecord(pathKind: .newModel, argv: CommandLine.arguments,
-                                                       initialization: initialization, naming: naming, at: mintDate)
+                                                       initialization: initialization, naming: naming, at: mintDate),
+                testSetResults: testSetResults
             )
             try FileManager.default.createDirectory(
                 at: outURL.deletingLastPathComponent(),

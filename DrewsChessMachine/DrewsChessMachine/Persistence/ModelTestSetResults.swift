@@ -293,3 +293,26 @@ struct ModelTestSetResults: Equatable, Sendable {
         let total: Int
     }
 }
+
+/// Evaluates a model's weights for a writer that has no evaluator of its own
+/// (`ModelDerivation.derive`, `ModelGraft.graft`, which do no GPU work
+/// themselves): the caller injects one, usually `ModelTestSetEvaluator`
+/// through a synchronous bridge.
+typealias ModelTestSetEvaluation = (_ weights: [[Float]], _ architecture: NetworkArchitecture) throws -> ModelTestSetResultsField
+
+extension ModelTestSetResultsField {
+    /// `metadata` plus the results key, for a writer that assembles the
+    /// tensors and metadata itself. The weights are evaluated as a load would
+    /// read them: the file is encoded without the key and decoded through
+    /// the normal loader (value-head handling included), in memory.
+    static func metadata(_ metadata: [String: String], addingResultsFor tensors: [SafetensorsTensor],
+                         evaluation: ModelTestSetEvaluation) throws -> [String: String] {
+        var withoutResults = metadata
+        withoutResults[metadataKey] = nil
+        let provisional = try SafetensorsFile.encode(tensors: tensors, metadata: withoutResults)
+        let decoded = try SafetensorsModelIO.decode(provisional)
+        var withResults = withoutResults
+        withResults[metadataKey] = try evaluation(decoded.file.weights, decoded.architecture).metadataValue()
+        return withResults
+    }
+}

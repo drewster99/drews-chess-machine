@@ -162,6 +162,9 @@ enum ModelDerivation {
         SafetensorsFile.contentHashKey,
         derivationHistoryKey,
         LineageRecord.metadataKey,
+        // The source's results describe the source's weights; the derived
+        // file is evaluated anew.
+        ModelTestSetResultsField.metadataKey,
         // A pre-v12 source's recorded tail is resolved into the target
         // architecture, which states it from v12; a copied key would be a
         // second copy, refused on load at v12.
@@ -329,7 +332,8 @@ enum ModelDerivation {
         createdAtUnix: Int64,
         build: String,
         invocationArguments: [String],
-        renamedTo newName: String?
+        renamedTo newName: String?,
+        testSetEvaluation: ModelTestSetEvaluation
     ) throws -> Result {
         guard !operations.isEmpty else { throw DeriveError.noOperations }
 
@@ -448,6 +452,9 @@ enum ModelDerivation {
             pathKind: .derive, argv: invocationArguments,
             at: Date(timeIntervalSince1970: TimeInterval(createdAtUnix)))
         for (key, value) in try lineage.metadataEntries() { metadata[key] = value }
+        // The derived weights' own test-set results (the source's are not
+        // copied: `rewrittenMetadataKeys`).
+        metadata = try ModelTestSetResultsField.metadata(metadata, addingResultsFor: outputTensors, evaluation: testSetEvaluation)
 
         let data = try SafetensorsFile.encode(tensors: outputTensors, metadata: metadata)
 
