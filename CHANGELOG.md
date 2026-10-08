@@ -9,6 +9,14 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 21:59 — Review fixes: test-set results and the probe path `861f51ff`
+
+- A NaN/Inf forward pass is a failed test-set evaluation (and an error in `--probe-model` and the probe watcher), never plausible numbers from the uniform fallback.
+- Identical base weights are evaluated once per process (`ModelTestSetMemo`: session champion = trainer base, train-vs-UCI final save, an unchanged GUI champion); a corpus check run had evaluated the step-2000 weights twice.
+- Every encoding check runs before slow work (`SafetensorsModelIO.prepare`; a session save checks both files before writing the replay buffer); a wrong-sized tensor is now refused by name instead of trapping or being truncated.
+- One async→sync bridge (`runBlocking`) replaces 8 copies; the probe fold runs off the cooperative pool; one battery encoder.
+- Session picker rows show the last probe tick's pElo again beside the saved results. Verified: a 2,000-step corpus run's checkpoints record exactly what `--probe-model` reports on them (every field, every theme).
+
 ## 2026-10-07 20:46 — Every model file carries its weights' puzzle test-set results `c06a790b` `23a1b027` `baad50e3` `6a31f4a6`
 
 - New `__metadata__` key `dcm_test_set_results` (JSON, schema 1) on every model file DCM writes: GUI session saves (champion and trainer, each its own weights), File ▸ Save Champion, corpus replay, train-vs-UCI, `--new-model`, `--derive-model`, graft. Per set (`lichess-200`, `lichess-wide`, with title, description, puzzle-list fingerprint): pElo or a bound, NLL, positions, top-1 / top-5 counts, average probability and rank of the right move, per-theme correct / total.
