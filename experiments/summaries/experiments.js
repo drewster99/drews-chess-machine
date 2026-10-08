@@ -431,7 +431,8 @@ window.DCM_EXPERIMENTS = [
   "takeaway": "Exact reruns of B-silu from 18k with grad_clip_max_norm 2.0 and 5.0 both left B-silu's path at 19,800, exactly where the 1.0 cap did, and neither blew up (21k pElo 1373.2 and 1353.6 vs 457.4; 0 parked channels; 1560.6 and 1567.3 at 23k vs ReLU B's 1573.4). So B-silu had one unlogged step with a pre-clip norm above 5, more than 13x its usual 0.33-0.38, and any cap from 1 to 5 cut it. A cap at about 3x the recent median catches such a step without binding in normal training: the relative gradient cap, now on main, defaults to log only until its validation runs pass.",
   "related": [
    "E-0020",
-   "E-0021"
+   "E-0021",
+   "E-0024"
   ],
   "supersededBy": null
  },
@@ -454,6 +455,26 @@ window.DCM_EXPERIMENTS = [
    "E-0020",
    "E-0021",
    "E-0023"
+  ],
+  "supersededBy": null
+ },
+ {
+  "id": "E-0025",
+  "date": "2026-10-07",
+  "file": "E-0025_2026-10-07_zlra-selfplay-lr-cycle.html",
+  "title": "Self-play on the LR cycle (ZlrA): flat puzzle rating, cause open",
+  "status": "stopped",
+  "tags": [
+   "self-play",
+   "lr-schedule",
+   "silu",
+   "failure"
+  ],
+  "takeaway": "The 0.001–1.0 LR cycle that works on corpus replay left self-play flat at about 540 wide pElo with losses far below every earlier run; do not use it for self-play until the follow-ups (replay with the same settings, self-play at a fixed 0.01) say why.",
+  "related": [
+   "E-0021",
+   "E-0020",
+   "E-0024"
   ],
   "supersededBy": null
  }

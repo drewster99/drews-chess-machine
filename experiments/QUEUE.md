@@ -8,6 +8,8 @@ conversation.
 
 | started | experiment | ends (est.) |
 |---|---|---|
+| 2026-10-08 09:46 | R-replay: ZlrA's settings on corpus replay (`20261008-zlra-selfplay-lr/`) | 60,000 steps |
+| 2026-10-08 09:46 | R-fixedlr: ZlrA's settings on self-play, LR 0.01 / momentum 0.90 fixed (`20261008-zlra-selfplay-lr/`) | until stopped |
 
 
 ## Next (in order)
@@ -31,6 +33,10 @@ conversation.
 
 ## Finished
 
+- 2026-10-07 16:47 → 2026-10-08 09:41 — ZlrA GUI self-play on the 0.001–1.0 LR cycle (`20261008-zlra-selfplay-lr/`, E-0025):
+  stopped by the owner at 51,135 steps. Wide pElo flat at about 540 from 20k (every earlier fresh self-play run 630–680 by
+  40–50k) while pLoss / vLoss sat far below every other run (0.72 / 0.16 at 50k); BN running-variance ratio ratcheted to
+  1,655. Cause open; follow-ups R-replay and R-fixedlr launched.
 - 2026-10-07 06:07 → 07:28 — Relative gradient cap validation V-1 and V-3 (`20261005-lr-schedule-ab/`, E-0024; plan
   `RELATIVE_GRADIENT_CAP_PLAN.md` Part V). V-1: exact log-only rerun of B-silu from 18k to 21k, byte-identical to B-silu; healthy
   steps ≤ 1.39× their trailing median, the breaking steps 18–48× (19,785, 19,795 and the 11-step burst 20,599–20,609) → k = 3.
