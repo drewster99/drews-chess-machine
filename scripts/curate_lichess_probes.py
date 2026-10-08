@@ -59,6 +59,14 @@ class QualityFilters:
 class Preset:
     name: str
     out_path: Path
+    # The set's identity, written first in the JSON `metadata` block. The app
+    # reads these (`LichessProbeData`) and records them, with a fingerprint of
+    # the puzzle list, beside each model file's results, so a set keeps its
+    # name and a regenerated set is told apart by its fingerprint.
+    set_id: str
+    title: str
+    # Formatted with the realized puzzle count (`total`) and `db_snapshot`.
+    description_template: str
     # Priority order: a puzzle is assigned to the FIRST bucket it qualifies
     # for, so tactical themes win over phase themes and a puzzle is never
     # double-counted across buckets.
@@ -99,6 +107,9 @@ def uniform_tiers(lo: int, hi: int, width: int, count: int) -> list[tuple[int, i
 LEGACY = Preset(
     name="legacy",
     out_path=Path("/tmp/lichess_probes_200.json"),
+    set_id="lichess-200",
+    title="Lichess puzzles, 200",
+    description_template="{total} Lichess puzzles rated 800\u20131800, 25 in each of 8 themes.",
     theme_priority=[
         "mateIn1", "hangingPiece", "fork", "pin", "skewer",
         "endgame", "middlegame", "opening",
@@ -117,6 +128,10 @@ LEGACY = Preset(
 WIDE = Preset(
     name="wide",
     out_path=Path("/tmp/lichess_probes_wide.json"),
+    set_id="lichess-wide",
+    title="Lichess puzzles, wide",
+    description_template=("{total:,} Lichess puzzles rated 400\u20133200, flat per-100 density 550\u20132849, "
+                          "13 themes, mate-weighted (puzzle DB {db_snapshot})."),
     theme_priority=[
         "mateIn1", "mateIn2",
         "hangingPiece", "fork", "pin", "skewer",
@@ -284,6 +299,9 @@ def validate_and_emit(selected: list[dict], preset: Preset, db_snapshot: str) ->
     f = preset.filters
     output = {
         "metadata": {
+            "id": preset.set_id,
+            "title": preset.title,
+            "description": preset.description_template.format(total=len(out_entries), db_snapshot=db_snapshot),
             "source": "Lichess puzzle DB (CC0) — database.lichess.org/lichess_db_puzzle.csv.zst",
             "db_snapshot": db_snapshot,
             "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

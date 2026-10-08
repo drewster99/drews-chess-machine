@@ -764,7 +764,7 @@ struct LichessProbeDetailView: View {
         let cmpAgg = comparison?.aggregatesByCategory[group.theme]
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 12) {
-                Text(themeLabel(group.theme))
+                Text(group.theme.title)
                     .font(.system(.body).weight(.semibold))
                     .frame(width: 180, alignment: .leading)
                 aggregateMetricCells(
@@ -1478,20 +1478,6 @@ struct LichessProbeDetailView: View {
                 return aid < bid
             }
             return ThemeGroup(theme: theme, results: sorted)
-        }
-    }
-
-    private func themeLabel(_ theme: ProbeCategory) -> String {
-        switch theme {
-        case .lichessMateIn1:      return "Mate in 1"
-        case .lichessHangingPiece: return "Hanging piece"
-        case .lichessFork:         return "Fork"
-        case .lichessPin:          return "Pin"
-        case .lichessSkewer:       return "Skewer"
-        case .lichessOpening:      return "Opening"
-        case .lichessMiddlegame:   return "Middlegame"
-        case .lichessEndgame:      return "Endgame"
-        default:                   return theme.rawValue
         }
     }
 

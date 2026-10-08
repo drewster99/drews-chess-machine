@@ -181,7 +181,7 @@ struct LichessProbeMonitorView: View {
         )
 
         HStack(spacing: 8) {
-            Text(themeLabel(theme))
+            Text(theme.title)
                 .font(.system(.body))
                 .frame(width: 140, alignment: .leading)
             Text(argmaxStr)
@@ -215,7 +215,7 @@ struct LichessProbeMonitorView: View {
     @ViewBuilder
     private func placeholderRow(theme: ProbeCategory) -> some View {
         HStack(spacing: 8) {
-            Text(themeLabel(theme))
+            Text(theme.title)
                 .font(.system(.body))
                 .foregroundStyle(.secondary)
                 .frame(width: 140, alignment: .leading)
@@ -277,20 +277,6 @@ struct LichessProbeMonitorView: View {
     }
 
     // MARK: Helpers
-
-    private func themeLabel(_ theme: ProbeCategory) -> String {
-        switch theme {
-        case .lichessMateIn1:      return "Mate in 1"
-        case .lichessHangingPiece: return "Hanging piece"
-        case .lichessFork:         return "Fork"
-        case .lichessPin:          return "Pin"
-        case .lichessSkewer:       return "Skewer"
-        case .lichessOpening:      return "Opening"
-        case .lichessMiddlegame:   return "Middlegame"
-        case .lichessEndgame:      return "Endgame"
-        default:                   return theme.rawValue
-        }
-    }
 
     private func deltaColor(current: Float, previous: Float?) -> Color {
         guard let prev = previous else { return .primary }

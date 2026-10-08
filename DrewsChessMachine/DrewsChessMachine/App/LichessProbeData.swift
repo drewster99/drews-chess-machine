@@ -1,4 +1,22 @@
+import CryptoKit
 import Foundation
+
+/// One bundled puzzle test set: who it is, and its probes. Its identity
+/// comes from the set file's own `metadata` block (written by
+/// `scripts/curate_lichess_probes.py`), never from code, so a renamed or
+/// regenerated set is described by its file.
+struct ProbeTestSet: Sendable {
+    /// Stable name, e.g. `lichess-wide`. A regenerated set may keep its id;
+    /// `fingerprintSHA256` tells the versions apart.
+    let id: String
+    let title: String
+    let description: String
+    /// SHA-256 (lowercase hex) of the puzzle list in file order, one line per
+    /// puzzle: `id \t theme \t rating \t fen \t best_move_uci \n`. Results
+    /// from two files are comparable only when their fingerprints match.
+    let fingerprintSHA256: String
+    let probes: [TacticalProbe]
+}
 
 /// Large probe set sourced from the Lichess puzzle database (CC0). Two
 /// hundred positions across eight theme buckets — `mateIn1`,
@@ -29,14 +47,24 @@ import Foundation
 enum LichessProbeData {
 
     /// Bundled 200-puzzle set, parsed at first access.
-    static var largeSet: [TacticalProbe] { loaded.probes }
+    static var largeSet: [TacticalProbe] { loaded.testSet.probes }
+
+    /// The 200-puzzle set with its identity.
+    static var set200: ProbeTestSet { loaded.testSet }
+
+    /// The wide set with its identity.
+    static var wide: ProbeTestSet { loadedWide.testSet }
+
+    /// The sets every model file DCM writes is evaluated on, in the order
+    /// their results are recorded (`ModelTestSetEvaluator`).
+    static var modelFileTestSets: [ProbeTestSet] { [set200, wide] }
 
     /// The ~4,435-puzzle WIDE longitudinal probe set (rating 400–3200,
     /// flat per-100 density 550–2800, mate-weighted), from the bundled
     /// `lichess_probes_wide.json`. Runs in parallel with `largeSet` as a
     /// fixed long-term yardstick — the 200-set is left completely
     /// untouched. See `LichessProbeWatcher`.
-    static var wideSet: [TacticalProbe] { loadedWide.probes }
+    static var wideSet: [TacticalProbe] { loadedWide.testSet.probes }
 
     /// Sidecar metadata keyed by `TacticalProbe.name` so the detail
     /// window and the JSON exporter can surface the original Lichess
@@ -65,7 +93,7 @@ enum LichessProbeData {
     /// Single one-shot bundle load. Computed lazily on first access of
     /// `largeSet` or `metadata`; subsequent accesses are O(1).
     private struct Loaded: Sendable {
-        let probes: [TacticalProbe]
+        let testSet: ProbeTestSet
         let metadata: [String: PuzzleMetadata]
     }
 
@@ -75,7 +103,16 @@ enum LichessProbeData {
     // MARK: - JSON shape
 
     private struct BundleJSON: Decodable {
+        let metadata: SetMetadataJSON
         let puzzles: [PuzzleJSON]
+    }
+
+    /// The identity fields of the set file's `metadata` block; its other
+    /// (provenance) fields are not read.
+    private struct SetMetadataJSON: Decodable {
+        let id: String
+        let title: String
+        let description: String
     }
 
     private struct PuzzleJSON: Decodable {
@@ -126,6 +163,7 @@ enum LichessProbeData {
 
         var probes: [TacticalProbe] = []
         var metadata: [String: PuzzleMetadata] = [:]
+        var fingerprintText = ""
         probes.reserveCapacity(decoded.puzzles.count)
         metadata.reserveCapacity(decoded.puzzles.count)
 
@@ -145,7 +183,7 @@ enum LichessProbeData {
                 )
             }
 
-            guard let category = themeToCategory(entry.theme) else {
+            guard let category = ProbeCategory(lichessThemeID: entry.theme) else {
                 preconditionFailure(
                     "LichessProbeData: unknown theme '\(entry.theme)' for \(entry.id)"
                 )
@@ -170,9 +208,28 @@ enum LichessProbeData {
                 fen: entry.fen,
                 bestMoveUci: entry.bestMoveUci
             )
+            fingerprintText += Self.fingerprintLine(id: entry.id, theme: entry.theme, rating: entry.rating, fen: entry.fen, bestMoveUci: entry.bestMoveUci)
         }
 
-        return Loaded(probes: probes, metadata: metadata)
+        let testSet = ProbeTestSet(
+            id: decoded.metadata.id,
+            title: decoded.metadata.title,
+            description: decoded.metadata.description,
+            fingerprintSHA256: Self.sha256Hex(fingerprintText),
+            probes: probes
+        )
+        return Loaded(testSet: testSet, metadata: metadata)
+    }
+
+    // MARK: - Fingerprint
+
+    /// One puzzle's line in a set's fingerprint (`ProbeTestSet.fingerprintSHA256`).
+    static func fingerprintLine(id: String, theme: String, rating: Int, fen: String, bestMoveUci: String) -> String {
+        "\(id)\t\(theme)\t\(rating)\t\(fen)\t\(bestMoveUci)\n"
+    }
+
+    static func sha256Hex(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - UCI move parsing
@@ -219,26 +276,5 @@ enum LichessProbeData {
         let rankNum = Int(rankAscii - 0x30)  // 1...8
         let row = 8 - rankNum
         return row * 8 + col
-    }
-
-    // MARK: - Theme mapping
-
-    private static func themeToCategory(_ theme: String) -> ProbeCategory? {
-        switch theme {
-        case "mateIn1":      return .lichessMateIn1
-        case "hangingPiece": return .lichessHangingPiece
-        case "fork":         return .lichessFork
-        case "pin":          return .lichessPin
-        case "skewer":       return .lichessSkewer
-        case "opening":      return .lichessOpening
-        case "middlegame":   return .lichessMiddlegame
-        case "endgame":      return .lichessEndgame
-        case "mateIn2":          return .lichessMateIn2
-        case "discoveredAttack": return .lichessDiscoveredAttack
-        case "deflection":       return .lichessDeflection
-        case "sacrifice":        return .lichessSacrifice
-        case "promotion":        return .lichessPromotion
-        default:             return nil
-        }
     }
 }

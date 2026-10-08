@@ -1,5 +1,8 @@
 {
   "metadata": {
+    "id": "lichess-wide",
+    "title": "Lichess puzzles, wide",
+    "description": "4,435 Lichess puzzles rated 400\u20133200, flat per-100 density 550\u20132849, 13 themes, mate-weighted (puzzle DB 2026-06).",
     "source": "Lichess puzzle DB (CC0) \u2014 database.lichess.org/lichess_db_puzzle.csv.zst",
     "db_snapshot": "2026-06",
     "generated_utc": "2026-06-04T04:26:55Z",

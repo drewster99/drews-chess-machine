@@ -13,7 +13,7 @@ import Foundation
 /// two scoreboards. The eight Lichess buckets are the theme names from
 /// the Lichess puzzle DB the curation script filters on, in the same
 /// priority order the Python-side bucketing uses.
-enum ProbeCategory: String, Codable, Sendable {
+enum ProbeCategory: String, Codable, Sendable, CaseIterable {
     case mateInOne
     case hangingPieceCapture
     case forcedPromotion
@@ -43,7 +43,7 @@ enum ProbeCategory: String, Codable, Sendable {
     // Wide-set additional buckets. The wide longitudinal probe set
     // (`LichessProbeData.wideSet`, ~4,435 puzzles, rating 400–3200)
     // carries five themes the 200-set never did. Pure additions — the
-    // eight buckets above are unchanged — so `themeToCategory` maps
+    // eight buckets above are unchanged — so `init(lichessThemeID:)` maps
     // every wide-set theme string and the loader never hits its
     // unknown-theme `preconditionFailure`.
     case lichessMateIn2
@@ -51,6 +51,62 @@ enum ProbeCategory: String, Codable, Sendable {
     case lichessDeflection
     case lichessSacrifice
     case lichessPromotion
+
+    /// The Lichess puzzle-DB theme a `lichess*` bucket holds, exactly as the
+    /// bundled sets' `theme` field spells it; nil for the hand-built
+    /// buckets. The one mapping between the two: the set loader reads it
+    /// backwards (`init(lichessThemeID:)`) and test-set results record it.
+    var lichessThemeID: String? {
+        switch self {
+        case .mateInOne, .hangingPieceCapture, .forcedPromotion, .avoidStalemate, .defensiveMustFind:
+            return nil
+        case .lichessMateIn1: return "mateIn1"
+        case .lichessHangingPiece: return "hangingPiece"
+        case .lichessFork: return "fork"
+        case .lichessPin: return "pin"
+        case .lichessSkewer: return "skewer"
+        case .lichessOpening: return "opening"
+        case .lichessMiddlegame: return "middlegame"
+        case .lichessEndgame: return "endgame"
+        case .lichessMateIn2: return "mateIn2"
+        case .lichessDiscoveredAttack: return "discoveredAttack"
+        case .lichessDeflection: return "deflection"
+        case .lichessSacrifice: return "sacrifice"
+        case .lichessPromotion: return "promotion"
+        }
+    }
+
+    /// The bucket holding Lichess theme `themeID`, or nil for a theme no
+    /// bucket holds.
+    init?(lichessThemeID themeID: String) {
+        guard let match = Self.allCases.first(where: { $0.lichessThemeID == themeID }) else { return nil }
+        self = match
+    }
+
+    /// The bucket's name for people: probe tables, the detail window and
+    /// the test-set results written into model files.
+    var title: String {
+        switch self {
+        case .mateInOne: return "Mate in one (hand-built)"
+        case .hangingPieceCapture: return "Hanging piece capture (hand-built)"
+        case .forcedPromotion: return "Forced promotion (hand-built)"
+        case .avoidStalemate: return "Avoid stalemate (hand-built)"
+        case .defensiveMustFind: return "Defensive must-find (hand-built)"
+        case .lichessMateIn1: return "Mate in 1"
+        case .lichessHangingPiece: return "Hanging piece"
+        case .lichessFork: return "Fork"
+        case .lichessPin: return "Pin"
+        case .lichessSkewer: return "Skewer"
+        case .lichessOpening: return "Opening"
+        case .lichessMiddlegame: return "Middlegame"
+        case .lichessEndgame: return "Endgame"
+        case .lichessMateIn2: return "Mate in 2"
+        case .lichessDiscoveredAttack: return "Discovered attack"
+        case .lichessDeflection: return "Deflection"
+        case .lichessSacrifice: return "Sacrifice"
+        case .lichessPromotion: return "Promotion"
+        }
+    }
 }
 
 /// A single hand-built tactical position with an unambiguous "right
