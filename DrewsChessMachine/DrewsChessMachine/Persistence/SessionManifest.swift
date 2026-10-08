@@ -48,6 +48,12 @@ struct SessionManifest: Codable, Hashable, Sendable, Identifiable {
 
     // MARK: B — Run / progress / lineage
 
+    /// The model's name and starting preset from the session's lineage
+    /// record (`ModelNaming`; unrecorded for a record before lineage schema
+    /// 4 or a session without one). nil when this manifest predates the
+    /// field (an embedded `manifest.json` or index-cache entry written
+    /// before model naming) or the stored naming did not decode (logged).
+    let modelNaming: LineageRecord.Recorded<ModelNaming>?
     let championID: String?
     let trainerID: String?
     let trainingSteps: Int?
@@ -199,6 +205,21 @@ extension SessionManifest {
         }
     }
 
+    /// `session.json`'s `lineage.model_naming`, decoded with the record's
+    /// own strictness: unrecorded when there is no lineage or its schema
+    /// predates the field; nil (logged) when it is present but malformed.
+    private static func modelNaming(in dict: [String: Any], folderName: String) -> LineageRecord.Recorded<ModelNaming>? {
+        guard let lineage = dict["lineage"] as? [String: Any],
+              let stored = lineage["model_naming"] else { return .unrecorded }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: stored)
+            return try JSONDecoder().decode(LineageRecord.Recorded<ModelNaming>.self, from: data)
+        } catch {
+            SessionLogger.shared.log("[SESSION-INDEX] \(folderName): lineage.model_naming does not decode: \(error)")
+            return nil
+        }
+    }
+
     static func extract(
         jsonDict dict: [String: Any],
         folderName: String,
@@ -309,6 +330,7 @@ extension SessionManifest {
             inputPlanes: inputPlanes,
             channels: chans,
             numBlocks: blocks,
+            modelNaming: modelNaming(in: dict, folderName: folderName),
             championID: str("championID"),
             trainerID: str("trainerID"),
             trainingSteps: int("trainingSteps"),
@@ -351,7 +373,7 @@ extension SessionManifest {
             folderName: folderName, trigger: parsed.trigger,
             savedAt: parsed.savedAt, lineageTag: parsed.lineageTag,
             architectureSummary: nil, parameterCount: nil, inputPlanes: nil,
-            channels: nil, numBlocks: nil, championID: nil, trainerID: nil,
+            channels: nil, numBlocks: nil, modelNaming: nil, championID: nil, trainerID: nil,
             trainingSteps: nil, elapsedTrainingSec: nil, emittedGames: nil,
             emittedPositions: nil, bufferStored: nil, bufferCapacity: nil,
             buildNumber: nil, buildGitHash: nil, buildGitDirty: nil,

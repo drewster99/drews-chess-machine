@@ -965,3 +965,8 @@ extension LineageRecord {
         var errorDescription: String? { description }
     }
 }
+
+/// So a `Recorded` value can sit in a `Hashable` summary (`SessionManifest`'s
+/// model naming). Declared here: `Hashable` is synthesized only in the file
+/// that declares the enum.
+extension LineageRecord.Recorded: Hashable where Value: Hashable {}

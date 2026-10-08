@@ -50,6 +50,9 @@ final class SessionPickerModel {
     struct RunGroup: Identifiable {
         let id: String
         let lineageTag: String
+        /// The newest save's model name / preset (`ModelNaming.headerText`);
+        /// nil when it states neither or its manifest has no naming.
+        let modelNameText: String?
         let architectureSummary: String?
         let newestDate: Date?
         let sessions: [SessionManifest]
@@ -72,6 +75,7 @@ final class SessionPickerModel {
             return RunGroup(
                 id: tag,
                 lineageTag: tag,
+                modelNameText: sorted.first?.modelNaming.flatMap(ModelNaming.headerText),
                 architectureSummary: sorted.first?.architectureSummary,
                 newestDate: sorted.first?.savedAt,
                 sessions: sorted

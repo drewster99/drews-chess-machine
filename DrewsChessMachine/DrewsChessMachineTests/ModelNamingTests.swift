@@ -300,6 +300,36 @@ final class ModelNamingTests: XCTestCase {
                        "t · format v\(ArchitectureFormat.currentVersion) · " + arch.shortLabel)
     }
 
+    // MARK: - Session picker
+
+    private func manifest(_ dict: [String: Any]) -> SessionManifest {
+        SessionManifest.extract(jsonDict: dict, folderName: "20261007-120000-20261007-1-NAME-manual.dcmsession",
+                                disk: nil, srcBytes: nil, srcMTime: nil)
+    }
+
+    @MainActor
+    func testTheSessionPickerReadsTheNamingFromSessionJSON() throws {
+        let modelNaming = try naming("picker", preset: "nt8y")
+        let lineage = try jsonObject(try freshRecord(modelNaming).jsonText())
+        let named = manifest(["lineage": lineage])
+        XCTAssertEqual(named.modelNaming, .recorded(modelNaming))
+        XCTAssertEqual(SessionPickerModel.makeGroups(from: [named]).first?.modelNameText, "picker · preset nt8y")
+
+        XCTAssertEqual(manifest([:]).modelNaming, .unrecorded, "a session without a lineage")
+        XCTAssertEqual(manifest(["lineage": try jsonObject(LineageSchemaThreeFixtures.guiPromotedChampion)]).modelNaming,
+                       .unrecorded, "a schema-3 record")
+        XCTAssertNil(manifest(["lineage": ["model_naming": ["recorded": "yes"]]]).modelNaming, "malformed: not guessed")
+    }
+
+    @MainActor
+    func testAManifestWrittenBeforeNamingDecodesWithoutIt() throws {
+        var object = try jsonObject(String(decoding: try JSONEncoder().encode(manifest([:])), as: UTF8.self))
+        object.removeValue(forKey: "modelNaming")
+        let decoded = try JSONDecoder().decode(SessionManifest.self, from: try JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(decoded.modelNaming)
+        XCTAssertNil(SessionPickerModel.makeGroups(from: [decoded]).first?.modelNameText)
+    }
+
     // MARK: - New Network screen
 
     @MainActor

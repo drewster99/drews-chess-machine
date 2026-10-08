@@ -1,6 +1,6 @@
 # Model naming plan: a model keeps its name, its preset and shows its file format
 
-Status (2026-10-07): approved by the owner (design questions answered 2026-10-07); implemented. Not done: the session picker (its cached `manifest.json` would need a format change). Deviation: a graft records the target preset, unedited (`ModelNaming.ofGraft`), not the source's preset marked edited.
+Status (2026-10-07): approved by the owner (design questions answered 2026-10-07); implemented; the session picker shows the name too (`SessionManifest.modelNaming`; a manifest or index-cache entry written before it shows none). Deviation: a graft records the target preset, unedited (`ModelNaming.ofGraft`), not the source's preset marked edited.
 
 Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachine/`, `DrewsChessMachineTests/`, `documentation/` or `scripts/`.
 

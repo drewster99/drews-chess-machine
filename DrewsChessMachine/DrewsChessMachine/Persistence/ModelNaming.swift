@@ -27,7 +27,7 @@
 
 import Foundation
 
-struct ModelNaming: Codable, Equatable, Sendable {
+struct ModelNaming: Codable, Hashable, Sendable {
     /// The name given when the model was made (or renamed by a derive);
     /// nil when none was given. Validated by `validatedName(_:)`.
     let name: String?
@@ -38,7 +38,7 @@ struct ModelNaming: Codable, Equatable, Sendable {
     /// naming (the name is new; where the topology began is not known).
     let presetStart: LineageRecord.Recorded<PresetStart?>
 
-    struct PresetStart: Codable, Equatable, Sendable {
+    struct PresetStart: Codable, Hashable, Sendable {
         /// The preset's key: a built-in `NetworkArchitecture.Preset` raw
         /// value or a user preset's file stem.
         let preset: String

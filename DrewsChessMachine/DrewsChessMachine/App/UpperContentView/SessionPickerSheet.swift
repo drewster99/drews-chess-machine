@@ -85,6 +85,11 @@ struct SessionPickerSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+                if let name = group.modelNameText {
+                    Text(name)
+                        .font(.callout)
+                        .lineLimit(1)
+                }
             }
             if let arch = group.architectureSummary {
                 Text(arch)
@@ -118,6 +123,7 @@ struct SessionPickerSheet: View {
                         ("Input planes", m.inputPlanes.map(String.init))
                     ])
                     detailSection("Run", [
+                        ("Name", m.modelNaming.map(ModelNaming.compactText)),
                         ("Champion", m.championID),
                         ("Trainer", m.trainerID),
                         ("Steps", m.trainingSteps.map { $0.formatted() }),
