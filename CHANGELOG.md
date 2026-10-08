@@ -9,6 +9,14 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-07 20:46 — Every model file carries its weights' puzzle test-set results `c06a790b` `23a1b027` `baad50e3` `6a31f4a6`
+
+- New `__metadata__` key `dcm_test_set_results` (JSON, schema 1) on every model file DCM writes: GUI session saves (champion and trainer, each its own weights), File ▸ Save Champion, corpus replay, train-vs-UCI, `--new-model`, `--derive-model`, graft. Per set (`lichess-200`, `lichess-wide`, with title, description, puzzle-list fingerprint): pElo or a bound, NLL, positions, top-1 / top-5 counts, average probability and rank of the right move, per-theme correct / total.
+- Evaluated before encoding, so the results are in the file's only write; a failed evaluation is recorded (`status: failed`) and never fails the save. Each evaluation logs `[CHECKPOINT] test sets …` with its time (roughly 0.5–1.5 s of GPU per file). A session save now writes the replay buffer before the model files.
+- The bundled puzzle sets carry id, title and description; theme names live in `ProbeCategory.title` (the probe views now name the wide-only themes).
+- The Lichess bot model picker and the session picker show the largest set's pElo / NLL / top-1 / top-5; `manifest.json` carries both files' summaries; the session picker's row column is now the trainer file's results instead of the last probe tick's pElo.
+- `scripts/dcm_lineage.py`: `test_set_results(metadata)`. Existing files are not backfilled.
+
 ## 2026-10-07 18:12 — Model naming (lineage schema 4); title bar shows file format, not v3/v4/v5 `4eb5c117`
 
 - A model keeps the name it was made under (New Network Name field, `--new-model --name`, `--derive-model --name`) and the preset its topology started from, with an `edited` flag, in lineage schema 4's `model_naming`. It rides with the model through saves, resumes, branches and promotions; a derive keeps the source's (edited when it changes the architecture); a graft records the target preset. Older records read it as unrecorded.

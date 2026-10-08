@@ -1,7 +1,44 @@
 # Test-set results in model-file metadata — plan
 
-**Status: decisions settled (2026-10-07, owner); awaiting "start".** Nothing
-here is implemented yet.
+**Status: implemented 2026-10-07** — P1 `c06a790b`, P2 `23a1b027`, P3
+`baad50e3`, P4 `6a31f4a6`, P5 (docs) after. "As built" below lists where the
+implementation differs from the design; the design text is kept as written.
+
+## As built (deviations from the design)
+
+- **D1, network per evaluation, not cached per architecture.** The evaluator
+  holds no state, so concurrent saves (a session's two files) can never load
+  weights into one network under each other; the cost is one graph build per
+  file, the same as the save's own verification scratch build.
+- **D2, session save order.** The replay buffer is now written before the
+  model files are evaluated and encoded, so self-play — held paused until the
+  buffer is written when the save includes it — never waits on the
+  evaluations. Training pauses were never affected (the trainer export
+  precedes `saveSession`).
+- **D3, derive and graft.** They take a required `testSetEvaluation` closure
+  (`ModelTestSetEvaluation`), so they stay free of GPU work of their own. The
+  weights are evaluated as a load reads them: the file is encoded without the
+  key and decoded through the normal loader in memory, then encoded once more
+  with it — still a single disk write. The CLI passes
+  `ModelTestSetEvaluator.blockingEvaluation`.
+- **D3, tests.** Production writers can't omit the results; existing tests
+  call test-target overloads (`ModelTestSetFixtures`) that record an explicit
+  `failed: "test fixture: not evaluated"`, so ~90 test call sites stay as
+  they were.
+- **D4.** A set's `errored` count is not stored: an evaluation with any
+  errored position, or a position without a legal right move, is recorded as
+  `failed` instead of as numbers. A theme's `correct` is its top-1 count.
+- **D6, reading.** Only the header-level reading exists
+  (`ModelTestSetResultsField.reading(fromMetadata:)`, used by the model
+  catalog, the manifest and the tests); `ModelCheckpointFile` does not carry
+  the results, since no loader needs them.
+- **D6, session picker.** The row's last-probe-tick pElo column is replaced
+  by the trainer file's labeled pElo / NLL / top-1 / top-5 (the pickers have
+  no column headers); the set's title is in the tooltip and in the detail's
+  "Test sets at save" section, which shows the champion and the trainer. The
+  last-tick pElo stays in the detail, relabeled "Last probe pElo".
+- **D5.** Theme titles moved into `ProbeCategory.title`; the probe monitor
+  and detail views now show proper names for the five wide-only themes too.
 
 ## Goal
 

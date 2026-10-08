@@ -2,7 +2,7 @@ import Foundation
 
 /// The puzzle test-set results of the weights in one model file, written into
 /// its safetensors `__metadata__` under `metadataKey` (test-set results plan,
-/// `documentation/plans-active/TEST_SET_RESULTS_METADATA_PLAN.md`).
+/// `documentation/plans-completed/TEST_SET_RESULTS_METADATA_PLAN.md`).
 ///
 /// Every writer evaluates the exact weights it is about to write
 /// (`ModelTestSetEvaluator`) and passes the outcome to
