@@ -69,6 +69,14 @@ struct ModelLineageNode: Identifiable, Sendable, Equatable {
         return Self.isSeedOnly(isUntrained: isUntrained, trainedBelow: trainedBelow)
     }
 
+    /// The one row below this one, when there is exactly one (owner request
+    /// 2026-10-08): the picker shows its file on this row too, so a
+    /// one-item group reads without expanding it.
+    var onlyChild: ModelLineageNode? {
+        guard let children, children.count == 1 else { return nil }
+        return children[0]
+    }
+
     /// The file selecting this row chooses, if any.
     var selectableEntry: ModelFileEntry? {
         switch kind {

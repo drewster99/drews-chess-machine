@@ -141,12 +141,13 @@ struct LichessBotLineageNodeRow: View {
     var body: some View {
         switch node.kind {
         case .segment(let line, let path, let isUntrained, let isBranchTip):
-            LichessBotLineageSegmentRow(line: line, path: path, isUntrained: isUntrained, isBranchTip: isBranchTip, trainedBelow: node.trainedBelow)
+            LichessBotLineageSegmentRow(line: line, path: path, isUntrained: isUntrained, isBranchTip: isBranchTip, trainedBelow: node.trainedBelow,
+                                        onlyChildEntry: node.onlyChild?.selectableEntry)
         case .file(let entry):
-            LichessBotModelFileRow(file: entry, showsModelID: false)
+            LichessBotModelFileRow(file: entry, idColumn: .blank)
         case .sessionChampion(let champion):
             HStack(spacing: 12) {
-                LichessBotModelFileRow(file: champion.entry, showsModelID: true)
+                LichessBotModelFileRow(file: champion.entry, idColumn: .modelID)
                 Text("self-play session \(champion.sessionName)")
                     .font(.caption)
                     .foregroundStyle(.purple)
@@ -160,28 +161,35 @@ struct LichessBotLineageNodeRow: View {
     }
 }
 
-/// A segment: its latest file, its step range and file count, and — for a
-/// branch tip — the whole chain from the seed.
+/// A segment: its latest file; below it, its step range and file count and
+/// — for a branch tip — the whole chain from the seed; and when it has only
+/// one row below it, that row's file, so a one-item group reads without
+/// expanding (owner request 2026-10-08). The tag has its own line: beside
+/// the file's columns it was squeezed into a narrow wrapped column and
+/// pushed the architecture off the row.
 struct LichessBotLineageSegmentRow: View {
     let line: ModelLine
     let path: [String]
     let isUntrained: Bool
     let isBranchTip: Bool
     let trainedBelow: ModelLineageNode.TrainedBelow
+    /// The file of the one row below this one; nil with none or several.
+    let onlyChildEntry: ModelFileEntry?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
+            LichessBotModelFileRow(file: line.latest, idColumn: .modelID)
             HStack(spacing: 12) {
-                LichessBotModelFileRow(file: line.latest, showsModelID: true)
                 Text(tagText)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(ModelLineageNode.isSeedOnly(isUntrained: isUntrained, trainedBelow: trainedBelow) ? Color.orange : Color.green)
+                Text(chainText)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .shown(isBranchTip && path.count > 1)
             }
-            Text(chainText)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .shown(isBranchTip && path.count > 1)
+            .lineLimit(1)
+            LichessBotOnlyChildFileRow(entry: onlyChildEntry)
         }
     }
 
@@ -259,18 +267,42 @@ struct LichessBotUnreadableModelFilesSection: View {
     }
 }
 
+/// The file of a segment's one row below it, on the segment's own row, in
+/// the same columns, marked as coming from below. Present only when there
+/// is one: an empty row still takes a line's height.
+struct LichessBotOnlyChildFileRow: View {
+    let entry: ModelFileEntry?
+
+    var body: some View {
+        ForEach(entry.map { [$0] } ?? [], id: \.url) { entry in
+            LichessBotModelFileRow(file: entry, idColumn: .onlyChildModelID)
+                .help("The one item below this row: \(entry.url.lastPathComponent)")
+        }
+    }
+}
+
 /// One model file's identity and strength: model ID, training step, date,
 /// how it was trained (`ModelTrainingHistory`; blank when unknown), its
 /// largest test set's figures (`ModelTestSetSummary`), architecture.
 struct LichessBotModelFileRow: View {
+    /// What the model ID column shows.
+    enum IDColumn {
+        /// The model ID.
+        case modelID
+        /// Nothing: an earlier file of the segment above, same model ID.
+        case blank
+        /// "↳ <model ID>": the one row below a segment, shown on its row.
+        case onlyChildModelID
+    }
+
     let file: ModelFileEntry
-    let showsModelID: Bool
+    let idColumn: IDColumn
 
     var body: some View {
         // Every column is one line, so every row has the same height and
         // the disclosure chevron lines up with the text.
         HStack(spacing: 16) {
-            Text(showsModelID ? file.modelID : "")
+            Text(idText)
                 .font(.system(.callout, design: .monospaced).weight(.semibold))
                 .frame(width: 190, alignment: .leading)
             Text(file.trainingStep.map { "step \($0)" } ?? "no step")
@@ -290,7 +322,16 @@ struct LichessBotModelFileRow: View {
                 .foregroundStyle(.secondary)
         }
         .lineLimit(1)
+        .foregroundStyle(idColumn == .onlyChildModelID ? .secondary : .primary)
         .help(file.url.lastPathComponent)
+    }
+
+    private var idText: String {
+        switch idColumn {
+        case .modelID: return file.modelID
+        case .blank: return ""
+        case .onlyChildModelID: return "↳ \(file.modelID)"
+        }
     }
 
     /// Wide enough for a two-method chain ("corpus replay → self-play");

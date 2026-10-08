@@ -131,4 +131,22 @@ final class ModelLineageTreeTests: XCTestCase {
         ]
         XCTAssertEqual(segmentIDs(ModelLineageTree.build(lines: lines, champions: [])), ["R-trained", "Q-seed"])
     }
+
+    /// A row with exactly one row below it names that row (the picker shows
+    /// its file on the parent's row); with none or several, none.
+    func testOnlyChildIsTheSingleRowBelow() throws {
+        let lines = [
+            line("O-seed", [entry("O-seed", step: nil, parent: nil, modified: 1)]),
+            line("O-run", [entry("O-run", step: 7000, parent: "O-seed", modified: 2)]),
+            line("P-seed", [entry("P-seed", step: nil, parent: nil, modified: 1)]),
+            line("P-a", [entry("P-a", step: 10, parent: "P-seed", modified: 3)]),
+            line("P-b", [entry("P-b", step: 20, parent: "P-seed", modified: 4)]),
+        ]
+        let tree = ModelLineageTree.build(lines: lines, champions: [])
+        let only = try XCTUnwrap(try XCTUnwrap(node("O-seed", in: tree)).onlyChild)
+        XCTAssertEqual(only.selectableEntry?.modelID, "O-run")
+        XCTAssertEqual(only.selectableEntry?.trainingStep, 7000)
+        XCTAssertNil(try XCTUnwrap(node("O-run", in: tree)).onlyChild, "a leaf has no row below it")
+        XCTAssertNil(try XCTUnwrap(node("P-seed", in: tree)).onlyChild, "two rows below")
+    }
 }
