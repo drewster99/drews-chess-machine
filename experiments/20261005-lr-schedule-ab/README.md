@@ -822,3 +822,20 @@ never passed the flag, so probes made with a build from `de0f22be` (2026-10-01
 numbers from those probes. A checkpoint recording no tail loads as
 `mixed_final_projection` until the owner-reviewed PT-D3 audit and header edit give it
 the tail it ran.
+
+## Arm B-siluall (added 2026-10-08 12:57, owner)
+
+- Owner: B-silu was a SiLU tower with leaky-ReLU heads; run "a version with all silu".
+- **Architecture:** `r7_basic24_silu_all.json` = B-silu's net with SiLU also in the policy head, value conv and value FC1
+  (format v12, policy tail `fp32_from_pre_bn`; `se_activation` `does_not_apply` as v12 requires for an SE-less group).
+  Start net `Models/20261008-r7b24-silu-all-fresh.safetensors` (ModelID `20261008-8-y57y`, `--init-seed 20261005`,
+  `mint-silu-all.txt`): all 61 tensors byte-identical to B-silu's start (`20261005-r7b24-silublocks-leakyheads-fresh`),
+  so the head activation is the only difference in the start state.
+- **Parameters:** `parameters-B-relcap-v3.json` (B plus the relative gradient cap: clip mode, k = 3, window 1,000, min
+  history 100, floor 0.5). My choice: B-silu with cap 15 blew up at 20,600; the relative cap was validated as
+  byte-identical to B until it binds (E-0024), so up to the first clip this arm differs from a cap-15 run only by its heads.
+- **Run:** frozen build 2440 (`DCM-2440-9c6a463c.app`), corpus `20260624-192615-w3aA5b`, `--seed 20261005`, 40,000 steps,
+  `--enumerate-checkpoints`; launcher `launch/Bsiluall_launch.sh`; stem `20261008-lrBsiluall-relcap`; log
+  `dcm_log_20261008-125718.txt`; lineage run `66006003-5799-4FA0-B7AE-F3C19E6FD3A5`; pid 72151. Every model file carries
+  its own wide / 200 puzzle results (`dcm_test_set_results`), so no probe loop. Shares the GPU with the two
+  `20261008-zlra-selfplay-lr` runs.

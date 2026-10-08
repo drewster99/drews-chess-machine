@@ -9,6 +9,7 @@ conversation.
 | started | experiment | ends (est.) |
 |---|---|---|
 | 2026-10-08 09:46 | R-replay: ZlrA's settings on corpus replay (`20261008-zlra-selfplay-lr/`) | 60,000 steps |
+| 2026-10-08 12:57 | B-siluall: B-silu with SiLU heads too, relative cap k = 3 (`20261005-lr-schedule-ab/`) | 40,000 steps |
 | 2026-10-08 09:46 | R-fixedlr: ZlrA's settings on self-play, LR 0.01 / momentum 0.90 fixed (`20261008-zlra-selfplay-lr/`) | until stopped |
 
 
