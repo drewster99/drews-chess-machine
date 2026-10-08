@@ -484,6 +484,7 @@ Phases P3–P8 follow the recommended item order of OD-21; if the owner orders t
 - **OD-18 Draws with no rule seen locally** labeled "Agreed / other draw". *Recommend.*
 - **OD-19 Card default height** 240 → 560 for operators who never dragged it (key unchanged). *Recommend.*
 - **OD-20 Account card ratings grid** stays as it is for now, though Time controls repeats its ratings. *Recommend keep*; revisit after P4.
+  - **Owner decision 2026-10-07 (`7dd5a2f8`):** the Account card moves up, under the controls, at full width, so it is readily visible (in the bottom row its speed and column names were cut off). The grid itself is unchanged.
 - **OD-21 First-pass scope and order:** which of the twelve proposed items ship first, and in what order. *Recommend items 1, 2, 4, 6, then 5 and 3* (the record table, then per-time-control, per-model and self-assessment, which most directly show how strong the bot is and whether its own evaluations can be trusted; endings and opponent strength last, as they refine the same picture); items 7–12 and the origin breakdown as later phases (§11). Alternative: any other subset or order; the phase list (§9) is reordered to match.
 
 **Decided (team lead, 2026-10-06, owner delegation).**
