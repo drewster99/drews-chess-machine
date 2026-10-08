@@ -112,9 +112,10 @@ final class LichessBotRecordStatisticsPipeline {
             schedule(reason: .model, now: Date())
         }
     }
-    /// Every model some game is attributed to, for the Model filter's menu;
-    /// from all games, whatever the selection. Empty until the first result.
-    private(set) var modelChoices: [LichessBotStatsModelChoice] = []
+    /// The Model filter's menu, per Games filter and period (the models
+    /// whose games the panes show), from all games whatever the model
+    /// selection. Empty until the first result.
+    private(set) var modelMenu = LichessBotStatsModelMenu.empty
 
     static let paneKey = "lichessBot.overview.record.pane"
     static let periodKey = "lichessBot.overview.record.period"
@@ -280,14 +281,14 @@ final class LichessBotRecordStatisticsPipeline {
         let queue = self.queue
         let model = rememberedModel
         latestComputation = Task { @MainActor [weak self] in
-            let outcome: Result<(LichessBotRecordStatistics, Double, [LichessBotStatsModelChoice]), Error>
+            let outcome: Result<(LichessBotRecordStatistics, Double, LichessBotStatsModelMenu), Error>
             do {
                 let computed = try await queue.run {
                     let started = DispatchTime.now().uptimeNanoseconds
                     let statistics = try compute(rows.filter { model.includes($0) }, origins, now, calendar)
-                    let choices = LichessBotStatsModelChoice.choices(from: rows)
+                    let menu = try LichessBotStatsModelMenu.make(rows: rows, now: now, calendar: calendar)
                     let milliseconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
-                    return (statistics, milliseconds, choices)
+                    return (statistics, milliseconds, menu)
                 }
                 outcome = .success(computed)
             } catch {
@@ -297,16 +298,16 @@ final class LichessBotRecordStatisticsPipeline {
         }
     }
 
-    private func apply(_ outcome: Result<(LichessBotRecordStatistics, Double, [LichessBotStatsModelChoice]), Error>, request: Int, reason: LichessBotRecordStatisticsReason, model: LichessBotStatsModelSelection) {
+    private func apply(_ outcome: Result<(LichessBotRecordStatistics, Double, LichessBotStatsModelMenu), Error>, request: Int, reason: LichessBotRecordStatisticsReason, model: LichessBotStatsModelSelection) {
         guard request == requestCount else { return }
         appliedOutcomeCount += 1
         switch outcome {
-        case .success(let (statistics, milliseconds, choices)):
+        case .success(let (statistics, milliseconds, menu)):
             state = .ready(statistics)
-            modelChoices = choices
+            modelMenu = menu
             // A remembered model no game is attributed to any more (its
             // records were cleared): back to every model, which recomputes.
-            if case .model(let key) = rememberedModel, !choices.contains(where: { $0.key == key }) {
+            if case .model(let key) = rememberedModel, !menu.everyModel.contains(where: { $0.key == key }) {
                 SessionLogger.shared.log("[LICHESS-BOT] record card: the model filter's model has no games; showing every model")
                 rememberedModel = .all
             }

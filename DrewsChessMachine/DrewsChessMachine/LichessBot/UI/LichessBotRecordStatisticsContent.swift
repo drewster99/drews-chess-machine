@@ -20,8 +20,14 @@ struct LichessBotRecordStatisticsContent: View {
             LichessBotRecordPeriodTable(rows: statistics[pipeline.rememberedFilter].periodRows, widths: statistics.periodColumnWidths)
             LichessBotRecordFootnote(statistics: statistics[pipeline.rememberedFilter])
             LichessBotRecordPanelHeader(pipeline: pipeline)
-            LichessBotRecordPanel(account: account, pipeline: pipeline, statistics: statistics)
-                .frame(maxWidth: .infinity, minHeight: LichessBotStatsStyle.paneMinimumHeight, alignment: .topLeading)
+            // At least the pane minimum, and taller when the pane needs it.
+            // Not `.frame(minHeight:)`: offered less than its content, such
+            // a frame reports the offered height and lets the pane spill
+            // over whatever is laid out below it (the recent games).
+            LichessBotAtLeastHeightLayout(minimumHeight: LichessBotStatsStyle.paneMinimumHeight) {
+                LichessBotRecordPanel(account: account, pipeline: pipeline, statistics: statistics)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
         }
     }
 }

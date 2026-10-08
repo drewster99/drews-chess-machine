@@ -49,6 +49,28 @@ final class LichessBotStatsModelFilterTests: XCTestCase {
         XCTAssertEqual(LichessBotStatsModelSelection.model(.file(sha256: "ab12cd34ef")).logSuffix, " model=file:ab12cd34")
     }
 
+    /// The menu for a period and Games filter lists only the models that
+    /// played there, with those games' counts (it matches the Models pane).
+    func testTheMenuFollowsThePeriodAndTheGamesFilter() throws {
+        let now = Self.start.addingTimeInterval(3600)
+        let a = Fixtures.generation("A", step: 1000, moves: 20)
+        let b = Fixtures.generation("B", step: 2000, moves: 20)
+        let rows = [
+            // A: an old casual game; B: a rated game in the last hour and an old one.
+            try Fixtures.row(id: "a-old", at: now.addingTimeInterval(-40 * 86_400), score: 1, rated: false, facts: Fixtures.facts(generations: [a])),
+            try Fixtures.row(id: "b-now", at: now.addingTimeInterval(-60), score: 0, facts: Fixtures.facts(generations: [b])),
+            try Fixtures.row(id: "b-old", at: now.addingTimeInterval(-40 * 86_400), score: 0, facts: Fixtures.facts(generations: [b])),
+        ]
+        let menu = try LichessBotStatsModelMenu.make(rows: rows, now: now, calendar: Fixtures.utcCalendar)
+        XCTAssertEqual(menu.choices(filter: .all, period: .lastHour).map(\.key), [Self.key("B", step: 2000)])
+        XCTAssertEqual(menu.choices(filter: .all, period: .lastHour).map(\.games), [1])
+        XCTAssertEqual(Set(menu.choices(filter: .all, period: .allTime).map(\.key)), [Self.key("A", step: 1000), Self.key("B", step: 2000)])
+        XCTAssertEqual(menu.choices(filter: .rated, period: .allTime).map(\.key), [Self.key("B", step: 2000)])
+        XCTAssertEqual(menu.choices(filter: .casual, period: .allTime).map(\.key), [Self.key("A", step: 1000)])
+        XCTAssertEqual(menu.everyModel.count, 2)
+        XCTAssertTrue(LichessBotStatsModelMenu.empty.everyModel.isEmpty)
+    }
+
     func testTheSelectionRoundTripsThroughJSON() throws {
         for selection in [LichessBotStatsModelSelection.all, .model(Self.key("A", step: 1000)), .model(.file(sha256: "ab12"))] {
             XCTAssertEqual(try JSONDecoder().decode(LichessBotStatsModelSelection.self, from: JSONEncoder().encode(selection)), selection)
@@ -64,14 +86,14 @@ final class LichessBotStatsModelFilterTests: XCTestCase {
         pipeline.indexChanged(rows: try rows())
         await pipeline.latestComputation?.value
         guard case .ready(let all) = pipeline.state else { return XCTFail("expected a snapshot") }
-        XCTAssertEqual(pipeline.modelChoices.count, 2)
+        XCTAssertEqual(pipeline.modelMenu.everyModel.count, 2)
 
         pipeline.rememberedModel = .model(Self.key("B", step: 2000))
         await pipeline.latestComputation?.value
         guard case .ready(let onlyB) = pipeline.state else { return XCTFail("expected a snapshot") }
         XCTAssertEqual(onlyB[.all].periodRows.allTime.record.all.games, 2)
         XCTAssertEqual(all[.all].periodRows.allTime.record.all.games, 4)
-        XCTAssertEqual(pipeline.modelChoices.count, 2, "the menu lists every model, whatever the selection")
+        XCTAssertEqual(pipeline.modelMenu.everyModel.count, 2, "the menu lists every model, whatever the selection")
 
         let reopened = LichessBotRecordStatisticsPipeline(defaults: defaults, calendar: { Fixtures.utcCalendar })
         addTeardownBlock { @MainActor in await reopened.shutdown(reason: "test teardown") }

@@ -82,3 +82,34 @@ struct LichessBotStatsModelChoice: Sendable, Equatable, Identifiable {
         }
     }
 }
+
+/// The Model filter's menu for each Games filter and period: the models
+/// that played games the panes show, with those games' counts, so the menu
+/// matches the Models pane (the selected period and Rated / Casual / All).
+/// Built with the statistics, so changing the period or the Games filter is
+/// a lookup.
+struct LichessBotStatsModelMenu: Sendable {
+    private let byFilter: LichessBotFilterValues<LichessBotPeriodValues<[LichessBotStatsModelChoice]>>
+
+    /// Before the first result: no models.
+    static let empty = LichessBotStatsModelMenu(byFilter: LichessBotFilterValues { _ in LichessBotPeriodValues { _ in [] } })
+
+    static func make(rows: [LichessBotGameSummary], now: Date, calendar: Calendar) throws -> LichessBotStatsModelMenu {
+        let starts = try LichessBotStatsPeriods.starts(now: now, calendar: calendar)
+        return LichessBotStatsModelMenu(byFilter: LichessBotFilterValues { filter in
+            let inFilter = rows.filter { filter.includes($0) }
+            return LichessBotPeriodValues { period in
+                LichessBotStatsModelChoice.choices(from: inFilter.filter { starts.contains($0.createdAt, in: period) })
+            }
+        })
+    }
+
+    func choices(filter: LichessBotStatsFilter, period: LichessBotStatsPeriod) -> [LichessBotStatsModelChoice] {
+        byFilter[filter][period]
+    }
+
+    /// Every model any game is attributed to (all games, all time).
+    var everyModel: [LichessBotStatsModelChoice] {
+        byFilter[.all][.allTime]
+    }
+}
