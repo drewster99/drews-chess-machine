@@ -1,11 +1,14 @@
 import SwiftUI
 
 /// The statistics for the selected filter: the period table, its footnote,
-/// the panel's pickers, and the selected pane. The table, footnote and
-/// header take their ideal heights; the pane takes the rest of the card's
-/// height and scrolls, so a tall pane never overflows the card. The pane is
-/// never shorter than `LichessBotStatsStyle.paneMinimumHeight`: the card
-/// grows instead, so the pickers always show what they select.
+/// the panel's pickers, and the selected pane. Every part takes its full
+/// height: a pane taller than the card's dragged height grows the card
+/// (`LichessBotAtLeastHeightLayout`; the Overview itself scrolls) instead of
+/// scrolling inside it, so nothing is cut off where the card ends (owner
+/// decision 2026-10-08: a pane's own scroll area cut the Opponent strength
+/// chart off below its tick labels). The pane is never shorter than
+/// `LichessBotStatsStyle.paneMinimumHeight`, so the pickers always show what
+/// they select; a card dragged taller leaves the extra space below it.
 struct LichessBotRecordStatisticsContent: View {
     /// Nil while the account is not loaded.
     let account: LichessBotAccount?
@@ -17,11 +20,8 @@ struct LichessBotRecordStatisticsContent: View {
             LichessBotRecordPeriodTable(rows: statistics[pipeline.rememberedFilter].periodRows, widths: statistics.periodColumnWidths)
             LichessBotRecordFootnote(statistics: statistics[pipeline.rememberedFilter])
             LichessBotRecordPanelHeader(pipeline: pipeline)
-            ScrollView(.vertical) {
-                LichessBotRecordPanel(account: account, pipeline: pipeline, statistics: statistics)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-            .frame(minHeight: LichessBotStatsStyle.paneMinimumHeight)
+            LichessBotRecordPanel(account: account, pipeline: pipeline, statistics: statistics)
+                .frame(maxWidth: .infinity, minHeight: LichessBotStatsStyle.paneMinimumHeight, alignment: .topLeading)
         }
     }
 }

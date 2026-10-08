@@ -640,3 +640,6 @@ Decisions taken while implementing, where the plan left a choice open or the cod
 - A game counts for its majority model (`LichessBotModelAttribution`, the Models pane's OD-11 rule, now shared); a mixed game counts for its majority model only; a game with no recorded model counts only under "All models".
 - Not precomputed per model (a run has dozens): `LichessBotRecordStatisticsPipeline` filters the rows by `rememberedModel` before `compute` and recomputes when the selection changes; the period and Rated / Casual / All selections stay precomputed. The model menu (`LichessBotStatsModelChoice`) is built from every game, newest-played first, and the selection is remembered in the defaults; a remembered model with no games falls back to "All models" (logged).
 - The rating sparkline follows the filter like everything else (it is computed from the filtered rows).
+
+**Panes grow the card (owner decision 2026-10-08)**
+- A pane no longer scrolls inside the Record card: the card grows to show the whole pane (the Overview scrolls), and the dragged height is only a minimum (`LichessBotAtLeastHeightLayout`). The pane's own scroll area had cut the Opponent strength chart off below its tick labels (axis title and band table out of sight, with no visible scroll bar). Supersedes "the pane takes the rest of the card's height and scrolls".
