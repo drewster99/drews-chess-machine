@@ -19,8 +19,10 @@ Owner request 2026-10-08: "This picker should indicate if the model is from a se
 
 From a lineage record, oldest first:
 1. each ancestor run's segments (`ancestry.runs[].segments[].configuration.path_kind`), skipping segments whose configuration is unrecorded or nil (not trained);
-2. the record's earlier segments (`segments[].configuration`), an unrecorded one taking the record's own method (a run never changes path);
-3. the record's own segment: `configuration.path_kind` when recorded; for a schema-2 record (configuration unrecorded) that trained (`parameters` present), `invocation.path_kind`; nothing when not trained.
+2. the record's earlier segments (`segments[].configuration`); an unrecorded one (a schema-2 summary, which names no path) adds nothing, and loses nothing: a run never changes path, so the record's own segment names that run's method and the repeat would collapse;
+3. the record's own segment (`SegmentSummary(of:)`): `configuration.path_kind` when recorded; for a schema-2 record (configuration unrecorded) that trained (`parameters` present), `invocation.path_kind`; nothing when not trained.
+
+A segment summary uses the same rule (its own `parameters` and `path_kind`).
 
 `path_kind` maps `gui` → self-play, `replay` → corpus replay, `vsuci` → UCI play; `derive` / `new_model` never appear in a configuration and map to nothing.
 
