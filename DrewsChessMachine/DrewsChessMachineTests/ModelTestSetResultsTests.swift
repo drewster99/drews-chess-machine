@@ -129,6 +129,20 @@ final class ModelTestSetResultsTests: XCTestCase {
         }
     }
 
+    /// The per-theme fold comes back in `ProbeCategory` order every time, so
+    /// the overall sums (NLL above all) are added in one order and a
+    /// result is bit-reproducible. It came back in `Dictionary` order, which
+    /// changes between dictionaries: two evaluations of the same weights
+    /// recorded NLLs differing in the last bit.
+    func testTheThemeFoldIsInCategoryOrderEveryTime() {
+        let results = LichessProbeData.wide.probes.map { TacticalProbeRunner.errorResult(for: $0) }
+        let expected = ProbeCategory.allCases.filter { category in results.contains { $0.probe.category == category } }
+        XCTAssertEqual(expected.count, 13)
+        for _ in 0..<20 {
+            XCTAssertEqual(LichessProbeHistory.aggregates(from: results).map(\.theme), expected)
+        }
+    }
+
     func testAnErroredPositionFailsTheSetInsteadOfCountingAsWrong() {
         let set = Self.subset(LichessProbeData.set200, count: 3)
         let errored = set.probes.map { TacticalProbeRunner.errorResult(for: $0) }

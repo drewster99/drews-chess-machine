@@ -491,7 +491,13 @@ final class LichessProbeHistory {
         }
         var out: [Aggregate] = []
         out.reserveCapacity(byCategory.count)
-        for (cat, perThemeResults) in byCategory {
+        // In `ProbeCategory` order, never the dictionary's: a dictionary's
+        // iteration order changes from one instance to the next, and every
+        // fold of these aggregates adds them up in this order, so a
+        // dictionary order made one network's overall NLL differ in its
+        // last bit between two evaluations.
+        for cat in ProbeCategory.allCases {
+            guard let perThemeResults = byCategory[cat] else { continue }
             var argmaxCorrect = 0
             var top5Correct = 0
             var errored = 0

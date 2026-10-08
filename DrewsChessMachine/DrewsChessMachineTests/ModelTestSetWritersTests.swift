@@ -44,6 +44,13 @@ final class ModelTestSetWritersTests: XCTestCase {
         return ModelTestSetResultsField.reading(fromMetadata: metadata)
     }
 
+    /// `field` as a file holds it: through its JSON text and back (JSON
+    /// writes a Double to about 16 significant digits, so a fresh evaluation
+    /// is compared with a file in its written form).
+    private static func asWritten(_ field: ModelTestSetResultsField) throws -> ModelTestSetResultsInFile {
+        ModelTestSetResultsField.reading(fromMetadata: [ModelTestSetResultsField.metadataKey: try field.metadataValue()])
+    }
+
     private static func evaluatedSets(_ reading: ModelTestSetResultsInFile, file: StaticString = #filePath, line: UInt = #line) -> [ModelTestSetResults.SetResult]? {
         guard case .recorded(.evaluated(let results)) = reading else {
             XCTFail("expected evaluated results, got \(reading)", file: file, line: line)
@@ -115,8 +122,8 @@ final class ModelTestSetWritersTests: XCTestCase {
 
         let championAgain = await Self.smallEvaluator.evaluate(weights: loaded.championFile.weights, architecture: .current)
         let trainerAgain = await Self.smallEvaluator.evaluate(weights: loaded.trainerFile.weights, architecture: .current)
-        XCTAssertEqual(championSets, Self.evaluatedSets(.recorded(championAgain)))
-        XCTAssertEqual(trainerSets, Self.evaluatedSets(.recorded(trainerAgain)))
+        XCTAssertEqual(championSets, Self.evaluatedSets(try Self.asWritten(championAgain)))
+        XCTAssertEqual(trainerSets, Self.evaluatedSets(try Self.asWritten(trainerAgain)))
         XCTAssertNotEqual(championSets, trainerSets, "two different networks")
         XCTAssertEqual(championSets.map(\.id), ["lichess-200", "lichess-wide"])
     }
@@ -253,6 +260,6 @@ final class ModelTestSetWritersTests: XCTestCase {
         XCTAssertEqual(sets.map(\.positions), [200, 4435])
         let file = try CheckpointManager.loadModelFile(at: outModel)
         let again = await ModelTestSetEvaluator.modelFiles.evaluate(weights: file.weights, architecture: file.architecture)
-        XCTAssertEqual(sets, Self.evaluatedSets(.recorded(again)))
+        XCTAssertEqual(sets, Self.evaluatedSets(try Self.asWritten(again)))
     }
 }
