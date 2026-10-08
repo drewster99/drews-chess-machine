@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// The panel's pickers on one row: the pane, the period and the Rated /
-/// Casual / All filter (OD-3, OD-7), all menus. All three are the
-/// pipeline's remembered selections; the filter applies to the period
-/// table as well as the panes.
+/// The panel's pickers on one row: the pane, the period, the Rated /
+/// Casual / All filter (OD-3, OD-7) and the Model filter, all menus. All
+/// four are the pipeline's remembered selections; the filters apply to the
+/// period table as well as the panes.
 struct LichessBotRecordPanelHeader: View {
     @Bindable var pipeline: LichessBotRecordStatisticsPipeline
 
@@ -22,6 +22,7 @@ struct LichessBotRecordPanelHeader: View {
                 }
             }
             .fixedSize()
+            LichessBotRecordModelPicker(pipeline: pipeline)
         }
         .pickerStyle(.menu)
     }

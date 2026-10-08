@@ -161,6 +161,11 @@ struct LichessBotModelCheckpointStatistics: Sendable, Equatable, Identifiable {
     /// step, the lineage's cumulative step when recorded, the source, and a
     /// file's hash prefix.
     var label: String {
+        Self.label(key: key, sourceKind: sourceKind, trainingStep: trainingStep, cumTrainerStep: cumTrainerStep)
+    }
+
+    /// The checkpoint label, shared with the Model filter's choices.
+    static func label(key: LichessBotModelKey, sourceKind: LichessBotModelSourceKind, trainingStep: Int?, cumTrainerStep: Int?) -> String {
         var parts: [String] = []
         if let trainingStep {
             parts.append("step \(trainingStep.formatted())")

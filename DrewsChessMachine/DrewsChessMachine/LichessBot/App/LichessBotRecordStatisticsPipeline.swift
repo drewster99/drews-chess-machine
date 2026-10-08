@@ -44,6 +44,8 @@ enum LichessBotRecordStatisticsReason: String, Sendable {
     case clock
     /// The games' resolved origins changed (a challenge-log fact arrived).
     case origins
+    /// The Model filter changed (`rememberedModel`).
+    case model
 }
 
 /// Computes the Record card's statistics off the main actor and keeps the
@@ -95,10 +97,29 @@ final class LichessBotRecordStatisticsPipeline {
     var rememberedFilter: LichessBotStatsFilter = .all {
         didSet { defaults.set(rememberedFilter.rawValue, forKey: Self.filterKey) }
     }
+    /// The Model filter. Unlike the period and the Rated / Casual filter it
+    /// is not precomputed for every value (a run has dozens of models): the
+    /// statistics are recomputed from the selected model's games when it
+    /// changes.
+    var rememberedModel: LichessBotStatsModelSelection = .all {
+        didSet {
+            guard rememberedModel != oldValue else { return }
+            do {
+                defaults.set(try JSONEncoder().encode(rememberedModel), forKey: Self.modelKey)
+            } catch {
+                SessionLogger.shared.log("[LICHESS-BOT] record card: could not remember the model filter: \(error.localizedDescription)")
+            }
+            schedule(reason: .model, now: Date())
+        }
+    }
+    /// Every model some game is attributed to, for the Model filter's menu;
+    /// from all games, whatever the selection. Empty until the first result.
+    private(set) var modelChoices: [LichessBotStatsModelChoice] = []
 
     static let paneKey = "lichessBot.overview.record.pane"
     static let periodKey = "lichessBot.overview.record.period"
     static let filterKey = "lichessBot.overview.record.filter"
+    static let modelKey = "lichessBot.overview.record.model"
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let queue: LichessBotFileQueue
@@ -155,6 +176,13 @@ final class LichessBotRecordStatisticsPipeline {
                 rememberedFilter = filter
             } else {
                 SessionLogger.shared.log("[LICHESS-BOT] record card: ignoring the remembered filter \"\(saved)\", which no longer exists")
+            }
+        }
+        if let saved = defaults.data(forKey: Self.modelKey) {
+            do {
+                rememberedModel = try JSONDecoder().decode(LichessBotStatsModelSelection.self, from: saved)
+            } catch {
+                SessionLogger.shared.log("[LICHESS-BOT] record card: ignoring the remembered model filter, which does not decode: \(error.localizedDescription)")
             }
         }
     }
@@ -250,14 +278,16 @@ final class LichessBotRecordStatisticsPipeline {
         let origins = self.origins
         let compute = self.compute
         let queue = self.queue
+        let model = rememberedModel
         latestComputation = Task { @MainActor [weak self] in
-            let outcome: Result<(LichessBotRecordStatistics, Double), Error>
+            let outcome: Result<(LichessBotRecordStatistics, Double, [LichessBotStatsModelChoice]), Error>
             do {
                 let computed = try await queue.run {
                     let started = DispatchTime.now().uptimeNanoseconds
-                    let statistics = try compute(rows, origins, now, calendar)
+                    let statistics = try compute(rows.filter { model.includes($0) }, origins, now, calendar)
+                    let choices = LichessBotStatsModelChoice.choices(from: rows)
                     let milliseconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
-                    return (statistics, milliseconds)
+                    return (statistics, milliseconds, choices)
                 }
                 outcome = .success(computed)
             } catch {
@@ -267,12 +297,19 @@ final class LichessBotRecordStatisticsPipeline {
         }
     }
 
-    private func apply(_ outcome: Result<(LichessBotRecordStatistics, Double), Error>, request: Int, reason: LichessBotRecordStatisticsReason) {
+    private func apply(_ outcome: Result<(LichessBotRecordStatistics, Double, [LichessBotStatsModelChoice]), Error>, request: Int, reason: LichessBotRecordStatisticsReason) {
         guard request == requestCount else { return }
         appliedOutcomeCount += 1
         switch outcome {
-        case .success(let (statistics, milliseconds)):
+        case .success(let (statistics, milliseconds, choices)):
             state = .ready(statistics)
+            modelChoices = choices
+            // A remembered model no game is attributed to any more (its
+            // records were cleared): back to every model, which recomputes.
+            if case .model(let key) = rememberedModel, !choices.contains(where: { $0.key == key }) {
+                SessionLogger.shared.log("[LICHESS-BOT] record card: the model filter's model has no games; showing every model")
+                rememberedModel = .all
+            }
             // One line per index change, not per clock tick: the numbers a
             // tick changes are period boundaries, already in the snapshot.
             // Keyed on the pending flag rather than this request's reason:

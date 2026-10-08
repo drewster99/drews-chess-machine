@@ -132,7 +132,7 @@ struct LichessBotRecordStatistics: Sendable, Equatable {
 private struct DerivedRow {
     let row: LichessBotGameSummary
     let ending: LichessBotGameEnding
-    let attribution: ModelAttribution
+    let attribution: LichessBotModelAttribution
     let origin: OriginLookup
 
     init(_ row: LichessBotGameSummary, origin: OriginLookup) {
@@ -145,7 +145,7 @@ private struct DerivedRow {
             localDrawCondition: row.facts?.localDrawCondition,
             drawConditionKnown: row.facts != nil
         )
-        attribution = ModelAttribution(row.facts?.moves)
+        attribution = LichessBotModelAttribution(row.facts?.moves)
     }
 }
 
@@ -163,8 +163,9 @@ private enum OriginLookup {
 /// Which model a game belongs to (§3.8, OD-11): the model key whose
 /// generations chose the most of DCM's moves; on a tie, the key that came
 /// into use later. Two generations with one key (the same file reloaded)
-/// are one model.
-private struct ModelAttribution {
+/// are one model. The one rule for the Models pane and the Record card's
+/// Model filter (`LichessBotStatsModelSelection`).
+struct LichessBotModelAttribution {
     struct Model {
         let key: LichessBotModelKey
         let facts: LichessBotGenerationFacts
