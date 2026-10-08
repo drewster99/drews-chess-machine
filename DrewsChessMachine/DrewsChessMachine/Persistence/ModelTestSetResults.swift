@@ -152,7 +152,7 @@ struct ModelTestSetResults: Equatable, Sendable {
         }
     }
 
-    struct SetResult: Codable, Equatable, Sendable {
+    struct SetResult: Codable, Hashable, Sendable {
         let id: String
         let title: String
         let description: String
@@ -265,7 +265,7 @@ struct ModelTestSetResults: Equatable, Sendable {
     /// The puzzle Elo fit (`LichessProbeHistory.mlePuzzleElo`). Every
     /// answer right or every answer wrong has no finite estimate; JSON has
     /// no infinity, so those are recorded as bounds.
-    enum PuzzleElo: Equatable, Sendable {
+    enum PuzzleElo: Hashable, Sendable {
         case estimate(Double)
         case allCorrect
         case allWrong
@@ -284,7 +284,7 @@ struct ModelTestSetResults: Equatable, Sendable {
         }
     }
 
-    struct ThemeResult: Codable, Equatable, Sendable {
+    struct ThemeResult: Codable, Hashable, Sendable {
         /// The Lichess theme id (`ProbeCategory.lichessThemeID`).
         let id: String
         let title: String
@@ -314,5 +314,86 @@ extension ModelTestSetResultsField {
         var withResults = withoutResults
         withResults[metadataKey] = try evaluation(decoded.file.weights, decoded.architecture).metadataValue()
         return withResults
+    }
+}
+
+/// What a picker shows about a model file's results: the largest set's
+/// figures (`ModelTestSetResults.largestSet`), or why there are none. The one
+/// place those figures become text, so every picker says the same thing.
+enum ModelTestSetSummary: Codable, Hashable, Sendable {
+    case notRecorded
+    case unreadable(reason: String)
+    case failed(reason: String)
+    case evaluated(ModelTestSetResults.SetResult)
+
+    init(_ reading: ModelTestSetResultsInFile) {
+        switch reading {
+        case .notRecorded:
+            self = .notRecorded
+        case .unreadable(let reason):
+            self = .unreadable(reason: reason)
+        case .recorded(.failed(let reason)):
+            self = .failed(reason: reason)
+        case .recorded(.evaluated(let results)):
+            if let largest = results.largestSet {
+                self = .evaluated(largest)
+            } else {
+                self = .unreadable(reason: "the record lists no test sets")
+            }
+        }
+    }
+
+    /// The summary of the safetensors file at `url`, from its header alone.
+    /// A file that isn't there (a session saved with `.dcmmodel` files) has
+    /// no results recorded; one whose header can't be read is unreadable.
+    static func ofModelFile(at url: URL) -> ModelTestSetSummary {
+        guard FileManager.default.fileExists(atPath: url.path) else { return .notRecorded }
+        do {
+            return ModelTestSetSummary(ModelTestSetResultsField.reading(fromMetadata: try ModelFileCatalog.headerMetadata(at: url)))
+        } catch {
+            return .unreadable(reason: "\(error)")
+        }
+    }
+
+    var largestSet: ModelTestSetResults.SetResult? {
+        if case .evaluated(let set) = self { return set }
+        return nil
+    }
+
+    // Column cells: the figure, or a dash when there is none (the help
+    // text says why).
+    var pEloText: String { largestSet.map { Self.pEloText($0.pElo) } ?? "—" }
+    var nllText: String { largestSet.map { String(format: "%.3f", $0.nll) } ?? "—" }
+    var top1Text: String { largestSet.map { String(format: "%.1f%%", $0.top1Fraction * 100) } ?? "—" }
+    var top5Text: String { largestSet.map { String(format: "%.1f%%", $0.top5Fraction * 100) } ?? "—" }
+
+    /// One line with every summary figure and the set it is for.
+    var line: String {
+        switch self {
+        case .evaluated(let set):
+            return "\(set.title): pElo \(Self.pEloText(set.pElo)) · NLL \(nllText) · top-1 \(top1Text) · top-5 \(top5Text)"
+        case .notRecorded:
+            return "Test-set results not recorded (saved before they were)"
+        case .failed(let reason):
+            return "Test-set evaluation failed: \(reason)"
+        case .unreadable(let reason):
+            return "Test-set results unreadable: \(reason)"
+        }
+    }
+
+    /// `line`, plus the set's description and counts, for a tooltip.
+    var help: String {
+        guard case .evaluated(let set) = self else { return line }
+        return "\(line)\n\(set.description)\n\(set.id): top-1 \(set.top1Correct)/\(set.positions), "
+            + "top-5 \(set.top5Correct)/\(set.positions), avg p(right) \(String(format: "%.4f", set.avgCorrectProbability)), "
+            + "avg rank \(String(format: "%.3f", set.avgCorrectRank))"
+    }
+
+    private static func pEloText(_ pElo: ModelTestSetResults.PuzzleElo) -> String {
+        switch pElo {
+        case .estimate(let value): return String(format: "%.0f", value)
+        case .allCorrect: return "all ✓"
+        case .allWrong: return "all ✗"
+        }
     }
 }

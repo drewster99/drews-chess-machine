@@ -21,7 +21,7 @@ struct SessionPickerSheet: View {
             Divider()
             HStack(spacing: 0) {
                 list
-                    .frame(minWidth: 560)
+                    .frame(minWidth: 820)
                 Divider()
                 detail
                     .frame(width: 360)
@@ -29,7 +29,7 @@ struct SessionPickerSheet: View {
             Divider()
             footer
         }
-        .frame(minWidth: 980, minHeight: 560)
+        .frame(minWidth: 1240, minHeight: 560)
     }
 
     // MARK: Header
@@ -132,10 +132,11 @@ struct SessionPickerSheet: View {
                         ("Buffer", bufferDescribe(m)),
                         ("Build", buildDescribe(m))
                     ])
+                    SessionPickerTestSetsSection(manifest: m)
                     detailSection("Performance", [
                         ("Arenas / promotions", zipDescribe(m.arenaCount, m.promotionCount, sep: " / ")),
-                        ("pElo (200 set)", m.latestPElo200.map { String(format: "%.0f", $0) }),
-                        ("pElo (wide set)", m.latestPEloWide.map { String(format: "%.0f", $0) }),
+                        ("Last probe pElo, 200", m.latestPElo200.map { String(format: "%.0f", $0) }),
+                        ("Last probe pElo, wide", m.latestPEloWide.map { String(format: "%.0f", $0) }),
                         ("Checkmates W/B", zipDescribe(m.whiteCheckmates, m.blackCheckmates, sep: " / ")),
                         ("Draws", m.drawCount.map { $0.formatted() })
                     ])
@@ -258,8 +259,9 @@ struct SessionPickerRow: View {
                 .frame(width: 70, alignment: .trailing)
             Text(arenaSummary)
                 .frame(width: 60, alignment: .trailing)
-            Text(manifest.latestPEloWide.map { String(format: "%.0f", $0) } ?? "—")
-                .frame(width: 50, alignment: .trailing)
+            // The trainer file's own results (what the probe's pElo
+            // described before; a manifest from before them has none).
+            ModelTestSetSummaryCells(summary: manifest.trainerTestSets ?? .notRecorded, textStyle: .caption)
             Text(manifest.buildNumber.map(String.init) ?? "—")
                 .frame(width: 46, alignment: .trailing)
             Text(diskString)

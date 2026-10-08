@@ -832,6 +832,57 @@ def segment_table(derived):
     return out
 
 
+TEST_SET_RESULTS_KEY = "dcm_test_set_results"
+TEST_SET_RESULTS_SCHEMA = 1
+
+
+def test_set_results(metadata):
+    """The file's puzzle test-set results, read as the app reads them
+    (`ModelTestSetResultsField.reading`, Persistence/ModelTestSetResults.swift).
+    Returns one of:
+
+    - ("not_recorded", None): no `dcm_test_set_results` key (written before
+      test-set results);
+    - ("unreadable", reason): the value doesn't parse, or is a schema this
+      reader doesn't know; reported, never fatal (the results are
+      informational);
+    - ("failed", reason): the writer's evaluation failed and it said why;
+    - ("evaluated", record): the record, with `sets` (each: id, title,
+      description, fingerprint_sha256, positions, top1_correct, top5_correct,
+      avg_correct_probability, avg_correct_rank, nll, pelo or pelo_bound,
+      themes [{id, title, correct, total}]).
+
+    Results are comparable between files only for sets with equal
+    `fingerprint_sha256`."""
+    raw = metadata.get(TEST_SET_RESULTS_KEY)
+    if raw is None:
+        return ("not_recorded", None)
+    try:
+        value = json.loads(raw)
+    except ValueError as error:
+        return ("unreadable", f"{TEST_SET_RESULTS_KEY} does not parse: {error}")
+    if not isinstance(value, dict):
+        return ("unreadable", f"{TEST_SET_RESULTS_KEY} is not a JSON object")
+    if value.get("schema") != TEST_SET_RESULTS_SCHEMA:
+        return ("unreadable", f"{TEST_SET_RESULTS_KEY} schema {value.get('schema')!r} is not one this reader reads "
+                              f"({TEST_SET_RESULTS_SCHEMA})")
+    status = value.get("status")
+    if status == "failed":
+        reason = value.get("reason")
+        if not isinstance(reason, str):
+            return ("unreadable", f"{TEST_SET_RESULTS_KEY}: a failed record without a reason")
+        return ("failed", reason)
+    if status != "evaluated":
+        return ("unreadable", f"{TEST_SET_RESULTS_KEY}: unknown status {status!r}")
+    sets = value.get("sets")
+    if not isinstance(sets, list):
+        return ("unreadable", f"{TEST_SET_RESULTS_KEY}: an evaluated record without sets")
+    for entry in sets:
+        if not isinstance(entry, dict) or (entry.get("pelo") is None) == (entry.get("pelo_bound") is None):
+            return ("unreadable", f"{TEST_SET_RESULTS_KEY}: a set must state exactly one of pelo and pelo_bound")
+    return ("evaluated", value)
+
+
 def main():
     import argparse
     import sys

@@ -26,6 +26,9 @@ struct ModelFileEntry: Sendable, Identifiable, Equatable {
     /// What the header's `dcm_lineage` record says. The catalog always sets
     /// it; nil only for an entry built elsewhere (a test).
     var lineage: ModelFileLineageFacts? = nil
+    /// The header's test-set results, summarized (`ModelTestSetSummary`).
+    /// The catalog always sets it; nil only for an entry built elsewhere.
+    var testSets: ModelTestSetSummary? = nil
 }
 
 /// What a model file's header says about its lineage (follow-lineage plan
@@ -305,7 +308,8 @@ enum ModelFileCatalog {
             parentModelID: metadata["parent_model_id"].flatMap { $0.isEmpty ? nil : $0 },
             creator: metadata["creator"].flatMap { $0.isEmpty ? nil : $0 },
             contentSHA256: metadata[SafetensorsFile.contentHashKey],
-            lineage: lineage
+            lineage: lineage,
+            testSets: ModelTestSetSummary(ModelTestSetResultsField.reading(fromMetadata: metadata))
         )
     }
 
@@ -343,7 +347,9 @@ enum ModelFileCatalog {
             // records (`ModelCheckpointFile.lineageParent` reads it the same
             // way).
             contentSHA256: nil,
-            lineage: .unrecorded(formatVersion: ArchitectureFormat.unversionedLegacyVersion)
+            lineage: .unrecorded(formatVersion: ArchitectureFormat.unversionedLegacyVersion),
+            // The legacy format predates test-set results.
+            testSets: .notRecorded
         )
     }
 

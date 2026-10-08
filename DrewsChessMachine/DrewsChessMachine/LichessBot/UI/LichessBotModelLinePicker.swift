@@ -256,7 +256,8 @@ struct LichessBotUnreadableModelFilesSection: View {
     }
 }
 
-/// One model file's identity: model ID, training step, date, architecture.
+/// One model file's identity and strength: model ID, training step, date,
+/// its largest test set's figures (`ModelTestSetSummary`), architecture.
 struct LichessBotModelFileRow: View {
     let file: ModelFileEntry
     let showsModelID: Bool
@@ -275,6 +276,7 @@ struct LichessBotModelFileRow: View {
                 .font(.system(.callout, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .frame(width: 140, alignment: .leading)
+            ModelTestSetSummaryCells(summary: file.testSets ?? .notRecorded, textStyle: .callout)
             Text(file.architectureLabel)
                 .font(.callout)
                 .foregroundStyle(.secondary)

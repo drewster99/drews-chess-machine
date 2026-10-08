@@ -75,6 +75,12 @@ struct SessionManifest: Codable, Hashable, Sendable, Identifiable {
     /// save carries probe history with finite values.
     let latestPElo200: Double?
     let latestPEloWide: Double?
+    /// The test-set results each model file of the save carries (largest
+    /// set, `ModelTestSetSummary`), read from the files' headers. Nil in a
+    /// manifest written before these fields; `.notRecorded` for a save
+    /// whose files predate test-set results.
+    var championTestSets: ModelTestSetSummary? = nil
+    var trainerTestSets: ModelTestSetSummary? = nil
     let whiteCheckmates: Int?
     let blackCheckmates: Int?
     let drawCount: Int?
@@ -153,6 +159,11 @@ extension SessionManifest {
     /// actor. Never throws: failures produce a manifest with `loadError`
     /// set so the picker can show the folder as unreadable.
     static func extract(fromSessionFolder url: URL) -> SessionManifest {
+        extractSessionJSON(fromSessionFolder: url).withTestSets(fromSessionFolder: url)
+    }
+
+    /// The `session.json` part of `extract(fromSessionFolder:)`.
+    private static func extractSessionJSON(fromSessionFolder url: URL) -> SessionManifest {
         let folderName = url.lastPathComponent
         let parsed = parseFolderName(folderName)
         let jsonURL = url.appendingPathComponent("session.json")
@@ -388,6 +399,15 @@ extension SessionManifest {
         )
     }
 
+    /// This manifest with the test-set summaries of the session's model
+    /// files (`championTestSets`, `trainerTestSets`), read from their headers.
+    func withTestSets(fromSessionFolder url: URL) -> SessionManifest {
+        var copy = self
+        copy.championTestSets = .ofModelFile(at: SessionCheckpointLayout.championURL(in: url))
+        copy.trainerTestSets = .ofModelFile(at: SessionCheckpointLayout.trainerURL(in: url))
+        return copy
+    }
+
     struct ManifestEncodingError: Error, CustomStringConvertible {
         let description: String
     }
@@ -415,7 +435,7 @@ extension SessionManifest {
             disk: directorySizeBytes(sessionDirURL),
             srcBytes: Int64(sessionJSON.count),
             srcMTime: mtime
-        )
+        ).withTestSets(fromSessionFolder: sessionDirURL)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(manifest)
