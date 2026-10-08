@@ -8,11 +8,9 @@ import SwiftUI
 struct LichessBotCalibrationTable: View {
     let rows: [LichessBotCalibrationRow]
 
-    static let titles = ["Move", "Games", "Missing", "Predicted", "Actual", "Predicted W / D / L", "Actual W / D / L", "Brier", "Skill"]
-
     var body: some View {
         Grid(alignment: .trailing, horizontalSpacing: LichessBotStatsStyle.columnSpacing, verticalSpacing: LichessBotStatsStyle.rowSpacing) {
-            LichessBotStatsHeaderRow(titles: Self.titles)
+            LichessBotStatsHeaderRow(columns: LichessBotCalibrationColumn.allCases.map { .init(title: $0.title, help: $0.help) })
             ForEach(rows, id: \.moveNumber) { row in
                 LichessBotCalibrationRowView(row: row)
             }

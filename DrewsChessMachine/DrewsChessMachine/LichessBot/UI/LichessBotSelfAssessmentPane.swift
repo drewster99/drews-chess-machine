@@ -18,8 +18,14 @@ struct LichessBotSelfAssessmentPane: View {
             }
             // One above the other: side by side they are wider than the
             // narrowest window.
-            LichessBotHeldGamesList(title: "Recent blown wins", games: assessment.heldWins.recentTurned)
-            LichessBotHeldGamesList(title: "Recent saves", games: assessment.heldLosses.recentTurned)
+            LichessBotHeldGamesList(
+                title: "Recent blown wins",
+                help: "Games where the value head held a win (≥ 80% on two consecutive DCM moves) and DCM then drew or lost: where the network was sure it was winning and was wrong.",
+                games: assessment.heldWins.recentTurned)
+            LichessBotHeldGamesList(
+                title: "Recent saves",
+                help: "Games where the value head held a loss (≥ 80% on two consecutive DCM moves) and DCM then drew or won.",
+                games: assessment.heldLosses.recentTurned)
             LichessBotPaneEmptyNote(text: "\(assessment.gamesWithoutMoveData) scored game\(assessment.gamesWithoutMoveData == 1 ? "" : "s") without move data are left out of this pane")
                 .shown(assessment.gamesWithoutMoveData > 0)
         }

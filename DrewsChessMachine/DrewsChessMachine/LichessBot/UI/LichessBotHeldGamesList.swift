@@ -6,12 +6,15 @@ import SwiftUI
 /// it on Lichess.
 struct LichessBotHeldGamesList: View {
     let title: String
+    /// What the list holds, for the title's tooltip.
+    let help: String
     let games: [LichessBotHeldGame]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(LichessBotStatsStyle.sectionFont)
+                .help(help)
             LichessBotPaneEmptyNote(text: "None")
                 .shown(games.isEmpty)
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {

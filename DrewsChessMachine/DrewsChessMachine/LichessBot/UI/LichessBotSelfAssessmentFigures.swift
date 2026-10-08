@@ -8,13 +8,13 @@ struct LichessBotSelfAssessmentFigures: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(LichessBotStatsFormat.held(turned: assessment.heldWins.turned, held: assessment.heldWins.held, verb: "blown", noun: "held wins"))
-                .help("A held win: the value head gave a win ≥ 80% on two consecutive DCM moves. Blown: the game was then drawn or lost.")
+                .help("A held win: the value head gave a win ≥ 80% on two consecutive DCM moves (two, so a one-move spike before a recapture does not count). Blown: the game was then drawn or lost. Many blown wins mean the value head is too optimistic.")
             Text(LichessBotStatsFormat.held(turned: assessment.heldLosses.turned, held: assessment.heldLosses.held, verb: "saved", noun: "held losses"))
-                .help("A held loss: a loss ≥ 80% on two consecutive DCM moves. Saved: the game was then drawn or won.")
+                .help("A held loss: the value head gave a loss ≥ 80% on two consecutive DCM moves. Saved: the game was then drawn or won.")
             Text(LichessBotStatsFormat.decisive(assessment.decisiveWins, result: "Won"))
-                .help("The earliest DCM move from which the win probability stayed ≥ 80% through DCM's last decision")
+                .help("Won games: the earliest DCM move from which the value head's win probability stayed ≥ 80% through DCM's last decision, as a ply. Plies count both sides' moves. \"plies before the end\": the average distance from that ply to the game's last ply. n: games that settled; never: games whose probability for their result was below 80% at DCM's last decision; no data: games with no recorded readings.")
             Text(LichessBotStatsFormat.decisive(assessment.decisiveLosses, result: "Lost"))
-                .help("The earliest DCM move from which the loss probability stayed ≥ 80% through DCM's last decision")
+                .help("Lost games: the earliest DCM move from which the value head's loss probability stayed ≥ 80% through DCM's last decision, as a ply. Plies count both sides' moves. \"plies before the end\": the average distance from that ply to the game's last ply. n: games that settled; never: games whose probability for their result was below 80% at DCM's last decision; no data: games with no recorded readings.")
         }
         .font(LichessBotStatsStyle.figureFont)
         .fixedSize(horizontal: false, vertical: true)
