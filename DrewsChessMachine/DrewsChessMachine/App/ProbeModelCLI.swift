@@ -597,14 +597,10 @@ enum ProbeModelCLI {
         weightFileURL: URL,
         gpuMs: Double
     ) -> [String: Any] {
-        let aggregates = LichessProbeHistory.aggregates(from: results)
-        let overall = LichessProbeOverallSummary(folding: aggregates)
-        let pairs: [(rating: Int, correct: Bool)] = results.compactMap {
-            guard let meta = LichessProbeData.metadata[$0.probe.name] else { return nil }
-            let correct = $0.verdict == .correctAndConfident || $0.verdict == .correctButFlat
-            return (rating: meta.rating, correct: correct)
-        }
-        let elo = LichessProbeHistory.mlePuzzleElo(pairs: pairs)
+        let battery = ProbeBatterySummary(results: results)
+        let aggregates = battery.aggregates
+        let overall = battery.overall
+        let elo = battery.puzzleElo
 
         var themes: [String: String] = [:]
         for agg in aggregates {
