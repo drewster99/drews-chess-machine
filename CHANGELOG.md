@@ -9,6 +9,25 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-09 08:49 — Model file picker: a row with one row below it isn't expandable `0529eccf` `87b761f4` `f1e9e38e`
+
+- In the Lichess bot's model file / lineage picker, a row with exactly one row below it has no disclosure; that row is listed right below it at the same level, marked `↳ <model_id>`, and stays selectable (`ModelLineageTree.flatteningSoleChildren`). At every depth, so a chain of single segments reads as a flat run. It replaced 0529eccf's first version, which repeated the one row's file on the parent row.
+- The segment tag (file count, step range, "latest on branch") has its own line; beside the file's columns it had been squeezed into a narrow wrapped column that pushed the architecture off the row.
+- The tree keeps its shape for search, selection and the "trained below" counts; search filters whole families first, so searching a seed's only segment still shows the seed above it. The listed rows are state, rebuilt only when the tree loads or the search changes. A selected row the search has since hidden can no longer be chosen.
+
+## 2026-10-08 17:32 — Model pickers show how a model was trained `1ac60db4` `8dbc7661`
+
+- `ModelTrainingHistory`: every method a model's weights went through (self-play, corpus replay, UCI play), oldest first, consecutive repeats collapsed (`corpus replay → self-play`). From the lineage record (ancestor runs' segments, earlier segments, its own; a schema-2 record by the path that wrote it) or, without a record, the `creator` (`replay`, `train-vs-uci`; GUI writers say nothing). Unknown or untrained shows nothing.
+- Lichess Record card: the Model menu and the Models pane's checkpoint label name the method. Each game generation records it (`trained=` on the generation log line); games recorded before read it from the played file's header while that file still holds the same `model_id`. Game records are never rewritten; index schema 5 (one rebuild).
+- Lichess bot model file picker: a training method column. Load Session picker: champion and trainer methods in the run details, the newest save's trainer method in each run's header.
+- Plan and owner decisions: `documentation/plans-active/MODEL_TRAINING_METHOD_PLAN.md`.
+
+## 2026-10-08 15:36 — Lichess bot Record card: Model filter, panes that grow, tooltips `991be86a` `468e2a9b` `9c5552c9` `8b5b8e32` `fe259fd9` `35472e62` `1e612b8a`
+
+- A Model filter beside Period and Games applies to every pane and the period table. A game counts for its majority model (`LichessBotModelAttribution`, shared with the Models pane); a game with no recorded model counts only under All models. The menu lists the models that played in the selected period and Games filter, with those games' counts; the selection is remembered, and the record-stats log line names it.
+- Panes grow the card instead of scrolling inside it (the Opponent strength chart's axis title and table had been hidden), and a tall pane no longer overlaps the recent games (`LichessBotAtLeastHeightLayout`; regression test `LichessBotRecordCardHeightTests`).
+- Tooltips on every self-assessment column header and cell, the held-game rows, the blown/saved lists and the settled-ply lines; Move choice pane header tooltips (Decisions, Top move, Mean p(chosen), Randomish — every move below 1.5× uniform, a forced move never counts).
+
 ## 2026-10-07 21:59 — Review fixes: test-set results and the probe path `861f51ff`
 
 - A NaN/Inf forward pass is a failed test-set evaluation (and an error in `--probe-model` and the probe watcher), never plausible numbers from the uniform fallback.
