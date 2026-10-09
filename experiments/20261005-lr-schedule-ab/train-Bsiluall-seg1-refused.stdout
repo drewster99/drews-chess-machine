@@ -1,0 +1,33 @@
+warning: loc(fused["mps_add_21"("(mpsFileLoc): /AppleInternal/Library/BuildRoots/4~CYf0ugAFA2MHVp9fguae4KUVbl8-CIxgGlWKSUA/Library/Caches/com.apple.xbs/TemporaryDirectory.p76yMP/Sources/MetalPerformanceShadersGraph/mpsgraph/MetalPerformanceShadersGraph/Core/Files/MPSGraphUtilities.mm":234:0), "ane_validation_message"("Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16":0:0)]): Reached maxReorderingDistance 10
+warning: loc(fused["mps_add_21"("(mpsFileLoc): /AppleInternal/Library/BuildRoots/4~CYf0ugAFA2MHVp9fguae4KUVbl8-CIxgGlWKSUA/Library/Caches/com.apple.xbs/TemporaryDirectory.p76yMP/Sources/MetalPerformanceShadersGraph/mpsgraph/MetalPerformanceShadersGraph/Core/Files/MPSGraphUtilities.mm":234:0), "ane_validation_message"("Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16":0:0)]): Reached maxReorderingDistance 10
+warning: loc(fused["mps_add_27"("(mpsFileLoc): /AppleInternal/Library/BuildRoots/4~CYf0ugAFA2MHVp9fguae4KUVbl8-CIxgGlWKSUA/Library/Caches/com.apple.xbs/TemporaryDirectory.p76yMP/Sources/MetalPerformanceShadersGraph/mpsgraph/MetalPerformanceShadersGraph/Core/Files/MPSGraphUtilities.mm":234:0), "ane_validation_message"("Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16":0:0)]): Reached maxReorderingDistance 10
+warning: loc(fused["mps_add_27"("(mpsFileLoc): /AppleInternal/Library/BuildRoots/4~CYf0ugAFA2MHVp9fguae4KUVbl8-CIxgGlWKSUA/Library/Caches/com.apple.xbs/TemporaryDirectory.p76yMP/Sources/MetalPerformanceShadersGraph/mpsgraph/MetalPerformanceShadersGraph/Core/Files/MPSGraphUtilities.mm":234:0), "ane_validation_message"("Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16":0:0)]): Reached maxReorderingDistance 10
+warning: loc(fused["mps_add_39"("(mpsFileLoc): /AppleInternal/Library/BuildRoots/4~CYf0ugAFA2MHVp9fguae4KUVbl8-CIxgGlWKSUA/Library/Caches/com.apple.xbs/TemporaryDirectory.p76yMP/Sources/MetalPerformanceShadersGraph/mpsgraph/MetalPerformanceShadersGraph/Core/Files/MPSGraphUtilities.mm":234:0), "ane_validation_message"("Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16":0:0)]): Reached maxReorderingDistance 10
+warning: loc(fused["mps_add_39"("(mpsFileLoc): /AppleInternal/Library/BuildRoots/4~CYf0ugAFA2MHVp9fguae4KUVbl8-CIxgGlWKSUA/Library/Caches/com.apple.xbs/TemporaryDirectory.p76yMP/Sources/MetalPerformanceShadersGraph/mpsgraph/MetalPerformanceShadersGraph/Core/Files/MPSGraphUtilities.mm":234:0), "ane_validation_message"("Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16":0:0)]): Reached maxReorderingDistance 10
+warning: loc(fused["mps_add_51"("(mpsFileLoc): /AppleInternal/Library/BuildRoots/4~CYf0ugAFA2MHVp9fguae4KUVbl8-CIxgGlWKSUA/Library/Caches/com.apple.xbs/TemporaryDirectory.p76yMP/Sources/MetalPerformanceShadersGraph/mpsgraph/MetalPerformanceShadersGraph/Core/Files/MPSGraphUtilities.mm":234:0), "ane_validation_message"("Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16":0:0)]): Reached maxReorderingDistance 10
+error: --resume-exact cannot continue this checkpoint exactly: it lacks params. Pass --accept-inexact params to resume anyway (each missing piece then starts fresh and the segment is recorded as not exact), or continue it as a new branch without --resume-exact.
+[REPLAY] starting offline corpus replay over 1 corpus path(s)
+[REPLAY] start-model: 20261008-lrBsiluall-relcap-replay-step40000.safetensors modelID=20261008-9-DlVG encoding=basic24 policy_tail=fp32_from_pre_bn
+[REPLAY-ARCH] (start-model) in basic24(24) -> stem 128 (7x7) . 3x[7x7+7x7 @128, no-SE, silu/pre, clean_add, no-ReZero, out:layer_norm, drop*1] . act silu . policy intermediate_conv(4864) . value WDL(16->FC128) . bfloat16 policy-tail fp32_from_pre_bn . 5,132,687 params
+[REPLAY-RESUME] WARNING lr_momentum_cycle: configured [lr=[trough 1.00e-03,peak 1.00e+00]^10000st cnt=0 inv=true mom=[0.75,0.90]^1000st cnt=0 inv=false decay=[peak->1.00e-03 trough->1.00e-06 over 1000000st] momFollow=[low 0.850->0.900 high 0.950->0.950]] but the checkpoint trained under [lr=[trough 1.00e-03,peak 1.00e+00]^10000st cnt=0 inv=true mom=[0.75,0.90]^1000st cnt=0 inv=false decay=[peak->1.00e-04 trough->1.00e-05 over 10000000st] momFollow=[low 0.850->0.900 high 0.950->0.950]]; restoring the checkpoint's value
+[REPLAY-HPARAMS] lr=0.001 batch=4096 wd=0.0003 momentum=0.9 gradClip=15 entropyBonus=0 drawPenalty=0 policyW=1 valueW=1 illegalW=1 pLabelSmooth=0.1 pLabelSmoothMode=fixed_total pLabelSmoothPerMove=0.0033 pLabelSmoothPerMoveCap=0.5 vLabelSmooth=0.013 dropout=0 lrWarmup=1000 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=on batchStats=10 klProbe=100 relClip=clip/k3/N1000/W100/floor0.75 stepLineSec=180 sampling=(maxPerGame=10 maxDrawPct=75 targetLen=999 stratify=off applied=on)
+[GRAD-CLIP] config mode=clip k=3 N=1000 W=100 floor=0.75 hardMax=15
+[REPLAY] trainer-model output: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261008-lrBsiluall-relcap-replay-latest.safetensors (replacing the existing file, which holds model 20261008-9-DlVG at step 40000 — the model line this run continues)
+[REPLAY] enumerated checkpoints: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261008-lrBsiluall-relcap-replay-step41000.safetensors and siblings (never overwritten)
+[REPLAY] corpus 20260624-192615-w3aA5b: 46 sealed shard(s)
+[RESUME-DIFF] arena_start_tau: parent=0.2 this_run=0.6
+[RESUME-DIFF] arena_target_tau: parent=0.05 this_run=0.2
+[RESUME-DIFF] max_draw_percent_per_batch: parent=100 this_run=75
+[RESUME-DIFF] max_plies_from_any_one_game: parent=400 this_run=10
+[RESUME-DIFF] policy_label_smoothing_epsilon: parent=0.10000000149011612 this_run=0.1
+[RESUME-DIFF] relative_grad_clip_floor: parent=0.5 this_run=0.75
+[RESUME-DIFF] replay_buffer_capacity: parent=500000 this_run=1000000
+[RESUME-DIFF] replay_buffer_min_positions_before_training: parent=250000 this_run=500000
+[RESUME-DIFF] self_play_concurrency: parent=180 this_run=250
+[RESUME-DIFF] self_play_draw_keep_fraction: parent=1.0 this_run=0.7
+[RESUME-DIFF] self_play_max_plies_per_game: parent=450 this_run=400
+[RESUME-DIFF] self_play_start_tau: parent=0.2 this_run=1.0
+[RESUME-DIFF] self_play_target_tau: parent=0.05 this_run=0.3
+[RESUME-DIFF] target_sampled_game_length_plies: parent=0 this_run=999
+[RESUME] replay buffer capacity: checkpoint 500000, this run 1000000 — the rebuilt buffer cannot hold what the saved one held
+[RESUME] NOT EXACT: params
