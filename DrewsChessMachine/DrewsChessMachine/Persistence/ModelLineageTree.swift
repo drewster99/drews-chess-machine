@@ -36,11 +36,15 @@ struct ModelLineageNode: Identifiable, Sendable, Equatable {
     /// Counted once here from the children, which are built first, since
     /// every row's label reads it.
     let trainedBelow: TrainedBelow
+    /// Listed at its parent's level, right below it, because it is the
+    /// parent's only row (`ModelLineageTree.flatteningSoleChildren`).
+    let isSoleChildOfRowAbove: Bool
 
     init(id: String, kind: Kind, children: [ModelLineageNode]?) {
         self.id = id
         self.kind = kind
         self.children = children
+        self.isSoleChildOfRowAbove = false
         var below = TrainedBelow()
         for child in children ?? [] {
             below.trainedSegments += child.trainedBelow.trainedSegments
@@ -57,6 +61,17 @@ struct ModelLineageNode: Identifiable, Sendable, Equatable {
         self.trainedBelow = below
     }
 
+    /// This row moved by `flatteningSoleChildren`: its counts stay the
+    /// tree's, so a seed whose one trained segment now sits beside it still
+    /// says what was trained below it.
+    fileprivate init(listing node: ModelLineageNode, children: [ModelLineageNode]?, isSoleChildOfRowAbove: Bool) {
+        self.id = node.id
+        self.kind = node.kind
+        self.children = children
+        self.trainedBelow = node.trainedBelow
+        self.isSoleChildOfRowAbove = isSoleChildOfRowAbove
+    }
+
     /// An untrained segment with nothing trained anywhere below it: what the
     /// tree sorts after the trained roots and the picker tags orange. The one
     /// rule for both.
@@ -67,14 +82,6 @@ struct ModelLineageNode: Identifiable, Sendable, Equatable {
     var isSeedOnly: Bool {
         guard case .segment(_, _, let isUntrained, _) = kind else { return false }
         return Self.isSeedOnly(isUntrained: isUntrained, trainedBelow: trainedBelow)
-    }
-
-    /// The one row below this one, when there is exactly one (owner request
-    /// 2026-10-08): the picker shows its file on this row too, so a
-    /// one-item group reads without expanding it.
-    var onlyChild: ModelLineageNode? {
-        guard let children, children.count == 1 else { return nil }
-        return children[0]
     }
 
     /// The file selecting this row chooses, if any.
@@ -189,6 +196,27 @@ enum ModelLineageTree {
             return lhs.newestActivity > rhs.newestActivity
         }
         return conflictNodes + trainedFirst + orphanChampions.map(championNode)
+    }
+
+    /// The rows as a picker lists them: a row with exactly one row below it
+    /// gets no disclosure, and that row follows it at the same level, marked
+    /// `isSoleChildOfRowAbove` (owner request 2026-10-09: a one-item group
+    /// is never something to expand). Applied at every depth, so a chain of
+    /// single rows reads as a flat run. Ids, counts and search are the
+    /// tree's, so filter and find on the tree, then flatten for display.
+    static func flatteningSoleChildren(_ nodes: [ModelLineageNode]) -> [ModelLineageNode] {
+        nodes.flatMap { listing($0, isSoleChildOfRowAbove: false) }
+    }
+
+    private static func listing(_ node: ModelLineageNode, isSoleChildOfRowAbove: Bool) -> [ModelLineageNode] {
+        guard let children = node.children, !children.isEmpty else {
+            return [ModelLineageNode(listing: node, children: nil, isSoleChildOfRowAbove: isSoleChildOfRowAbove)]
+        }
+        guard children.count > 1 else {
+            return [ModelLineageNode(listing: node, children: nil, isSoleChildOfRowAbove: isSoleChildOfRowAbove)]
+                + listing(children[0], isSoleChildOfRowAbove: true)
+        }
+        return [ModelLineageNode(listing: node, children: flatteningSoleChildren(children), isSoleChildOfRowAbove: isSoleChildOfRowAbove)]
     }
 
     /// A self-play champion's lineage-root ModelID: the id with any

@@ -132,21 +132,41 @@ final class ModelLineageTreeTests: XCTestCase {
         XCTAssertEqual(segmentIDs(ModelLineageTree.build(lines: lines, champions: [])), ["R-trained", "Q-seed"])
     }
 
-    /// A row with exactly one row below it names that row (the picker shows
-    /// its file on the parent's row); with none or several, none.
-    func testOnlyChildIsTheSingleRowBelow() throws {
+    /// The rows as the picker lists them: a row with exactly one row below
+    /// it has no disclosure and that row follows it, marked, at every depth;
+    /// a row with several keeps them under it. Ids and counts are the tree's.
+    func testASoleChildIsListedBelowItsRowInsteadOfUnderADisclosure() throws {
         let lines = [
             line("O-seed", [entry("O-seed", step: nil, parent: nil, modified: 1)]),
             line("O-run", [entry("O-run", step: 7000, parent: "O-seed", modified: 2)]),
+            line("O-next", [entry("O-next", step: 9000, parent: "O-run", modified: 3)]),
             line("P-seed", [entry("P-seed", step: nil, parent: nil, modified: 1)]),
-            line("P-a", [entry("P-a", step: 10, parent: "P-seed", modified: 3)]),
+            line("P-a", [entry("P-a", step: 10, parent: "P-seed", modified: 3), entry("P-a", step: 5, parent: "P-seed", modified: 2.5)]),
             line("P-b", [entry("P-b", step: 20, parent: "P-seed", modified: 4)]),
         ]
         let tree = ModelLineageTree.build(lines: lines, champions: [])
-        let only = try XCTUnwrap(try XCTUnwrap(node("O-seed", in: tree)).onlyChild)
-        XCTAssertEqual(only.selectableEntry?.modelID, "O-run")
-        XCTAssertEqual(only.selectableEntry?.trainingStep, 7000)
-        XCTAssertNil(try XCTUnwrap(node("O-run", in: tree)).onlyChild, "a leaf has no row below it")
-        XCTAssertNil(try XCTUnwrap(node("P-seed", in: tree)).onlyChild, "two rows below")
+        let listed = ModelLineageTree.flatteningSoleChildren(tree)
+        func row(_ id: String, in nodes: [ModelLineageNode]) throws -> ModelLineageNode {
+            try XCTUnwrap(nodes.first { $0.id == id }, id)
+        }
+
+        // A chain of single rows is a flat run; only the first is unmarked.
+        XCTAssertEqual(listed.map(\.id), ["segment:P-seed", "segment:O-seed", "segment:O-run", "segment:O-next"])
+        XCTAssertEqual(listed.map(\.isSoleChildOfRowAbove), [false, false, true, true])
+        XCTAssertNil(try row("segment:O-seed", in: listed).children, "no disclosure for one row")
+        XCTAssertNil(try row("segment:O-run", in: listed).children)
+        XCTAssertEqual(try row("segment:O-seed", in: listed).trainedBelow, try XCTUnwrap(node("O-seed", in: tree)).trainedBelow,
+                       "the seed still counts what was trained below it")
+        XCTAssertEqual(try row("segment:O-seed", in: listed).trainedBelow.trainedSegments, 2)
+
+        // Two rows below: they stay under the disclosure; one of them with
+        // a single earlier file lists it beside itself.
+        let pChildren = try XCTUnwrap(try row("segment:P-seed", in: listed).children)
+        XCTAssertEqual(pChildren.map(\.id), ["segment:P-b", "segment:P-a", "file:/m/P-a-5.safetensors"])
+        XCTAssertEqual(pChildren.map(\.isSoleChildOfRowAbove), [false, false, true])
+        XCTAssertNil(try row("segment:P-a", in: pChildren).children)
+
+        XCTAssertTrue(tree.allSatisfy { !$0.isSoleChildOfRowAbove }, "the tree itself is unchanged")
+        XCTAssertNotNil(try XCTUnwrap(node("O-seed", in: tree)).children)
     }
 }
