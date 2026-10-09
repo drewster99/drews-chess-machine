@@ -1,5 +1,9 @@
 # Lichess Bot — native Swift client
 
+Links (owner, 2026-10-09):
+- Profile: https://lichess.org/@/DrewsChessMachine
+- Challenge the bot: https://lichess.org/?user=DrewsChessMachine#friend
+
 Status (2026-09-28; updated 2026-10-01):
 - **Phases 1–5 implemented** (commits `4ebcbfb`…`e66fc02`). The bot is live on lichess.org, and the live verification findings are recorded below.
 - **Implemented alongside the live testing:** the additions of 2026-09-28 in §7.2, §9.1 (first version), §12.5a and §14.3b (account refresh), as each section notes. §9.1's lineage tree and §14.3b's opponent card are planned.

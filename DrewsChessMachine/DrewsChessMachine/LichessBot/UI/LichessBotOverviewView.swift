@@ -81,6 +81,8 @@ struct LichessBotControlsCard: View {
                         .textSelection(.enabled)
                         .shown(!errorText.isEmpty)
                     Spacer()
+                    LichessBotProfileLink(controller: controller)
+                        .padding(.trailing, 12)
                     Text("\(controller.activeGameIDs.count) game(s) in progress")
                         .font(.system(.callout, design: .monospaced))
                         .foregroundStyle(.secondary)
