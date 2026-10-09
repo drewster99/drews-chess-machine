@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-09 17:38 — Lichess bot: profile link and copy button `53854b71`
+
+- The bot window's controls card shows the bot's Lichess profile address (`lichess.org/@/<account>`) beside the games-in-progress count: clicking it opens the page in the browser, and the button beside it copies the full link (a checkmark confirms for 1.5 s; `[BUTTON] Copy Lichess profile link` in the log). The account is the token's checked account, else the one the settings expect, as on the Account card.
+- One address builder, `LichessBotLinks.userAddress`, serves both opening and copying.
+- `LICHESS_BOT_PLAN.md` records the profile link and the challenge link (`https://lichess.org/?user=DrewsChessMachine#friend`).
+
 ## 2026-10-09 08:49 — Model file picker: a row with one row below it isn't expandable `0529eccf` `87b761f4` `f1e9e38e`
 
 - In the Lichess bot's model file / lineage picker, a row with exactly one row below it has no disclosure; that row is listed right below it at the same level, marked `↳ <model_id>`, and stays selectable (`ModelLineageTree.flatteningSoleChildren`). At every depth, so a chain of single segments reads as a flat run. It replaced 0529eccf's first version, which repeated the one row's file on the parent row.
