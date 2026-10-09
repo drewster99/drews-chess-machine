@@ -17,9 +17,10 @@ struct ModelLineageNode: Identifiable, Sendable, Equatable {
     }
 
     /// What was trained anywhere below a row. A seed's own file is untrained
-    /// (a fresh build records no step) while its trained segments sit
-    /// collapsed under it, so its row has to say what is under it or it
-    /// reads as if the whole lineage were untrained.
+    /// (a fresh build records no step) while its trained segments sit under
+    /// it (collapsed, or as the next row when there is only one), so its row
+    /// has to say what is under it or it reads as if the whole lineage were
+    /// untrained.
     struct TrainedBelow: Sendable, Equatable {
         /// Descendant segments with at least one file that records a step.
         var trainedSegments = 0
@@ -31,10 +32,12 @@ struct ModelLineageNode: Identifiable, Sendable, Equatable {
 
     let id: String
     let kind: Kind
-    /// nil for a leaf, so `OutlineGroup` shows no disclosure arrow.
+    /// nil for a leaf, and in a picker's listing for a row with one row
+    /// below it (`ModelLineageTree.flatteningSoleChildren`), so
+    /// `OutlineGroup` shows no disclosure arrow.
     let children: [ModelLineageNode]?
     /// Counted once here from the children, which are built first, since
-    /// every row's label reads it.
+    /// every row's label reads it; copied unchanged by `init(listing:)`.
     let trainedBelow: TrainedBelow
     /// Listed at its parent's level, right below it, because it is the
     /// parent's only row (`ModelLineageTree.flatteningSoleChildren`).
@@ -205,18 +208,34 @@ enum ModelLineageTree {
     /// single rows reads as a flat run. Ids, counts and search are the
     /// tree's, so filter and find on the tree, then flatten for display.
     static func flatteningSoleChildren(_ nodes: [ModelLineageNode]) -> [ModelLineageNode] {
-        nodes.flatMap { listing($0, isSoleChildOfRowAbove: false) }
+        var rows: [ModelLineageNode] = []
+        for node in nodes {
+            appendListing(of: node, isSoleChildOfRowAbove: false, to: &rows)
+        }
+        return rows
     }
 
-    private static func listing(_ node: ModelLineageNode, isSoleChildOfRowAbove: Bool) -> [ModelLineageNode] {
-        guard let children = node.children, !children.isEmpty else {
-            return [ModelLineageNode(listing: node, children: nil, isSoleChildOfRowAbove: isSoleChildOfRowAbove)]
+    /// One accumulator for a whole chain of single rows, so a long chain
+    /// isn't copied once per level.
+    private static func appendListing(of node: ModelLineageNode, isSoleChildOfRowAbove: Bool, to rows: inout [ModelLineageNode]) {
+        guard let children = node.children, children.count > 1 else {
+            rows.append(ModelLineageNode(listing: node, children: nil, isSoleChildOfRowAbove: isSoleChildOfRowAbove))
+            if let soleChild = node.children?.first {
+                appendListing(of: soleChild, isSoleChildOfRowAbove: true, to: &rows)
+            }
+            return
         }
-        guard children.count > 1 else {
-            return [ModelLineageNode(listing: node, children: nil, isSoleChildOfRowAbove: isSoleChildOfRowAbove)]
-                + listing(children[0], isSoleChildOfRowAbove: true)
-        }
-        return [ModelLineageNode(listing: node, children: flatteningSoleChildren(children), isSoleChildOfRowAbove: isSoleChildOfRowAbove)]
+        rows.append(ModelLineageNode(listing: node, children: flatteningSoleChildren(children), isSoleChildOfRowAbove: isSoleChildOfRowAbove))
+    }
+
+    /// The picker's rows for a search: the families (roots) with any id in
+    /// them containing the query, case-insensitively, then listed. Filtering
+    /// comes first because the listing moves a seed's only segment out of
+    /// its subtree; searching that segment's id still shows the seed above it.
+    static func listedRows(of tree: [ModelLineageNode], matching search: String) -> [ModelLineageNode] {
+        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
+        let families = query.isEmpty ? tree : tree.filter { root in root.searchableIDs.contains { $0.contains(query) } }
+        return flatteningSoleChildren(families)
     }
 
     /// A self-play champion's lineage-root ModelID: the id with any

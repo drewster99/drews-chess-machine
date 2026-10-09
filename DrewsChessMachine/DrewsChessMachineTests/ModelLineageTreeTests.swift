@@ -169,4 +169,75 @@ final class ModelLineageTreeTests: XCTestCase {
         XCTAssertTrue(tree.allSatisfy { !$0.isSoleChildOfRowAbove }, "the tree itself is unchanged")
         XCTAssertNotNil(try XCTUnwrap(node("O-seed", in: tree)).children)
     }
+
+    /// Every row of a listing at any depth, in order.
+    private func allRows(_ nodes: [ModelLineageNode]) -> [ModelLineageNode] {
+        nodes.flatMap { [$0] + allRows($0.children ?? []) }
+    }
+
+    /// The listing's edge cases: a conflict row, a session champion as the
+    /// only row, a sole row that has several rows of its own, empty input,
+    /// and that every tree id is listed exactly once (List selection and
+    /// `OutlineGroup` identity rely on it).
+    func testTheListingKeepsEveryRowOnceForEveryKind() throws {
+        let lines = [
+            line("P1", [entry("P1", step: 1, parent: nil, modified: 1)]),
+            line("P2", [entry("P2", step: 1, parent: nil, modified: 1)]),
+            line("C", [entry("C", step: 2, parent: "P1", modified: 2), entry("C", step: 3, parent: "P2", modified: 3)]),
+            line("20261001-1-SEED", [entry("20261001-1-SEED", step: nil, parent: nil, modified: 1)]),
+            line("R-run", [entry("R-run", step: 20, parent: "20261001-1-SEED", modified: 5), entry("R-run", step: 10, parent: "20261001-1-SEED", modified: 4)]),
+            line("R-next", [entry("R-next", step: 30, parent: "R-run", modified: 6)]),
+            line("20261002-1-SOLO", [entry("20261002-1-SOLO", step: 100, parent: nil, modified: 7)]),
+        ]
+        let champion = SessionChampion(sessionName: "sess", entry: entry("20261002-1-SOLO-2", step: 900, parent: nil, modified: 8))
+        let tree = ModelLineageTree.build(lines: lines, champions: [champion])
+        let listed = ModelLineageTree.flatteningSoleChildren(tree)
+
+        let treeIDs = allRows(tree).map(\.id)
+        let listedIDs = allRows(listed).map(\.id)
+        XCTAssertEqual(Set(listedIDs).count, listedIDs.count, "no id twice")
+        XCTAssertEqual(Set(listedIDs), Set(treeIDs), "every tree row listed")
+
+        // A conflict always has one row: its segment, listed below it.
+        let conflict = try XCTUnwrap(listed.firstIndex { $0.id == "conflict:C" })
+        XCTAssertNil(listed[conflict].children)
+        XCTAssertEqual(listed[conflict + 1].id, "segment:C")
+        XCTAssertTrue(listed[conflict + 1].isSoleChildOfRowAbove)
+
+        // A session champion as the only row; its parent still counts it.
+        let solo = try XCTUnwrap(listed.firstIndex { $0.id == "segment:20261002-1-SOLO" })
+        XCTAssertNil(listed[solo].children)
+        XCTAssertEqual(listed[solo].trainedBelow.sessionChampions, 1)
+        guard case .sessionChampion(let placed) = listed[solo + 1].kind else { return XCTFail("expected the champion below its segment") }
+        XCTAssertEqual(placed, champion)
+        XCTAssertTrue(listed[solo + 1].isSoleChildOfRowAbove)
+
+        // A sole row with several rows of its own keeps its disclosure and
+        // its copied count.
+        let seed = try XCTUnwrap(listed.firstIndex { $0.id == "segment:20261001-1-SEED" })
+        let run = listed[seed + 1]
+        XCTAssertEqual(run.id, "segment:R-run")
+        XCTAssertTrue(run.isSoleChildOfRowAbove)
+        XCTAssertEqual(run.children?.map(\.id), ["file:/m/R-run-10.safetensors", "segment:R-next"])
+        XCTAssertEqual(run.trainedBelow, try XCTUnwrap(node("R-run", in: tree)).trainedBelow)
+        XCTAssertEqual(run.trainedBelow.trainedSegments, 1)
+
+        XCTAssertEqual(ModelLineageTree.flatteningSoleChildren([]), [])
+        let empty = ModelLineageNode(id: "x", kind: .conflict(modelID: "x", parents: []), children: [])
+        XCTAssertEqual(ModelLineageTree.flatteningSoleChildren([empty]).map(\.children), [nil], "an empty list of rows is a leaf")
+    }
+
+    /// Search filters whole families before listing: the id of a seed's
+    /// only segment finds the seed and that segment below it.
+    func testSearchingASoleSegmentShowsItsSeedAboveIt() {
+        let lines = [
+            line("O-seed", [entry("O-seed", step: nil, parent: nil, modified: 1)]),
+            line("O-run", [entry("O-run", step: 7000, parent: "O-seed", modified: 2)]),
+            line("Z-other", [entry("Z-other", step: 5, parent: nil, modified: 3)]),
+        ]
+        let tree = ModelLineageTree.build(lines: lines, champions: [])
+        XCTAssertEqual(ModelLineageTree.listedRows(of: tree, matching: "  o-RUN ").map(\.id), ["segment:O-seed", "segment:O-run"])
+        XCTAssertEqual(ModelLineageTree.listedRows(of: tree, matching: "").map(\.id), ["segment:Z-other", "segment:O-seed", "segment:O-run"])
+        XCTAssertEqual(ModelLineageTree.listedRows(of: tree, matching: "nothing"), [])
+    }
 }

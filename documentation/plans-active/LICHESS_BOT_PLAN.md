@@ -846,6 +846,7 @@ training is visible.
 - **Probe pElo ("strongest (probe)") is not shown.** The app has no access to the dashboards' `data/*.csv`, which live in the repo, not in the app's data. Showing it needs an import step or the ROADMAP's in-file provenance, so it is deferred rather than guessed.
 - Session champions hang under their base ModelID's segment, labeled with the session folder.
 - A parent cycle, which should never happen, is broken by placing each id once, and ids reachable only through a cycle are listed as roots.
+- **A row with exactly one row below it has no disclosure** (owner request 2026-10-09). That row is listed right below it at the same level, marked `↳ <model_id>`, and stays selectable; at every depth, so a chain of single segments reads as a flat run. The tree keeps its shape for search, selection and the "trained below" counts; only the listing is flattened (`ModelLineageTree.flatteningSoleChildren`).
 
 **Status.** A first version shipped with the live-testing fixes: "Latest by lineage" (`ModelFileCatalog`, `LichessBotModelLinePicker`). It groups files by `model_id`, shows the highest-step file first, and lists the lineage's earlier files underneath. Live use showed the grouping is too fine, and the result misleads:
 - The untrained seed "Qeu8" appears as its own lineage, and its trained continuations appear as unrelated rows (GLu5, Lnji, PVZp, Ejp0).

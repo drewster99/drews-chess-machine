@@ -4,15 +4,23 @@ import SwiftUI
 /// through its training segments (by `parent_model_id`), each segment
 /// selecting its latest file and listing its earlier files, plus self-play
 /// session champions under their base ModelID. Built only from the files'
-/// metadata, never from their names. With `.chooseLineageToFollow` only a
-/// training segment whose latest file records a followable lineage can be
-/// chosen (follow-lineage plan §3.9); every other row says why not.
+/// metadata, never from their names. A row with exactly one row below it
+/// is listed without a disclosure, that row right below it
+/// (`ModelLineageTree.flatteningSoleChildren`). With
+/// `.chooseLineageToFollow` only a training segment whose latest file
+/// records a followable lineage can be chosen (follow-lineage plan §3.9);
+/// every other row says why not.
 struct LichessBotModelLinePicker: View {
     @Binding var isPresented: Bool
     let purpose: LichessBotModelLinePickerPurpose
     let onChoose: (ModelFileEntry) -> Void
 
     @State private var tree: [ModelLineageNode]?
+    /// What the list shows: `tree` filtered by `search`, then listed
+    /// (`ModelLineageTree.listedRows`). Kept as state, set when the tree
+    /// loads and when the search changes, so a redraw (every selection
+    /// click) doesn't rebuild every row.
+    @State private var listedRows: [ModelLineageNode] = []
     @State private var modelCount = (lineages: 0, files: 0, sessions: 0)
     @State private var unreadable: [UnreadableModelFile] = []
     @State private var scanError: String?
@@ -43,7 +51,7 @@ struct LichessBotModelLinePicker: View {
                     .shown(scanError != nil)
                 List(selection: $selection) {
                     LichessBotUnreadableModelFilesSection(files: unreadable)
-                    OutlineGroup(filteredTree, children: \.children) { node in
+                    OutlineGroup(listedRows, children: \.children) { node in
                         LichessBotLineageNodeRow(node: node)
                             .tag(node.id)
                             .selectionDisabled(purpose.selectableEntry(for: node) == nil)
@@ -78,6 +86,11 @@ struct LichessBotModelLinePicker: View {
         // (`LichessBotModelFileRow.trainingMethodWidth`), so the other
         // columns keep the room they had before it.
         .frame(width: 1100 + LichessBotModelFileRow.trainingMethodWidth, height: 760)
+        .onChange(of: search) {
+            DispatchQueue.main.async {
+                listedRows = ModelLineageTree.listedRows(of: tree ?? [], matching: search)
+            }
+        }
         .task {
             await load()
         }
@@ -105,20 +118,15 @@ struct LichessBotModelLinePicker: View {
         }
         unreadable = unreadableFiles
         modelCount = (scan.lines.count, scan.lines.reduce(0) { $0 + $1.files.count }, champions.count)
-        tree = ModelLineageTree.build(lines: scan.lines, champions: champions)
+        let built = ModelLineageTree.build(lines: scan.lines, champions: champions)
+        tree = built
+        listedRows = ModelLineageTree.listedRows(of: built, matching: search)
     }
 
-    private var filteredTree: [ModelLineageNode] {
-        guard let tree else { return [] }
-        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
-        // Filter whole families on the tree, then list them: flattening
-        // moves a seed's only segment beside it, out of its subtree.
-        let families = query.isEmpty ? tree : tree.filter { root in root.searchableIDs.contains { $0.contains(query) } }
-        return ModelLineageTree.flatteningSoleChildren(families)
-    }
-
+    /// Looked up in the listed rows, so a selected row the search has since
+    /// hidden can't be chosen.
     private var selectedEntry: ModelFileEntry? {
-        guard let selection, let tree, let node = Self.find(selection, in: tree) else { return nil }
+        guard let selection, let node = Self.find(selection, in: listedRows) else { return nil }
         return purpose.selectableEntry(for: node)
     }
 
