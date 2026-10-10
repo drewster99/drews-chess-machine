@@ -66,12 +66,19 @@ InnocentVictim, R-replay 1 InnocentVictim; B-siluall none. Nothing in any
 session log; R-replay's step lines around it (41,330) look normal, so the
 discarded buffer there was likely not one that fed training — unknown.
 
-Both hangs came early in an R-fixedlr arena: 15.2 s after `[ARENA] start` at
+**Third hang, 2026-10-09 22:59:04.127:** R-fixedlr Hang + 3 InnocentVictim,
+R-replay 1 and B-siluall (resumed, pid 63702) 1 InnocentVictim. Effects, all
+clipped by the relative cap, none halted: R-fixedlr pre-clip norm 13,487,039 at
+trainer step 47,924 (and `[ALARM] Critical Training Divergence … gNorm=26343`),
+B-siluall 7,425,386 at 46,697, R-replay 2.35 (9.4× its reference) at 44,616.
+8.5 s after R-fixedlr's `[ARENA] start` at 22:58:55.602.
+
+All three hangs came early in an R-fixedlr arena: 15.2 s after `[ARENA] start` at
 19:36:33.910 (hang 19:36:49.102; that arena ran to 19:38:31) and 51.3 s after
 the one at 21:36:18.260 (hang 21:37:09.567; SPRT decided 0.6 s later, arena
 ended 21:37:36) (SPRT tick driver, initialK=400
 games in flight). R-fixedlr ran 260 arenas from 2026-10-08 10:25 to
-2026-10-09 22:34, so 2 hangs in 260 arenas. macOS language-model activity at
+2026-10-09 22:34, so 3 hangs in about 265 arenas, all three within 3.5 h on 2026-10-09. macOS language-model activity at
 19:36:30–19:36:50 was only 4 `textunderstandingd` lines, so it is not a
 common factor. Pattern, not proof: the arena's GPU work, with two other
 trainers on the GPU, is the first suspect.
@@ -86,91 +93,116 @@ is unknown; nothing records it (A5).
 
 ## Part A — GPU and memory error audit, then handling
 
-### A1. Inventory (read-only, first)
+### A1. Inventory — done
 
-List every GPU submission site and, for each: synchronous `graph.run` /
-`executable.run` or our own command buffer; which command buffers it can
-produce (`MPSCommandBuffer` may `commitAndContinue`, so the root buffer and
-`mpsCommandBuffer.commandBuffer` can differ); whether status is checked;
-when; and what consumes the output. Sites found so far (2026-10-09 grep):
-`ChessTrainer.swift` (training step encode at ~7148, working-weight sync
-~7218, ~11 `graph.run` sites for probes / exports / KL probe), `ChessNetwork.swift`
-(inference `executable.run` ~1490, value baseline encode ~1703, weight load
-~1976 — the one site that checks both buffers, ~6 `graph.run`),
-`DropoutPhiloxState.swift`, `ChessMPSNetwork.swift`. The inventory table goes
-into this file.
+`GPU_CALL_AUDIT_2026-10-09.md` (this folder): 164 call sites. All GPU work is
+MPSGraph (no app `makeBuffer`, compute pipelines or MPS kernels). 24 GPU
+submissions: none fully checked, 4 partly (training step, working-weight sync,
+value baseline, weight load), 20 not at all (19 synchronous `graph.run`, 1
+`executable.run` — self-play / arena / probe inference). 9 nil- or
+throw-returning creations (device, queues, `makeCommandBuffer`, capture
+start), all checked. 117 calls have no failure signal (`MPSNDArray`,
+`MPSGraphTensorData`, `readBytes` / `writeBytes`, `compile`). No site logs the
+Metal error.
 
-Known gaps already visible:
+Facts from the audit's probes that shape the design:
 
-- **Training step** checks only the root `mtlCommandBuffer.status`, not the
-  continued `mpsCommandBuffer.commandBuffer` (the weight load checks both).
-- **Value baseline** is committed without a wait and checked at the *next*
-  call (`lastBaselineCommandBuffer`) — after the training step that used it
-  has already consumed garbage. A discarded baseline gives garbage advantages,
-  which fits a 10M gradient or a NaN.
-- **Synchronous `graph.run`** (self-play / arena inference, probes) returns
-  results with no status at all; a discarded buffer's outputs are used as if
-  valid.
-- **No logging**: a `gpuCommandFailed` is thrown, never logged with the Metal
-  error code, and nothing mirrors the system's IOGPU / Metal messages.
+1. MPSGraph `encode` splits work across several command buffers
+   (`commitAndContinue`): 1 extra buffer at ~100 ops, 4 at ~400, 10 at ~8,000.
+   A training step spans several.
+2. After a split, `MPSCommandBuffer.commandBuffer` and `.rootCommandBuffer`
+   both name the newest buffer; middle buffers are unreachable. So "check
+   every buffer" is impossible through public API.
+3. Continued buffers don't inherit `errorOptions`.
+4. Synchronous `graph.run` returns no error at all. `executable` / graph
+   `encode` / `run` with an execution descriptor gets a
+   `completionHandler(…, NSError?)`; whether that error covers a middle
+   buffer, or a hang / victim, is unverified (a real fault can't be forced
+   safely beside live training).
 
-### A2. One status rule
+So detection has three layers, because no single public signal is complete.
 
-Every command buffer we commit is checked (root and continued) before any of
-its outputs are read or consumed by later GPU work. One helper
-(`ChessNetwork.requireCompleted`, extended to take an `MPSCommandBuffer`)
-used everywhere. Synchronous `graph.run` sites move to encode + commit + wait +
-check, or to an execution descriptor whose completion handler reports the
-error (API to verify on macOS 27).
+### A2. Layer 1 — one checked submission helper (`GPUWork`)
 
-### A3. The baseline before the step
+Every GPU submission goes through one helper:
 
-The training step checks the baseline's command buffers before it reads its
-own results. A failed baseline fails the step.
+- creates the command buffer itself, with `errorOptions = .encoderExecutionStatus`;
+- encodes (graph or executable) with an execution descriptor whose
+  `completionHandler` records the `NSError`;
+- commits, waits, then checks the first buffer (our reference), the last
+  (`mpsCommandBuffer.commandBuffer`) and the handler's error;
+- on any failure throws `GPUWorkError(stage:, firstStatus:, lastStatus:,
+  error domain / code / userInfo, encoder statuses)` and logs one
+  `[GPU-ERR] stage=… first=… last=… handler=… code=… (kIOGPUCommandBufferCallbackError…)`.
 
-### A4. What happens on a GPU fault
+It also measures each submission's GPU time from the first and last
+buffers' `gpuStartTime` / `gpuEndTime`, and logs `[GPU-SLOW] stage=… gpuMs=…`
+for any submission over 5 s (the hang watchdog fires on a long-running
+buffer, so this names the stage that comes closest).
 
-- Log `[GPU-ERR] stage=… status=… code=… (kIOGPUCommandBufferCallbackError…) domain=… pid=…`
-  with `MTLCommandBufferDescriptor.errorOptions = .encoderExecutionStatus` so
-  the error names the encoder that faulted.
-- **Self-play / arena inference faulted:** discard that tick's evaluations
-  and run the tick again, logging it; no move is played from garbage. Safe
-  because inference only reads the weights: the inputs are still on the CPU
-  and nothing has changed, so the re-run is exact.
-- **Training step or its baseline faulted:** a training step writes the
-  weights and optimizer velocity in place on the GPU. A buffer aborted partway
-  may leave some tensors updated, some not, some garbage, and nothing tells
-  which; the old values are gone. So the trainer's in-memory state can't be
-  trusted or repaired → dump, then return to the last checkpoint.
-  (Owner decision 1: halt for an exact resume, or reload the last checkpoint
-  in-process and continue.)
-- **Probe faulted:** discard the probe result, log, continue.
+All 19 `graph.run` sites, the `executable.run` site and the four `encode`
+sites move to it (`graph.run(with:queue…)` is encode + commit + wait inside,
+so results are unchanged; tests pin that). The value baseline keeps its
+no-wait overlap: the training step checks the baseline's buffers and handler
+before it reads its own results (the step's buffers follow the baseline's on
+the same queue, so the baseline has finished by then).
 
-### A5. Memory and thermal visibility
+### A3. Layer 2 — the process's own GPU fault messages (`GPUFaultMonitor`)
 
-- `DispatchSource.makeMemoryPressureSource` (warning / critical) → `[MEM]` line
-  on every change.
-- On step lines and every `[MEM]` line: `phys_footprint`,
+macOS logs every hang / victim / page fault in the affected process
+(`IOGPUMetalError`, `kIOGPUCommandBufferCallbackError…`), including for
+buffers the app can't reach. `OSLogStore(scope: .currentProcessIdentifier)`
+reads them without an entitlement (verified 2026-10-09 with a standalone
+probe: found its own error entry; 1.8–2.0 s per query with three trainers
+running). One monitor per process polls every 10 s on a utility queue:
+
+- logs each new entry once as `[GPU-SYSLOG] <time> <message>`;
+- keeps fault times; `faults(since:)` answers in memory, no query.
+- A failed `OSLogStore` open or query logs `[GPU-SYSLOG] unavailable: …`
+  once and the run continues (layers 1 and 3 still apply).
+
+Detection lag is up to ~12 s, so its consumers act on faults that already
+happened (A4).
+
+### A4. Layer 3 — numeric guard (exists)
+
+The relative gradient cap already clips a faulted step's gradient (3 of 3
+hangs today showed 2.35× … 32,736,274× spikes, all clipped); the non-finite
+check halts on NaN. Both stay; Part C dumps on either.
+
+### A5. What each path does on a fault
+
+| Where | Immediate (layer 1) | Late (layer 2) |
+|---|---|---|
+| Training step / baseline / working-weight sync (all paths) | crash dump (Part C), then abort: CLI exits 36 (new: GPU fault), GUI suspends training (`trainingSuspension = .gpuFault`, like a health stop: arenas and promotion refused, self-play and autosave continue) | same — a fault at any time while the trainer is active means the weights since may be poisoned; recovery is an exact resume from the last checkpoint |
+| Self-play inference (GUI) | abandon the games in that tick (their next move would come from garbage); log count | abandon every game in progress when the fault is reported; games that ended inside the lag window are already in the buffer — logged as possibly affected, not removed |
+| Arena (GUI) | void the arena: no promotion, no "kept", logged `[ARENA] voided: GPU fault` | void the arena if a fault time falls between its start and end |
+| Weight / optimizer-state export for a save | the save fails through its existing failure path (nothing written) | the save that overlapped the fault is logged as possibly affected (not deleted) |
+| Weight / optimizer-state load, BN warmup, dropout-state writes | the load / resume fails with its error | logged |
+| Probes, health reads, test-set evaluation | result discarded, logged; training continues | logged |
+| Lichess bot / UCI / interactive | the move fails with the error (existing behavior) | logged |
+
+Exit codes: 33 stays "failed", 35 health stop; new 36 = GPU fault (CLI).
+
+### A6. Memory and thermal visibility
+
+- `DispatchSource.makeMemoryPressureSource` (warning / critical / normal) →
+  `[MEM]` line on every change.
+- `[MEM]` every 10 minutes and on every change: `phys_footprint`,
   `MTLDevice.currentAllocatedSize`, `recommendedMaxWorkingSetSize`, swap used
   and total (`vm.swapusage`), memory-pressure level, `thermalState`.
-- `[MEM]` on every thermal-state change.
-
-### A6. Mirror the system's GPU messages
-
-Poll `OSLogStore(scope: .currentProcessIdentifier)` (our own process's entries,
-no entitlement needed — the 21:37 errors were attributed to our pids) for
-Metal / IOGPU error entries and copy them into the session log as
-`[GPU-SYSLOG]`. Verify the API on macOS 27 before building on it.
 
 ### A7. Validation
 
-- Inventory table complete: every site has a checked status or a written
-  reason.
-- Unit tests: the helper throws on an `.error` root, an `.error` continued
-  buffer, and passes `.completed`; the fault policy (halt / re-run tick /
-  discard probe) driven by an injected `gpuCommandFailed`.
-- A real fault can't be forced on demand; the first real one must produce
-  `[GPU-ERR]` + `[GPU-SYSLOG]` lines and (for training) a dump.
+- Unit tests: `GPUWork` returns identical results to `graph.run` /
+  `executable.run` on small graphs; throws and logs on an injected failed
+  status / handler error (the failure check is a pure function over
+  statuses + error, tested directly); the A5 policy for each path driven by
+  an injected fault; the monitor's entry parsing and de-duplication from
+  fixed log text.
+- Live: the first real fault must produce `[GPU-SYSLOG]` (always) and, when a
+  reachable buffer or the handler reports it, `[GPU-ERR]`; a training fault
+  must produce a dump and the abort.
 
 ## Part B — Batch hashes
 
@@ -198,16 +230,20 @@ batch's 4,096 sample indices (16 KB), 0.006 ms. So:
 
 ### B3. Identity chain
 
-`chain[n] = SHA-256(chain[n−1] ‖ identity[n])`, carried in the trainer
-checkpoint's lineage record (with the RNG states) and restored by an exact
-resume. A matching chain at any common step proves every batch since the
-checkpoint drew the same samples; a matching content hash at a logged step
-proves the bytes themselves matched (same buffer contents).
+`chain[n] = SHA-256(chain[n−1] ‖ identity[n])`, restarting at every multiple
+of 1,000 trainer steps from a fixed seed (`SHA-256("dcm-batch-chain-v1" ‖
+window start step)`). Checkpoints land on multiples of 1,000, so an exact
+resume and the original run compute the same chain values without storing
+anything in the checkpoint (no lineage schema change). A matching chain at a
+common step proves every batch in that window drew the same samples; a
+matching content hash at a logged step proves the bytes matched. A segment
+that starts mid-window (a resume from a final or autosave not on a multiple
+of 1,000) logs `chain=partial` until its first window boundary.
 
 ### B4. Where it appears
 
 - Every step line: `batch=<16 hex content> chain=<16 hex>`.
-- Checkpoint saves: both values in the save's log line and lineage record.
+- Checkpoint saves: both values in the save's log line.
 - `[BATCH-HASH] trainerStep=N chain=…` every 100 trainer steps (chain only;
   step lines are partly time-scheduled, so a resumed run's step lines land on
   other steps; the 100-step cadence always overlaps).
@@ -219,7 +255,8 @@ proves the bytes themselves matched (same buffer contents).
 ### B5. Validation
 
 - Same arrays → same hash; one changed float → different hash.
-- Chain survives save → exact resume (unit test on the lineage round-trip).
+- Window restarts: same identities → same chain from any window start; a
+  partial window is labelled.
 - Two corpus-replay runs from one checkpoint, N steps each: identical chains
   (extend the existing exact-resume test).
 - Live: B-siluall-style resume shows matching `chain=` at the overlapping
@@ -230,10 +267,12 @@ proves the bytes themselves matched (same buffer contents).
 ### C1. Triggers
 
 - A halt on a non-finite loss / gradient.
-- A training-step GPU fault (A4).
+- A GPU fault while the trainer is active (A5, either layer).
 - **Near miss, no halt:** a pre-clip gradient norm ≥ a threshold × reference
   (R-replay's 21:37 step was 37 million ×). Writes batch + state, not weights,
-  and training continues. (Owner decision 3: threshold; proposal 1,000×.)
+  and training continues. Threshold: 1,000 × the relative cap's median
+  reference (decided 2026-10-09; today's three hang-corrupted steps were
+  32.7M ×, 10.3M × and 37.5M ×; ordinary clips are under 10 ×).
 
 Every training path: corpus replay, train-vs-UCI, GUI Play-and-Train /
 `--train`.
@@ -287,22 +326,31 @@ this plan.
 
 ## Phases
 
-1. **A1 inventory** (read-only) → table in this file. Commit.
-2. **A2–A6** status rule, fault policy, `[GPU-ERR]`, `[MEM]`, `[GPU-SYSLOG]`;
-   tests. Build, commit.
-3. **Part B** batch hashes + chain + compare script; tests. Build, commit.
-4. **Part C** crash dumps + reader; tests. Build, commit.
-5. **Docs**: CLAUDE.md log tags, `documentation/training-health-alarms.md`,
-   CHANGELOG. Commit.
+1. **A1 inventory** — done (`GPU_CALL_AUDIT_2026-10-09.md`).
+2. **A2** `GPUWork` + every submission converted + `[GPU-ERR]`; tests. Build,
+   recheck, commit, push.
+3. **A3–A6** `GPUFaultMonitor` + per-path fault policy (exit 36, GUI
+   `.gpuFault` suspension, self-play abandon, arena void) + `[MEM]`; tests.
+   Build, recheck, commit, push.
+4. **Part B** batch identity + content hashes + chain + compare script; tests.
+   Build, recheck, commit, push.
+5. **Part C** crash dumps + reader; tests. Build, recheck, commit, push.
+6. **Docs**: CLAUDE.md log tags and exit codes,
+   `documentation/training-health-alarms.md`, CHANGELOG. Commit, push.
 
 Running training is never touched; new builds apply to new runs only.
 
 ## Owner decisions
 
-2. **Self-play / arena inference fault:** re-run the tick (proposed) — or halt.
-   Owner asked why it differs from training (answered in A4). Open.
-3. **Near-miss dump threshold:** pre-clip norm ≥ 1,000 × reference (proposed).
-   Open.
+Decided by me under the owner's "make the best decision and note it"
+standing rule (2026-10-09), owner may revisit:
+
+- **Self-play / arena fault:** abandon the affected games, void the arena
+  (A5). Re-running a tick was the first proposal, but most faults are seen
+  only through the monitor, seconds late, when the moves are already played.
+- **Near-miss dump threshold:** 1,000 × reference (C1).
+- **Batch chain without a lineage field** (B3): windows of 1,000 trainer
+  steps instead of a chain stored in checkpoints.
 
 Decided (owner, 2026-10-09):
 
@@ -325,8 +373,11 @@ Decided (owner, 2026-10-09):
 
 ## Follow-up suspect: arena GPU work
 
-Both hangs began in R-fixedlr's process early in an arena. Part A1's
-inventory should record the arena tick driver's per-tick batch size and
-command-buffer duration; a buffer that runs long enough to trip the GPU
-watchdog while two other processes share the GPU would explain a Hang that
-only one process reports. Measuring that is part of phase 1.
+All three hangs began in R-fixedlr's process early in an arena. The audit
+(section 5) found two concurrent `executable.run` calls per arena tick (one
+per network, own queues, ≤ ~200 positions each) beside self-play, training
+steps and the baseline in the same process; nothing logs their GPU time, and
+which buffer hung is unknown (none of the four checked buffers reported it).
+After phase 2, `[GPU-ERR]` names the stage of any reachable failed buffer, and
+`GPUWork` records each submission's GPU time, so the next hang identifies its
+source.
