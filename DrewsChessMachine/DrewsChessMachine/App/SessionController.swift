@@ -348,8 +348,15 @@ final class SessionController {
     /// The current Play-and-Train start's view of the GPU fault ledger (GPU
     /// fault forensics plan, A5): a fault since the start stops training,
     /// voids an arena and refuses a save. Replaced at every start; nil
-    /// before the first start of this launch.
+    /// before the first start of this launch and after Stop.
     @ObservationIgnored var gpuFaultWatch: GPUFaultWatch?
+
+    /// The stopped start's watch, from Stop until the next start commits or
+    /// the trainer is dropped. A fault from the run's last seconds is
+    /// recorded only after Stop (by the monitor's closing poll, or a barrier
+    /// after Stop); `absorbStoppedRunGPUFault` turns it into the trainer's
+    /// taint.
+    @ObservationIgnored var stoppedRunFaultWatch: StoppedRunGPUFaultWatch?
 
     /// The `--train` run's termination claim, for a GPU fault (nil in an
     /// interactive session, where a GPU fault suspends training instead).
@@ -1317,6 +1324,8 @@ final class SessionController {
     /// and the auto-build before a load) cannot disagree.
     func dropTrainerEndingLineageSegment() {
         trainer = nil
+        // A fault from a stopped run's last seconds was about this trainer.
+        stoppedRunFaultWatch = nil
         lineageTracker = nil
         runStartCapture = nil
         runTrainedPositions = nil

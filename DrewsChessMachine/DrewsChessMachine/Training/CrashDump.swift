@@ -35,7 +35,9 @@ struct CrashDumpContext: Sendable {
     /// run and segment).
     let runProvenance: String?
     let batch: CapturedTrainingBatch?
-    let batchHashes: [BatchHashChain.Entry]
+    /// Nil when they couldn't be read (the reason is in `notes`); empty when
+    /// no batch was hashed yet.
+    let batchHashes: [BatchHashChain.Entry]?
     let gradientNorms: GradientNormHistory?
     let faults: [GPUFaultLedger.Fault]
     /// Parts that couldn't be gathered, and why.
@@ -61,7 +63,13 @@ struct CapturedTrainingBatch: Sendable {
 ///    `log-tail.txt` (the session logger is flushed first),
 ///    `system-log.txt` (this process's system-log entries for the last two
 ///    minutes) and copies of macOS's `gpuEvent` reports for this process —
-///    are staged in `<name>.dcmcrash.tmp/` and published by an atomic rename;
+///    are staged in `<name>.dcmcrash.tmp/` and published by an atomic rename.
+///    `dump` reads the trainer state among them (the staged batch, the
+///    gradient-norm history, the recent batch hashes) beforehand, on the
+///    trainer's and the hash chain's serial queues, under a time limit of
+///    its own: those reads wait behind whatever their queue is running, and
+///    on the trainer's queue after a GPU hang that can be a GPU wait that
+///    never returns;
 /// 2. then the trainer's weights and optimizer velocity are read back from
 ///    the GPU into `weights-after.safetensors` with a per-tensor non-finite
 ///    census, under a time limit: right after a GPU hang the read can hang
@@ -77,6 +85,15 @@ struct CapturedTrainingBatch: Sendable {
 enum CrashDumpWriter {
     /// How long the weights read may take before the dump gives up on it.
     static let weightsReadTimeLimitSeconds: UInt64 = 60
+    /// How long each trainer-state read (the staged batch, the gradient-norm
+    /// history, the recent batch hashes) may take before the dump goes on
+    /// without it. The three run at once, so together they take at most
+    /// this long. On a healthy trainer queue they wait behind at most the
+    /// step in flight, and healthy batch-4,096 corpus-replay steps logged
+    /// `ms=` up to 15 s (34 s once) on 2026-10-01 and 2026-10-08: a shorter
+    /// limit could abandon the batch — the dump's main part — on a queue
+    /// that was only busy.
+    static let trainerStateReadTimeLimitSeconds: UInt64 = 60
     /// How many session-log lines `log-tail.txt` keeps.
     static let logTailLines = 5_000
     /// How far back `system-log.txt` reads this process's system log.
@@ -99,6 +116,7 @@ enum CrashDumpWriter {
         _ context: CrashDumpContext,
         in directory: URL = CrashDumpWriter.defaultDirectory,
         now: Date = Date(),
+        weightsTimeLimitSeconds: UInt64 = CrashDumpWriter.weightsReadTimeLimitSeconds,
         weights: (@Sendable () async throws -> (weights: [[Float]], velocity: [[Float]]))?
     ) async -> URL? {
         let folder: URL
@@ -123,7 +141,7 @@ enum CrashDumpWriter {
             return folder
         }
         SessionLogger.shared.log("[CRASH-DUMP] wrote \(folder.path) (\(context.reason.rawValue)); reading the weights next")
-        await writeWeights(into: folder, read: weights)
+        await writeWeights(into: folder, limitSeconds: weightsTimeLimitSeconds, read: weights)
         return folder
     }
 
@@ -195,8 +213,10 @@ enum CrashDumpWriter {
             momentum: context.momentum,
             build: "\(BuildInfo.buildNumber) \(BuildInfo.gitHash)",
             runProvenance: context.runProvenance,
-            recentBatchHashes: context.batchHashes.map {
-                CrashDumpManifest.BatchHash(trainerStep: $0.trainerStep, batchHash: $0.batchHash, chain: $0.chain)
+            recentBatchHashes: context.batchHashes.map { entries in
+                entries.map {
+                    CrashDumpManifest.BatchHash(trainerStep: $0.trainerStep, batchHash: $0.batchHash, chain: $0.chain)
+                }
             },
             gradientNorms: context.gradientNorms.map {
                 CrashDumpManifest.GradientNorms(lastTrainerStep: $0.lastTrainerStep, preClipNorms: $0.preClipNorms,
@@ -364,11 +384,11 @@ enum CrashDumpWriter {
 
     private static func writeWeights(
         into folder: URL,
+        limitSeconds: UInt64,
         read: @escaping @Sendable () async throws -> (weights: [[Float]], velocity: [[Float]])
     ) async {
-        let outcome = await readWithTimeLimit(read)
-        switch outcome {
-        case .success(let values):
+        switch await withTimeLimit(seconds: limitSeconds, read) {
+        case .finished(let values):
             do {
                 var tensors: [SafetensorsTensor] = []
                 var census: [WeightsCensusEntry] = []
@@ -397,8 +417,10 @@ enum CrashDumpWriter {
             } catch {
                 writeWeightsError("writing the weights failed: \(error.localizedDescription)", into: folder)
             }
-        case .failure(let reason):
-            writeWeightsError(reason, into: folder)
+        case .failed(let error):
+            writeWeightsError("reading the weights failed: \(error.localizedDescription)", into: folder)
+        case .timedOut(let seconds):
+            writeWeightsError("reading the weights took longer than \(seconds) s; abandoned", into: folder)
         }
     }
 
@@ -411,21 +433,35 @@ enum CrashDumpWriter {
         }
     }
 
-    enum WeightsReadOutcome: Sendable {
-        case success((weights: [[Float]], velocity: [[Float]]))
-        case failure(String)
+    // MARK: - Time limits
+
+    /// How a read under `withTimeLimit` ended.
+    enum TimeLimitedOutcome<Value: Sendable>: Sendable {
+        case finished(Value)
+        case failed(any Error)
+        /// Still running at the limit: abandoned.
+        case timedOut(limitSeconds: UInt64)
     }
 
-    /// Runs `read` with a time limit. A read still running at the limit is
-    /// abandoned, not cancelled (a GPU wait can't be cancelled); the halt that
-    /// follows ends the process.
-    static func readWithTimeLimit(
-        _ read: @escaping @Sendable () async throws -> (weights: [[Float]], velocity: [[Float]]),
-        limitSeconds: UInt64 = weightsReadTimeLimitSeconds
-    ) async -> WeightsReadOutcome {
+    /// Runs `work` with a time limit. Work still running at the limit is
+    /// abandoned, not cancelled: neither a GPU wait nor a block queued behind
+    /// one on a serial `DispatchQueue` can be cancelled. It goes on in its
+    /// detached task and its result, if it ever comes, is dropped — so the
+    /// caller never waits for it (a task group would: a group's scope waits
+    /// for every child). `work` must therefore only read and return a copy,
+    /// never write into the dump or change any state: it may finish after
+    /// the dump, and the halt behind it, have gone on. A `--train` or CLI
+    /// halt then ends the process; an interactive GUI run keeps it, and the
+    /// abandoned read finishes whenever its queue frees up.
+    static func withTimeLimit<Value: Sendable>(
+        seconds limitSeconds: UInt64,
+        _ work: @escaping @Sendable () async throws -> Value
+    ) async -> TimeLimitedOutcome<Value> {
         let resumed = SyncBox(false)
-        return await withCheckedContinuation { (continuation: CheckedContinuation<WeightsReadOutcome, Never>) in
-            @Sendable func finish(_ outcome: WeightsReadOutcome) {
+        return await withCheckedContinuation { (continuation: CheckedContinuation<TimeLimitedOutcome<Value>, Never>) in
+            // The first of the work and the timer resumes; the other is a
+            // no-op.
+            @Sendable func finish(_ outcome: TimeLimitedOutcome<Value>) {
                 let first = resumed.mutate { done -> Bool in
                     if done { return false }
                     done = true
@@ -433,20 +469,24 @@ enum CrashDumpWriter {
                 }
                 if first { continuation.resume(returning: outcome) }
             }
-            Task.detached(priority: .userInitiated) {
-                do {
-                    finish(.success(try await read()))
-                } catch {
-                    finish(.failure("reading the weights failed: \(error.localizedDescription)"))
-                }
-            }
-            Task.detached(priority: .utility) {
+            let timer = Task.detached(priority: .utility) {
                 do {
                     try await Task.sleep(for: .seconds(Double(limitSeconds)))
                 } catch {
+                    // Cancelled: the work finished first.
                     return
                 }
-                finish(.failure("reading the weights took longer than \(limitSeconds) s; abandoned"))
+                finish(.timedOut(limitSeconds: limitSeconds))
+            }
+            Task.detached(priority: .userInitiated) {
+                let outcome: TimeLimitedOutcome<Value>
+                do {
+                    outcome = .finished(try await work())
+                } catch {
+                    outcome = .failed(error)
+                }
+                finish(outcome)
+                timer.cancel()
             }
         }
     }
@@ -502,7 +542,8 @@ struct CrashDumpManifest: Encodable, Sendable {
     let momentum: Double
     let build: String
     let runProvenance: String?
-    let recentBatchHashes: [BatchHash]
+    /// Absent when they couldn't be read (`notes` says why).
+    let recentBatchHashes: [BatchHash]?
     let gradientNorms: GradientNorms?
     let gpuFaults: [GPUFaultReport.Fault]
     let gpuFaultMonitor: String
@@ -586,6 +627,10 @@ extension CrashDumpWriter {
     /// throws: a part that can't be read is noted in the manifest. The
     /// weights are read only for a stopping reason (a near miss leaves them,
     /// since training goes on and they are in the next checkpoint anyway).
+    ///
+    /// Bounded in time apart from the file and log I/O of `write`: the
+    /// trainer-state reads take at most `trainerStateReadTimeLimitSeconds`
+    /// together, the weights read at most `weightsReadTimeLimitSeconds`.
     static func dump(
         reason: CrashDumpReason,
         detail: String,
@@ -596,22 +641,11 @@ extension CrashDumpWriter {
         runProvenance: String?,
         faults: [GPUFaultLedger.Fault]
     ) async -> URL? {
-        var notes: [String] = []
         let completed = trainer.completedTrainSteps
-        let batch: CapturedTrainingBatch?
-        do {
-            batch = try await trainer.captureLastBatch()
-        } catch {
-            batch = nil
-            notes.append("batch not captured: \(error.localizedDescription)")
-        }
-        let gradientNorms: GradientNormHistory?
-        do {
-            gradientNorms = try await trainer.exportGradNormHistory()
-        } catch {
-            gradientNorms = nil
-            notes.append("gradient-norm history not read: \(error.localizedDescription)")
-        }
+        let state = await readTrainerState(
+            batch: { try await trainer.captureLastBatch() },
+            gradientNorms: { try await trainer.exportGradNormHistory() },
+            batchHashes: { await trainer.batchHashes.recentEntries() })
         let context = CrashDumpContext(
             reason: reason,
             detail: detail,
@@ -622,11 +656,11 @@ extension CrashDumpWriter {
             learningRate: Double(trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: completed)),
             momentum: Double(trainer.effectiveMomentum(completedSteps: completed)),
             runProvenance: runProvenance,
-            batch: batch,
-            batchHashes: await trainer.batchHashes.recentEntries(),
-            gradientNorms: gradientNorms,
+            batch: state.batch,
+            batchHashes: state.batchHashes,
+            gradientNorms: state.gradientNorms,
             faults: faults,
-            notes: notes)
+            notes: state.notes)
         let weights: (@Sendable () async throws -> (weights: [[Float]], velocity: [[Float]]))?
         if reason == .nearMiss {
             weights = nil
@@ -636,5 +670,71 @@ extension CrashDumpWriter {
             }
         }
         return await write(context, weights: weights)
+    }
+
+    /// The trainer state a dump records, and why any part is missing.
+    struct TrainerState: Sendable {
+        /// Nil when none was staged yet, or when it couldn't be read.
+        let batch: CapturedTrainingBatch?
+        let gradientNorms: GradientNormHistory?
+        let batchHashes: [BatchHashChain.Entry]?
+        /// One line per part that couldn't be read.
+        let notes: [String]
+    }
+
+    /// Reads the staged batch, the gradient-norm history and the recent
+    /// batch hashes at once, each under `limitSeconds` (`withTimeLimit`).
+    /// The first two run on the trainer's serial queue, behind any step or
+    /// read in flight; the hashes on the hash chain's queue, behind any
+    /// hashes still pending. Running them at once bounds the whole read by
+    /// one limit, not three; their order on the trainer's queue doesn't
+    /// matter (both only copy).
+    static func readTrainerState(
+        batch readBatch: @escaping @Sendable () async throws -> CapturedTrainingBatch?,
+        gradientNorms readGradientNorms: @escaping @Sendable () async throws -> GradientNormHistory,
+        batchHashes readBatchHashes: @escaping @Sendable () async -> [BatchHashChain.Entry],
+        limitSeconds: UInt64 = trainerStateReadTimeLimitSeconds
+    ) async -> TrainerState {
+        async let batchOutcome = withTimeLimit(seconds: limitSeconds, readBatch)
+        async let gradientNormsOutcome = withTimeLimit(seconds: limitSeconds, readGradientNorms)
+        async let batchHashesOutcome = withTimeLimit(seconds: limitSeconds, readBatchHashes)
+
+        var notes: [String] = []
+        let batch: CapturedTrainingBatch?
+        switch await batchOutcome {
+        case .finished(let captured):
+            batch = captured
+        case .failed(let error):
+            batch = nil
+            notes.append("batch not captured: \(error.localizedDescription)")
+        case .timedOut(let seconds):
+            batch = nil
+            notes.append("batch not captured: the trainer's queue did not answer within \(seconds) s; abandoned")
+        }
+        let gradientNorms: GradientNormHistory?
+        switch await gradientNormsOutcome {
+        case .finished(let history):
+            gradientNorms = history
+        case .failed(let error):
+            gradientNorms = nil
+            notes.append("gradient-norm history not read: \(error.localizedDescription)")
+        case .timedOut(let seconds):
+            gradientNorms = nil
+            notes.append("gradient-norm history not read: the trainer's queue did not answer within \(seconds) s; "
+                + "abandoned")
+        }
+        let batchHashes: [BatchHashChain.Entry]?
+        switch await batchHashesOutcome {
+        case .finished(let entries):
+            batchHashes = entries
+        case .failed(let error):
+            batchHashes = nil
+            notes.append("recent batch hashes not read: \(error.localizedDescription)")
+        case .timedOut(let seconds):
+            batchHashes = nil
+            notes.append("recent batch hashes not read: the batch-hash queue did not answer within \(seconds) s; "
+                + "abandoned")
+        }
+        return TrainerState(batch: batch, gradientNorms: gradientNorms, batchHashes: batchHashes, notes: notes)
     }
 }

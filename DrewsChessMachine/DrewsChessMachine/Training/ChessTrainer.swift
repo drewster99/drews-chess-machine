@@ -7942,15 +7942,6 @@ final class ChessTrainer: @unchecked Sendable {
         return UInt64(max(0, predicted))
     }
 
-    /// Read the process-wide `phys_footprint` from `task_info`. On Apple
-    /// Silicon's unified memory architecture this captures everything the
-    /// process is holding onto — CPU buffers and Metal-managed GPU memory
-    /// alike — so it's a strictly better high-water-mark proxy than
-    /// `MTLDevice.currentAllocatedSize`, which only sees memory that's
-    /// still live at the moment you query it. Returns 0 on failure rather
-    /// than throwing — the caller is sampling on a hot path and a missed
-    /// reading is recoverable, while throwing would force exception
-    /// handling around every UI tick.
     /// Off-main async variant of `currentPhysFootprintBytes()`. The
     /// `task_info` kernel call runs on a global executor so the
     /// awaiter (typically the main actor) is never synchronously
@@ -7963,7 +7954,36 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
+    /// `readPhysFootprintBytes()`, with a failed read as 0. For the
+    /// samplers (sweep row peaks, the heartbeat's memory readout): they
+    /// sample on a hot path and a missed reading is recoverable. A
+    /// caller that reports the value as a measurement (the `[MEM]` line)
+    /// uses `readPhysFootprintBytes()`, so a failed read stays
+    /// distinguishable from a footprint of zero.
     static func currentPhysFootprintBytes() -> UInt64 {
+        switch readPhysFootprintBytes() {
+        case .success(let bytes):
+            return bytes
+        case .failure:
+            return 0
+        }
+    }
+
+    /// Why `readPhysFootprintBytes()` has no reading: what `task_info`
+    /// returned instead of `KERN_SUCCESS`.
+    struct PhysFootprintReadError: Error, Sendable, Equatable {
+        let kernReturn: kern_return_t
+    }
+
+    /// Read the process-wide `phys_footprint` from
+    /// `task_info(TASK_VM_INFO)`, or the kernel's refusal. On Apple
+    /// Silicon's unified memory architecture this captures everything the
+    /// process is holding onto — CPU buffers and Metal-managed GPU memory
+    /// alike — so it's a strictly better high-water-mark proxy than
+    /// `MTLDevice.currentAllocatedSize`, which only sees memory that's
+    /// still live at the moment you query it. The one place the kernel
+    /// is asked.
+    static func readPhysFootprintBytes() -> Result<UInt64, PhysFootprintReadError> {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(
             MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size
@@ -7978,8 +7998,10 @@ final class ChessTrainer: @unchecked Sendable {
                 )
             }
         }
-        guard kr == KERN_SUCCESS else { return 0 }
-        return UInt64(info.phys_footprint)
+        guard kr == KERN_SUCCESS else {
+            return .failure(PhysFootprintReadError(kernReturn: kr))
+        }
+        return .success(UInt64(info.phys_footprint))
     }
 
     /// Sample cumulative CPU and GPU time for the current process.

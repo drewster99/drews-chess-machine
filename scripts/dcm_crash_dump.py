@@ -42,8 +42,12 @@ def main(argv: list[str]) -> int:
     print(f"GPU faults:    {len(faults)}")
     for fault in faults:
         print(f"  #{fault['sequence']} {fault['time']} {fault['source']}: {fault['detail'][:160]}")
-    hashes = manifest.get("recent_batch_hashes", [])
-    if hashes:
+    # Absent when the dump couldn't read them (a note says why); empty when
+    # no batch was hashed yet.
+    hashes = manifest.get("recent_batch_hashes")
+    if hashes is None:
+        print("batch hashes:  not read (see notes)")
+    elif hashes:
         last = hashes[-1]
         print(f"batch hashes:  {len(hashes)} kept, last step {last['trainer_step']} "
               f"chain {'partial' if last['chain'] is None else last['chain'][:16]}")

@@ -4,8 +4,9 @@
 //
 //  Crash dumps (GPU fault forensics plan, Part C): every part is written,
 //  the batch's recorded hash is the batch's, nothing is ever overwritten (a
-//  second dump with the same name gets `-2`), and a weights read that fails
-//  or hangs never blocks the dump — the halt behind it must always proceed.
+//  second dump with the same name gets `-2`), and a weights read or a
+//  trainer-state read that fails or hangs never blocks the dump — the halt
+//  behind it must always proceed.
 //
 
 import XCTest
@@ -25,7 +26,12 @@ final class CrashDumpTests: XCTestCase {
         try FileManager.default.removeItem(at: directory)
     }
 
-    private static func context(reason: CrashDumpReason = .gpuFault) -> CrashDumpContext {
+    private static let recentBatchHashes = [
+        BatchHashChain.Entry(trainerStep: 45_900, batchHash: String(repeating: "a", count: 64), chain: nil),
+    ]
+
+    private static func context(reason: CrashDumpReason = .gpuFault,
+                                batchHashes: [BatchHashChain.Entry]? = recentBatchHashes) -> CrashDumpContext {
         let boards = (0..<(2 * 30 * 64)).map { Float($0 % 5) }
         let batch = CapturedTrainingBatch(batchSize: 2, floatsPerBoard: 30 * 64, boards: boards,
                                           moves: [17, 4_863], outcomes: [1, -0.013])
@@ -34,8 +40,7 @@ final class CrashDumpTests: XCTestCase {
             modelID: "20261009-2-14oI", trainerStep: 45_974, batchTrainerStep: 45_975,
             learningRate: 0.001, momentum: 0.95, runProvenance: "[RUN] path=replay run=…",
             batch: batch,
-            batchHashes: [BatchHashChain.Entry(trainerStep: 45_900, batchHash: String(repeating: "a", count: 64),
-                                               chain: nil)],
+            batchHashes: batchHashes,
             gradientNorms: nil,
             faults: [GPUFaultLedger.Fault(sequence: 1, time: Date(timeIntervalSince1970: 1_791_600_000),
                                           source: .systemLog(message: "Caused GPU Hang Error (kIOGPUCommandBufferCallbackErrorHang)"))],
@@ -96,15 +101,131 @@ final class CrashDumpTests: XCTestCase {
 
     func testAHangingWeightsReadIsAbandonedAtTheTimeLimit() async {
         let started = Date()
-        let outcome = await CrashDumpWriter.readWithTimeLimit({
+        let outcome = await CrashDumpWriter.withTimeLimit(seconds: 1) { () async throws -> (weights: [[Float]], velocity: [[Float]]) in
             try await Task.sleep(for: .seconds(3_600))
             return (weights: [], velocity: [])
-        }, limitSeconds: 1)
-        guard case .failure(let reason) = outcome else {
+        }
+        guard case .timedOut(let limitSeconds) = outcome else {
             return XCTFail("a hung read must be abandoned")
         }
-        XCTAssertTrue(reason.contains("longer than 1 s"), reason)
+        XCTAssertEqual(limitSeconds, 1)
         XCTAssertLessThan(Date().timeIntervalSince(started), 30)
+    }
+
+    func testAHangingWeightsReadStillLeavesTheDumpAndSaysWhy() async throws {
+        let started = Date()
+        let written = await CrashDumpWriter.write(Self.context(), in: directory, now: Self.now,
+                                                  weightsTimeLimitSeconds: 1) {
+            try await Task.sleep(for: .seconds(3_600))
+            return (weights: [], velocity: [])
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 30)
+        let folder = try XCTUnwrap(written)
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        XCTAssertTrue(names.contains("manifest.json"))
+        XCTAssertFalse(names.contains("weights-after.safetensors"))
+        let reason = try String(contentsOf: folder.appendingPathComponent("weights-after-error.txt"), encoding: .utf8)
+        XCTAssertTrue(reason.contains("longer than 1 s"), reason)
+    }
+
+    func testWorkThatFinishesInTimeIsReturnedAndAThrowIsReported() async {
+        guard case .finished(let value) = await CrashDumpWriter.withTimeLimit(seconds: 30, { 42 }) else {
+            return XCTFail("work that finishes in time must be returned")
+        }
+        XCTAssertEqual(value, 42)
+        struct ReadFailed: Error {}
+        let failed = await CrashDumpWriter.withTimeLimit(seconds: 30) { () async throws -> Int in
+            throw ReadFailed()
+        }
+        guard case .failed(let error) = failed else {
+            return XCTFail("a throw must be reported, not timed out")
+        }
+        XCTAssertTrue(error is ReadFailed)
+    }
+
+    func testAHangingTrainerQueueReadIsAbandonedAndNotedAndTheOthersAreKept() async throws {
+        let started = Date()
+        let history = GradientNormHistory()
+        let hashes = Self.recentBatchHashes
+        let state = await CrashDumpWriter.readTrainerState(
+            batch: {
+                try await Task.sleep(for: .seconds(3_600))
+                return nil
+            },
+            gradientNorms: { history },
+            batchHashes: { hashes },
+            limitSeconds: 1)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 30)
+        XCTAssertNil(state.batch)
+        XCTAssertEqual(state.gradientNorms, history)
+        XCTAssertEqual(state.batchHashes, hashes)
+        XCTAssertEqual(state.notes.count, 1, "\(state.notes)")
+        let note = try XCTUnwrap(state.notes.first)
+        XCTAssertTrue(note.hasPrefix("batch not captured:"), note)
+        XCTAssertTrue(note.contains("within 1 s"), note)
+    }
+
+    /// The three reads run at once: three hung reads cost one limit, not
+    /// three (the halt behind a dump waits for them).
+    func testThreeHangingTrainerStateReadsShareOneTimeLimit() async {
+        let started = Date()
+        let state = await CrashDumpWriter.readTrainerState(
+            batch: {
+                try await Task.sleep(for: .seconds(3_600))
+                return nil
+            },
+            gradientNorms: {
+                try await Task.sleep(for: .seconds(3_600))
+                return GradientNormHistory()
+            },
+            batchHashes: {
+                // Non-throwing, like `BatchHashChain.recentEntries`. Abandoned
+                // work is never cancelled, so the sleep doesn't end early.
+                do {
+                    try await Task.sleep(for: .seconds(3_600))
+                } catch {
+                    return []
+                }
+                return []
+            },
+            limitSeconds: 2)
+        // Sequential reads would take at least 6 s.
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5.5)
+        XCTAssertNil(state.batch)
+        XCTAssertNil(state.gradientNorms)
+        XCTAssertNil(state.batchHashes)
+        XCTAssertEqual(state.notes.count, 3, "\(state.notes)")
+    }
+
+    func testAFailedTrainerStateReadIsNotedWithItsError() async {
+        struct ReadFailed: LocalizedError {
+            var errorDescription: String? { "queue gone" }
+        }
+        let state = await CrashDumpWriter.readTrainerState(
+            batch: { nil },
+            gradientNorms: { throw ReadFailed() },
+            batchHashes: { [] },
+            limitSeconds: 30)
+        XCTAssertNil(state.batch)
+        XCTAssertNil(state.gradientNorms)
+        XCTAssertEqual(state.batchHashes, [])
+        XCTAssertEqual(state.notes, ["gradient-norm history not read: queue gone"])
+    }
+
+    func testUnreadBatchHashesAreLeftOutOfTheManifestNotWrittenAsEmpty() async throws {
+        let written = await CrashDumpWriter.write(Self.context(batchHashes: nil), in: directory,
+                                                  now: Self.now, weights: nil)
+        let folder = try XCTUnwrap(written)
+        let manifest = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent("manifest.json")))
+                as? [String: Any])
+        XCTAssertNil(manifest["recent_batch_hashes"])
+        let writtenWithHashes = await CrashDumpWriter.write(Self.context(), in: directory, now: Self.now, weights: nil)
+        let folderWithHashes = try XCTUnwrap(writtenWithHashes)
+        let manifestWithHashes = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: folderWithHashes.appendingPathComponent("manifest.json")))
+                as? [String: Any])
+        XCTAssertEqual((manifestWithHashes["recent_batch_hashes"] as? [[String: Any]])?.count, 1)
     }
 
     func testANearMissDumpReadsNoWeights() async throws {

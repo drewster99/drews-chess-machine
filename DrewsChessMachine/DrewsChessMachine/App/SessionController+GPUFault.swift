@@ -22,6 +22,31 @@ struct GPUFaultTaint: Sendable, Equatable {
     var champion: Bool
 }
 
+/// A stopped Play-and-Train start's view of the fault ledger, kept from Stop
+/// until the next start commits or the trainer is dropped. The run's last
+/// seconds can still produce a fault after Stop: the training step in flight
+/// at the cancel finishes afterwards, and macOS's message for a fault just
+/// before Stop reaches the ledger only through the monitor's closing poll.
+/// A fault from later is not the stopped trainer's — Play Game, a probe, or
+/// another process's GPU reset discarding this one's inference work — so it
+/// never taints the trainer.
+struct StoppedRunGPUFaultWatch: Sendable {
+    let watch: GPUFaultWatch
+    /// When Stop ended the run.
+    let stoppedAt: Date
+
+    /// How long after Stop a fault still counts as the stopped run's: the
+    /// monitor's closing poll runs one poll interval after Stop.
+    static let tailSeconds = TimeInterval(GPUFaultMonitor.pollIntervalSeconds)
+
+    /// The first fault since the run began that happened no later than
+    /// `tailSeconds` after Stop. In memory; no log read.
+    var firstRunFault: GPUFaultLedger.Fault? {
+        let tailEnd = stoppedAt.addingTimeInterval(Self.tailSeconds)
+        return watch.faultsSinceStart.first { $0.time <= tailEnd }
+    }
+}
+
 extension SessionController {
     /// The one place a GUI Play-and-Train run acts on a GPU fault (GPU fault
     /// forensics plan, A5), whoever saw it: the training worker (a failed
@@ -128,12 +153,30 @@ extension SessionController {
     /// The fault that makes saving or promoting the current weights unsafe:
     /// a tainted trainer (outlives Stop), or a fault since this start found
     /// by a fresh read of macOS's fault messages (≈2 s). Nil when safe.
+    /// After Stop, the stopped run's faults are read first: one from its
+    /// last seconds may not be recorded until the monitor's closing poll.
     func gpuFaultBarrier() async -> GPUFaultLedger.Fault? {
+        if gpuFaultWatch == nil, let stopped = stoppedRunFaultWatch {
+            await stopped.watch.monitor.checkNow()
+            absorbStoppedRunGPUFault()
+        }
         if let taint = gpuFaultTaint, taint.trainer || taint.champion {
             return taint.fault
         }
         guard let watch = gpuFaultWatch else { return nil }
         return await watch.barrier()
+    }
+
+    /// A fault recorded after Stop that belongs to the stopped run (from its
+    /// last seconds, logged after the monitor's last poll of the run) taints
+    /// the trainer, as it would have during the run. In memory; no log read.
+    func absorbStoppedRunGPUFault() {
+        guard let fault = stoppedRunFaultWatch?.firstRunFault, gpuFaultTaint?.trainer != true else { return }
+        var taint = gpuFaultTaint ?? GPUFaultTaint(fault: fault, trainer: true, champion: false)
+        taint.trainer = true
+        gpuFaultTaint = taint
+        SessionLogger.shared.log(
+            "[GPU-FAULT] a fault from the stopped run, recorded after Stop, taints its trainer: \(fault.summary)")
     }
 
     /// Why a Play-and-Train start in `mode` must be refused because of a GPU

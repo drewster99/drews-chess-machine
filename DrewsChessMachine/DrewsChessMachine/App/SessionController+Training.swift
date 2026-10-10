@@ -32,7 +32,9 @@ extension SessionController {
         SessionLogger.shared.log("[BUTTON] Play and Train")
         // Weights a GPU fault may have damaged are never trained on or saved
         // (GPU fault forensics plan, A5); a start that replaces them clears
-        // the taint.
+        // the taint. A fault recorded after Stop from the stopped run's last
+        // seconds taints its trainer first.
+        absorbStoppedRunGPUFault()
         if let refusal = gpuFaultStartRefusal(mode: mode) {
             let message = "Play and Train not started: \(refusal)"
             SessionLogger.shared.log("[GPU-FAULT] \(message)")
@@ -573,10 +575,12 @@ extension SessionController {
         // arenas and the periodic autosave un-gated.
         trainingSuspension = nil
         // This start passed `gpuFaultStartRefusal`, so it replaced a trainer a
-        // GPU fault had tainted.
+        // GPU fault had tainted. The stopped run's faults are now accounted
+        // for (absorbed into the taint above, or about a replaced trainer).
         if gpuFaultTaint?.trainer == true {
             clearTrainerGPUFaultTaint()
         }
+        stoppedRunFaultWatch = nil
         // Arm the periodic-save scheduler. Always construct a fresh
         // controller on each start — a previous stop will have nil'd it
         // out, and `.continueAfterStop` intentionally resets the
@@ -2665,9 +2669,15 @@ extension SessionController {
     /// session alive.)
     func stopRealTraining() {
         finishTrainingHealthRun()
-        // No run is left to watch: a fault from now on belongs to no
-        // training, and the suspect weights are tracked by `gpuFaultTaint`.
-        // The system-log monitor pauses until the next start.
+        // No run is left to watch: apart from this run's last seconds, a
+        // fault from now on belongs to no training, and the suspect weights
+        // are tracked by `gpuFaultTaint`. The system-log monitor pauses until
+        // the next start, after one closing poll that may still record a
+        // fault from those last seconds; the stopped watch keeps it
+        // actionable. (A second Stop with no run keeps the first's.)
+        if let watch = gpuFaultWatch {
+            stoppedRunFaultWatch = StoppedRunGPUFaultWatch(watch: watch, stoppedAt: Date())
+        }
         gpuFaultWatch = nil
         GPUFaultMonitor.shared.pause()
         realTrainingTask?.cancel()

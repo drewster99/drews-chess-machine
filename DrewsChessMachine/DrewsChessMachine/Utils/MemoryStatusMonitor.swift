@@ -27,7 +27,8 @@ final class MemoryStatusMonitor: @unchecked Sendable {
     /// One reading, as the `[MEM]` line shows it. Pure data, so the line's
     /// format is tested without the kernel.
     struct Reading: Sendable, Equatable {
-        let footprintBytes: UInt64
+        /// Nil when `task_info` couldn't be read (the reason is logged).
+        let footprintBytes: UInt64?
         /// Nil when there is no Metal device.
         let gpuAllocatedBytes: UInt64?
         let gpuRecommendedMaxBytes: UInt64?
@@ -80,6 +81,7 @@ final class MemoryStatusMonitor: @unchecked Sendable {
     private var thermalObserver: NSObjectProtocol?
     private var device: MTLDevice?
     private var swapReadFailureLogged = false
+    private var footprintReadFailureLogged = false
 
     private init() {}
 
@@ -134,7 +136,7 @@ final class MemoryStatusMonitor: @unchecked Sendable {
     private func writeLine(trigger: String) {
         let swap = readSwap()
         let reading = Reading(
-            footprintBytes: ChessTrainer.currentPhysFootprintBytes(),
+            footprintBytes: readFootprint(),
             gpuAllocatedBytes: device.map { UInt64($0.currentAllocatedSize) },
             gpuRecommendedMaxBytes: device.map { $0.recommendedMaxWorkingSetSize },
             swapUsedBytes: swap?.used,
@@ -144,6 +146,22 @@ final class MemoryStatusMonitor: @unchecked Sendable {
             faultMonitorPollsMs: GPUFaultMonitor.shared.takePollDurations()
         )
         SessionLogger.shared.log(reading.line(trigger: trigger))
+    }
+
+    /// `phys_footprint`; nil (logged once) when `task_info` fails, so the
+    /// line shows `n/a` rather than a footprint of zero.
+    private func readFootprint() -> UInt64? {
+        switch ChessTrainer.readPhysFootprintBytes() {
+        case .success(let bytes):
+            return bytes
+        case .failure(let error):
+            if !footprintReadFailureLogged {
+                footprintReadFailureLogged = true
+                SessionLogger.shared.log(
+                    "[MEM] could not read task_info(TASK_VM_INFO) (kern_return \(error.kernReturn)); footprint shows n/a")
+            }
+            return nil
+        }
     }
 
     /// `vm.swapusage`; nil (logged once) when the read fails.
