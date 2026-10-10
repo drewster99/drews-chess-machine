@@ -37,6 +37,21 @@ What our own logs showed:
 | R-replay | 21:37:09.960 `[GRAD-CLIP] trainerStep=43220 preNorm=10624371` | relative cap clipped the step to 0.85; training continued |
 | R-fixedlr | nothing | unknown which work was lost (self-play, arena or training) |
 
+**Earlier hang, same day.** A search of five days of system log
+(`eventMessage CONTAINS "kIOGPUCommandBufferCallbackError"`, run 22:30) finds
+exactly one other event, 2026-10-09 19:36:49: R-fixedlr 1 Hang + 3
+InnocentVictim, R-replay 1 InnocentVictim; B-siluall none. Nothing in any
+session log; R-replay's step lines around it (41,330) look normal, so the
+discarded buffer there was likely not one that fed training — unknown.
+
+Both hangs came early in an R-fixedlr arena: 16 s after `[ARENA] start` at
+19:36:33 and 51 s after the one at 21:36:18 (SPRT tick driver, initialK=400
+games in flight). R-fixedlr ran 260 arenas from 2026-10-08 10:25 to
+2026-10-09 22:34, so 2 hangs in 260 arenas. macOS language-model activity at
+19:36:30–19:36:50 was only 4 `textunderstandingd` lines, so it is not a
+common factor. Pattern, not proof: the arena's GPU work, with two other
+trainers on the GPU, is the first suspect.
+
 B-siluall's exact resume from step 45,000 replayed the step-~45,975 batch at
 22:25 with no fault — consistent with the GPU reset, not the batch. Without
 batch hashes that "same batch" is an assumption (Part B).
@@ -252,5 +267,14 @@ Running training is never touched; new builds apply to new runs only.
 3. **Near-miss dump threshold:** pre-clip norm ≥ 1,000 × reference (proposed).
 4. **Per-step pre-step weight copy for dumps:** off (proposed).
 5. **This Mac:** macOS on-device language-model requests started 9 s before the
-   hang. Turning Apple Intelligence off on the training Mac is the owner's
-   call; this plan doesn't depend on it.
+   21:37 hang but were nearly absent at the 19:36 one. Turning Apple
+   Intelligence off on the training Mac is the owner's call; this plan doesn't
+   depend on it.
+
+## Follow-up suspect: arena GPU work
+
+Both hangs began in R-fixedlr's process early in an arena. Part A1's
+inventory should record the arena tick driver's per-tick batch size and
+command-buffer duration; a buffer that runs long enough to trip the GPU
+watchdog while two other processes share the GPU would explain a Hang that
+only one process reports. Measuring that is part of phase 1.
