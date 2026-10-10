@@ -37,15 +37,39 @@ What our own logs showed:
 | R-replay | 21:37:09.960 `[GRAD-CLIP] trainerStep=43220 preNorm=10624371` | relative cap clipped the step to 0.85; training continued |
 | R-fixedlr | nothing | unknown which work was lost (self-play, arena or training) |
 
-**Earlier hang, same day.** A search of five days of system log
+**How far back the evidence goes.** The system log keeps error entries only
+back to 2026-10-09 10:56 (`/private/var/db/diagnostics/Persist`, 51 files,
+499 MB cap); earlier GPU faults are gone from it. Our own session logs (9,870
+files back to 2026-04-14) record a GPU fault only when our code caught one:
+
+| Log | Build | Event |
+|---|---|---|
+| 2026-06-14 10:49 | 1883 | NaN halt, losses blown up (total 1.0e13) |
+| 2026-06-14 19:53 | 1845 | NaN gradient, finite losses (total 5.69), 28 s after launch |
+| 2026-06-15 07:55 | 1891 | inf gradient, losses blown up (total 1152) |
+| 2026-06-16 19:27 | 1921 | NaN halt, losses blown up (total 6.1e30) |
+| 2026-06-24 15:01 | — | corpus replay, inf gradient, losses blown up (4.5e7) |
+| 2026-06-24 16:17 | — | corpus replay, NaN, losses blown up (1.2e20) |
+| 2026-06-25 18:06 | 1977 | NaN halt, losses blown up (4.6e17) |
+| 2026-07-14 18:13 | — | train-vs-UCI halted: `GPU command buffer failed during working-weight sync: status=5, error=Internal Error` |
+| 2026-10-09 21:37 | 2440 | this incident |
+
+The June halts are the reduced-precision divergence period (losses grew
+first). The July 14 one is the only GPU fault our code has ever caught and
+logged. No other session log has a gradient spike ≥ 100 × its reference
+(`[GRAD-CLIP]` lines exist only in recent builds).
+
+**Earlier hang, same day.** A search of the system log
 (`eventMessage CONTAINS "kIOGPUCommandBufferCallbackError"`, run 22:30) finds
 exactly one other event, 2026-10-09 19:36:49: R-fixedlr 1 Hang + 3
 InnocentVictim, R-replay 1 InnocentVictim; B-siluall none. Nothing in any
 session log; R-replay's step lines around it (41,330) look normal, so the
 discarded buffer there was likely not one that fed training — unknown.
 
-Both hangs came early in an R-fixedlr arena: 16 s after `[ARENA] start` at
-19:36:33 and 51 s after the one at 21:36:18 (SPRT tick driver, initialK=400
+Both hangs came early in an R-fixedlr arena: 15.2 s after `[ARENA] start` at
+19:36:33.910 (hang 19:36:49.102; that arena ran to 19:38:31) and 51.3 s after
+the one at 21:36:18.260 (hang 21:37:09.567; SPRT decided 0.6 s later, arena
+ended 21:37:36) (SPRT tick driver, initialK=400
 games in flight). R-fixedlr ran 260 arenas from 2026-10-08 10:25 to
 2026-10-09 22:34, so 2 hangs in 260 arenas. macOS language-model activity at
 19:36:30–19:36:50 was only 4 `textunderstandingd` lines, so it is not a
@@ -109,12 +133,17 @@ own results. A failed baseline fails the step.
 - Log `[GPU-ERR] stage=… status=… code=… (kIOGPUCommandBufferCallbackError…) domain=… pid=…`
   with `MTLCommandBufferDescriptor.errorOptions = .encoderExecutionStatus` so
   the error names the encoder that faulted.
-- **Training step or its baseline faulted:** the weights may be partly written
-  → halt with a crash dump (Part C). Recovery stays an exact resume.
-  (Owner decision 1.)
 - **Self-play / arena inference faulted:** discard that tick's evaluations
-  and run the tick again, logging it; no move is played from garbage.
-  (Owner decision 2.)
+  and run the tick again, logging it; no move is played from garbage. Safe
+  because inference only reads the weights: the inputs are still on the CPU
+  and nothing has changed, so the re-run is exact.
+- **Training step or its baseline faulted:** a training step writes the
+  weights and optimizer velocity in place on the GPU. A buffer aborted partway
+  may leave some tensors updated, some not, some garbage, and nothing tells
+  which; the old values are gone. So the trainer's in-memory state can't be
+  trusted or repaired → dump, then return to the last checkpoint.
+  (Owner decision 1: halt for an exact resume, or reload the last checkpoint
+  in-process and continue.)
 - **Probe faulted:** discard the probe result, log, continue.
 
 ### A5. Memory and thermal visibility
@@ -152,29 +181,40 @@ The exact sampler output the training step consumes, in batch order: boards
 depends on the weights). SHA-256 (CryptoKit); logs show the first 16 hex
 digits, dumps keep all 64.
 
-### B2. Cost
+### B2. Cost (owner 2026-10-09: no per-step content hashing)
 
-Boards dominate: batch 4096 × 30 planes × 64 squares × 4 bytes ≈ 30 MB. SHA-256
-at ~2 GB/s ≈ 15 ms per step, computed on the existing `boardsCopy` off the
-trainer queue, in parallel with the baseline forward, so it doesn't lengthen a
-~3–4 s step. Every step, every path; no parameter (it never changes training).
+Measured on this Mac (Python `hashlib`, one core, three trainers running):
+SHA-256 of a whole batch (4096 × 30 × 64 floats ≈ 30 MB) takes 11.9 ms; of the
+batch's 4,096 sample indices (16 KB), 0.006 ms. So:
 
-### B3. Hash chain
+- **Every step:** hash only the batch's identity: the sampler's buffer-slot
+  indices in batch order, plus the buffer's write position (how much has been
+  fed). 0.006 ms; no measurable cost.
+- **Content hash only where it's recorded:** step-line steps, checkpoint saves
+  and crash dumps hash the full batch bytes (boards, moves, outcomes). It runs
+  on a background CPU thread from the existing `boardsCopy`, so the trainer
+  never waits; the step line is written after the step, by which time the hash
+  is done.
 
-`chain[n] = SHA-256(chain[n−1] ‖ batch[n])`, carried in the trainer
+### B3. Identity chain
+
+`chain[n] = SHA-256(chain[n−1] ‖ identity[n])`, carried in the trainer
 checkpoint's lineage record (with the RNG states) and restored by an exact
-resume. A matching chain value at any common step proves every batch since the
-checkpoint matched — not just the logged ones.
+resume. A matching chain at any common step proves every batch since the
+checkpoint drew the same samples; a matching content hash at a logged step
+proves the bytes themselves matched (same buffer contents).
 
 ### B4. Where it appears
 
-- Every step line: `batch=<16 hex> chain=<16 hex>`.
-- `[BATCH-HASH] trainerStep=N batch=… chain=…` every 100 trainer steps (step
-  lines are partly time-scheduled, so a resumed run's step lines land on other
-  steps; the 100-step cadence always overlaps).
-- `results.json` rows; the last 1,000 per-step hashes held in memory for dumps.
+- Every step line: `batch=<16 hex content> chain=<16 hex>`.
+- Checkpoint saves: both values in the save's log line and lineage record.
+- `[BATCH-HASH] trainerStep=N chain=…` every 100 trainer steps (chain only;
+  step lines are partly time-scheduled, so a resumed run's step lines land on
+  other steps; the 100-step cadence always overlaps).
+- `results.json` rows; the last 1,000 per-step identities held in memory for
+  dumps.
 - `scripts/compare_batch_hashes.py <log A> <log B>`: first common step where
-  the chains differ, or "identical through step N".
+  the chains or content hashes differ, or "identical through step N".
 
 ### B5. Validation
 
@@ -219,11 +259,9 @@ No automatic deletion.
 - `weights-after.safetensors`: trainer weights + optimizer velocity as they
   are after the failing step, and a per-tensor non-finite census in the
   manifest (locates where the damage is).
-- **Weights before the step: not kept by default.** They are reproducible by
-  an exact resume from the last checkpoint, which the batch chain now proves
-  reaches the same batch. An optional per-step copy costs a GPU → CPU copy of
-  weights + velocity every step (~65 MB for 8.3M parameters). (Owner
-  decision 4; proposal: off.)
+- **Weights before the step: never copied per step** (owner 2026-10-09: too
+  slow). They are reproducible by an exact resume from the last checkpoint,
+  which the batch chain proves reaches the same batch.
 - `log-tail.txt`: the session log's last 5,000 lines; `system-log.txt`: our
   process's system-log entries for the last 60 s (A6).
 
@@ -261,15 +299,19 @@ Running training is never touched; new builds apply to new runs only.
 
 ## Owner decisions
 
-1. **Training-step GPU fault:** halt + dump, recover by exact resume
-   (proposed) — or roll back in memory to the last checkpoint and continue.
+1. **Training-step GPU fault:** halt + dump, recover by exact resume — or
+   reload the last checkpoint in-process and continue. Open.
 2. **Self-play / arena inference fault:** re-run the tick (proposed) — or halt.
+   Owner asked why it differs from training (answered in A4). Open.
 3. **Near-miss dump threshold:** pre-clip norm ≥ 1,000 × reference (proposed).
-4. **Per-step pre-step weight copy for dumps:** off (proposed).
-5. **This Mac:** macOS on-device language-model requests started 9 s before the
-   21:37 hang but were nearly absent at the 19:36 one. Turning Apple
-   Intelligence off on the training Mac is the owner's call; this plan doesn't
-   depend on it.
+   Open.
+
+Decided (owner, 2026-10-09):
+
+- No per-step copy of the weights.
+- Batch content hashed only at step lines, checkpoints and crash dumps (B2).
+- GPU errors are logged (Part A).
+- Apple Intelligence turned off on the training Mac, to rule it out.
 
 ## Follow-up suspect: arena GPU work
 
