@@ -253,6 +253,60 @@ final class CrashDumpTests: XCTestCase {
         XCTAssertFalse(CrashDumpWriter.isNearMiss(preClipNorm: 1e9, decision: .hardMaxOnly(hardMax: 15)))
     }
 
+    /// The shape of the three reports macOS wrote for the 2026-10-09 hangs
+    /// (`gpuEvent-DrewsChessMachin-2026-10-09-225904.ips`, trimmed): a JSON
+    /// header line, then a JSON body naming the process cut to 16
+    /// characters, with no pid.
+    private static func gpuEventReport(processName: String) -> Data {
+        Data(("""
+        {"bug_type":"284","timestamp":"2026-10-09 22:59:04.00 -0500","os_version":"macOS 27.2 (26B5091g)","roots_installed":0,"incident_id":"0D63083D-3260-46A7-9573-BD91CA218FCD"}
+        {
+          "roots_installed" : 0,
+          "bug_type" : "284",
+          "process_name" : "\(processName)",
+          "registers" : {},
+          "timestamp" : 1791604744,
+          "analysis" : {"guilty_dm":3,"command_buffer_trace_id":1406631678160,"signature":579,"restart_reason_desc":"firmware-detected lockup","restart_reason":4}
+        }
+        """).utf8)
+    }
+
+    /// Regression (2026-10-10): the copy looked for this pid in the report,
+    /// which macOS never writes, and only in the top folder, from which macOS
+    /// moves reports to `Retired/` — so a dump never held one.
+    func testGPUEventReportsAreFoundByProcessNameIncludingRetiredOnes() throws {
+        let reports = directory.appendingPathComponent("DiagnosticReports", isDirectory: true)
+        let retired = reports.appendingPathComponent("Retired", isDirectory: true)
+        let otherReports = directory.appendingPathComponent("UserDiagnosticReports", isDirectory: true)
+        let dump = directory.appendingPathComponent("dump", isDirectory: true)
+        for folder in [retired, otherReports, dump] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        let since = Self.now.addingTimeInterval(-120)
+        func place(_ name: String, in folder: URL, processName: String, modified: Date) throws {
+            let url = folder.appendingPathComponent(name)
+            try Self.gpuEventReport(processName: processName).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+        }
+        try place("gpuEvent-DrewsChessMachin-2026-10-09-225904.ips", in: retired,
+                  processName: "DrewsChessMachin", modified: Self.now.addingTimeInterval(-5))
+        try place("gpuEvent-DrewsChessMachin-2026-10-09-225910.ips", in: reports,
+                  processName: "DrewsChessMachin", modified: Self.now.addingTimeInterval(-1))
+        try place("gpuEvent-OtherGPUApp-2026-10-09-225904.ips", in: reports,
+                  processName: "OtherGPUApp", modified: Self.now.addingTimeInterval(-5))
+        try place("gpuEvent-DrewsChessMachin-2026-10-09-200000.ips", in: retired,
+                  processName: "DrewsChessMachin", modified: since.addingTimeInterval(-1))
+
+        // `otherReports` has no `Retired/`, as on a Mac that never moved one:
+        // not a failure to note.
+        CrashDumpWriter.copyGPUEventReports(into: dump, since: since, from: [reports, otherReports],
+                                            processName: "DrewsChessMachine")
+
+        let copied = try FileManager.default.contentsOfDirectory(atPath: dump.path).sorted()
+        XCTAssertEqual(copied, ["gpuEvent-DrewsChessMachin-2026-10-09-225904.ips",
+                                "gpuEvent-DrewsChessMachin-2026-10-09-225910.ips"])
+    }
+
     func testTheLaunchSweepRecognizesOnlyCrashDumpStagingFolders() {
         let kind = CheckpointPaths.OrphanStagingKind.crashDumpDirectory
         XCTAssertTrue(kind.matchesName("20261009-213709-x-step1-gpu-fault.dcmcrash.tmp"))

@@ -52,7 +52,7 @@ System log (`/usr/bin/log show`), none of it in any session log:
 | 21:37:09.569–.570 | DrewsChessMachine 20985 (×3) | `Discarded (victim of GPU error/recovery) (00000005:kIOGPUCommandBufferCallbackErrorInnocentVictim)` |
 | 21:37:09.570 | DrewsChessMachine 20981 (R-replay) | same, InnocentVictim |
 | 21:37:09.571 | DrewsChessMachine 19816 (B-siluall) | same, InnocentVictim |
-| 21:37:09.633 | osanalyticshelper | wrote `gpuEvent-DrewsChessMachin-2026-10-09-213709.ips` (not present afterwards) |
+| 21:37:09.633 | osanalyticshelper | wrote `gpuEvent-DrewsChessMachin-2026-10-09-213709.ips` (later found moved to `/Library/Logs/DiagnosticReports/Retired/`, as were the 19:36 and 22:59 reports: `restart_reason_desc` "firmware-detected lockup", `guilty_dm` 3, `signature` 579 in all three; no pid, `process_name` "DrewsChessMachin") |
 
 What our own logs showed:
 

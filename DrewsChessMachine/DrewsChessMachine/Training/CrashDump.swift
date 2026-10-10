@@ -62,7 +62,7 @@ struct CapturedTrainingBatch: Sendable {
 /// 1. the parts already in memory — `manifest.json`, `batch.safetensors`,
 ///    `log-tail.txt` (the session logger is flushed first),
 ///    `system-log.txt` (this process's system-log entries for the last two
-///    minutes) and copies of macOS's `gpuEvent` reports for this process —
+///    minutes) and copies of macOS's `gpuEvent` reports naming this app —
 ///    are staged in `<name>.dcmcrash.tmp/` and published by an atomic rename.
 ///    `dump` reads the trainer state among them (the staged batch, the
 ///    gradient-norm history, the recent batch hashes) beforehand, on the
@@ -189,7 +189,8 @@ enum CrashDumpWriter {
         try FileSafety.writeNewFile(Data(sessionLogTail().utf8), at: stagingURL.appendingPathComponent("log-tail.txt"))
         try FileSafety.writeNewFile(Data(systemLogText(now: now).utf8),
                                     at: stagingURL.appendingPathComponent("system-log.txt"))
-        copyGPUEventReports(into: stagingURL, since: now.addingTimeInterval(-systemLogLookBackSeconds))
+        copyGPUEventReports(into: stagingURL, since: now.addingTimeInterval(-systemLogLookBackSeconds),
+                            from: gpuEventReportFolders, processName: ProcessInfo.processInfo.processName)
         try FileSafety.renameWithoutReplacing(from: stagingURL, to: finalURL)
         return finalURL
     }
@@ -301,25 +302,42 @@ enum CrashDumpWriter {
         }
     }
 
-    /// Copies macOS's GPU event reports for this process written since
-    /// `since` (`gpuEvent-*` in the system and the user DiagnosticReports
-    /// folders, when readable — they are often gone within hours). A report
-    /// counts as this process's when it names this pid. Failures are noted in
-    /// a file, not thrown.
-    private static func copyGPUEventReports(into folder: URL, since: Date) {
-        let pid = ProcessInfo.processInfo.processIdentifier
-        let pidMarkers = ["\"pid\":\(pid)", "\"pid\" : \(pid)", "\"pid\": \(pid)"]
-        let reportFolders = [
-            URL(fileURLWithPath: "/Library/Logs/DiagnosticReports", isDirectory: true),
-            FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Logs/DiagnosticReports", isDirectory: true),
-        ]
+    /// The DiagnosticReports folders macOS writes `gpuEvent-*` reports into;
+    /// `copyGPUEventReports` also searches each one's `Retired/`.
+    static let gpuEventReportFolders = [
+        URL(fileURLWithPath: "/Library/Logs/DiagnosticReports", isDirectory: true),
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/DiagnosticReports", isDirectory: true),
+    ]
+
+    /// macOS records a process name cut to this many characters (the
+    /// kernel's `MAXCOMLEN`): `DrewsChessMachin`.
+    static let reportedProcessNameLength = 16
+
+    /// Copies macOS's GPU event reports naming this app written since
+    /// `since`, from each of `reportFolders` and its `Retired/` (macOS moves
+    /// a report there once it has been handled — all three of 2026-10-09's
+    /// were there the next morning, none in the top folder).
+    ///
+    /// A report names only the process macOS blamed (`process_name`, cut to
+    /// 16 characters) and no pid, so with several DrewsChessMachine
+    /// processes running a report may be another one's — which is what a
+    /// dump in a process hit as a bystander needs: the report of the process
+    /// that caused the reset. `system-log.txt` (this process's entries) and
+    /// the manifest's other-process list tell which it was. A report whose
+    /// body can't be read as JSON, and any other failure, is noted in a
+    /// file, not thrown; a folder that doesn't exist is not a failure.
+    static func copyGPUEventReports(into folder: URL, since: Date, from reportFolders: [URL], processName: String) {
+        let reportedName = String(processName.prefix(reportedProcessNameLength))
         var notes: [String] = []
-        for reports in reportFolders {
+        let searched = reportFolders.flatMap { [$0, $0.appendingPathComponent("Retired", isDirectory: true)] }
+        for reports in searched {
             let entries: [URL]
             do {
                 entries = try FileManager.default.contentsOfDirectory(
                     at: reports, includingPropertiesForKeys: [.contentModificationDateKey], options: [])
+            } catch CocoaError.fileReadNoSuchFile {
+                continue
             } catch {
                 notes.append("could not list \(reports.path): \(error.localizedDescription)")
                 continue
@@ -329,8 +347,11 @@ enum CrashDumpWriter {
                     let modified = try entry.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
                     guard let modified, modified >= since else { continue }
                     let data = try Data(contentsOf: entry)
-                    let text = String(decoding: data.prefix(16_384), as: UTF8.self)
-                    guard pidMarkers.contains(where: { text.contains($0) }) else { continue }
+                    guard let name = gpuEventReportProcessName(data) else {
+                        notes.append("\(entry.path): no process_name in the report body")
+                        continue
+                    }
+                    guard name == reportedName else { continue }
                     try FileSafety.writeNewFile(data, at: folder.appendingPathComponent(entry.lastPathComponent))
                 } catch {
                     notes.append("\(entry.path): \(error.localizedDescription)")
@@ -345,6 +366,22 @@ enum CrashDumpWriter {
                 SessionLogger.shared.log("[CRASH-DUMP-ERR] could not note the GPU reports not copied: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// `process_name` from a `.ips` report: a JSON header line, then a JSON
+    /// body. nil when the body isn't a JSON object with a string
+    /// `process_name`.
+    static func gpuEventReportProcessName(_ report: Data) -> String? {
+        guard let newline = report.firstIndex(of: UInt8(ascii: "\n")) else { return nil }
+        let body = report[report.index(after: newline)...]
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: Data(body))
+        } catch {
+            return nil
+        }
+        guard let fields = object as? [String: Any] else { return nil }
+        return fields["process_name"] as? String
     }
 
     /// `pid command…` of every other DrewsChessMachine process, secret-bearing
