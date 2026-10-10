@@ -885,7 +885,17 @@ enum CorpusReplayRunner {
         /// honoured it and the final save succeeded), or nil. `runAndExit`
         /// exits with `trainingHealthStopExitStatus` when it is set.
         var healthStop: TrainingHealthEvent?
+        /// The GPU fault that stopped training (no save after it), or nil.
+        /// `runAndExit` exits with `gpuFaultExitStatus` when it is set.
+        var gpuFault: GPUFaultLedger.Fault?
     }
+
+    /// Exit status of a run stopped by a GPU fault (GPU fault forensics plan,
+    /// A5): training stopped at the first fault, with no save after it, so
+    /// the run's last save is its last fault-free state. Distinct from every
+    /// other status (2 refused, 33 failed, 35 health stop). Shared with
+    /// train-vs-UCI.
+    static let gpuFaultExitStatus: Int32 = 36
 
     /// Exit status of a run stopped by a training-health alarm after a
     /// successful final save (owner decision OD-4): distinct from 0, so a
@@ -1088,6 +1098,12 @@ enum CorpusReplayRunner {
         }
         let summary = "[REPLAY] done: steps=\(result.steps) positionsFed=\(result.positionsFed) gamesFed=\(result.gamesFed) rejected=\(result.gamesRejected) skipped=\(result.gamesSkipped) epochs=\(result.epochs)"
         emit(summary)
+        if let gpuFault = result.gpuFault {
+            emit("[REPLAY] stopped by a GPU fault (\(gpuFault.summary)); no save after it; "
+                + "exit status \(gpuFaultExitStatus)")
+            SessionLogger.shared.shutdown()
+            Darwin.exit(gpuFaultExitStatus)
+        }
         if let healthStop = result.healthStop {
             emit("[REPLAY] stopped by training health alarm \(healthStop.rule.rawValue) (\(healthStop.severity.rawValue)) "
                 + "at trainerStep=\(healthStop.trainerStep); exit status \(trainingHealthStopExitStatus)")
@@ -1692,14 +1708,18 @@ enum CorpusReplayRunner {
             policyTailPrecision: trainer.arch.policyTailPrecision, budget: budget, vsuci: nil, selfPlayDirichlet: nil,
             startValueHeadRecentered: .recorded(try LineageTracker.startValueHeadRecentered(of: startModelFile))))
         lineageTracker.noteRunSeed(runSeed, atTrainerStep: trainer.completedTrainSteps)
-        emit(RunProvenanceLine.line(
+        // GPU faults from here on stop training (GPU fault forensics plan, A5).
+        let faultWatch = GPUFaultWatch.startForRun()
+        // Kept for crash dumps, which record the run they belong to.
+        let runProvenanceLine = RunProvenanceLine.line(
             record: try lineageTracker.startRecord(
                 at: Date(), trainerCompletedSteps: trainer.completedTrainSteps, parameters: p.lineageParameters,
                 inputs: lineageTracker.saveInputs(
                     scheduleAtSave: LRMomentumCycleReadout.scheduleAtSave(
                         inForce: p.parameters, completedTrainSteps: trainer.completedTrainSteps),
                     replayRatioAtSave: nil, healthAlarms: nil)),
-            seed: runSeed))
+            seed: runSeed)
+        emit(runProvenanceLine)
         // Training-health alarms: one monitor for the run, its settings read
         // once from the run-start snapshot; logs `[HEALTH] config` beside
         // the `[RUN]` line.
@@ -2068,6 +2088,19 @@ enum CorpusReplayRunner {
         var aborted = false
         // The training-health stop the loop honoured (R3), or nil.
         var healthStop: TrainingHealthEvent? = nil
+        // The GPU fault that stopped training, or nil. Once set, nothing more
+        // is saved: the weights may be wrong in ways nothing can locate, and
+        // the last save (written before any fault, by the barrier) is the
+        // state to resume.
+        var gpuFault: GPUFaultLedger.Fault? = nil
+        // The trainer step whose batch is in the staging buffers when the
+        // fault stops training: the failing step for a failure the step
+        // reported, the last completed one for a fault seen later.
+        var gpuFaultBatchStep = 0
+        // Crash dumps written (near misses during the run, the stop's at the
+        // end), for `results.json`; and the step of the last near-miss dump.
+        var crashDumps: [String] = []
+        var lastNearMissDumpStep: Int? = nil
         // `--gpu-capture-step` bookkeeping: whether the capture started, and
         // the error if it could not.
         var gpuCaptureStarted = false
@@ -2123,6 +2156,42 @@ enum CorpusReplayRunner {
             let stepTiming: TrainStepTiming?
             do {
                 stepTiming = try await trainer.trainStep(replayBuffer: buffer, batchSize: batchSize)
+            } catch ChessNetworkError.gpuCommandFailed(let stage, _, let detail) {
+                if captureThisStep != nil {
+                    MTLCaptureManager.shared().stopCapture()
+                }
+                // A failed `GPUSubmission` logged `[GPU-ERR]` and recorded
+                // itself in the ledger; anything else that threw this is
+                // recorded here, so the run always stops on a recorded fault.
+                gpuFault = faultWatch.firstFault
+                    ?? faultWatch.ledger.record(.submission(stage: stage, detail: detail ?? "no detail"))
+                gpuFaultBatchStep = trainer.completedTrainSteps + 1
+                emit("[REPLAY] GPU fault during trainer step \(trainer.completedTrainSteps + 1); stopping training, "
+                    + "no further saves")
+                break
+            } catch let nonFinite as ChessTrainerError {
+                if captureThisStep != nil {
+                    MTLCaptureManager.shared().stopCapture()
+                }
+                // A non-finite loss or gradient. A GPU reset can show up
+                // first as a NaN, before macOS's message reaches the monitor
+                // (B-siluall at 2026-10-09 21:37 did): the barrier decides.
+                // A fault makes it a GPU fault (exit 36); otherwise dump and
+                // fail the run as before (exit 33, no save after it).
+                if case .nonFiniteLoss = nonFinite, let fault = await faultWatch.barrier() {
+                    gpuFault = fault
+                    gpuFaultBatchStep = trainer.completedTrainSteps + 1
+                    emit("[REPLAY] non-finite step \(trainer.completedTrainSteps + 1) with a GPU fault "
+                        + "(\(fault.summary)); stopping as a GPU fault, no further saves")
+                    break
+                }
+                if case .nonFiniteLoss = nonFinite {
+                    _ = await CrashDumpWriter.dump(
+                        reason: .nonFinite, detail: nonFinite.localizedDescription, pathKind: "replay",
+                        trainer: trainer, batchSize: batchSize, batchTrainerStep: trainer.completedTrainSteps + 1,
+                        runProvenance: runProvenanceLine, faults: faultWatch.faultsSinceStart)
+                }
+                throw nonFinite
             } catch {
                 if captureThisStep != nil {
                     MTLCaptureManager.shared().stopCapture()
@@ -2139,6 +2208,37 @@ enum CorpusReplayRunner {
             }
             lineageTracker.recordTrainingStep(totalMs: timing.totalMs)
             step += 1
+            // A fault anywhere in this process since the run began (macOS's
+            // messages arrive up to one poll late): this step and everything
+            // since the fault are suspect.
+            if let fault = faultWatch.firstFault {
+                gpuFault = fault
+                gpuFaultBatchStep = trainer.completedTrainSteps
+                emit("[REPLAY] GPU fault seen at trainer step \(trainer.completedTrainSteps) (\(fault.summary)); "
+                    + "stopping training, no further saves")
+                break
+            }
+            // A near miss (a pre-clip gradient norm ≥ 1,000× its reference):
+            // dump the batch and state, keep training.
+            if CrashDumpWriter.isNearMiss(preClipNorm: timing.gradGlobalNorm, decision: timing.gradientCap),
+               lastNearMissDumpStep.map({ trainer.completedTrainSteps - $0 >= CrashDumpWriter.nearMissMinimumSpacingSteps }) ?? true {
+                lastNearMissDumpStep = trainer.completedTrainSteps
+                if let folder = await CrashDumpWriter.dump(
+                    reason: .nearMiss,
+                    detail: "pre-clip gradient norm \(timing.gradGlobalNorm) vs reference \(timing.gradientCap.referenceMedian.map { String($0) } ?? "none")",
+                    pathKind: "replay", trainer: trainer, batchSize: batchSize,
+                    batchTrainerStep: trainer.completedTrainSteps, runProvenance: runProvenanceLine,
+                    faults: faultWatch.faultsSinceStart) {
+                    crashDumps.append(folder.path)
+                }
+            }
+            // Every 100 trainer steps, the batch's hash and its window's chain
+            // (Part B): a resumed run's lines match the original's exactly
+            // when it trained on the same batches.
+            if BatchHashChain.logsLine(atTrainerStep: trainer.completedTrainSteps),
+               let batchHash = await trainer.batchHashes.entry(forTrainerStep: trainer.completedTrainSteps) {
+                emit(batchHash.logLine)
+            }
             // One trainer-step observation for this step: the line's cadence,
             // its LR / momentum / cycle values, and the save point all read it.
             let observedSteps = trainer.completedTrainSteps
@@ -2263,6 +2363,16 @@ enum CorpusReplayRunner {
             // throws here, halting the run (propagates out of runReplay) so it
             // can resume cleanly from the last checkpoint after space is freed.
             if TrainingStepLineSchedule.isCheckpointStep(trainerStep: observedSteps) {
+                // The barrier: a fault macOS logged moments ago must stop the
+                // save, or the rolling file would be replaced by suspect
+                // weights.
+                if let fault = await faultWatch.barrier() {
+                    gpuFault = fault
+                    gpuFaultBatchStep = trainer.completedTrainSteps
+                    emit("[REPLAY] GPU fault found before the autosave at trainer step \(observedSteps) "
+                        + "(\(fault.summary)); not saving, stopping training")
+                    break
+                }
                 let rp = resumePoint()
                 try await saveTrainerModel(step: step, reason: "autosave",
                     nextGameIndex: rp.nextGame, shard: rp.shard,
@@ -2285,6 +2395,45 @@ enum CorpusReplayRunner {
                 + "at step \(step); no trace was written to \(capture.outputURL.path)"
             FileHandle.standardError.write(Data((msg + "\n").utf8))
             SessionLogger.shared.log(msg)
+        }
+
+        // A GPU fault ends the run here: no final save (the weights may be
+        // wrong), the health monitor's last line, then the results with the
+        // fault, then exit 36 in `runAndExit`.
+        if gpuFault == nil, let fault = await faultWatch.barrier() {
+            gpuFault = fault
+            gpuFaultBatchStep = trainer.completedTrainSteps
+            emit("[REPLAY] GPU fault found before the final save (\(fault.summary)); not saving")
+        }
+        if let gpuFault {
+            // The run's last save is its recovery point — unless that save
+            // failed (one failure is tolerated mid-run): say so.
+            if rollingSaveFailures.consecutiveFailures > 0 {
+                emit("[REPLAY] WARNING: the last autosave failed, so the rolling file is from the save before it; "
+                    + "resume from the newest step-enumerated checkpoint written before the fault")
+            }
+            if let folder = await CrashDumpWriter.dump(
+                reason: .gpuFault, detail: gpuFault.summary, pathKind: "replay", trainer: trainer,
+                batchSize: batchSize, batchTrainerStep: gpuFaultBatchStep, runProvenance: runProvenanceLine,
+                faults: faultWatch.faultsSinceStart) {
+                crashDumps.append(folder.path)
+            }
+            trainingHealth.finish()
+            if let recorder, let output = config.output {
+                recorder.setTerminationReason(.gpuFault)
+                recorder.setGPUFaultReport(faultWatch.report(
+                    stoppedAtTrainerStep: trainer.completedTrainSteps, crashDumps: crashDumps))
+                do {
+                    let written = try recorder.write(
+                        to: output, totalTrainingSeconds: CFAbsoluteTimeGetCurrent() - runStart)
+                    emit("[REPLAY] wrote results: \(written.path) (termination_reason=gpu_fault)")
+                } catch {
+                    emit("[REPLAY] results write FAILED for \(output.url.path): \(error.localizedDescription)")
+                }
+            }
+            return Result(steps: step, positionsFed: feedTally.positions, gamesFed: feedTally.games,
+                          gamesRejected: feedTally.rejected, gamesSkipped: feedTally.skipped,
+                          epochs: epochsCompleted, healthStop: nil, gpuFault: gpuFault)
         }
 
         // Final save on any clean exit path — step/epoch limit, corpus
@@ -2335,6 +2484,7 @@ enum CorpusReplayRunner {
             // would change the results.json schema for the self-play path too.
             recorder.setTerminationReason(
                 aborted ? .manualStop : (healthStop != nil ? .trainingHealthAlarm : .stepLimitReached))
+            recorder.setGPUFaultReport(faultWatch.report(stoppedAtTrainerStep: nil, crashDumps: crashDumps))
             let counts = recorder.countsSnapshot()
             // Logged, not thrown — matching the self-play path. The trainer
             // model is already safely on disk by this point, so a failed
@@ -2353,6 +2503,6 @@ enum CorpusReplayRunner {
 
         return Result(steps: step, positionsFed: feedTally.positions, gamesFed: feedTally.games,
                       gamesRejected: feedTally.rejected, gamesSkipped: feedTally.skipped,
-                      epochs: epochsCompleted, healthStop: healthStop)
+                      epochs: epochsCompleted, healthStop: healthStop, gpuFault: nil)
     }
 }

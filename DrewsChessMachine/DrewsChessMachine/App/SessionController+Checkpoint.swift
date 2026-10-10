@@ -40,6 +40,13 @@ extension SessionController {
             onRefuseMenuAction("Build or load a model first.")
             return
         }
+        // A GPU fault during a promotion's copy may have left wrong weights
+        // in the champion (GPU fault forensics plan, A5).
+        if let taint = gpuFaultTaint, taint.champion {
+            onRefuseMenuAction("The champion's weights may be wrong after a GPU fault during a promotion "
+                + "(\(taint.fault.summary)). Load a saved session or model first.")
+            return
+        }
         guard let championID = champion.identifier?.description else {
             onRefuseMenuAction("The champion has no model ID, so it cannot be saved as a model file.")
             return
@@ -568,6 +575,20 @@ extension SessionController {
                 clearInFlight()
                 checkpoint?.setCheckpointStatus("Save failed (session state): \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session failed building its session state: \(error.localizedDescription)")
+                return
+            }
+
+            // The GPU fault barrier (GPU fault forensics plan, A3): a fault
+            // since this Play-and-Train start means the exported weights may
+            // be wrong. Nothing is written and `LastSessionPointer` stays on
+            // the last save, which is then the run's last fault-free state.
+            if let fault = await gpuFaultBarrier() {
+                clearInFlight()
+                checkpoint?.setCheckpointStatus(
+                    "Save refused: GPU fault since this run started (\(fault.summary))\(uiSuffix)", kind: .error)
+                SessionLogger.shared.log(
+                    "[CHECKPOINT] Save session (\(diskTag)) refused: GPU fault since this run started: \(fault.summary)")
+                await handleGPUFault(fault, seenBy: "session save (\(diskTag))")
                 return
             }
 

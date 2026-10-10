@@ -344,7 +344,9 @@ extension SessionController {
             let runRecord = try lineageRecordForSave(at: Date(), cut: try takeConfigurationCut(trainer: trainer),
                                                      trainerCompletedSteps: trainer.completedTrainSteps,
                                                      dropoutPhiloxState: nil, dropoutStreamState: nil)
-            SessionLogger.shared.log(RunProvenanceLine.line(record: runRecord, seed: seed))
+            let provenance = RunProvenanceLine.line(record: runRecord, seed: seed)
+            crashDumpRunProvenance = provenance
+            SessionLogger.shared.log(provenance)
         } catch {
             tracker.restoreJournals(journalsBeforeStart)
             throw error
@@ -373,6 +375,7 @@ extension SessionController {
         let fileFormat: ModelFileFormat = file.architectureFormat.map { .safetensors(architectureFormat: $0.formatVersion) }
             ?? .legacyDCMModel(formatVersion: file.formatVersion)
         championOrigin = .file(file.lineageParent, startWeights: .loaded(centering, fileFormat: fileFormat))
+        clearChampionGPUFaultTaint()
         guard let trainer else { return }
         do {
             try noteChampionChange(trainerStep: trainer.completedTrainSteps, trigger: .loadedModel)

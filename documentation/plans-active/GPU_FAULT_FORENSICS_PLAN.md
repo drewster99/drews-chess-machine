@@ -12,6 +12,31 @@ Owner request (2026-10-09, after the 21:37 incident below):
 3. Audit GPU and memory error handling: we may not be watching, or logging,
    every GPU error; check and log every failure.
 
+## As built (deviations from the design below)
+
+- **Batch hashes (Part B):** the cheap per-step identity was dropped — a
+  resumed run rebuilds its replay buffer, so ring slots and stream counters
+  differ from the original's and could never match. Instead every step's full
+  content (boards, moves, outcomes after the draw penalty) is hashed on a
+  utility queue (≈12 ms of one core per step, never waited on by the step —
+  the owner allowed asynchronous CPU work) and chained per 1,000-step window.
+  Only `[BATCH-HASH]` lines carry them (every 100 trainer steps); step lines
+  are unchanged, so no log parser changes.
+- **Self-play:** any ledger fault, including the driver's own failed
+  evaluation, abandons the games in progress (more conservative than "skip
+  the tick" for layer 1).
+- **Monitor availability** is in `results.json` `gpu_faults.monitor` and the
+  `[GPU-SYSLOG] monitoring …` / `unavailable` line, not on `[RUN]` (its
+  format is shared and parsed).
+- **Crash dump:** records the run's `[RUN]` line (seed, parameters hash,
+  build, device, lineage run and segment) instead of the full lineage record,
+  and no per-sample source slots (the positions are in `batch.safetensors`
+  and can be decoded from the boards).
+- **Voided arena:** `[ARENA] voided: GPU fault …` precedes the usual verdict
+  line, which still shows the SPRT outcome; no promotion happens.
+- `ChessNetwork.requireCompleted` stays as the single-buffer form of
+  `GPUSubmissionReport`'s rule (its test pins it).
+
 ## The incident that prompted this (2026-10-09 21:37:09)
 
 Three training processes shared the GPU (build 2440, macOS 27.2 beta

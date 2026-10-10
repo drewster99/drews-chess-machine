@@ -381,6 +381,15 @@ extension SessionController {
             }
         } catch {
             trainingBox?.recordError("Arena tournament failed: \(error.localizedDescription)")
+            SessionLogger.shared.log("[ARENA] tournament failed: \(error.localizedDescription)")
+            // A GPU fault during the arena's evaluations: no verdict, and the
+            // run stops training (the fault may have reached the trainer too).
+            if case ChessNetworkError.gpuCommandFailed(let stage, _, let detail) = error, let watch = gpuFaultWatch {
+                let fault = watch.firstFault
+                    ?? watch.ledger.record(.submission(stage: stage, detail: detail ?? "no detail"))
+                SessionLogger.shared.log("[ARENA] voided: GPU fault (\(fault.summary))")
+                await handleGPUFault(fault, seenBy: "arena")
+            }
             cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
             return
         }
@@ -391,6 +400,16 @@ extension SessionController {
         // of score or verdict, under either criterion. The consume also
         // clears the box for the next tournament.
         let aborted = overrideBox.consume()
+        // The GPU fault barrier (GPU fault forensics plan, A3): a fault since
+        // this run started — macOS's messages arrive seconds late, and an SPRT
+        // can decide within a second of a GPU reset — voids the arena. No
+        // promotion: the candidate's weights, or the games that judged it,
+        // may be wrong.
+        let arenaFault = await gpuFaultBarrier()
+        if let arenaFault {
+            SessionLogger.shared.log("[ARENA] voided: GPU fault since this run started (\(arenaFault.summary)); no promotion")
+            await handleGPUFault(arenaFault, seenBy: "arena")
+        }
         let playedGames = stats.gamesPlayed
         let score: Double
         if playedGames > 0 {
@@ -430,11 +449,11 @@ extension SessionController {
         let shouldPromote: Bool
         switch promotionCriterion {
         case .scoreThreshold:
-            shouldPromote = !aborted
+            shouldPromote = !aborted && arenaFault == nil
                 && playedGames >= totalGames
                 && score >= TrainingParameters.shared.arenaPromoteThreshold
         case .sprt:
-            shouldPromote = !aborted && (stats.sprtVerdict?.promotes == true)
+            shouldPromote = !aborted && arenaFault == nil && (stats.sprtVerdict?.promotes == true)
         }
         // `promotionKind` is `.automatic` for any arena-driven
         // promotion (the only kind this path can produce); `.manual`
@@ -557,13 +576,32 @@ extension SessionController {
                     }
                 } catch {
                     trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
+                    SessionLogger.shared.log("[ARENA] promotion copy failed: \(error.localizedDescription)")
+                    // The trainer may be half-rewound (weights rewound, fp32
+                    // masters, velocity or dropout state not), and the
+                    // champion may already hold the candidate: training must
+                    // not continue from that. A GPU fault stops the run as one;
+                    // anything else suspends it as a divergence.
+                    if case ChessNetworkError.gpuCommandFailed(let stage, _, let detail) = error, let watch = gpuFaultWatch {
+                        let fault = watch.firstFault
+                            ?? watch.ledger.record(.submission(stage: stage, detail: detail ?? "no detail"))
+                        await handleGPUFault(fault, seenBy: "promotion copy", championAffected: true)
+                    } else {
+                        suspendTrainingOnDivergence(reason: "promotion copy failed: \(error.localizedDescription)")
+                    }
                 }
             }
             // Training (and self-play) stay paused through the history
             // append below: the post-promotion save's session state is
             // built there, at this cut.
         }
-        let promotionSaveWillRun = promoted && Self.autosaveSessionsOnPromote && !promotedChampionWeights.isEmpty
+        // The barrier again, after the promotion's own GPU work (the
+        // candidate export, the champion load, the trainer rewind): a fault
+        // macOS reports for any of it means the new champion and the trainer
+        // may hold wrong weights, so the post-promotion save must not run.
+        let promotionFault: GPUFaultLedger.Fault? = promoted ? await gpuFaultBarrier() : nil
+        let promotionSaveWillRun = promoted && promotionFault == nil
+            && Self.autosaveSessionsOnPromote && !promotedChampionWeights.isEmpty
 
         // Append to history and clear arena state.
         let durationSec = Date().timeIntervalSince(startTime)
@@ -641,6 +679,11 @@ extension SessionController {
         }
         if !(promotionSaveWillRun && promotionSaveIncludesReplayBuffer) {
             promotionSelfPlayHold?.release()
+        }
+        if let promotionFault {
+            SessionLogger.shared.log("[ARENA] GPU fault during the promotion (\(promotionFault.summary)); "
+                + "no post-promotion save")
+            await handleGPUFault(promotionFault, seenBy: "promotion", championAffected: true)
         }
         // Mirror into the chart-tile event stream. Compute the
         // elapsed-second start/end against the chart-coordinator's

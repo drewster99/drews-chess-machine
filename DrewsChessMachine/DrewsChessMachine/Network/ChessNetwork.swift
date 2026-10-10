@@ -23,8 +23,6 @@ enum ChessNetworkError: LocalizedError {
     /// (out-of-memory, timeout, kernel fault). Surfaced instead of consuming
     /// garbage result tensors.
     case gpuCommandFailed(stage: String, status: MTLCommandBufferStatus, error: String?)
-    /// The command queue returned no command buffer to encode into.
-    case commandBufferCreationFailed(stage: String)
     /// The network was built `overwrittenByLoad` and asked to evaluate,
     /// export or train before `loadWeights` gave it real weights.
     case weightsNotLoaded(operation: String)
@@ -50,9 +48,7 @@ enum ChessNetworkError: LocalizedError {
         case .boardSizeMismatch(let expected, let got):
             return "Inference input size mismatch: expected \(expected) floats, got \(got)"
         case .gpuCommandFailed(let stage, let status, let error):
-            return "GPU command buffer failed during \(stage): status=\(status), error=\(error ?? "none")."
-        case .commandBufferCreationFailed(let stage):
-            return "The Metal command queue returned no command buffer for \(stage)."
+            return "GPU command buffer failed during \(stage): status=\(GPUSubmissionReport.name(of: status)), error=\(error ?? "none")."
         case .weightsNotLoaded(let operation):
             return "\(operation) on a network built to receive loaded weights, before any weights were loaded"
         }
@@ -1207,11 +1203,13 @@ final class ChessNetwork: @unchecked Sendable {
         try autoreleasepool {
             Self.writeInferenceInput(board, into: inferenceInputNDArray)
 
-            let results = graph.run(
-                with: commandQueue,
+            let results = try GPUSubmission.runGraph(
+                graph,
+                on: commandQueue,
                 feeds: inferenceFeeds,
                 targetTensors: inferenceTargets,
-                targetOperations: nil
+                targetOperations: nil,
+                stage: .singleInference
             )
 
             guard let policyData = results[policyOutput] else {
@@ -1319,11 +1317,13 @@ final class ChessNetwork: @unchecked Sendable {
         return try board.withUnsafeBufferPointer { buf in
             try autoreleasepool {
                 Self.writeInferenceInput(buf, into: inferenceInputNDArray)
-                let results = graph.run(
-                    with: commandQueue,
+                let results = try GPUSubmission.runGraph(
+                    graph,
+                    on: commandQueue,
                     feeds: inferenceFeeds,
                     targetTensors: [valueProbs],
-                    targetOperations: nil
+                    targetOperations: nil,
+                    stage: .valueDistribution
                 )
                 guard let probsData = results[valueProbs] else {
                     throw ChessNetworkError.outputMissing("valueProbs")
@@ -1487,11 +1487,12 @@ final class ChessNetwork: @unchecked Sendable {
                 }
                 inputs.append(data)
             }
-            let resultArray = executable.run(
-                with: commandQueue,
+            let resultArray = try GPUSubmission.runExecutable(
+                executable,
+                on: commandQueue,
                 inputs: inputs,
                 results: nil,
-                executionDescriptor: nil
+                stage: .batchedInference
             )
             let results = Dictionary(uniqueKeysWithValues: zip(inferenceTargets, resultArray))
 
@@ -1625,13 +1626,30 @@ final class ChessNetwork: @unchecked Sendable {
     /// identical to that path — the same fp32 `valueOutput` — just no CPU round
     /// trip. The result buffer is reused per call; safe because the trainer
     /// drives this serially (phase 2 fully completes before phase 3 reads it).
-    /// The most recent value-baseline command buffer. It is committed WITHOUT a
-    /// host wait (it overlaps the trainer's step), so we cannot inspect its
-    /// status synchronously at commit time. Instead we hold the reference and
-    /// check its (by-then settled) status on the *next* baseline call — a failed
-    /// baseline would otherwise silently feed garbage `v(s)` into training.
-    /// Accessed only on `executionQueue`.
-    private var lastBaselineCommandBuffer: MTLCommandBuffer?
+    /// The most recent value-baseline submission, committed WITHOUT a host
+    /// wait (it overlaps the trainer's step) and not yet verified. The
+    /// training step that consumes its `v(s)` verifies it
+    /// (`verifyPendingValueBaseline`) before reading its own results — the
+    /// step's command buffers follow the baseline's on the same queue, so the
+    /// baseline has finished by then. A baseline nobody verified (the step
+    /// threw first) is verified at the start of the next baseline call. A
+    /// failed baseline would otherwise silently feed garbage `v(s)` into
+    /// training. Lock-guarded: set on `executionQueue`, taken on the
+    /// trainer's queue.
+    private let pendingValueBaseline = SyncBox<GPUSubmission?>(nil)
+
+    /// Waits for and verifies the value-baseline submission the last
+    /// `computeValueBaselineGPU` committed, if it hasn't been verified yet;
+    /// throws `gpuCommandFailed` when it failed. Called by the training step
+    /// that consumed the baseline, from the trainer's queue.
+    func verifyPendingValueBaseline() throws {
+        let pending = pendingValueBaseline.mutate { box -> GPUSubmission? in
+            let taken = box
+            box = nil
+            return taken
+        }
+        try pending?.verify()
+    }
 
     func computeValueBaselineGPU(
         batchBoards: [Float],
@@ -1656,17 +1674,10 @@ final class ChessNetwork: @unchecked Sendable {
         guard batchBoards.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: batchBoards.count)
         }
-        // The previous baseline was committed without a host wait; by now it has
-        // settled (the trainer's dependent step waited on it). If it faulted,
-        // surface that before issuing another step on top of poisoned state.
-        if let previous = lastBaselineCommandBuffer, previous.status == .error {
-            lastBaselineCommandBuffer = nil
-            throw ChessNetworkError.gpuCommandFailed(
-                stage: "value baseline",
-                status: previous.status,
-                error: previous.error?.localizedDescription
-            )
-        }
+        // A previous baseline the training step never verified (it threw
+        // before its own check) is verified now, before another step builds
+        // on whatever it left.
+        try verifyPendingValueBaseline()
         let entry = batchInputEntry(for: count)
         let resultTD = valueBaselineResultTD(for: count)
         try autoreleasepool {
@@ -1697,26 +1708,23 @@ final class ChessNetwork: @unchecked Sendable {
             // wait is needed. Caller-owned result buffer (never `results: nil`)
             // per the proven concurrent-encode contract; `consume` only hands the
             // buffer reference onward (the data fills on the GPU, in order).
-            guard let mtlCommandBuffer = commandQueue.makeCommandBuffer() else {
-                throw ChessNetworkError.outputMissing("value-baseline command buffer")
-            }
-            let mpsCommandBuffer = MPSCommandBuffer(commandBuffer: mtlCommandBuffer)
+            let submission = try GPUSubmission(queue: commandQueue, stage: .valueBaseline)
             _ = executable.encode(
-                to: mpsCommandBuffer,
+                to: submission.commandBuffer,
                 inputs: inputs,
                 results: [resultTD],
-                executionDescriptor: nil
+                executionDescriptor: submission.executableExecutionDescriptor
             )
-            mpsCommandBuffer.commit()
+            submission.commit()
             // A/B: fully serialize the baseline before the training step reads its
             // output. Defeats any cross-command-buffer read-before-write hazard on
             // the single-buffered `resultTD` if the default overlap is unsafe on
             // macOS 27. Off by default (keeps the non-blocking overlap).
             if blockingValueBaseline {
-                mpsCommandBuffer.waitUntilCompleted()
+                try submission.verify()
+            } else {
+                pendingValueBaseline.value = submission
             }
-            // Retain for the next call's status check (see `lastBaselineCommandBuffer`).
-            lastBaselineCommandBuffer = mtlCommandBuffer
             consume(resultTD)
         }
     }
@@ -1886,11 +1894,13 @@ final class ChessNetwork: @unchecked Sendable {
         // from a long-lived background Task (arena start / promotion
         // flows, checkpoint autosave) without a natural pool boundary.
         return try autoreleasepool {
-            let results = graph.run(
-                with: commandQueue,
+            let results = try GPUSubmission.runGraph(
+                graph,
+                on: commandQueue,
                 feeds: [inputPlaceholder: dummyInferenceInputTensorData],
                 targetTensors: allVars,
-                targetOperations: nil
+                targetOperations: nil,
+                stage: .weightExport
             )
 
             var out: [[Float]] = []
@@ -1957,54 +1967,40 @@ final class ChessNetwork: @unchecked Sendable {
             feeds[weightLoadPlaceholders[i]] = weightLoadTensorData[i]
         }
 
-        // Encode into a command buffer we own, instead of the high-level
-        // `graph.run`, which hides its buffer and reports no status: a load
-        // whose GPU work faults (out of memory, timeout, kernel error) would
-        // otherwise return normally and clear the load gate below, marking a
-        // network that still holds its zero-filled variables as loaded —
-        // the silent garbage the gate exists to refuse. Encode + commit +
-        // wait is what `graph.run` does internally.
+        // A checked submission (`GPUSubmission`), not the high-level
+        // `graph.run`, which reports no status: a load whose GPU work faults
+        // (out of memory, timeout, a GPU reset) would otherwise return
+        // normally and clear the load gate below, marking a network that
+        // still holds its zero-filled variables as loaded — the silent
+        // garbage the gate exists to refuse.
         //
         // The encode needs at least one target tensor. Use the first
         // persistent variable as a dummy read — its value after the
         // assigns run is whatever we just wrote in, which we ignore.
         // Autoreleasepool-wrapped for the same reason as the other
-        // graph.run sites in this file.
-        guard let rootCommandBuffer = commandQueue.makeCommandBuffer() else {
-            throw ChessNetworkError.commandBufferCreationFailed(stage: Self.weightLoadStage)
-        }
-        let commandBuffer = MPSCommandBuffer(commandBuffer: rootCommandBuffer)
-        autoreleasepool {
-            _ = graph.encode(
-                to: commandBuffer,
+        // GPU sites in this file.
+        try autoreleasepool {
+            _ = try GPUSubmission.runGraph(
+                graph,
+                on: commandQueue,
                 feeds: feeds,
                 targetTensors: [allVars[0]],
                 targetOperations: weightLoadAssignOps,
-                executionDescriptor: nil
+                stage: .weightLoad
             )
-            commandBuffer.commit()
-            commandBuffer.waitUntilCompleted()
         }
-        // MPS may have committed the root buffer early and continued in a
-        // new one (`commitAndContinue`); the load completed only if both did.
-        rootCommandBuffer.waitUntilCompleted()
-        try Self.requireCompleted(
-            status: rootCommandBuffer.status, error: rootCommandBuffer.error, stage: Self.weightLoadStage)
-        try Self.requireCompleted(
-            status: commandBuffer.commandBuffer.status, error: commandBuffer.commandBuffer.error,
-            stage: Self.weightLoadStage)
         awaitingWeightLoad.value = false
     }
 
     /// The `gpuCommandFailed` stage a failed weight load reports.
-    static let weightLoadStage = "weight load"
+    static let weightLoadStage = GPUStage.weightLoad.rawValue
 
     /// Throws `gpuCommandFailed` unless a waited-for command buffer finished
     /// `.completed`. `waitUntilCompleted` returns whatever happened on the
     /// GPU, so a caller about to treat the buffer's work as done checks its
     /// status here first.
     static func requireCompleted(status: MTLCommandBufferStatus, error: Error?, stage: String) throws {
-        guard status == .completed else {
+        guard GPUSubmissionReport.bufferCompleted(status) else {
             throw ChessNetworkError.gpuCommandFailed(stage: stage, status: status, error: error?.localizedDescription)
         }
     }
@@ -2063,11 +2059,13 @@ final class ChessNetwork: @unchecked Sendable {
             // Targets: every BN layer's batch_mean and batch_var.
             // Order: all means first, then all vars — caller splits.
             let targets = bnBatchMeanTensors + bnBatchVarTensors
-            let results = graph.run(
-                with: commandQueue,
+            let results = try GPUSubmission.runGraph(
+                graph,
+                on: commandQueue,
                 feeds: entry.feeds,
                 targetTensors: targets,
-                targetOperations: nil
+                targetOperations: nil,
+                stage: .bnBatchStats
             )
             var means: [[Float]] = []
             var vars_: [[Float]] = []
@@ -2128,11 +2126,13 @@ final class ChessNetwork: @unchecked Sendable {
         let entry = batchInputEntry(for: count)
         return try autoreleasepool {
             Self.writeInferenceInput(boards, into: entry.ndArray)
-            let results = graph.run(
-                with: commandQueue,
+            let results = try GPUSubmission.runGraph(
+                graph,
+                on: commandQueue,
                 feeds: entry.feeds,
                 targetTensors: analysisTapReadbacks.map(\.tensor),
-                targetOperations: nil
+                targetOperations: nil,
+                stage: .analysisTaps
             )
             var out: [AnalysisTapValues] = []
             out.reserveCapacity(analysisTapReadbacks.count)
@@ -2226,12 +2226,14 @@ final class ChessNetwork: @unchecked Sendable {
             assignOpsToRun.append(weightLoadAssignOps[varIdx])
         }
 
-        autoreleasepool {
-            _ = graph.run(
-                with: commandQueue,
+        try autoreleasepool {
+            _ = try GPUSubmission.runGraph(
+                graph,
+                on: commandQueue,
                 feeds: feeds,
                 targetTensors: [bnRunningStatsVariables[0]],
-                targetOperations: assignOpsToRun
+                targetOperations: assignOpsToRun,
+                stage: .bnRunningStatsLoad
             )
         }
     }

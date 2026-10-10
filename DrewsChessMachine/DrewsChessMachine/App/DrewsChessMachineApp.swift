@@ -526,6 +526,7 @@ struct DrewsChessMachineApp: App {
         // their own.
         if !XCTestHostDetection.isRunningUnderXCTest {
             CheckpointPaths.cleanupOrphans()
+            CheckpointPaths.cleanupCrashDumpOrphans()
         }
     }
 

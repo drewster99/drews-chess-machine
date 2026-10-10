@@ -30,6 +30,15 @@ extension SessionController {
     /// see `TrainingStartMode` for the four cases.
     func startRealTraining(mode: TrainingStartMode = .freshOrFromLoadedSession) {
         SessionLogger.shared.log("[BUTTON] Play and Train")
+        // Weights a GPU fault may have damaged are never trained on or saved
+        // (GPU fault forensics plan, A5); a start that replaces them clears
+        // the taint.
+        if let refusal = gpuFaultStartRefusal(mode: mode) {
+            let message = "Play and Train not started: \(refusal)"
+            SessionLogger.shared.log("[GPU-FAULT] \(message)")
+            checkpoint?.setCheckpointStatus(message, kind: .error)
+            return
+        }
         // A run that does not continue the stopped one starts from the
         // user's settings: values an earlier resume held for its run only
         // (pre-feature values, out-of-range session values) are put back
@@ -563,6 +572,11 @@ extension SessionController {
         // Clear any suspension from a prior run so this start begins with
         // arenas and the periodic autosave un-gated.
         trainingSuspension = nil
+        // This start passed `gpuFaultStartRefusal`, so it replaced a trainer a
+        // GPU fault had tainted.
+        if gpuFaultTaint?.trainer == true {
+            clearTrainerGPUFaultTaint()
+        }
         // Arm the periodic-save scheduler. Always construct a fresh
         // controller on each start — a previous stop will have nil'd it
         // out, and `.continueAfterStop` intentionally resets the
@@ -659,6 +673,22 @@ extension SessionController {
             autoTrainStop: isAutoTrainRun
                 ? autoTrainTermination.map { TrainingHealthAutoTrainStop(termination: $0, runStart: runStart) }
                 : nil)
+        // GPU faults from this start on stop training (GPU fault forensics
+        // plan, A5). A `--train` run records the monitor's availability now,
+        // so a run with no fault still says whether faults were watched for.
+        let faultWatch = GPUFaultWatch.startForRun()
+        gpuFaultWatch = faultWatch
+        crashDumpRunBatchSize = runCapture.trainingBatchSize
+        gpuFaultRunRecord.value = GPUFaultRunRecord()
+        gpuFaultDumpWritten = false
+        gpuFaultAutoTrainStop = isAutoTrainRun
+            ? autoTrainTermination.map { TrainingHealthAutoTrainStop(termination: $0, runStart: runStart) }
+            : nil
+        let runRecord = gpuFaultRunRecord
+        recorder?.setGPUFaultReportProvider {
+            let record = runRecord.value
+            return faultWatch.report(stoppedAtTrainerStep: record.stoppedAtTrainerStep, crashDumps: record.crashDumps)
+        }
         let healthResolveConfig: @Sendable () async -> TrainingHealthConfig? = { [weak self] in
             await MainActor.run { self?.resolveTrainingHealthConfig() }
         }
@@ -1266,6 +1296,9 @@ extension SessionController {
                     // wall-clock measurement directly; the caller
                     // just reports its current configured delay.
                     var lastTrainingDelaySettingMs: Int = 0
+                    // The trainer step of the last near-miss dump (at most
+                    // one per `CrashDumpWriter.nearMissMinimumSpacingSteps`).
+                    var lastNearMissDumpStep: Int? = nil
                     while !Task.isCancelled {
                         // Pause gate check (between steps).
                         if trainingGate.isRequestedToPause {
@@ -1327,6 +1360,17 @@ extension SessionController {
                                 continue
                             }
                             timing = sampledTiming
+                        } catch ChessNetworkError.gpuCommandFailed(let stage, _, let detail) {
+                            // A failed GPU submission in the step: a GPU
+                            // fault, not a numeric divergence. A failed
+                            // `GPUSubmission` logged `[GPU-ERR]` and recorded
+                            // itself in the ledger.
+                            box.recordError("GPU fault in \(stage)")
+                            let fault = faultWatch.firstFault
+                                ?? faultWatch.ledger.record(.submission(stage: stage, detail: detail ?? "no detail"))
+                            await self.handleGPUFault(
+                                fault, seenBy: "training step", batchTrainerStep: trainer.completedTrainSteps + 1)
+                            return
                         } catch {
                             box.recordError(error.localizedDescription)
                             // A divergence (non-finite loss / GPU command
@@ -1345,10 +1389,36 @@ extension SessionController {
                             // (it can't keep stepping a NaN net); the user can
                             // inspect the session or reload an earlier
                             // checkpoint, and an explicit Stop fully tears down.
-                            await self.suspendTrainingOnDivergence(reason: error.localizedDescription)
+                            if case ChessTrainerError.nonFiniteLoss = error {
+                                await self.handleNonFiniteStep(error)
+                            } else {
+                                await self.suspendTrainingOnDivergence(reason: error.localizedDescription)
+                            }
                             return
                         }
 
+                        // A GPU fault anywhere in this process since the
+                        // start (macOS's messages arrive up to one poll
+                        // late): this step and everything since the fault
+                        // are suspect, so training stops here.
+                        if let fault = faultWatch.firstFault {
+                            await self.handleGPUFault(fault, seenBy: "training worker")
+                            return
+                        }
+                        // A near miss (a pre-clip gradient norm ≥ 1,000× its
+                        // reference): dump the batch and state, keep training.
+                        if CrashDumpWriter.isNearMiss(preClipNorm: timing.gradGlobalNorm, decision: timing.gradientCap),
+                           lastNearMissDumpStep.map({ trainer.completedTrainSteps - $0 >= CrashDumpWriter.nearMissMinimumSpacingSteps }) ?? true {
+                            lastNearMissDumpStep = trainer.completedTrainSteps
+                            await self.dumpNearMiss(preClipNorm: timing.gradGlobalNorm, decision: timing.gradientCap)
+                        }
+                        // Every 100 trainer steps, the batch's hash and its
+                        // window's chain (GPU fault forensics plan, Part B).
+                        let hashedStep = trainer.completedTrainSteps
+                        if BatchHashChain.logsLine(atTrainerStep: hashedStep),
+                           let batchHash = await trainer.batchHashes.entry(forTrainerStep: hashedStep) {
+                            SessionLogger.shared.log(batchHash.logLine)
+                        }
                         box.recordStep(timing)
                         pStatsBox.recordTrainingStep()
                         // Every clip (and every would-be clip in log-only
@@ -2595,6 +2665,11 @@ extension SessionController {
     /// session alive.)
     func stopRealTraining() {
         finishTrainingHealthRun()
+        // No run is left to watch: a fault from now on belongs to no
+        // training, and the suspect weights are tracked by `gpuFaultTaint`.
+        // The system-log monitor pauses until the next start.
+        gpuFaultWatch = nil
+        GPUFaultMonitor.shared.pause()
         realTrainingTask?.cancel()
         realTrainingTask = nil
         trainingSuspension = nil

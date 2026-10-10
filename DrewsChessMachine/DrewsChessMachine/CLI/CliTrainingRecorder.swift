@@ -50,6 +50,13 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// The lineage of the run's latest save; the last one set is the
         /// run's final lineage.
         var finalLineage: ResultsLineage?
+        /// GPU faults the run saw and the fault monitor's availability
+        /// (`setGPUFaultReport`).
+        var gpuFaults: GPUFaultReport?
+        /// Builds `gpuFaults` when the results are written, for a run whose
+        /// report changes after it starts (`setGPUFaultReportProvider`);
+        /// wins over `gpuFaults` when set.
+        var gpuFaultReportProvider: (@Sendable () -> GPUFaultReport)?
     }
     private let lock = OSAllocatedUnfairLock<State>(initialState: State())
 
@@ -145,6 +152,19 @@ final class CliTrainingRecorder: @unchecked Sendable {
         lock.withLock { $0.alarmConfig = config }
     }
 
+    /// Record the run's GPU faults (`GPUFaultWatch.report`); set before the
+    /// results are written. The last one set is written.
+    func setGPUFaultReport(_ report: GPUFaultReport) {
+        lock.withLock { $0.gpuFaults = report }
+    }
+
+    /// Have the results' `gpu_faults` built by `provider` at write time
+    /// (the GUI `--train` run, whose monitor and dumps change during the
+    /// run and whose endings write the results from several places).
+    func setGPUFaultReportProvider(_ provider: @escaping @Sendable () -> GPUFaultReport) {
+        lock.withLock { $0.gpuFaultReportProvider = provider }
+    }
+
     /// Cheap lock-protected counts used by the post-write log line
     /// so the caller doesn't have to inspect the JSON file after
     /// writing it to confirm how many events were captured.
@@ -159,6 +179,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
     /// before the JSON encode step, which doesn't need the
     /// recorder's state.
     func encodedJSONData(totalTrainingSeconds: Double) throws -> Data {
+        // Called outside the lock: the provider reads other locks.
+        let providedGPUFaults = lock.withLock { $0.gpuFaultReportProvider }.map { $0() }
         let snapshot = lock.withLock { state in
             Snapshot(
                 runKind: state.runKind,
@@ -179,7 +201,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
                 randomSeedMode: state.runRandomSeed.map { $0.effectiveMode.logToken },
                 rngStreamDerivation: state.runRandomSeed.map { _ in DCMRandomStreams.derivationVersion },
                 samplingConstraints: state.samplingConstraints,
-                lineage: state.finalLineage
+                lineage: state.finalLineage,
+                gpuFaults: providedGPUFaults ?? state.gpuFaults
             )
         }
 
@@ -309,6 +332,12 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// requested a stop (`TrainingHealthStopPolicy`); the command-line
         /// paths wrote their final save first and exit with status 35.
         case trainingHealthAlarm = "training_health_alarm"
+        /// A GPU fault (a failed GPU submission, or macOS reporting a GPU
+        /// hang / discarded command buffer in this process) while the trainer
+        /// was active: training stopped with no further save, since the
+        /// weights may be wrong; details in `gpu_faults`. The command-line
+        /// paths exit with status 36.
+        case gpuFault = "gpu_fault"
     }
 
     /// Which driver produced this run. Emitted once at top level so a consumer
@@ -424,6 +453,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// The lineage of the run's last save (`setFinalLineage`); nil, and
         /// left out, for a run that recorded none.
         let lineage: ResultsLineage?
+        /// GPU faults and the fault monitor's availability
+        /// (`setGPUFaultReport`); nil, and left out, for a path that set none.
+        let gpuFaults: GPUFaultReport?
 
         enum CodingKeys: String, CodingKey {
             case runKind = "run_kind"
@@ -445,6 +477,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case rngStreamDerivation = "rng_stream_derivation"
             case samplingConstraints = "sampling_constraints"
             case lineage
+            case gpuFaults = "gpu_faults"
         }
     }
 

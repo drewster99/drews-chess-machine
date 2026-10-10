@@ -50,7 +50,9 @@ struct DropoutPhiloxState: Sendable, Hashable, Codable {
     ) throws -> DropoutPhiloxState {
         let graph = MPSGraph()
         let state = graph.randomPhiloxStateTensor(withSeed: seed, name: "dropout_rng_seed")
-        let results = graph.run(with: commandQueue, feeds: [:], targetTensors: [state], targetOperations: nil)
+        let results = try GPUSubmission.runGraph(
+            graph, on: commandQueue, feeds: [:], targetTensors: [state], targetOperations: nil,
+            stage: .dropoutStateDerive)
         guard let data = results[state] else {
             throw DropoutPhiloxStateError.missingResult
         }

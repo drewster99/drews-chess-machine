@@ -261,7 +261,45 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         }
         defer { refreshTask.cancel() }
 
+        // GPU faults recorded before this point are not this driver's.
+        var seenFaultSequence = GPUFaultLedger.shared.latestSequence
+        // The newest fault time games were last abandoned for. One GPU reset
+        // is reported several times (a failed submission, then macOS's
+        // message per discarded buffer, across one or two monitor polls),
+        // all within seconds of the reset: games are abandoned once for it.
+        var lastAbandonedFaultTime: Date? = nil
+
         while !Task.isCancelled {
+            // 0. A GPU fault recorded since the last tick, by anyone in this
+            // process (GPU fault forensics plan, A5). A GPU reset discards
+            // command buffers across the process, including ones the app
+            // can't check, and macOS reports those seconds late — by which
+            // time moves may have been sampled from garbage evaluations. So
+            // every game in progress is abandoned (not flushed to the
+            // buffer). This driver's own failed evaluation is also recorded
+            // (its tick was skipped before any sampling); its games go too.
+            // Games that ended between the fault and its report are already
+            // in the buffer.
+            let latestFault = GPUFaultLedger.shared.latestSequence
+            if latestFault > seenFaultSequence {
+                let newFaults = GPUFaultLedger.shared.faults(after: seenFaultSequence)
+                seenFaultSequence = latestFault
+                let newest = newFaults.map(\.time).max()
+                let sameReset = newest.flatMap { newest in
+                    lastAbandonedFaultTime.map { newest.timeIntervalSince($0) < Self.sameResetWindowSeconds }
+                } ?? false
+                if !sameReset {
+                    lastAbandonedFaultTime = newest
+                    let abandoned = games.count
+                    let plies = games.reduce(0) { $0 + $1.totalPliesPlayed }
+                    SessionLogger.shared.log("[SP-TICK] GPU fault reported: abandoned \(abandoned) in-progress games "
+                        + "(\(plies) plies); games that ended since the fault are already in the replay buffer")
+                    games.removeAll(keepingCapacity: true)
+                    gameWatcher?.markPlaying(false)
+                    continue
+                }
+            }
+
             // 1. Arena pause check.
             if pauseGate.isRequestedToPause {
                 // Drop in-flight games (no flush — matches legacy
@@ -349,6 +387,10 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         SessionLogger.shared.log("[SP-TICK] driver exiting")
         games.removeAll(keepingCapacity: true)
     }
+
+    /// Faults within this many seconds of the last one games were abandoned
+    /// for are taken as the same GPU reset.
+    static let sameResetWindowSeconds: TimeInterval = 30
 
     /// The stream of the next game to start. Called only on the driver task,
     /// in slot order (see `randomStreams`).
@@ -523,6 +565,10 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 }
             }
         } catch {
+            // A failed GPU submission throws here, before any move is sampled
+            // from its outputs, so skipping the tick is enough for these
+            // games (a failed `GPUSubmission` also logged `[GPU-ERR]` and
+            // recorded the fault, which stops training).
             SessionLogger.shared.log("[SP-TICK] network error: \(error); skipping tick")
             return
         }

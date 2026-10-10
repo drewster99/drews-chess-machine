@@ -24,10 +24,6 @@ enum ChessTrainerError: LocalizedError {
     /// overflowing even the enlarged graph-build stack. Raised *before* the
     /// build runs so it surfaces as a catchable error instead of a SIGBUS.
     case towerTooDeepToBuild(numBlocks: Int, estimatedKB: Int, limitKB: Int)
-    /// The GPU command buffer for a training step finished in a non-`completed`
-    /// state (out-of-memory, timeout, kernel fault). Surfaced instead of reading
-    /// back garbage result tensors and training on them.
-    case gpuCommandFailed(stage: String, status: MTLCommandBufferStatus, error: String?)
 
     var errorDescription: String? {
         switch self {
@@ -49,8 +45,6 @@ enum ChessTrainerError: LocalizedError {
             return "Layer-health readback: tensor missing from graph.run results: \(name)"
         case .towerTooDeepToBuild(let numBlocks, let estimatedKB, let limitKB):
             return "Tower too deep to build gradients: \(numBlocks) residual blocks need ~\(estimatedKB) KB of build stack, over the \(limitKB) KB budget. Depth is the limit, not width or parameter count — reduce the block count."
-        case .gpuCommandFailed(let stage, let status, let error):
-            return "GPU command buffer failed during \(stage): status=\(status), error=\(error ?? "none"). Results from this step are unreliable; training halted."
         }
     }
 }
@@ -1664,6 +1658,37 @@ final class ChessTrainer: @unchecked Sendable {
 
     private let executionQueue = DispatchQueue(label: "drewschess.chesstrainer.serial")
 
+    /// The SHA-256 of every batch this trainer trains on, chained per
+    /// 1,000-step window (`BatchHashChain`). Fed by the replay-buffer step;
+    /// read by the `[BATCH-HASH]` lines and crash dumps.
+    let batchHashes = BatchHashChain()
+
+    /// Size of the batch the last replay-buffer step sampled into the
+    /// staging buffers; 0 before any. Accessed only on `executionQueue`.
+    private var lastSampledBatchSize = 0
+
+    /// A copy of the batch in the staging buffers — the one the last
+    /// replay-buffer step trained on (or failed on), with outcomes after the
+    /// draw-penalty rewrite once that step reached it — for a crash dump; nil
+    /// before any step sampled. On the trainer's queue, so it waits for a step
+    /// in flight.
+    func captureLastBatch() async throws -> CapturedTrainingBatch? {
+        try await enqueue {
+            let batchSize = self.lastSampledBatchSize
+            guard batchSize > 0,
+                  let boards = self.replayBatchBoards,
+                  let moves = self.replayBatchMoves,
+                  let zs = self.replayBatchZs else { return nil }
+            let floatsPerBoard = self.arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+            return CapturedTrainingBatch(
+                batchSize: batchSize,
+                floatsPerBoard: floatsPerBoard,
+                boards: Array(UnsafeBufferPointer(start: boards, count: batchSize * floatsPerBoard)),
+                moves: Array(UnsafeBufferPointer(start: moves, count: batchSize)),
+                outcomes: Array(UnsafeBufferPointer(start: zs, count: batchSize)))
+        }
+    }
+
     /// Optional stable identity for the trainer's internal network.
     /// Assigned by the UI layer at Play-and-Train start (after loading
     /// champion weights) and then kept stable for the lifetime of the
@@ -2420,7 +2445,7 @@ final class ChessTrainer: @unchecked Sendable {
         // `executionQueue`, so wrap in a sync hop. The dropout RNG state is
         // seeded in the same hop (no-op on graphs without dropout nodes).
         try executionQueue.sync {
-            self.runSyncMastersOnQueue()
+            try self.runSyncMastersOnQueue()
             try self.runDropoutSeedOnQueue()
         }
     }
@@ -2640,6 +2665,7 @@ final class ChessTrainer: @unchecked Sendable {
         // `_completedTrainSteps / lrWarmupSteps`) jumps ahead of the
         // immature network and drives oversized first-step updates.
         _completedTrainSteps.value = 0
+        batchHashes.reset()
         // The gradient-norm history belongs to the trajectory these weights
         // replace; a fresh network starts its own (warm-up from empty).
         gradNormHistory = GradientNormHistory()
@@ -2648,7 +2674,7 @@ final class ChessTrainer: @unchecked Sendable {
         // weights. Already on `executionQueue` (via `enqueue`), so run
         // directly. No-op under `.float32`. Re-seed the dropout RNG state
         // for the new graph as well.
-        runSyncMastersOnQueue()
+        try runSyncMastersOnQueue()
         try runDropoutSeedOnQueue()
         // Re-apply the configured dropout rate to the NEW network. The rate
         // lives in a per-network buffer that is built holding 0, while
@@ -4522,7 +4548,12 @@ final class ChessTrainer: @unchecked Sendable {
     /// in-flight SGD step.
     var completedTrainSteps: Int {
         get { _completedTrainSteps.value }
-        set { _completedTrainSteps.value = max(0, newValue) }
+        set {
+            _completedTrainSteps.value = max(0, newValue)
+            // A restored clock comes with restored weights: the batch-hash
+            // chain of the replaced trajectory must not continue.
+            batchHashes.reset()
+        }
     }
 
     /// The training network's weights with the number of SGD steps they
@@ -4896,6 +4927,7 @@ final class ChessTrainer: @unchecked Sendable {
                 materialCounts: isStatsStep ? materials : nil
             )
             guard didSample else { return nil }
+            self.lastSampledBatchSize = batchSize
             // Realized composition of the batch this step just drew, for the
             // rolling sampled-batch chart windows (mean game length + draw
             // rate). `lastSamplingResult()` is populated on EVERY sample — the
@@ -4998,7 +5030,8 @@ final class ChessTrainer: @unchecked Sendable {
         let includeDiagnostics = phase1.includeDiagnostics
         let sampledBatchMeanGameLength = phase1.sampledBatchMeanGameLength
         let sampledBatchDrawFraction = phase1.sampledBatchDrawFraction
-        return try await enqueue { [batchSize, vBaselineHandoff, freshBaselineMs, dispatchedAtPhase3, isStatsStep, includeDiagnostics, sampledBatchMeanGameLength, sampledBatchDrawFraction] in
+        let boardsForHash = phase1.boardsCopy
+        return try await enqueue { [batchSize, vBaselineHandoff, freshBaselineMs, dispatchedAtPhase3, isStatsStep, includeDiagnostics, sampledBatchMeanGameLength, sampledBatchDrawFraction, boardsForHash] in
             let phase3Start = CFAbsoluteTimeGetCurrent()
             let phase3QueueWaitMs = (phase3Start - dispatchedAtPhase3) * 1000
             let totalStart = phase3Start
@@ -5031,6 +5064,16 @@ final class ChessTrainer: @unchecked Sendable {
                     zs[i] = penalty
                 }
             }
+
+            // The batch's hash (Part B of the GPU fault forensics plan): the
+            // exact boards, moves and outcomes this step trains on, hashed on
+            // the chain's own queue from copies (the staging buffers are
+            // overwritten by the next `sample()`), so the step never waits.
+            self.batchHashes.submit(
+                trainerStep: self._completedTrainSteps.value + 1,
+                boards: boardsForHash,
+                moves: Array(UnsafeBufferPointer(start: moves, count: batchSize)),
+                outcomes: Array(UnsafeBufferPointer(start: zs, count: batchSize)))
 
             // NEW: populate the legal-move mask for each position in the batch.
             let policySize = ChessNetwork.policySize
@@ -5835,11 +5878,13 @@ final class ChessTrainer: @unchecked Sendable {
         // until its load; refuse to export it as trained state.
         try network.requireLoadedWeights("readVelocityValues")
         return try autoreleasepool {
-            let results = network.graph.run(
-                with: network.commandQueue,
+            let results = try GPUSubmission.runGraph(
+                network.graph,
+                on: network.commandQueue,
                 feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                 targetTensors: velocityVariables,
-                targetOperations: nil
+                targetOperations: nil,
+                stage: .velocityRead
             )
             var out: [[Float]] = []
             out.reserveCapacity(velocityVariables.count)
@@ -5897,11 +5942,13 @@ final class ChessTrainer: @unchecked Sendable {
                         // dict is MPSGraph's CPU-side signal of a failed
                         // GPU run; surface it as a thrown error so a
                         // poisoned velocity load can't pass silently.
-                        let results = network.graph.run(
-                            with: network.commandQueue,
+                        let results = try GPUSubmission.runGraph(
+                            network.graph,
+                            on: network.commandQueue,
                             feeds: feeds,
                             targetTensors: [velocityVariables[0]],
-                            targetOperations: velocityLoadAssignOps
+                            targetOperations: velocityLoadAssignOps,
+                            stage: .velocityWrite
                         )
                         guard results[velocityVariables[0]] != nil else {
                             throw ChessTrainerError.velocityLoadGraphFailed(
@@ -5937,11 +5984,13 @@ final class ChessTrainer: @unchecked Sendable {
         // hand them to a save as the trained weights.
         try network.requireLoadedWeights("readMasterValues")
         return try autoreleasepool {
-            let results = network.graph.run(
-                with: network.commandQueue,
+            let results = try GPUSubmission.runGraph(
+                network.graph,
+                on: network.commandQueue,
                 feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                 targetTensors: masterVariables,
-                targetOperations: nil
+                targetOperations: nil,
+                stage: .masterRead
             )
             var out: [[Float]] = []
             out.reserveCapacity(masterVariables.count)
@@ -5988,11 +6037,13 @@ final class ChessTrainer: @unchecked Sendable {
                             ChessNetwork.writeFloatsFP32(weights[i], into: masterLoadNDArrays[i])
                             feeds[masterLoadPlaceholders[i]] = masterLoadTensorData[i]
                         }
-                        let results = network.graph.run(
-                            with: network.commandQueue,
+                        let results = try GPUSubmission.runGraph(
+                            network.graph,
+                            on: network.commandQueue,
                             feeds: feeds,
                             targetTensors: [masterVariables[0]],
-                            targetOperations: masterLoadAssignOps
+                            targetOperations: masterLoadAssignOps,
+                            stage: .masterWrite
                         )
                         guard results[masterVariables[0]] != nil else {
                             throw ChessTrainerError.velocityLoadGraphFailed(masterVariables[0].operation.name)
@@ -6072,11 +6123,13 @@ final class ChessTrainer: @unchecked Sendable {
                         got: velocityVariables.count)
                 }
                 let variable = velocityVariables[index]
-                let results = network.graph.run(
-                    with: network.commandQueue,
+                let results = try GPUSubmission.runGraph(
+                    network.graph,
+                    on: network.commandQueue,
                     feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                     targetTensors: [variable],
-                    targetOperations: nil
+                    targetOperations: nil,
+                    stage: .trainableVelocityRead
                 )
                 guard let data = results[variable] else {
                     throw ChessTrainerError.velocityReadbackMissing(variable.operation.name)
@@ -6117,11 +6170,13 @@ final class ChessTrainer: @unchecked Sendable {
             }
             targets.append(sources[index])
         }
-        let results = network.graph.run(
-            with: network.commandQueue,
+        let results = try GPUSubmission.runGraph(
+            network.graph,
+            on: network.commandQueue,
             feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
             targetTensors: targets,
-            targetOperations: nil
+            targetOperations: nil,
+            stage: .layerHealthRead
         )
         var tensors: [String: [Float]] = [:]
         tensors.reserveCapacity(names.count)
@@ -6150,11 +6205,13 @@ final class ChessTrainer: @unchecked Sendable {
             executionQueue.async { [self] in
                 do {
                     try autoreleasepool {
-                        let results = network.graph.run(
-                            with: network.commandQueue,
+                        let results = try GPUSubmission.runGraph(
+                            network.graph,
+                            on: network.commandQueue,
                             feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                             targetTensors: [masterVariables[0]],
-                            targetOperations: syncMastersOps
+                            targetOperations: syncMastersOps,
+                            stage: .syncMastersFromWorking
                         )
                         guard results[masterVariables[0]] != nil else {
                             throw ChessTrainerError.velocityLoadGraphFailed("master_sync")
@@ -6174,14 +6231,16 @@ final class ChessTrainer: @unchecked Sendable {
     /// overwrite the He-init weights with `cast(0 − lr·v)`. No-op under
     /// `.float32`. `init` wraps this in `executionQueue.sync`;
     /// `internalResetNetwork` (already on `executionQueue`) calls it directly.
-    private func runSyncMastersOnQueue() {
+    private func runSyncMastersOnQueue() throws {
         guard !syncMastersOps.isEmpty, let first = masterVariables.first else { return }
-        autoreleasepool {
-            _ = network.graph.run(
-                with: network.commandQueue,
+        try autoreleasepool {
+            _ = try GPUSubmission.runGraph(
+                network.graph,
+                on: network.commandQueue,
                 feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                 targetTensors: [first],
-                targetOperations: syncMastersOps
+                targetOperations: syncMastersOps,
+                stage: .syncMastersFromWorking
             )
         }
     }
@@ -6249,15 +6308,17 @@ final class ChessTrainer: @unchecked Sendable {
         }
         network.weightAccessLock.wait()
         defer { network.weightAccessLock.signal() }
-        autoreleasepool {
-            _ = network.graph.run(
-                with: network.commandQueue,
+        try autoreleasepool {
+            _ = try GPUSubmission.runGraph(
+                network.graph,
+                on: network.commandQueue,
                 feeds: [
                     network.inputPlaceholder: network.dummyInferenceInputTensorData,
                     stateFeed: state.tensorData(device: network.metalDevice)
                 ],
                 targetTensors: [stateVar],
-                targetOperations: [seedOp]
+                targetOperations: [seedOp],
+                stage: .dropoutStateWrite
             )
         }
     }
@@ -6270,12 +6331,14 @@ final class ChessTrainer: @unchecked Sendable {
         }
         network.weightAccessLock.wait()
         defer { network.weightAccessLock.signal() }
-        let result = autoreleasepool {
-            network.graph.run(
-                with: network.commandQueue,
+        let result = try autoreleasepool {
+            try GPUSubmission.runGraph(
+                network.graph,
+                on: network.commandQueue,
                 feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                 targetTensors: [stateVar],
-                targetOperations: nil
+                targetOperations: nil,
+                stage: .dropoutStateRead
             )
         }
         guard let data = result[stateVar] else {
@@ -7142,10 +7205,7 @@ final class ChessTrainer: @unchecked Sendable {
         // MTLCommandBuffer and conforms to MTLCommandBuffer, so commit/wait work
         // on it directly. Equivalence to `run` is locked by
         // testExecutableEncodeToCommandBufferMatchesRun.
-        guard let mtlCommandBuffer = network.commandQueue.makeCommandBuffer() else {
-            throw ChessTrainerError.lossOutputMissing
-        }
-        let mpsCommandBuffer = MPSCommandBuffer(commandBuffer: mtlCommandBuffer)
+        let stepSubmission = try GPUSubmission(queue: network.commandQueue, stage: .trainingStep)
         // Pipeline-feasibility probe: time the (async, CPU-only) encode call
         // separately from commit + GPU wait. encodeMs is pure CPU encode;
         // gpuWaitMs is commit + GPU execution + wait. Their ratio decides the
@@ -7153,10 +7213,10 @@ final class ChessTrainer: @unchecked Sendable {
         // `trainingExecutable` above, so no compile cost is folded into encodeMs.
         let encodeStart = CFAbsoluteTimeGetCurrent()
         let resultArray = executable.encode(
-            to: mpsCommandBuffer,
+            to: stepSubmission.commandBuffer,
             inputs: inputs,
             results: nil,
-            executionDescriptor: nil
+            executionDescriptor: stepSubmission.executableExecutionDescriptor
         )
         let encodeMs = (CFAbsoluteTimeGetCurrent() - encodeStart) * 1000
         let gpuWaitStart = CFAbsoluteTimeGetCurrent()
@@ -7174,22 +7234,18 @@ final class ChessTrainer: @unchecked Sendable {
         // probe (which mirrors approximate weights into an inference net), but
         // it is why the lock does not make export and SGD strictly atomic.
         network.weightAccessLock.wait()
-        mpsCommandBuffer.commit()
-        mpsCommandBuffer.waitUntilCompleted()
-        let stepStatus = mtlCommandBuffer.status
+        stepSubmission.commit()
+        stepSubmission.waitUntilCompleted()
         network.weightAccessLock.signal()
-        // `waitUntilCompleted` returns regardless of GPU success, leaving the
-        // buffer in either `.completed` or `.error`. On `.error` (OOM / timeout /
-        // kernel fault — e.g. an oversized network) the result tensors below hold
-        // garbage; surface it instead of reading them back and training on
-        // poisoned weights.
-        if stepStatus == .error {
-            throw ChessTrainerError.gpuCommandFailed(
-                stage: "training step",
-                status: stepStatus,
-                error: mtlCommandBuffer.error?.localizedDescription
-            )
-        }
+        // `waitUntilCompleted` returns whether or not the GPU did the work. A
+        // failed step (a GPU reset discarding its buffers, out of memory, a
+        // timeout) leaves garbage in the result tensors below and partly
+        // updated weights: verify the step, then the value baseline it read,
+        // before reading anything back. Either failure throws
+        // `gpuCommandFailed`, which every training path treats as a GPU fault
+        // (crash dump, then abort).
+        try stepSubmission.verify()
+        try network.verifyPendingValueBaseline()
         // Split working-weight sync (bf16 stomp workaround; see
         // `splitWorkingWeightSync`): the main executable updated the fp32 masters
         // but did NOT re-derive the bf16 working weights. Do that now in a
@@ -7204,37 +7260,27 @@ final class ChessTrainer: @unchecked Sendable {
             // any empty-target edge case; the real work is the targetOperations
             // (the working = cast(master) assigns).
             let dummyTarget = network.trainableVariables[0]
-            // Encode into a command buffer we own (instead of the high-level
-            // `graph.run`, which hides its buffer) SO WE CAN CHECK ITS STATUS.
+            // A checked submission (instead of the high-level `graph.run`,
+            // which reports no status) SO WE CAN CHECK IT.
             // If this pass faults (OOM/timeout/kernel error) the bf16/fp16
             // working weights silently stay stale while the fp32 masters have
             // already advanced — the next step would then train against a
             // working/master mismatch. Surface it loudly instead, mirroring the
             // main step's `.error` check above. encode+commit+wait is functionally
             // identical to `graph.run`.
-            guard let syncMtlCommandBuffer = network.commandQueue.makeCommandBuffer() else {
-                throw ChessTrainerError.lossOutputMissing
-            }
-            let syncCommandBuffer = MPSCommandBuffer(commandBuffer: syncMtlCommandBuffer)
+            let syncSubmission = try GPUSubmission(queue: network.commandQueue, stage: .workingWeightSync)
             network.weightAccessLock.wait()
             _ = network.graph.encode(
-                to: syncCommandBuffer,
+                to: syncSubmission.commandBuffer,
                 feeds: [:],
                 targetTensors: [dummyTarget],
                 targetOperations: workingSyncOps,
-                executionDescriptor: nil
+                executionDescriptor: syncSubmission.graphExecutionDescriptor
             )
-            syncCommandBuffer.commit()
-            syncCommandBuffer.waitUntilCompleted()
-            let syncStatus = syncMtlCommandBuffer.status
+            syncSubmission.commit()
+            syncSubmission.waitUntilCompleted()
             network.weightAccessLock.signal()
-            if syncStatus == .error {
-                throw ChessTrainerError.gpuCommandFailed(
-                    stage: "working-weight sync",
-                    status: syncStatus,
-                    error: syncMtlCommandBuffer.error?.localizedDescription
-                )
-            }
+            try syncSubmission.verify()
         }
         let gpuWaitMs = (CFAbsoluteTimeGetCurrent() - gpuWaitStart) * 1000
         encodeMsTimes.append(encodeMs)
@@ -7475,14 +7521,21 @@ final class ChessTrainer: @unchecked Sendable {
                 }
                 // Take the same weight lock as the training step: this reads
                 // the variables an `exportWeights` probe could be writing.
+                // Wait inside the lock, verify after it (the lock section
+                // must not throw).
+                let klSubmission = try GPUSubmission(queue: network.commandQueue, stage: .klProbe)
                 network.weightAccessLock.wait()
-                let klResults = network.graph.run(
-                    with: network.commandQueue,
+                let klResults = network.graph.encode(
+                    to: klSubmission.commandBuffer,
                     feeds: runFeeds,
                     targetTensors: targets,
-                    targetOperations: nil
+                    targetOperations: nil,
+                    executionDescriptor: klSubmission.graphExecutionDescriptor
                 )
+                klSubmission.commit()
+                klSubmission.waitUntilCompleted()
                 network.weightAccessLock.signal()
+                try klSubmission.verify()
 
                 guard let meanData = klResults[probe.klMean],
                       let meanSquareData = klResults[probe.klMeanSquare] else {
@@ -7522,8 +7575,10 @@ final class ChessTrainer: @unchecked Sendable {
             // Outside the do/catch on purpose: if the probe failed we lose the
             // metric, but the RNG must still move or the next step silently
             // reuses this step's mask — a correctness bug in training, caused
-            // by telemetry, which is precisely what must not happen. A failure
-            // here is logged and swallowed for the same reason.
+            // by telemetry, which is precisely what must not happen. A GPU
+            // failure of the advance itself throws: the Philox state may then
+            // hold garbage, so the step fails as a GPU fault like the step's
+            // own submission.
             if let advance = network.dropoutRngAdvanceOp,
                let stateVariable = network.dropoutRngStateVariable {
                 // `advance`'s value (`finalState` in ChessNetwork's builder)
@@ -7545,14 +7600,19 @@ final class ChessTrainer: @unchecked Sendable {
                 // that just ran had no board input — impossible if it got
                 // this far — so this is an ALARM, not a silent skip.
                 if let inputData = feeds[network.inputPlaceholder] {
+                    let advanceSubmission = try GPUSubmission(queue: network.commandQueue, stage: .dropoutAdvance)
                     network.weightAccessLock.wait()
-                    _ = network.graph.run(
-                        with: network.commandQueue,
+                    _ = network.graph.encode(
+                        to: advanceSubmission.commandBuffer,
                         feeds: [network.inputPlaceholder: inputData],
                         targetTensors: [stateVariable],
-                        targetOperations: [advance]
+                        targetOperations: [advance],
+                        executionDescriptor: advanceSubmission.graphExecutionDescriptor
                     )
+                    advanceSubmission.commit()
+                    advanceSubmission.waitUntilCompleted()
                     network.weightAccessLock.signal()
+                    try advanceSubmission.verify()
                 } else {
                     SessionLogger.shared.log(
                         "[ALARM] KL-PROBE: inputPlaceholder missing from this step's feeds — dropout RNG not advanced, next step will reuse this step's mask"

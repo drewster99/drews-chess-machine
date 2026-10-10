@@ -84,6 +84,16 @@ extension SessionController {
         checkpoint?.setCheckpointStatus("Promoting trainee → champion…", kind: .progress)
 
         Task {
+            // 0) The GPU fault barrier (GPU fault forensics plan, A3): a fault
+            //    since this run started means the trainer's weights may be
+            //    wrong, so they must not become the champion.
+            if let fault = await gpuFaultBarrier() {
+                checkpoint?.checkpointSaveInFlight = false
+                checkpoint?.setCheckpointStatus("Promotion refused: GPU fault since this run started", kind: .error)
+                SessionLogger.shared.log("[STATS] promote(manual) refused — GPU fault since this run started: \(fault.summary)")
+                await handleGPUFault(fault, seenBy: "Promote Trainee Now")
+                return
+            }
             // 1) Pause self-play (evaluates against `champion`) and
             //    training (drives the trainer's network) so the export/load is
             //    race-free. Bounded waits so a session end mid-promote
@@ -142,6 +152,18 @@ extension SessionController {
                 return
             }
 
+            // 1d) The barrier again, under the pause, right before the export:
+            //     the first one ran before the (seconds-long) gate waits.
+            if let fault = await gpuFaultBarrier() {
+                trainingGate.resume()
+                selfPlayGate.resume()
+                checkpoint?.checkpointSaveInFlight = false
+                checkpoint?.setCheckpointStatus("Promotion refused: GPU fault since this run started", kind: .error)
+                SessionLogger.shared.log("[STATS] promote(manual) refused — GPU fault since this run started: \(fault.summary)")
+                await handleGPUFault(fault, seenBy: "Promote Trainee Now")
+                return
+            }
+
             // 2) Copy live trainer weights → champion, on a detached
             //    task so the GPU work doesn't sit on the cooperative
             //    pool. All errors surfaced — never swallowed.
@@ -162,6 +184,24 @@ extension SessionController {
                 copyError = error
             }
 
+            // A fault during the copy, reported by the copy itself or by
+            // macOS afterwards: the champion may hold wrong weights.
+            var copyFault: GPUFaultLedger.Fault?
+            if case ChessNetworkError.gpuCommandFailed(let stage, _, let detail)? = copyError {
+                copyFault = gpuFaultWatch?.firstFault
+                    ?? GPUFaultLedger.shared.record(.submission(stage: stage, detail: detail ?? "no detail"))
+            } else if copyError == nil {
+                copyFault = await gpuFaultBarrier()
+            }
+            if let copyFault {
+                trainingGate.resume()
+                selfPlayGate.resume()
+                checkpoint?.checkpointSaveInFlight = false
+                checkpoint?.setCheckpointStatus("Promotion failed: GPU fault during the copy", kind: .error)
+                SessionLogger.shared.log("[STATS] promote(manual) failed — GPU fault during the copy: \(copyFault.summary)")
+                await handleGPUFault(copyFault, seenBy: "Promote Trainee Now copy", championAffected: true)
+                return
+            }
             if let copyError {
                 trainingGate.resume()
                 selfPlayGate.resume()

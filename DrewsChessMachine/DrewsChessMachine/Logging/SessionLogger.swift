@@ -293,6 +293,20 @@ final class SessionLogger: @unchecked Sendable {
         queue.sync { fileURL?.path }
     }
 
+    /// Waits until every line queued so far is written to the file, without
+    /// closing it — for a reader of the file in this process (a crash dump's
+    /// log tail). `queue.sync` FIFOs behind the queued writes.
+    func flush() {
+        queue.sync {
+            guard let fileHandle else { return }
+            do {
+                try fileHandle.synchronize()
+            } catch {
+                FileHandle.standardError.write(Data("SessionLogger: flushing the log file failed: \(error)\n".utf8))
+            }
+        }
+    }
+
     /// Synchronously flush and close the log file. Called from
     /// AppDelegate.applicationWillTerminate so a normal app exit
     /// preserves the full tail that the idle-flush coalescer might

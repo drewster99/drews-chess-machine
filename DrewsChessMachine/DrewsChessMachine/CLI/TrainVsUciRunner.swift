@@ -106,6 +106,9 @@ enum TrainVsUciRunner {
         /// the loop, final save succeeded), or nil; `runAndExit` then exits
         /// with `CorpusReplayRunner.trainingHealthStopExitStatus`.
         var healthStop: TrainingHealthEvent?
+        /// The GPU fault that stopped training (no save after it), or nil;
+        /// `runAndExit` then exits with `CorpusReplayRunner.gpuFaultExitStatus`.
+        var gpuFault: GPUFaultLedger.Fault?
     }
 
     private static func emit(_ message: String) {
@@ -117,6 +120,12 @@ enum TrainVsUciRunner {
     /// on success, 2 when the run is refused before it starts
     /// (`CLIRunRefusal`), 33 on any other failure, 35 when a training-health
     /// alarm stopped the run after a successful final save.
+    /// Whether a trainer error is the non-finite loss / gradient halt.
+    static func isNonFinite(_ error: ChessTrainerError) -> Bool {
+        if case .nonFiniteLoss = error { return true }
+        return false
+    }
+
     static func runAndExit(config: TrainVsUciConfig, params: ReplayParams) -> Never {
         SessionLogger.shared.start()
         emit("[VS-UCI] starting train-vs-UCI over \(config.opponents.count) opponent kind(s)")
@@ -171,6 +180,12 @@ enum TrainVsUciRunner {
             Darwin.exit(33)
         }
         emit("[VS-UCI] done: steps=\(result.steps) gamesCompleted=\(result.gamesCompleted)")
+        if let gpuFault = result.gpuFault {
+            let status = CorpusReplayRunner.gpuFaultExitStatus
+            emit("[VS-UCI] stopped by a GPU fault (\(gpuFault.summary)); no save after it; exit status \(status)")
+            SessionLogger.shared.shutdown()
+            Darwin.exit(status)
+        }
         if let healthStop = result.healthStop {
             let status = CorpusReplayRunner.trainingHealthStopExitStatus
             emit("[VS-UCI] stopped by training health alarm \(healthStop.rule.rawValue) (\(healthStop.severity.rawValue)) "
@@ -526,14 +541,18 @@ enum TrainVsUciRunner {
             selfPlayDirichlet: nil,
             startValueHeadRecentered: .recorded(try LineageTracker.startValueHeadRecentered(of: startModelFile))))
         lineageTracker.noteRunSeed(runSeed, atTrainerStep: trainer.completedTrainSteps)
-        emit(RunProvenanceLine.line(
+        // GPU faults from here on stop training (GPU fault forensics plan, A5).
+        let faultWatch = GPUFaultWatch.startForRun()
+        // Kept for crash dumps, which record the run they belong to.
+        let runProvenanceLine = RunProvenanceLine.line(
             record: try lineageTracker.startRecord(
                 at: Date(), trainerCompletedSteps: trainer.completedTrainSteps, parameters: p.lineageParameters,
                 inputs: lineageTracker.saveInputs(
                     scheduleAtSave: LRMomentumCycleReadout.scheduleAtSave(
                         inForce: p.parameters, completedTrainSteps: trainer.completedTrainSteps),
                     replayRatioAtSave: nil, healthAlarms: nil)),
-            seed: runSeed))
+            seed: runSeed)
+        emit(runProvenanceLine)
         // session.json's positions trained: this run's steps at its batch,
         // on top of what a record says about the steps before it.
         let trainedPositions = TrainVsUciSession.trainedPositionsCount(
@@ -870,6 +889,15 @@ enum TrainVsUciRunner {
         var timedOut = false
         // The training-health stop the loop honoured (R3), or nil.
         var healthStop: TrainingHealthEvent? = nil
+        // The GPU fault that stopped training, or nil; once set, nothing more
+        // is saved (see CorpusReplayRunner).
+        var gpuFault: GPUFaultLedger.Fault? = nil
+        // The trainer step whose batch is staged when a fault stops training
+        // (see CorpusReplayRunner), the crash dumps written, and the step of
+        // the last near-miss dump.
+        var gpuFaultBatchStep = 0
+        var crashDumps: [String] = []
+        var lastNearMissDumpStep: Int? = nil
         do {
             // Wait for the producer to prefill the buffer. Games are produced
             // by actually playing the engines, so this takes as long as it
@@ -917,6 +945,35 @@ enum TrainVsUciRunner {
                 }
                 lineageTracker.recordTrainingStep(totalMs: timing.totalMs)
                 step += 1
+                // A fault anywhere in this process since the run began: this
+                // step and everything since the fault are suspect.
+                if let fault = faultWatch.firstFault {
+                    gpuFault = fault
+                    gpuFaultBatchStep = trainer.completedTrainSteps
+                    emit("[VS-UCI] GPU fault seen at trainer step \(trainer.completedTrainSteps) (\(fault.summary)); "
+                        + "stopping training, no further saves")
+                    break
+                }
+                // A near miss: dump the batch and state, keep training (see
+                // CorpusReplayRunner).
+                if CrashDumpWriter.isNearMiss(preClipNorm: timing.gradGlobalNorm, decision: timing.gradientCap),
+                   lastNearMissDumpStep.map({ trainer.completedTrainSteps - $0 >= CrashDumpWriter.nearMissMinimumSpacingSteps }) ?? true {
+                    lastNearMissDumpStep = trainer.completedTrainSteps
+                    if let folder = await CrashDumpWriter.dump(
+                        reason: .nearMiss,
+                        detail: "pre-clip gradient norm \(timing.gradGlobalNorm) vs reference \(timing.gradientCap.referenceMedian.map { String($0) } ?? "none")",
+                        pathKind: "vsuci", trainer: trainer, batchSize: batchSize,
+                        batchTrainerStep: trainer.completedTrainSteps, runProvenance: runProvenanceLine,
+                        faults: faultWatch.faultsSinceStart) {
+                        crashDumps.append(folder.path)
+                    }
+                }
+                // Every 100 trainer steps, the batch's hash and its window's
+                // chain (see CorpusReplayRunner).
+                if BatchHashChain.logsLine(atTrainerStep: trainer.completedTrainSteps),
+                   let batchHash = await trainer.batchHashes.entry(forTrainerStep: trainer.completedTrainSteps) {
+                    emit(batchHash.logLine)
+                }
 
                 // Keep the play network ~live.
                 if step % syncEvery == 0 { try await syncEvalNet() }
@@ -1049,17 +1106,60 @@ enum TrainVsUciRunner {
                 }
                 // At every trainer-step multiple of 1000, after the step line
                 // (so the line and its live readout precede the save).
-                if TrainingStepLineSchedule.isCheckpointStep(trainerStep: observedSteps) {
+                let checkpointDue = TrainingStepLineSchedule.isCheckpointStep(trainerStep: observedSteps)
+                let sessionDue = TrainVsUciSession.periodicSaveIsDue(now: Date(), lastSave: lastSessionSave,
+                                                                     intervalSec: periodicSessionIntervalSec)
+                // The barrier before either save: a fault macOS logged moments
+                // ago must stop it.
+                if checkpointDue || sessionDue, let fault = await faultWatch.barrier() {
+                    gpuFault = fault
+                    gpuFaultBatchStep = trainer.completedTrainSteps
+                    emit("[VS-UCI] GPU fault found before a save at trainer step \(observedSteps) (\(fault.summary)); "
+                        + "not saving, stopping training")
+                    break
+                }
+                if checkpointDue {
                     try await writeEnumeratedCheckpoint(step: step, reason: "autosave")
                 }
-                if TrainVsUciSession.periodicSaveIsDue(now: Date(), lastSave: lastSessionSave,
-                                                       intervalSec: periodicSessionIntervalSec) {
+                if sessionDue {
                     try await saveSession(step: step, kind: .periodic)
                 }
                 // Rule 3's value-FC1 velocity at most 1,000 trainer steps
                 // apart (D6): covered by the enumerated checkpoints' passes
                 // with `--enumerate-checkpoints`, a dedicated read otherwise.
                 await trainingHealth.valueFC1ReadIfDue(trainer: trainer, trainerStep: observedSteps)
+            }
+        } catch ChessNetworkError.gpuCommandFailed(let stage, _, let detail) {
+            // A failed GPU submission in a training step or the play-network
+            // sync: a GPU fault, handled below like one the loop saw (a failed
+            // `GPUSubmission` already logged `[GPU-ERR]` and recorded itself).
+            gpuFault = faultWatch.firstFault
+                ?? faultWatch.ledger.record(.submission(stage: stage, detail: detail ?? "no detail"))
+            // A failure inside a training step (any of its submissions)
+            // leaves the failing step's batch staged; a play-network sync
+            // failure, the last completed step's.
+            let stepStages: Set<String> = Set([GPUStage.trainingStep, .valueBaseline, .workingWeightSync, .klProbe,
+                                               .dropoutAdvance].map(\.rawValue))
+            gpuFaultBatchStep = stepStages.contains(stage) ? trainer.completedTrainSteps + 1 : trainer.completedTrainSteps
+            emit("[VS-UCI] GPU fault in \(stage) after step \(step); stopping training, no further saves")
+        } catch let nonFinite as ChessTrainerError where Self.isNonFinite(nonFinite) {
+            // A non-finite loss or gradient. The barrier decides whether a
+            // GPU reset caused it (see CorpusReplayRunner): a fault makes it
+            // a GPU fault, handled below; otherwise dump and fail as before.
+            if let fault = await faultWatch.barrier() {
+                gpuFault = fault
+                gpuFaultBatchStep = trainer.completedTrainSteps + 1
+                emit("[VS-UCI] non-finite step \(trainer.completedTrainSteps + 1) with a GPU fault "
+                    + "(\(fault.summary)); stopping as a GPU fault, no further saves")
+            } else {
+                _ = await CrashDumpWriter.dump(
+                    reason: .nonFinite, detail: nonFinite.localizedDescription, pathKind: "vsuci",
+                    trainer: trainer, batchSize: batchSize, batchTrainerStep: trainer.completedTrainSteps + 1,
+                    runProvenance: runProvenanceLine, faults: faultWatch.faultsSinceStart)
+                statsTask.cancel()
+                driverTask.cancel()
+                _ = await driverTask.value
+                throw nonFinite
             }
         } catch {
             // Tear the producer down (shuts every engine down) before the
@@ -1074,6 +1174,37 @@ enum TrainVsUciRunner {
         statsTask.cancel()
         driverTask.cancel()
         _ = await driverTask.value
+
+        // A GPU fault ends the run here: no final save, the health monitor's
+        // last line, the results with the fault, then exit 36 in `runAndExit`.
+        if gpuFault == nil, let fault = await faultWatch.barrier() {
+            gpuFault = fault
+            gpuFaultBatchStep = trainer.completedTrainSteps
+            emit("[VS-UCI] GPU fault found before the final save (\(fault.summary)); not saving")
+        }
+        if let gpuFault {
+            if let folder = await CrashDumpWriter.dump(
+                reason: .gpuFault, detail: gpuFault.summary, pathKind: "vsuci", trainer: trainer,
+                batchSize: batchSize, batchTrainerStep: gpuFaultBatchStep, runProvenance: runProvenanceLine,
+                faults: faultWatch.faultsSinceStart) {
+                crashDumps.append(folder.path)
+            }
+            trainingHealth.finish()
+            if let recorder, let output = config.output {
+                recorder.setTerminationReason(.gpuFault)
+                recorder.setGPUFaultReport(faultWatch.report(
+                    stoppedAtTrainerStep: trainer.completedTrainSteps, crashDumps: crashDumps))
+                do {
+                    let written = try recorder.write(
+                        to: output, totalTrainingSeconds: CFAbsoluteTimeGetCurrent() - runStart)
+                    emit("[VS-UCI] wrote results: \(written.path) (termination_reason=gpu_fault)")
+                } catch {
+                    emit("[VS-UCI] results write FAILED for \(output.url.path): \(error.localizedDescription)")
+                }
+            }
+            let totalGames = driver.statsSnapshot().reduce(0) { $0 + $1.gamesCompleted }
+            return Result(steps: step, gamesCompleted: totalGames, healthStop: nil, gpuFault: gpuFault)
+        }
 
         // The final session (its save syncs the play network first), then the
         // final step's enumerated checkpoint.
@@ -1120,6 +1251,7 @@ enum TrainVsUciRunner {
                 reason = .stepLimitReached
             }
             recorder.setTerminationReason(reason)
+            recorder.setGPUFaultReport(faultWatch.report(stoppedAtTrainerStep: nil, crashDumps: crashDumps))
             let counts = recorder.countsSnapshot()
             // Logged, not thrown — see CorpusReplayRunner: the trainer model is
             // already saved, so a failed results write must not fail the run.
@@ -1135,6 +1267,6 @@ enum TrainVsUciRunner {
         }
 
         let totalGames = driver.statsSnapshot().reduce(0) { $0 + $1.gamesCompleted }
-        return Result(steps: step, gamesCompleted: totalGames, healthStop: healthStop)
+        return Result(steps: step, gamesCompleted: totalGames, healthStop: healthStop, gpuFault: nil)
     }
 }

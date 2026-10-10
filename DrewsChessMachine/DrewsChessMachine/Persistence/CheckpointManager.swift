@@ -95,6 +95,13 @@ enum CheckpointPaths {
         rootURL.appendingPathComponent("Models", isDirectory: true)
     }
 
+    /// `~/Library/Application Support/DrewsChessMachine/CrashDumps/`: one
+    /// folder per crash dump (`CrashDumpWriter`). Created by the first dump;
+    /// nothing in it is ever deleted automatically.
+    static var crashDumpsDir: URL {
+        rootURL.appendingPathComponent("CrashDumps", isDirectory: true)
+    }
+
     /// `~/Library/Application Support/DrewsChessMachine/Analyses/`.
     /// Output directory for offline replay-buffer analyzer runs (see
     /// `ReplayBufferAnalyzer` + the `Analyze Replay Buffer…` debug menu).
@@ -135,6 +142,12 @@ enum CheckpointPaths {
 
     /// Name suffix of `saveSession`'s staging directory.
     static var sessionStagingSuffix: String { ".dcmsession.\(stagingPathExtension)" }
+
+    /// Path extension of a crash-dump folder (`<name>.dcmcrash`).
+    static let crashDumpPathExtension = "dcmcrash"
+
+    /// Name suffix of a crash dump's staging directory.
+    static var crashDumpStagingSuffix: String { ".\(crashDumpPathExtension).\(stagingPathExtension)" }
 
     /// Name suffixes of `saveModel`'s staging file: the current
     /// `.safetensors` format and the legacy `.dcmmodel` format, whose
@@ -246,6 +259,9 @@ enum CheckpointPaths {
         /// `saveModel`'s staging file in `Models/`. Must be a regular
         /// file.
         case modelFile
+        /// A crash dump's staging folder in `CrashDumps/`
+        /// (`CrashDumpWriter`). Must be a real directory.
+        case crashDumpDirectory
         /// `FileSafety`'s hidden staging file for a write staged and
         /// renamed into place (`FileSafety.temporarySibling(of:)`) — e.g.
         /// a corpus-replay or train-vs-UCI rolling `--out-model` written
@@ -262,6 +278,7 @@ enum CheckpointPaths {
             switch self {
             case .sessionDirectory: suffixes = [CheckpointPaths.sessionStagingSuffix]
             case .modelFile: suffixes = CheckpointPaths.modelStagingSuffixes
+            case .crashDumpDirectory: suffixes = [CheckpointPaths.crashDumpStagingSuffix]
             case .fileSafetyStagingFile:
                 return FileSafety.destinationName(ofTemporarySiblingName: name) != nil
             }
@@ -320,6 +337,10 @@ enum CheckpointPaths {
         case .modelFile:
             guard candidate.isRegularFile else {
                 return .keep(reason: "is not a regular file, but model staging is always a regular file")
+            }
+        case .crashDumpDirectory:
+            guard candidate.isDirectory else {
+                return .keep(reason: "is not a directory, but crash-dump staging is always a directory")
             }
         case .fileSafetyStagingFile:
             guard candidate.isRegularFile else {
@@ -436,6 +457,21 @@ enum CheckpointPaths {
         sweepOrphanStaging(in: sessionsDirectory, kinds: [.sessionDirectory, .fileSafetyStagingFile],
                            now: now, minimumAge: minimumAge)
         sweepOrphanStaging(in: modelsDirectory, kinds: [.modelFile, .fileSafetyStagingFile],
+                           now: now, minimumAge: minimumAge)
+    }
+
+    /// The same sweep over `CrashDumps/`: a crash dump's staging folder, or a
+    /// `FileSafety` staging file, left by a dump interrupted mid-write.
+    /// Separate from `cleanupOrphans` so tests that sweep temporary
+    /// `Sessions/` and `Models/` folders never touch the real crash dumps.
+    /// Does nothing when the folder doesn't exist yet.
+    static func cleanupCrashDumpOrphans(
+        crashDumpsDirectory: URL = CheckpointPaths.crashDumpsDir,
+        now: Date = Date(),
+        minimumAge: TimeInterval = CheckpointPaths.orphanStagingMinimumAge
+    ) {
+        guard FileManager.default.fileExists(atPath: crashDumpsDirectory.path) else { return }
+        sweepOrphanStaging(in: crashDumpsDirectory, kinds: [.crashDumpDirectory, .fileSafetyStagingFile],
                            now: now, minimumAge: minimumAge)
     }
 

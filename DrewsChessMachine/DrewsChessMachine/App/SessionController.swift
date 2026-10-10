@@ -345,6 +345,34 @@ final class SessionController {
     /// interactive session, where a stop suspends training instead).
     @ObservationIgnored var trainingHealthAutoTrainStop: TrainingHealthAutoTrainStop?
 
+    /// The current Play-and-Train start's view of the GPU fault ledger (GPU
+    /// fault forensics plan, A5): a fault since the start stops training,
+    /// voids an arena and refuses a save. Replaced at every start; nil
+    /// before the first start of this launch.
+    @ObservationIgnored var gpuFaultWatch: GPUFaultWatch?
+
+    /// The `--train` run's termination claim, for a GPU fault (nil in an
+    /// interactive session, where a GPU fault suspends training instead).
+    /// The same claim every other ending of the run takes.
+    @ObservationIgnored var gpuFaultAutoTrainStop: TrainingHealthAutoTrainStop?
+
+    /// The current start's training batch size, `[RUN]` line, and crash dumps
+    /// written — what a crash dump and the results' `gpu_faults` need. Set
+    /// at every start.
+    @ObservationIgnored var crashDumpRunBatchSize = 0
+    @ObservationIgnored var crashDumpRunProvenance: String?
+    /// Crash dumps written and the trainer step training stopped at for a
+    /// GPU fault, read by the results' `gpu_faults` provider at write time
+    /// (from whichever thread writes them), hence the lock.
+    @ObservationIgnored let gpuFaultRunRecord = SyncBox(GPUFaultRunRecord())
+    /// Whether this start already wrote its GPU-fault dump (one per start;
+    /// later reports of the same fault add nothing).
+    @ObservationIgnored var gpuFaultDumpWritten = false
+
+    /// Which in-memory weights a GPU fault may have damaged
+    /// (`GPUFaultTaint`); outlives Stop, cleared as the weights are replaced.
+    @ObservationIgnored var gpuFaultTaint: GPUFaultTaint?
+
     /// Handle to the Play-and-Train driver `Task`. Cancelled on Stop.
     var realTrainingTask: Task<Void, Never>?
 
@@ -1212,6 +1240,7 @@ final class SessionController {
                 // drawn under this init seed.
                 championOrigin = .built(initialization: ModelInitRecord(initSeed: initSeed, scheme: WeightInitScheme.current),
                                         naming: naming)
+                clearChampionGPUFaultTaint()
                 net.network.commandQueue.label = "champion (self-play)"
                 runner = ChessRunner(network: net)
                 let idStr = net.identifier?.description ?? "?"

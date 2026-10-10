@@ -62,6 +62,10 @@ For unattended runs, the plan recommends `1` for `non_finite`, `illegal_mass`, `
 
 A stop requested by a CLI run's final save changes neither the termination reason nor the exit status, because the run was already ending. In the GUI the stop decision uses the actions in force when each evaluation arrives, so a change on the Health tab applies at the next evaluation.
 
+### GPU faults are not health alarms
+
+A GPU fault (a failed GPU submission, or macOS reporting a GPU hang / discarded command buffer in the process) is handled outside these rules and always stops training, whatever the actions above: the weights may be wrong in ways no rule can see. There is **no save after it** (a health stop saves first, because its weights are finite). Corpus replay and train-vs-UCI write `results.json` with `termination_reason: "gpu_fault"` and `gpu_faults`, and **exit 36**; the GUI suspends training as a divergence (autosave skipped); GUI `--train` ends through `AutoTrainTermination` with `gpu_fault`. A crash dump is written in every case. Details: CLAUDE.md "GPU faults", `documentation/plans-active/GPU_FAULT_FORENSICS_PLAN.md`.
+
 ## Parameters (Health category, all live-tunable)
 
 | id | default | range |
