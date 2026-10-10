@@ -9,6 +9,14 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-10 02:52 — GPU fault forensics: checked GPU work, fault monitor, batch hashes, crash dumps `b1e7ef35`
+
+- Why: three GPU resets on 2026-10-09 (19:36, 21:37, 22:59, each early in an R-fixedlr arena) discarded command buffers in every training process and reached no session log; the garbage fed a NaN gradient (B-siluall halted) and 10M-norm gradients (clipped) into training.
+- Every GPU submission goes through `GPUSubmission` (first and last command buffer, completion handler); failures log `[GPU-ERR]`, slow buffers `[GPU-SLOW]`. `GPUFaultMonitor` adds macOS's own fault messages for the process (`[GPU-SYSLOG]`), since MPSGraph splits work across buffers the app can't reach.
+- A GPU fault stops training: corpus replay / train-vs-UCI exit 36 with no save after it and `gpu_fault` / `gpu_faults` in `results.json`; the GUI suspends and taints the suspect weights (continue, saves and promotions refused until replaced); GUI `--train` ends with `gpu_fault`; self-play abandons games; arenas are voided. A barrier runs before every save and promotion, and a NaN halt checks it first.
+- `[MEM]` (memory, swap, pressure, thermal); `[BATCH-HASH]` every 100 steps with `scripts/compare_batch_hashes.py`; crash dumps in `CrashDumps/` with `scripts/dcm_crash_dump.py`.
+- Plan, call audit, independent plan review and code review: `documentation/plans-active/GPU_FAULT_FORENSICS_*`, `GPU_CALL_AUDIT_2026-10-09.md`.
+
 ## 2026-10-09 17:38 — Lichess bot: profile link and copy button `53854b71`
 
 - The bot window's controls card shows the bot's Lichess profile address (`lichess.org/@/<account>`) beside the games-in-progress count: clicking it opens the page in the browser, and the button beside it copies the full link (a checkmark confirms for 1.5 s; `[BUTTON] Copy Lichess profile link` in the log). The account is the token's checked account, else the one the settings expect, as on the Account card.
