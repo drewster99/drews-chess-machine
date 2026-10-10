@@ -24,8 +24,12 @@ import os
 /// Consumers keep the `latestSequence` they last acted on and compare:
 /// a training loop stops on any new fault, an arena compares fault times
 /// with its own start and end.
+///
+/// The shared ledger also has `GPUFlightRecorder` log what was on the GPU
+/// around each fault it records (`[GPU-INFLIGHT]`): every fault passes
+/// through here, from either layer, with the time it happened.
 final class GPUFaultLedger: @unchecked Sendable {
-    static let shared = GPUFaultLedger()
+    static let shared = GPUFaultLedger(flightRecorder: .shared)
 
     enum Source: Sendable, Equatable {
         /// A checked submission failed; `detail` is its `[GPU-ERR]` account.
@@ -62,14 +66,23 @@ final class GPUFaultLedger: @unchecked Sendable {
     }
 
     private let state = OSAllocatedUnfairLock<State>(initialState: State())
+    /// Accounts for each recorded fault; nil for a test ledger.
+    private let flightRecorder: GPUFlightRecorder?
 
-    /// A ledger of its own, for tests; production code uses `shared`.
-    init() {}
+    /// A ledger of its own, for tests (no `[GPU-INFLIGHT]` accounts);
+    /// production code uses `shared`.
+    init() {
+        self.flightRecorder = nil
+    }
+
+    private init(flightRecorder: GPUFlightRecorder) {
+        self.flightRecorder = flightRecorder
+    }
 
     /// Records one fault and returns it with its sequence number.
     @discardableResult
     func record(_ source: Source, at time: Date = Date()) -> Fault {
-        state.withLock { state in
+        let fault = state.withLock { state in
             state.latestSequence += 1
             let fault = Fault(sequence: state.latestSequence, time: time, source: source)
             state.faults.append(fault)
@@ -78,6 +91,8 @@ final class GPUFaultLedger: @unchecked Sendable {
             }
             return fault
         }
+        flightRecorder?.logAccount(for: fault)
+        return fault
     }
 
     /// The sequence number of the newest fault recorded; 0 before any.

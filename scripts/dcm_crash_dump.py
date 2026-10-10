@@ -10,7 +10,8 @@ Usage:
 
 Prints: why and when, the step and its batch, the GPU faults the run saw, the
 non-finite tensors in the weights after the failure (when they were read),
-the recent gradient norms, and what else is in the folder.
+the recent gradient norms, the GPU submissions that failed or never finished
+(gpu-submissions.json), and what else is in the folder.
 """
 from __future__ import annotations
 
@@ -71,6 +72,18 @@ def main(argv: list[str]) -> int:
             print(f"weights after: not read — {handle.read().strip()}")
     else:
         print(f"weights after: {manifest['weights_after']}")
+    submissions_path = os.path.join(folder, "gpu-submissions.json")
+    if os.path.exists(submissions_path):
+        history = read_json(submissions_path)
+        records = history["submissions"]
+        unfinished = [record for record in records if record["finished_at"] is None]
+        failed = [record for record in records if record["outcome"].startswith("failed")]
+        print(f"GPU submissions: {len(records)} in the last {history['retention_seconds']:g} s, "
+              f"{len(failed)} failed, {len(unfinished)} never finished, "
+              f"{history['evicted_while_running']} dropped while running")
+        for record in (failed + unfinished)[:20]:
+            print(f"  seq={record['sequence']} {record['stage']} queue=\"{record['queue']}\" {record['work']} "
+                  f"started {record['started_at']} finished {record['finished_at']} {record['outcome'][:120]}")
     others = manifest.get("other_processes", [])
     print(f"other DrewsChessMachine processes: {len(others)}")
     for line in others:

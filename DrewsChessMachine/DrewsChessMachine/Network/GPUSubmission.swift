@@ -42,12 +42,21 @@ import os
 /// A failure logs one `[GPU-ERR]` line and throws
 /// `ChessNetworkError.gpuCommandFailed` naming the stage.
 ///
+/// Every submission names its network (the command queue's label), its
+/// stage and its size (`GPUWorkSize`), in its command buffer's label, its
+/// `[GPU-ERR]` / `[GPU-SLOW]` lines and `GPUFlightRecorder`, which keeps the
+/// last couple of minutes of submissions so a fault can be matched to the
+/// work on the GPU at the time.
+///
 /// Thread safety: one owner drives create → encode → commit → wait in order;
 /// the completion handler runs on a Metal thread and only writes
 /// `handlerOutcome` (lock-guarded) and signals `handlerFired`.
 final class GPUSubmission: @unchecked Sendable {
     /// What the work was, for logs and errors.
     let stage: GPUStage
+    /// The submitting network: its command queue's label.
+    let queueLabel: String
+    let work: GPUWorkSize
     /// The `MPSCommandBuffer` to encode into. After `commit()`, its
     /// `commandBuffer` is the last buffer of the submission.
     let commandBuffer: MPSCommandBuffer
@@ -59,6 +68,11 @@ final class GPUSubmission: @unchecked Sendable {
     private let handlerFired = DispatchSemaphore(value: 0)
     /// Guards the one-descriptor rule and the commit / wait order.
     private let lifecycle = OSAllocatedUnfairLock<Lifecycle>(initialState: Lifecycle())
+    /// This submission's `GPUFlightRecorder` sequence, set when its
+    /// descriptor is handed out (just before the encode); the completion
+    /// handler reads it.
+    private let flightSequence = OSAllocatedUnfairLock<UInt64?>(initialState: nil)
+    private let recorder: GPUFlightRecorder
 
     /// How long `verify` waits for the completion handler after the
     /// last buffer has completed. MPS calls it from the last buffer's
@@ -90,19 +104,24 @@ final class GPUSubmission: @unchecked Sendable {
     /// Creates the submission's first command buffer on `queue`, with
     /// encoder execution status reporting on (it covers this first buffer
     /// only: MPS-created continuation buffers don't inherit it).
-    init(queue: MTLCommandQueue, stage: GPUStage) throws {
+    init(queue: MTLCommandQueue, stage: GPUStage, work: GPUWorkSize, recorder: GPUFlightRecorder = .shared) throws {
+        let queueLabel = queue.label ?? "unlabeled queue"
+        let identity = Self.identity(queueLabel: queueLabel, work: work)
         let descriptor = MTLCommandBufferDescriptor()
         descriptor.errorOptions = .encoderExecutionStatus
         guard let buffer = queue.makeCommandBuffer(descriptor: descriptor) else {
             // No command buffer is a GPU failure like any other: logged,
             // recorded, and thrown as the one GPU-failure error.
             let detail = "the command queue returned no command buffer"
-            SessionLogger.shared.log("[GPU-ERR] stage=\(stage.rawValue) \(detail)")
+            SessionLogger.shared.log("[GPU-ERR] stage=\(stage.rawValue)\(identity) \(detail)")
             GPUFaultLedger.shared.record(.submission(stage: stage.rawValue, detail: detail))
             throw ChessNetworkError.gpuCommandFailed(stage: stage.rawValue, status: .notEnqueued, error: detail)
         }
-        buffer.label = stage.rawValue
+        buffer.label = "\(stage.rawValue) · \(queueLabel) · \(work.label)"
         self.stage = stage
+        self.queueLabel = queueLabel
+        self.work = work
+        self.recorder = recorder
         self.firstBuffer = buffer
         self.commandBuffer = MPSCommandBuffer(commandBuffer: buffer)
     }
@@ -112,8 +131,9 @@ final class GPUSubmission: @unchecked Sendable {
     var graphExecutionDescriptor: MPSGraphExecutionDescriptor {
         claimDescriptor()
         let descriptor = MPSGraphExecutionDescriptor()
-        descriptor.completionHandler = { [handlerOutcome, handlerFired] _, error in
-            Self.record(error, in: handlerOutcome, signalling: handlerFired)
+        descriptor.completionHandler = { [handlerOutcome, handlerFired, flightSequence, recorder] _, error in
+            Self.record(error, in: handlerOutcome, signalling: handlerFired,
+                        flightSequence: flightSequence, recorder: recorder)
         }
         return descriptor
     }
@@ -123,8 +143,9 @@ final class GPUSubmission: @unchecked Sendable {
     var executableExecutionDescriptor: MPSGraphExecutableExecutionDescriptor {
         claimDescriptor()
         let descriptor = MPSGraphExecutableExecutionDescriptor()
-        descriptor.completionHandler = { [handlerOutcome, handlerFired] _, error in
-            Self.record(error, in: handlerOutcome, signalling: handlerFired)
+        descriptor.completionHandler = { [handlerOutcome, handlerFired, flightSequence, recorder] _, error in
+            Self.record(error, in: handlerOutcome, signalling: handlerFired,
+                        flightSequence: flightSequence, recorder: recorder)
         }
         return descriptor
     }
@@ -187,13 +208,21 @@ final class GPUSubmission: @unchecked Sendable {
             firstBufferMilliseconds: Self.milliseconds(from: firstBuffer.gpuStartTime, to: firstBuffer.gpuEndTime),
             lastBufferMilliseconds: Self.milliseconds(from: lastBuffer.gpuStartTime, to: lastBuffer.gpuEndTime)
         )
+        let identity = Self.identity(queueLabel: queueLabel, work: work)
+        if let sequence = flightSequence.withLock({ $0 }) {
+            if let failure = report.failure {
+                recorder.finish(sequence, outcome: .failed(failure.detail), gpuMilliseconds: report.gpuMilliseconds)
+            } else {
+                recorder.finish(sequence, outcome: .completed, gpuMilliseconds: report.gpuMilliseconds)
+            }
+        }
         if let failure = report.failure {
-            SessionLogger.shared.log(report.logLine)
-            GPUFaultLedger.shared.record(.submission(stage: stage.rawValue, detail: failure.detail))
+            SessionLogger.shared.log(Self.inserting(identity, into: report.logLine, after: "stage=\(stage.rawValue)"))
+            GPUFaultLedger.shared.record(.submission(stage: stage.rawValue, detail: failure.detail + identity))
             throw ChessNetworkError.gpuCommandFailed(stage: stage.rawValue, status: failure.status, error: failure.detail)
         }
         if let slowLine = report.slowLine(thresholdMs: Self.slowBufferMs) {
-            SessionLogger.shared.log(slowLine)
+            SessionLogger.shared.log(Self.inserting(identity, into: slowLine, after: "stage=\(stage.rawValue)"))
         }
         return report.gpuMilliseconds ?? 0
     }
@@ -206,9 +235,10 @@ final class GPUSubmission: @unchecked Sendable {
         on queue: MTLCommandQueue,
         inputs: [MPSGraphTensorData],
         results: [MPSGraphTensorData]?,
-        stage: GPUStage
+        stage: GPUStage,
+        work: GPUWorkSize
     ) throws -> [MPSGraphTensorData] {
-        let submission = try GPUSubmission(queue: queue, stage: stage)
+        let submission = try GPUSubmission(queue: queue, stage: stage, work: work)
         let outputs = executable.encode(
             to: submission.commandBuffer,
             inputs: inputs,
@@ -230,9 +260,10 @@ final class GPUSubmission: @unchecked Sendable {
         feeds: [MPSGraphTensor: MPSGraphTensorData],
         targetTensors: [MPSGraphTensor],
         targetOperations: [MPSGraphOperation]?,
-        stage: GPUStage
+        stage: GPUStage,
+        work: GPUWorkSize
     ) throws -> [MPSGraphTensor: MPSGraphTensorData] {
-        let submission = try GPUSubmission(queue: queue, stage: stage)
+        let submission = try GPUSubmission(queue: queue, stage: stage, work: work)
         let outputs = graph.encode(
             to: submission.commandBuffer,
             feeds: feeds,
@@ -252,14 +283,39 @@ final class GPUSubmission: @unchecked Sendable {
             precondition(!state.descriptorHandedOut, "GPUSubmission(\(stage.rawValue)): one execution descriptor per submission")
             state.descriptorHandedOut = true
         }
+        let sequence = recorder.begin(stage: stage, queue: queueLabel, work: work)
+        flightSequence.withLock { $0 = sequence }
+    }
+
+    /// ` queue="…" n=…`, the part of a log line naming the network and size.
+    private static func identity(queueLabel: String, work: GPUWorkSize) -> String {
+        " queue=\"\(queueLabel)\" \(work.label)"
+    }
+
+    /// `line` with `identity` inserted right after `marker` (the stage).
+    private static func inserting(_ identity: String, into line: String, after marker: String) -> String {
+        guard let range = line.range(of: marker) else { return line + identity }
+        return line.replacingCharacters(in: range, with: marker + identity)
     }
 
     private static func record(
         _ error: Error?,
         in outcome: OSAllocatedUnfairLock<HandlerOutcome>,
-        signalling fired: DispatchSemaphore
+        signalling fired: DispatchSemaphore,
+        flightSequence: OSAllocatedUnfairLock<UInt64?>,
+        recorder: GPUFlightRecorder
     ) {
         let reported: HandlerOutcome = error.map { .failed(GPUErrorDescription($0)) } ?? .succeeded
+        // The finish time the flight recorder keeps is this one: when the
+        // work actually ended, not when the owner got round to `verify`.
+        if let sequence = flightSequence.withLock({ $0 }) {
+            switch reported {
+            case .failed(let description):
+                recorder.finish(sequence, outcome: .failed("handler error \(description)"))
+            case .succeeded, .pending:
+                recorder.finish(sequence, outcome: .completed)
+            }
+        }
         let first = outcome.withLock { state -> Bool in
             guard state == .pending else { return false }
             state = reported

@@ -1209,7 +1209,8 @@ final class ChessNetwork: @unchecked Sendable {
                 feeds: inferenceFeeds,
                 targetTensors: inferenceTargets,
                 targetOperations: nil,
-                stage: .singleInference
+                stage: .singleInference,
+                work: .positions(1)
             )
 
             guard let policyData = results[policyOutput] else {
@@ -1323,7 +1324,8 @@ final class ChessNetwork: @unchecked Sendable {
                     feeds: inferenceFeeds,
                     targetTensors: [valueProbs],
                     targetOperations: nil,
-                    stage: .valueDistribution
+                    stage: .valueDistribution,
+                    work: .positions(1)
                 )
                 guard let probsData = results[valueProbs] else {
                     throw ChessNetworkError.outputMissing("valueProbs")
@@ -1475,6 +1477,10 @@ final class ChessNetwork: @unchecked Sendable {
             // tensor→data dictionary the readback below expects. See
             // MPSGraphExecutableTrainingEquivalenceTests for the equivalence and
             // ordering proofs, and GPU_UTILIZATION_PLAN.md.
+            // Read before the lookup compiles it: the flight recorder marks a
+            // size's first run (`GPUWorkSize`).
+            let inferenceWork: GPUWorkSize = inferenceExecutables[count] == nil
+                ? .positionsOnNewlyCompiledShape(count) : .positions(count)
             let executable = inferenceExecutable(for: count, feeds: entry.feeds)
             guard let feedTensors = executable.feedTensors else {
                 throw ChessNetworkError.outputMissing("inference feed tensors")
@@ -1492,7 +1498,8 @@ final class ChessNetwork: @unchecked Sendable {
                 on: commandQueue,
                 inputs: inputs,
                 results: nil,
-                stage: .batchedInference
+                stage: .batchedInference,
+                work: inferenceWork
             )
             let results = Dictionary(uniqueKeysWithValues: zip(inferenceTargets, resultArray))
 
@@ -1684,6 +1691,8 @@ final class ChessNetwork: @unchecked Sendable {
             batchBoards.withUnsafeBufferPointer { buf in
                 Self.writeInferenceInput(buf, into: entry.ndArray)
             }
+            let baselineWork: GPUWorkSize = valueBaselineExecutables[count] == nil
+                ? .positionsOnNewlyCompiledShape(count) : .positions(count)
             let executable = valueBaselineExecutable(for: count, feeds: entry.feeds)
             guard let feedTensors = executable.feedTensors else {
                 throw ChessNetworkError.outputMissing("value-baseline feed tensors")
@@ -1708,7 +1717,7 @@ final class ChessNetwork: @unchecked Sendable {
             // wait is needed. Caller-owned result buffer (never `results: nil`)
             // per the proven concurrent-encode contract; `consume` only hands the
             // buffer reference onward (the data fills on the GPU, in order).
-            let submission = try GPUSubmission(queue: commandQueue, stage: .valueBaseline)
+            let submission = try GPUSubmission(queue: commandQueue, stage: .valueBaseline, work: baselineWork)
             _ = executable.encode(
                 to: submission.commandBuffer,
                 inputs: inputs,
@@ -1900,7 +1909,8 @@ final class ChessNetwork: @unchecked Sendable {
                 feeds: [inputPlaceholder: dummyInferenceInputTensorData],
                 targetTensors: allVars,
                 targetOperations: nil,
-                stage: .weightExport
+                stage: .weightExport,
+                work: .notPerPosition
             )
 
             var out: [[Float]] = []
@@ -1986,7 +1996,8 @@ final class ChessNetwork: @unchecked Sendable {
                 feeds: feeds,
                 targetTensors: [allVars[0]],
                 targetOperations: weightLoadAssignOps,
-                stage: .weightLoad
+                stage: .weightLoad,
+                work: .notPerPosition
             )
         }
         awaitingWeightLoad.value = false
@@ -2065,7 +2076,8 @@ final class ChessNetwork: @unchecked Sendable {
                 feeds: entry.feeds,
                 targetTensors: targets,
                 targetOperations: nil,
-                stage: .bnBatchStats
+                stage: .bnBatchStats,
+                work: .positions(count)
             )
             var means: [[Float]] = []
             var vars_: [[Float]] = []
@@ -2132,7 +2144,8 @@ final class ChessNetwork: @unchecked Sendable {
                 feeds: entry.feeds,
                 targetTensors: analysisTapReadbacks.map(\.tensor),
                 targetOperations: nil,
-                stage: .analysisTaps
+                stage: .analysisTaps,
+                work: .positions(count)
             )
             var out: [AnalysisTapValues] = []
             out.reserveCapacity(analysisTapReadbacks.count)
@@ -2233,7 +2246,8 @@ final class ChessNetwork: @unchecked Sendable {
                 feeds: feeds,
                 targetTensors: [bnRunningStatsVariables[0]],
                 targetOperations: assignOpsToRun,
-                stage: .bnRunningStatsLoad
+                stage: .bnRunningStatsLoad,
+                work: .notPerPosition
             )
         }
     }

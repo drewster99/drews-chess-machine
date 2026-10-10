@@ -472,5 +472,25 @@ Mine, under the owner's "make the best decision and note it" rule:
   arena (two concurrent `executable.run` per tick beside self-play, training
   and the baseline, audit §5). `[GPU-ERR]` / `[GPU-SLOW]` now name the stage
   of a reachable failed or slow buffer.
+  - macOS's three `gpuEvent` reports (moved to `DiagnosticReports/Retired/`)
+    all name R-fixedlr's process guilty (`Caused GPU Hang Error`,
+    "firmware-detected lockup", `restart_reason` 4, `guilty_dm` 3, signature
+    579); the other runs were innocent victims. The hangs came 11 s, 48 s and
+    6 s into an arena; arenas were 19.3% of that run's time (8.54 of 44.3 h,
+    320 arenas), so all three landing in one by chance is about 0.7%.
+  - Arena ticks split games between candidate and champion in sizes that
+    change every tick; batched inference compiles one executable per size on
+    its first use. Hypotheses: a shape-specific kernel that never finishes; a
+    cross-buffer wait that never completes under the two concurrent passes;
+    a memory-pressure stall (≈79 GB of footprints on 64 GB, swap nearly
+    full); a macOS beta driver bug.
+  - **Done (2026-10-10, owner request):** every submission names its network
+    (queue label), stage and size, with `new-shape` on a size's first run
+    (`GPUWorkSize`), in its command-buffer label and `[GPU-ERR]` /
+    `[GPU-SLOW]`; `GPUFlightRecorder` keeps 120 s of submissions and logs
+    `[GPU-INFLIGHT]` on each fault (what ran in the 2 s before it, a 10 s
+    per-network summary); crash dumps add `gpu-submissions.json`.
+  - Still open: arena soak, batch-size sweep, serialized vs concurrent arena
+    passes, padded batches — on an idle GPU.
 - Forced-fault experiment and performance measurement (A7), when the GPU is
   idle.

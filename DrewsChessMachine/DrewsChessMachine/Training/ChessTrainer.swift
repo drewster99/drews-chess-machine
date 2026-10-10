@@ -5884,7 +5884,8 @@ final class ChessTrainer: @unchecked Sendable {
                 feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                 targetTensors: velocityVariables,
                 targetOperations: nil,
-                stage: .velocityRead
+                stage: .velocityRead,
+                work: .notPerPosition
             )
             var out: [[Float]] = []
             out.reserveCapacity(velocityVariables.count)
@@ -5948,7 +5949,8 @@ final class ChessTrainer: @unchecked Sendable {
                             feeds: feeds,
                             targetTensors: [velocityVariables[0]],
                             targetOperations: velocityLoadAssignOps,
-                            stage: .velocityWrite
+                            stage: .velocityWrite,
+                            work: .notPerPosition
                         )
                         guard results[velocityVariables[0]] != nil else {
                             throw ChessTrainerError.velocityLoadGraphFailed(
@@ -5990,7 +5992,8 @@ final class ChessTrainer: @unchecked Sendable {
                 feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                 targetTensors: masterVariables,
                 targetOperations: nil,
-                stage: .masterRead
+                stage: .masterRead,
+                work: .notPerPosition
             )
             var out: [[Float]] = []
             out.reserveCapacity(masterVariables.count)
@@ -6043,7 +6046,8 @@ final class ChessTrainer: @unchecked Sendable {
                             feeds: feeds,
                             targetTensors: [masterVariables[0]],
                             targetOperations: masterLoadAssignOps,
-                            stage: .masterWrite
+                            stage: .masterWrite,
+                            work: .notPerPosition
                         )
                         guard results[masterVariables[0]] != nil else {
                             throw ChessTrainerError.velocityLoadGraphFailed(masterVariables[0].operation.name)
@@ -6129,7 +6133,8 @@ final class ChessTrainer: @unchecked Sendable {
                     feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                     targetTensors: [variable],
                     targetOperations: nil,
-                    stage: .trainableVelocityRead
+                    stage: .trainableVelocityRead,
+                    work: .notPerPosition
                 )
                 guard let data = results[variable] else {
                     throw ChessTrainerError.velocityReadbackMissing(variable.operation.name)
@@ -6176,7 +6181,8 @@ final class ChessTrainer: @unchecked Sendable {
             feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
             targetTensors: targets,
             targetOperations: nil,
-            stage: .layerHealthRead
+            stage: .layerHealthRead,
+            work: .notPerPosition
         )
         var tensors: [String: [Float]] = [:]
         tensors.reserveCapacity(names.count)
@@ -6211,7 +6217,8 @@ final class ChessTrainer: @unchecked Sendable {
                             feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                             targetTensors: [masterVariables[0]],
                             targetOperations: syncMastersOps,
-                            stage: .syncMastersFromWorking
+                            stage: .syncMastersFromWorking,
+                            work: .notPerPosition
                         )
                         guard results[masterVariables[0]] != nil else {
                             throw ChessTrainerError.velocityLoadGraphFailed("master_sync")
@@ -6240,7 +6247,8 @@ final class ChessTrainer: @unchecked Sendable {
                 feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                 targetTensors: [first],
                 targetOperations: syncMastersOps,
-                stage: .syncMastersFromWorking
+                stage: .syncMastersFromWorking,
+                work: .notPerPosition
             )
         }
     }
@@ -6318,7 +6326,8 @@ final class ChessTrainer: @unchecked Sendable {
                 ],
                 targetTensors: [stateVar],
                 targetOperations: [seedOp],
-                stage: .dropoutStateWrite
+                stage: .dropoutStateWrite,
+                work: .notPerPosition
             )
         }
     }
@@ -6338,7 +6347,8 @@ final class ChessTrainer: @unchecked Sendable {
                 feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
                 targetTensors: [stateVar],
                 targetOperations: nil,
-                stage: .dropoutStateRead
+                stage: .dropoutStateRead,
+                work: .notPerPosition
             )
         }
         guard let data = result[stateVar] else {
@@ -7205,7 +7215,7 @@ final class ChessTrainer: @unchecked Sendable {
         // MTLCommandBuffer and conforms to MTLCommandBuffer, so commit/wait work
         // on it directly. Equivalence to `run` is locked by
         // testExecutableEncodeToCommandBufferMatchesRun.
-        let stepSubmission = try GPUSubmission(queue: network.commandQueue, stage: .trainingStep)
+        let stepSubmission = try GPUSubmission(queue: network.commandQueue, stage: .trainingStep, work: .positions(batchSize))
         // Pipeline-feasibility probe: time the (async, CPU-only) encode call
         // separately from commit + GPU wait. encodeMs is pure CPU encode;
         // gpuWaitMs is commit + GPU execution + wait. Their ratio decides the
@@ -7268,7 +7278,7 @@ final class ChessTrainer: @unchecked Sendable {
             // working/master mismatch. Surface it loudly instead, mirroring the
             // main step's `.error` check above. encode+commit+wait is functionally
             // identical to `graph.run`.
-            let syncSubmission = try GPUSubmission(queue: network.commandQueue, stage: .workingWeightSync)
+            let syncSubmission = try GPUSubmission(queue: network.commandQueue, stage: .workingWeightSync, work: .notPerPosition)
             network.weightAccessLock.wait()
             _ = network.graph.encode(
                 to: syncSubmission.commandBuffer,
@@ -7523,7 +7533,7 @@ final class ChessTrainer: @unchecked Sendable {
                 // the variables an `exportWeights` probe could be writing.
                 // Wait inside the lock, verify after it (the lock section
                 // must not throw).
-                let klSubmission = try GPUSubmission(queue: network.commandQueue, stage: .klProbe)
+                let klSubmission = try GPUSubmission(queue: network.commandQueue, stage: .klProbe, work: .positions(batchSize))
                 network.weightAccessLock.wait()
                 let klResults = network.graph.encode(
                     to: klSubmission.commandBuffer,
@@ -7600,7 +7610,7 @@ final class ChessTrainer: @unchecked Sendable {
                 // that just ran had no board input — impossible if it got
                 // this far — so this is an ALARM, not a silent skip.
                 if let inputData = feeds[network.inputPlaceholder] {
-                    let advanceSubmission = try GPUSubmission(queue: network.commandQueue, stage: .dropoutAdvance)
+                    let advanceSubmission = try GPUSubmission(queue: network.commandQueue, stage: .dropoutAdvance, work: .positions(batchSize))
                     network.weightAccessLock.wait()
                     _ = network.graph.encode(
                         to: advanceSubmission.commandBuffer,

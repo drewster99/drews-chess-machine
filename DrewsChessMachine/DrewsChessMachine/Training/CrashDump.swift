@@ -62,7 +62,9 @@ struct CapturedTrainingBatch: Sendable {
 /// 1. the parts already in memory — `manifest.json`, `batch.safetensors`,
 ///    `log-tail.txt` (the session logger is flushed first),
 ///    `system-log.txt` (this process's system-log entries for the last two
-///    minutes) and copies of macOS's `gpuEvent` reports naming this app —
+///    minutes), `gpu-submissions.json` (`GPUFlightRecorder`'s history of
+///    this process's GPU submissions) and copies of macOS's `gpuEvent`
+///    reports naming this app —
 ///    are staged in `<name>.dcmcrash.tmp/` and published by an atomic rename.
 ///    `dump` reads the trainer state among them (the staged batch, the
 ///    gradient-norm history, the recent batch hashes) beforehand, on the
@@ -189,6 +191,8 @@ enum CrashDumpWriter {
         try FileSafety.writeNewFile(Data(sessionLogTail().utf8), at: stagingURL.appendingPathComponent("log-tail.txt"))
         try FileSafety.writeNewFile(Data(systemLogText(now: now).utf8),
                                     at: stagingURL.appendingPathComponent("system-log.txt"))
+        try FileSafety.writeNewFile(try gpuSubmissionsFile(GPUFlightRecorder.shared),
+                                    at: stagingURL.appendingPathComponent("gpu-submissions.json"))
         copyGPUEventReports(into: stagingURL, since: now.addingTimeInterval(-systemLogLookBackSeconds),
                             from: gpuEventReportFolders, processName: ProcessInfo.processInfo.processName)
         try FileSafety.renameWithoutReplacing(from: stagingURL, to: finalURL)
@@ -234,6 +238,27 @@ enum CrashDumpWriter {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(manifest)
+    }
+
+    /// `gpu-submissions.json`: the flight recorder's history (the last
+    /// couple of minutes of this process's GPU submissions, oldest first),
+    /// with how many records its capacity dropped while still running.
+    static func gpuSubmissionsFile(_ recorder: GPUFlightRecorder) throws -> Data {
+        struct File: Encodable {
+            let retentionSeconds: TimeInterval
+            let evictedWhileRunning: Int
+            let submissions: [GPUSubmissionRecord]
+            enum CodingKeys: String, CodingKey {
+                case retentionSeconds = "retention_seconds"
+                case evictedWhileRunning = "evicted_while_running"
+                case submissions
+            }
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(File(retentionSeconds: GPUFlightRecorder.retentionSeconds,
+                                       evictedWhileRunning: recorder.evictedWhileRunning,
+                                       submissions: recorder.snapshot()))
     }
 
     private static func batchFile(_ batch: CapturedTrainingBatch, context: CrashDumpContext) throws -> Data {

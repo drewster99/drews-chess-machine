@@ -52,7 +52,7 @@ struct DropoutPhiloxState: Sendable, Hashable, Codable {
         let state = graph.randomPhiloxStateTensor(withSeed: seed, name: "dropout_rng_seed")
         let results = try GPUSubmission.runGraph(
             graph, on: commandQueue, feeds: [:], targetTensors: [state], targetOperations: nil,
-            stage: .dropoutStateDerive)
+            stage: .dropoutStateDerive, work: .notPerPosition)
         guard let data = results[state] else {
             throw DropoutPhiloxStateError.missingResult
         }

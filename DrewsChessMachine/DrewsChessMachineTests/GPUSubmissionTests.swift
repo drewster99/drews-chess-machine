@@ -157,7 +157,8 @@ final class GPUSubmissionTests: XCTestCase {
             let feeds = [placeholder: Self.tensorData(input, shape: [64, 64], device: device)]
             let unchecked = graph.run(with: queue, feeds: feeds, targetTensors: [output], targetOperations: nil)
             let checked = try GPUSubmission.runGraph(
-                graph, on: queue, feeds: feeds, targetTensors: [output], targetOperations: nil, stage: .analysisTaps)
+                graph, on: queue, feeds: feeds, targetTensors: [output], targetOperations: nil, stage: .analysisTaps,
+                work: .notPerPosition)
             let expected = try XCTUnwrap(unchecked[output])
             let actual = try XCTUnwrap(checked[output])
             XCTAssertEqual(Self.floats(actual, count: 64 * 64).map(\.bitPattern),
@@ -177,7 +178,8 @@ final class GPUSubmissionTests: XCTestCase {
             let inputs = [Self.tensorData(input, shape: [64, 64], device: device)]
             let unchecked = executable.run(with: queue, inputs: inputs, results: nil, executionDescriptor: nil)
             let checked = try GPUSubmission.runExecutable(
-                executable, on: queue, inputs: inputs, results: nil, stage: .batchedInference)
+                executable, on: queue, inputs: inputs, results: nil, stage: .batchedInference,
+                work: .notPerPosition)
             XCTAssertEqual(checked.count, 1)
             XCTAssertEqual(Self.floats(checked[0], count: 64 * 64).map(\.bitPattern),
                            Self.floats(unchecked[0], count: 64 * 64).map(\.bitPattern), "depth \(depth)")
@@ -199,7 +201,8 @@ final class GPUSubmissionTests: XCTestCase {
             let expected = executable.run(with: queue, inputs: inputs, results: nil, executionDescriptor: nil)
             let owned = Self.tensorData([Float](repeating: 0, count: 64 * 64), shape: [64, 64], device: device)
             _ = try GPUSubmission.runExecutable(
-                executable, on: queue, inputs: inputs, results: [owned], stage: .valueBaseline)
+                executable, on: queue, inputs: inputs, results: [owned], stage: .valueBaseline,
+                work: .notPerPosition)
             XCTAssertEqual(Self.floats(owned, count: 64 * 64).map(\.bitPattern),
                            Self.floats(expected[0], count: 64 * 64).map(\.bitPattern), "depth \(depth)")
         }
@@ -216,9 +219,11 @@ final class GPUSubmissionTests: XCTestCase {
         let written = graph.constant(values.withUnsafeBufferPointer { Data(buffer: $0) }, shape: [4], dataType: .float32)
         let assign = graph.assign(variable, tensor: written, name: "assign_v")
         _ = try GPUSubmission.runGraph(
-            graph, on: queue, feeds: [:], targetTensors: [variable], targetOperations: [assign], stage: .weightLoad)
+            graph, on: queue, feeds: [:], targetTensors: [variable], targetOperations: [assign], stage: .weightLoad,
+            work: .notPerPosition)
         let read = try GPUSubmission.runGraph(
-            graph, on: queue, feeds: [:], targetTensors: [variable], targetOperations: nil, stage: .weightExport)
+            graph, on: queue, feeds: [:], targetTensors: [variable], targetOperations: nil, stage: .weightExport,
+            work: .notPerPosition)
         XCTAssertEqual(Self.floats(try XCTUnwrap(read[variable]), count: 4), values)
     }
 
@@ -226,7 +231,7 @@ final class GPUSubmissionTests: XCTestCase {
         let (device, queue) = try requireMetal()
         let before = GPUFaultLedger.shared.latestSequence
         let (graph, placeholder, output) = Self.chainGraph(depth: 400)
-        let submission = try GPUSubmission(queue: queue, stage: .analysisTaps)
+        let submission = try GPUSubmission(queue: queue, stage: .analysisTaps, work: .notPerPosition)
         _ = graph.encode(
             to: submission.commandBuffer,
             feeds: [placeholder: Self.tensorData([Float](repeating: 1, count: 64 * 64), shape: [64, 64], device: device)],
