@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-10 04:24 — GPU fault forensics: review fixes; replay supervisor (not adopted) `0a7fbbd4`
+
+- `GPUFaultMonitor` counts only faults from 60 s before a start on and never reads a long pause, so a GUI Stop → Start no longer stops the new run on a fault from between runs; a closing poll after Stop, and a stopped run's last-seconds fault taints its trainer.
+- Crash dumps bound the trainer-state reads (60 s, concurrently) so a stuck trainer queue can't block a halt or a `--train` exit.
+- `[MEM]` shows `footprint=n/a` on a failed read instead of 0 GB.
+- `scripts/replay_supervisor.py` (resume a corpus-replay run after a GPU-fault exit; moves suspect checkpoints aside, never deletes) is reviewed and committed but not wired to any run: `documentation/plans-active/REPLAY_SUPERVISOR_REVIEW_2026-10-10.md`.
+
 ## 2026-10-10 02:52 — GPU fault forensics: checked GPU work, fault monitor, batch hashes, crash dumps `b1e7ef35`
 
 - Why: three GPU resets on 2026-10-09 (19:36, 21:37, 22:59, each early in an R-fixedlr arena) discarded command buffers in every training process and reached no session log; the garbage fed a NaN gradient (B-siluall halted) and 10M-norm gradients (clipped) into training.
