@@ -299,8 +299,6 @@ Running training is never touched; new builds apply to new runs only.
 
 ## Owner decisions
 
-1. **Training-step GPU fault:** halt + dump, recover by exact resume — or
-   reload the last checkpoint in-process and continue. Open.
 2. **Self-play / arena inference fault:** re-run the tick (proposed) — or halt.
    Owner asked why it differs from training (answered in A4). Open.
 3. **Near-miss dump threshold:** pre-clip norm ≥ 1,000 × reference (proposed).
@@ -308,10 +306,22 @@ Running training is never touched; new builds apply to new runs only.
 
 Decided (owner, 2026-10-09):
 
+- **Training-step GPU fault: full abort** — crash dump, halt, recover by exact
+  resume from the last checkpoint.
+- **Audit scope: every GPU-touching call** — `MTLCreateSystemDefaultDevice`,
+  command-queue and command-buffer creation, every `MTLBuffer` / heap /
+  texture allocation, `MPSGraph` `run` / `runAsync` / `encode` / `compile`,
+  `MPSGraphExecutable` `run` / `encode`, `MPSGraphTensorData` / `MPSNDArray`
+  creation and reads/writes. Every one checks its failure (nil, status, error)
+  and logs it.
 - No per-step copy of the weights.
 - Batch content hashed only at step lines, checkpoints and crash dumps (B2).
 - GPU errors are logged (Part A).
 - Apple Intelligence turned off on the training Mac, to rule it out.
+  **Not possible from Settings on macOS 27.2 beta (26B5091g):** the Siri pane
+  has no Apple Intelligence switch; the only control is "Turn Off Siri", whose
+  dialog lists Siri, the Siri app, Visual Intelligence and HomePod, not the
+  on-device model. Left unchanged (2026-10-09 22:5x); owner to decide.
 
 ## Follow-up suspect: arena GPU work
 
