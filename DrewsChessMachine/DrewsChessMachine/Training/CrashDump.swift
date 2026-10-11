@@ -676,6 +676,9 @@ extension CrashDumpWriter {
     static let nearMissReferenceMultiple: Double = 1_000
     /// At most one near-miss dump per this many trainer steps.
     static let nearMissMinimumSpacingSteps = 1_000
+    /// The model ID a dump names when its trainer carries none (noted in
+    /// the manifest).
+    static let unidentifiedModelID = "unidentified"
 
     /// Whether a completed step is a near miss: its pre-clip gradient norm
     /// reached `nearMissReferenceMultiple` × the cap's reference median.
@@ -708,11 +711,23 @@ extension CrashDumpWriter {
             batch: { try await trainer.captureLastBatch() },
             gradientNorms: { try await trainer.exportGradNormHistory() },
             batchHashes: { await trainer.batchHashes.recentEntries() })
+        // The trainer's identity is the model ID its saves carry: the GUI
+        // stamps it at every start and promotion, the CLI runners at start
+        // (their run's minted ID). A trainer without one names the dump
+        // `unidentified` and says so in the notes, never a made-up ID.
+        var notes = state.notes
+        let modelID: String
+        if let identifier = trainer.identifier {
+            modelID = identifier.description
+        } else {
+            modelID = Self.unidentifiedModelID
+            notes.append("the trainer carried no model ID; the dump is named \"\(Self.unidentifiedModelID)\"")
+        }
         let context = CrashDumpContext(
             reason: reason,
             detail: detail,
             pathKind: pathKind,
-            modelID: trainer.identifier?.description ?? "no-model-id",
+            modelID: modelID,
             trainerStep: completed,
             batchTrainerStep: batchTrainerStep,
             learningRate: Double(trainer.effectiveLearningRate(forBatchSize: batchSize, completedSteps: completed)),
@@ -722,7 +737,7 @@ extension CrashDumpWriter {
             batchHashes: state.batchHashes,
             gradientNorms: state.gradientNorms,
             faults: faults,
-            notes: state.notes)
+            notes: notes)
         let weights: (@Sendable () async throws -> (weights: [[Float]], velocity: [[Float]]))?
         if reason == .nearMiss {
             weights = nil

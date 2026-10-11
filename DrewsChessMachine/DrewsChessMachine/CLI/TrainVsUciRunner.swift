@@ -443,6 +443,10 @@ enum TrainVsUciRunner {
             dropoutStream: runSeed.streams.generator(.dropout),
             hyperparameters: hp, arch: arch, initialization: trainerInitialization
         )
+        // The trainer's identity is the model ID this run's saves carry, as in
+        // the GUI: crash dumps and anything else that names the trainer read
+        // it from here (dumps were "no-model-id" until 2026-10-10).
+        trainer.identifier = ModelID(value: config.runModelID)
         emit(arch.policyTailLogLine)
         // Field for field with `[REPLAY-HPARAMS]` so the two CLI paths can be
         // diffed directly.

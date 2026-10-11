@@ -1626,6 +1626,10 @@ enum CorpusReplayRunner {
         let trainer = try ChessTrainer(
             dropoutStream: runSeed.streams.generator(.dropout),
             hyperparameters: hp, arch: arch, initialization: trainerInitialization)
+        // The trainer's identity is the model ID this run's saves carry, as in
+        // the GUI: crash dumps and anything else that names the trainer read
+        // it from here (dumps were "no-model-id" until 2026-10-10).
+        trainer.identifier = ModelID(value: config.runModelID)
         emit(arch.policyTailLogLine)
         // A requested GPU capture must be possible before any buffer fill or
         // training is spent on the run (the capture itself starts at its step).
