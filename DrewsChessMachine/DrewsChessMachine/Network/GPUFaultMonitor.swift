@@ -310,7 +310,14 @@ final class GPUFaultMonitor: @unchecked Sendable {
         guard let logSource, let readFrom, let countFrom else { return }
         let started = Date()
         do {
-            let entries = try logSource.faultEntries(from: readFrom.addingTimeInterval(-Self.readOverlapSeconds))
+            let queryFrom = readFrom.addingTimeInterval(-Self.readOverlapSeconds)
+            // This process's OSLogStore returns entries from before the
+            // position asked for (observed 2026-10-10: one 21:15 GPU reset
+            // came back at every poll, and once `seen` had forgotten it,
+            // was recorded again each time, 627 faults by 22:31). An entry
+            // older than the read point was handled by an earlier poll or
+            // predates the run's window, so it is never new.
+            let entries = try logSource.faultEntries(from: queryFrom).filter { $0.date >= queryFrom }
             var newest = readFrom
             for polled in Self.newFaultEntries(entries, countFrom: countFrom, seen: &seen) {
                 let entry = polled.entry
