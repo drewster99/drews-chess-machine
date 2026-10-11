@@ -62,10 +62,11 @@ final class LichessBotChatCommandsTests: XCTestCase {
         }
     }
 
-    func testAboutIsThreeMessagesEndingWithThisMachine() throws {
+    /// One message, not a burst (owner, 2026-10-10): three replies at once
+    /// read as spam in the opponent's chat.
+    func testAboutIsOneMessage() throws {
         let about = try LichessBotChatCommands.replies(to: .about, context: context())
-        XCTAssertEqual(about.count, 3)
-        XCTAssertEqual(about[2], "This machine: Apple M5 Max, 18-core CPU (6 super + 12 performance), 40-core GPU, 64 GB unified memory.")
+        XCTAssertEqual(about, ["Drew's Chess Machine by drewster99 (GitHub): a from-scratch neural net picks each move in one forward pass, no search. Swift + MPSGraph."])
     }
 
     func testNameIncludesStepAndTailWhenItFits() throws {

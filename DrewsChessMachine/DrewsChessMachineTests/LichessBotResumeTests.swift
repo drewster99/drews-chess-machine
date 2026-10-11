@@ -275,20 +275,25 @@ final class LichessBotResumeTests: XCTestCase {
     func testAResumedGameIsNotGreetedAgain() async throws {
         let installation = try makeInstallation { $0.chat.greetingEnabled = true }
         let lichess = LichessBotResumeFakeLichess()
+        // DCM plays black; white's first move is in, so DCM greets.
+        lichess.movesByGame.modify { $0["cbob"] = "e2e4" }
         let model = try await LichessBotFakeModelProvider.randomChampion()
         let first = try await launch(installation, lichess: lichess, modelProvider: model)
         try await startAndWait("bob", on: first, lichess: lichess, installation: installation)
         try await waitUntil("the greeting is sent") { lichess.postCount(containing: "/api/bot/game/cbob/chat") > 0 }
+        try await waitUntil("DCM plays its first move") { lichess.postCount(containing: "/api/bot/game/cbob/move/") > 0 }
         try await Task.sleep(for: .milliseconds(300))
         let greetingPosts = lichess.postCount(containing: "/api/bot/game/cbob/chat")
+        let ourMove = try postedMove(lichess, "cbob")
         await stop(first)
 
-        // White moved while the app was down: DCM resumes at ply 1, where a
-        // new game would still be greeted.
-        lichess.movesByGame.modify { $0["cbob"] = "e2e4" }
+        // DCM resumes at ply 2 (white to move), where a new game would
+        // still be greeted.
+        lichess.movesByGame.modify { $0["cbob"] = "e2e4 \(ourMove)" }
         let second = try await launch(installation, lichess: lichess, modelProvider: model)
         lichess.startGame(against: "bob")
-        try await waitUntil("DCM plays its move in the resumed game") { lichess.postCount(containing: "/api/bot/game/cbob/move/") > 0 }
+        try await waitUntil("cbob is listed again") { second.games.count == 1 }
+        try await waitUntil("cbob's game stream is open again") { lichess.gameStreamIsOpen("cbob") }
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(lichess.postCount(containing: "/api/bot/game/cbob/chat"), greetingPosts, "the opponent was greeted before the relaunch")
         XCTAssertEqual(second.games.count, 1)

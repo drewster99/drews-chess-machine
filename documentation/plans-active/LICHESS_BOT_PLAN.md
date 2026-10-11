@@ -1245,6 +1245,14 @@ Type !help for commands."). The goodbye defaults to off ("Thanks for the
 game, {opponent}!"). The room is selectable and defaults to the player
 room.
 
+The greeting waits for the opponent's first move (2026-10-10,
+`LichessBotGameSession.greetingTiming`): sent with DCM's own first move
+(game 9NZyGNwb, 0.36 s into the game), it reached Lichess and came back on
+the bot's stream but never showed on the human's game page, which was still
+loading. The opponent's move shows their page is live. An opponent who never
+moves is not greeted; a session that joins more than one ply after that move
+(a resumed game) doesn't greet.
+
 **12.5a Chat commands (added 2026-09-28; supersedes E53's "no chat commands").** Research: `documentation/research/lichess-bot/chat-commands.md`, verified in lila, lichess-bot and BotLi source.
 
 **Status: implemented 2026-09-28** (`LichessBotChatCommands`, `HardwareInfo`; tests in `LichessBotChatCommandsTests`).
@@ -1256,8 +1264,8 @@ room.
   - A line counts as a command when, after trimming, it starts with `!` followed by a known command word, matched case-insensitively as a *prefix*. So `!name2` or `!help please` still work: Lichess's duplicate filter blocks a human who repeats the exact same text, and lichess-bot's PR #967 does the same.
   - Lines from our own account are ignored, because our greeting mentions `!help`. So are lines from the system user `lichess`.
   - Anything else is displayed as before and never interpreted.
-- **Replies:** each is a single message, except `!about`, which sends three, each at most 140 UTF-16 code units (Lichess counts `String.length`).
-  - `!about` is three messages, not one message with newlines. lila keeps a single `\n` through cleanup, but how the chat renders it is unverified, and each message gets its own 140.
+- **Replies:** each is a single message of at most 140 UTF-16 code units (Lichess counts `String.length`).
+  - `!about` was three messages until 2026-10-10; the owner found the burst of three spammy, so it is one message now and the machine facts are left to `!cpu`, `!gpu` and `!ram`.
   - Replies are built by a pure function and checked against the limit. An optional tail, such as `!name`'s "no search" note, is appended only when it fits. A reply whose core doesn't fit is not sent, and an anomaly is logged.
   - Replies avoid emoji, chess symbols, anything link-like (including "github.com") and all-caps text. lila strips or lowercases those, or drops the message silently with a 200.
 - **Budget:** replies are requests through the one request gate, so an opponent must not be able to spend our budget.
@@ -1268,11 +1276,9 @@ room.
 - **Content:**
   - `!name`: `<our username> running DCM <modelID> step <n> (build <b>) · no search, one forward pass per move`. The step is omitted when the model has none.
   - `!motor`: `DCM <modelID> step <n>`.
-  - `!about`:
-    1. "Drew's Chess Machine is a from-scratch chess engine by drewster99 (GitHub). A neural net picks each move in one forward pass: no search."
-    2. "It learns from self-play and from replayed games. It's written in Swift and runs on Apple silicon, on the GPU through Metal's MPSGraph."
-    3. "This machine: <cpu>, <cores>-core CPU (<per-level counts>), <gpu cores>-core GPU, <memory> GB unified memory."
-  - `!cpu`, `!gpu` and `!ram` are the corresponding pieces of message 3.
+  - `!about`: "Drew's Chess Machine by drewster99 (GitHub): a from-scratch neural net picks each move in one forward pass, no search. Swift + MPSGraph."
+    - Before 2026-10-10 it was three messages: that one's longer form, "It learns from self-play and from replayed games. It's written in Swift and runs on Apple silicon, on the GPU through Metal's MPSGraph.", and "This machine: <cpu>, <cores>-core CPU (<per-level counts>), <gpu cores>-core GPU, <memory> GB unified memory."
+  - `!cpu`: "<cpu> · <cores>-core CPU (<per-level counts>)"; `!gpu`: "<gpu model> · <gpu cores>-core GPU"; `!ram`: "<memory> GB unified memory".
   - `!help`: "Commands: !name, !about, !motor, !cpu, !gpu, !ram. I answer in the chat you ask in."
 - **Hardware facts** are read once at launch (`HardwareInfo`), never per command:
   - the CPU brand (`machdep.cpu.brand_string`)

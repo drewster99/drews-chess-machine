@@ -613,11 +613,38 @@ actor LichessBotGameSession {
         }
 
         if !greeted {
-            greeted = true
-            if tracker.ply <= 1 {
+            switch Self.greetingTiming(ply: tracker.ply, weArePlayingWhite: ourPieceColor == .white) {
+            case .wait:
+                break
+            case .send:
+                greeted = true
                 await sendChat(settings.chat.greetingEnabled ? settings.chat.greetingTemplate : nil, origin: .greeting, settings: settings)
+            case .tooLate:
+                greeted = true
             }
         }
+    }
+
+    enum GreetingTiming: Equatable {
+        /// The opponent hasn't moved yet.
+        case wait
+        /// The opponent's first move is in: greet now.
+        case send
+        /// Joined later than that (a resumed game): don't greet.
+        case tooLate
+    }
+
+    /// When to greet, by the game's ply count: once the opponent has made
+    /// their first move. Sent with DCM's own first move (game 9NZyGNwb,
+    /// 2026-10-10: 0.36 s into the game), the greeting reached Lichess but
+    /// not the human's game page, which was still loading and joined the
+    /// game's live chat after the line went out. The opponent's move shows
+    /// their page is connected. One ply of slack covers a session whose
+    /// first state already holds DCM's reply.
+    static func greetingTiming(ply: Int, weArePlayingWhite: Bool) -> GreetingTiming {
+        let opponentHasMovedAt = weArePlayingWhite ? 2 : 1
+        if ply < opponentHasMovedAt { return .wait }
+        return ply <= opponentHasMovedAt + 1 ? .send : .tooLate
     }
 
     // MARK: - Moving

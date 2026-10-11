@@ -64,11 +64,9 @@ enum LichessBotChatCommands {
         case .motor:
             return [try fitted(command, engineName(context))]
         case .about:
-            return [
-                try fitted(command, "Drew's Chess Machine is a from-scratch chess engine by drewster99 (GitHub). A neural net picks each move in one forward pass: no search."),
-                try fitted(command, "It learns from self-play and from replayed games. It's written in Swift and runs on Apple silicon, on the GPU through Metal's MPSGraph."),
-                try fitted(command, "This machine: \(cpuBrand(context.hardware)), \(cpuCoresSummary(context.hardware)), \(gpuCoresSummary(context.hardware)), \(memorySummary(context.hardware)).")
-            ]
+            // One message: a burst of several reads as spam (owner,
+            // 2026-10-10). The machine itself is !cpu, !gpu and !ram.
+            return [try fitted(command, "Drew's Chess Machine by drewster99 (GitHub): a from-scratch neural net picks each move in one forward pass, no search. Swift + MPSGraph.")]
         case .cpu:
             return [try fitted(command, "\(cpuBrand(context.hardware)) · \(cpuCoresSummary(context.hardware))")]
         case .gpu:

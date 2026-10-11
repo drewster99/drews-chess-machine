@@ -602,6 +602,77 @@ final class LichessBotGameSessionTests: XCTestCase {
         XCTAssertEqual(h.observer.anomalies, [])
     }
 
+    /// The greeting waits for the opponent's first move (game 9NZyGNwb,
+    /// 2026-10-10): sent with DCM's first move, 0.36 s into the game, it
+    /// reached Lichess but not the human's game page, which was still
+    /// loading. The opponent's move shows their page is live.
+    func testTheGreetingWaitsForTheOpponentsFirstMove() async throws {
+        let server = try LichessBotFakeGameServer()
+        await server.setScript(afterOurMoves: [.opponentReplies, .finish(status: "resign", winner: "white")])
+        let h = makeHarness(server: server)
+        await runToEnd(h)
+        let record = await server.record()
+        XCTAssertEqual(record.acceptedPlies, [0, 2])
+        XCTAssertEqual(record.chats.count, 1)
+        // The fake server answers inside DCM's move request, so its own move
+        // count can't tell; what the session had read when it greeted can.
+        let events = h.observer.events.value
+        let greetingIndex = try XCTUnwrap(events.firstIndex { event in
+            if case .chatSent(_, _, .greeting) = event { return true }
+            return false
+        })
+        let readBeforeGreeting = events[..<greetingIndex].compactMap { event -> String? in
+            if case .streamLine(let data, _) = event { return String(decoding: data, as: UTF8.self) }
+            return nil
+        }
+        XCTAssertTrue(readBeforeGreeting.contains { Self.moveCount(inStateLine: $0) >= 2 },
+                      "greeted before the opponent's first move was read: \(readBeforeGreeting)")
+    }
+
+    /// The number of moves in a streamed `gameState` / `gameFull` line.
+    private static func moveCount(inStateLine line: String) -> Int {
+        guard let range = line.range(of: #""moves":""#) else { return 0 }
+        let rest = line[range.upperBound...]
+        guard let end = rest.firstIndex(of: "\"") else { return 0 }
+        return rest[..<end].split(separator: " ").count
+    }
+
+    func testGreetingTimingByPly() {
+        // DCM white: the opponent's first move makes ply 2.
+        XCTAssertEqual(LichessBotGameSession.greetingTiming(ply: 0, weArePlayingWhite: true), .wait)
+        XCTAssertEqual(LichessBotGameSession.greetingTiming(ply: 1, weArePlayingWhite: true), .wait)
+        XCTAssertEqual(LichessBotGameSession.greetingTiming(ply: 2, weArePlayingWhite: true), .send)
+        XCTAssertEqual(LichessBotGameSession.greetingTiming(ply: 3, weArePlayingWhite: true), .send)
+        XCTAssertEqual(LichessBotGameSession.greetingTiming(ply: 4, weArePlayingWhite: true), .tooLate)
+        // DCM black: the opponent's first move is ply 1.
+        XCTAssertEqual(LichessBotGameSession.greetingTiming(ply: 0, weArePlayingWhite: false), .wait)
+        XCTAssertEqual(LichessBotGameSession.greetingTiming(ply: 1, weArePlayingWhite: false), .send)
+        XCTAssertEqual(LichessBotGameSession.greetingTiming(ply: 2, weArePlayingWhite: false), .send)
+        XCTAssertEqual(LichessBotGameSession.greetingTiming(ply: 3, weArePlayingWhite: false), .tooLate)
+    }
+
+    /// An opponent who never moves is never greeted.
+    func testAnOpponentWhoNeverMovesIsNotGreeted() async throws {
+        let server = try LichessBotFakeGameServer()
+        await server.setScript(afterOurMoves: [.finish(status: "aborted", winner: nil)])
+        let h = makeHarness(server: server)
+        await runToEnd(h)
+        let record = await server.record()
+        XCTAssertEqual(record.acceptedPlies, [0])
+        XCTAssertEqual(record.chats, [], "no greeting before the opponent's first move")
+    }
+
+    /// Playing black, the opponent's first move is already in when DCM
+    /// first gets to move, so the greeting goes out then.
+    func testPlayingBlackTheGreetingFollowsTheOpponentsFirstMove() async throws {
+        let server = try LichessBotFakeGameServer(botIsWhite: false, initialTokens: ["a2a3"])
+        await server.setScript(afterOurMoves: [.finish(status: "resign", winner: "black")])
+        let h = makeHarness(server: server)
+        await runToEnd(h)
+        let record = await server.record()
+        XCTAssertEqual(record.chats.count, 1)
+    }
+
     func testPlaysBlack() async throws {
         let server = try LichessBotFakeGameServer(botIsWhite: false, initialTokens: ["a2a3"])
         await server.setScript(afterOurMoves: [.opponentReplies, .finish(status: "mate", winner: "black")])
@@ -640,13 +711,18 @@ final class LichessBotGameSessionTests: XCTestCase {
     /// stream for a fresh `gameFull` instead of resending (plan §5.5, E21).
     func testRejectedMoveResyncsThenPlays() async throws {
         let server = try LichessBotFakeGameServer()
-        await server.setScript(moveOutcomes: [.rejected(status: 400)], afterOurMoves: [.finish(status: "resign", winner: "white")])
+        // The rejection comes after the greeting (sent once the opponent has
+        // moved), so the resync's fresh `gameFull` must not greet again.
+        await server.setScript(
+            moveOutcomes: [.accept, .accept, .rejected(status: 400)],
+            afterOurMoves: [.opponentReplies, .opponentReplies, .finish(status: "resign", winner: "white")]
+        )
         let h = makeHarness(server: server)
         await runToEnd(h)
         let record = await server.record()
         XCTAssertEqual(record.streamOpens, 2)
-        XCTAssertEqual(record.moveAttempts, 2)
-        XCTAssertEqual(record.acceptedPlies, [0])
+        XCTAssertEqual(record.moveAttempts, 4)
+        XCTAssertEqual(record.acceptedPlies, [0, 2, 4])
         XCTAssertEqual(h.observer.rejections.count, 1)
         XCTAssertEqual(record.chats.count, 1, "the greeting is not repeated on a resync")
     }
