@@ -217,12 +217,16 @@ final class GPUSubmission: @unchecked Sendable {
             }
         }
         if let failure = report.failure {
+            GPUFaultMonitor.shared.requestPoll(reason: "a checked submission failed (\(stage.rawValue))")
             SessionLogger.shared.log(Self.inserting(identity, into: report.logLine, after: "stage=\(stage.rawValue)"))
             GPUFaultLedger.shared.record(.submission(stage: stage.rawValue, detail: failure.detail + identity))
             throw ChessNetworkError.gpuCommandFailed(stage: stage.rawValue, status: failure.status, error: failure.detail)
         }
         if let slowLine = report.slowLine(thresholdMs: Self.slowBufferMs) {
             SessionLogger.shared.log(Self.inserting(identity, into: slowLine, after: "stage=\(stage.rawValue)"))
+            // A buffer this slow is how a hang starts; macOS's report of a
+            // reset may follow within seconds.
+            GPUFaultMonitor.shared.requestPoll(reason: "a \(stage.rawValue) buffer ran \(Int(Self.slowBufferMs / 1000)) s or more")
         }
         return report.gpuMilliseconds ?? 0
     }

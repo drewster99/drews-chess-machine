@@ -233,6 +233,35 @@ final class GPUFaultMonitorTests: XCTestCase {
                        "an entry from before the requested date was returned")
     }
 
+    /// `requestPoll` reads the log at once, without waiting for the
+    /// two-minute timer: the signs of an unseen reset ask for it.
+    func testARequestedPollRecordsAFaultWithoutWaitingForTheTimer() async throws {
+        let ledger = GPUFaultLedger()
+        let log = ScriptedFaultLog()
+        let monitor = Self.makeMonitor(ledger: ledger, log: log)
+        defer { monitor.pause() }
+
+        monitor.start(lookBack: 60)
+        await monitor.checkNow()
+        log.add(Self.incidentMessages[0], at: Date())
+        monitor.requestPoll(reason: "test")
+        for _ in 0..<200 where ledger.latestSequence == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(ledger.latestSequence, 1)
+    }
+
+    /// A requested poll does nothing while the monitor isn't polling.
+    func testARequestedPollWhilePausedReadsNothing() async throws {
+        let ledger = GPUFaultLedger()
+        let log = ScriptedFaultLog()
+        let monitor = Self.makeMonitor(ledger: ledger, log: log)
+        log.add(Self.incidentMessages[0], at: Date())
+        monitor.requestPoll(reason: "test")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(ledger.latestSequence, 0)
+    }
+
     /// An entry recorded by one run and returned again by the next run's
     /// overlapping read is not recorded twice.
     func testAnEntryReadAgainAfterAResumeIsNotRecordedTwice() async {

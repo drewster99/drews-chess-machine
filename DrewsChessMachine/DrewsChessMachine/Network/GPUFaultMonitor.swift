@@ -21,11 +21,13 @@ import os
 ///
 /// The monitor polls `OSLogStore(scope: .currentProcessIdentifier)` — this
 /// process's own entries, readable without an entitlement — every
-/// `pollIntervalSeconds` on a utility queue. A query takes about two seconds on a
-/// busy machine (measured beside three training processes), so it is never
-/// run on a training thread; `checkNow()` runs one on the monitor's queue and
-/// is awaited only before actions that make state durable (saves,
-/// promotions), where two seconds don't matter.
+/// `pollIntervalSeconds` on a utility queue, and at once when `requestPoll`
+/// is called (a failed or very slow checked submission, a near-miss
+/// gradient). This process's store ignores the start position it is given,
+/// so every query scans the process's whole log: seconds, growing with the
+/// process's age and how much it logs. It is never run on a training thread;
+/// `checkNow()` runs one on the monitor's queue and is awaited only before
+/// actions that make state durable (saves, promotions).
 ///
 /// Only messages naming a command-buffer callback error count
 /// (`isFaultMessage`); each new one is logged once as `[GPU-SYSLOG]` and
@@ -51,8 +53,19 @@ import os
 final class GPUFaultMonitor: @unchecked Sendable {
     static let shared = GPUFaultMonitor(ledger: .shared)
 
-    /// How often the background poll reads the log, in seconds.
-    static let pollIntervalSeconds = 10
+    /// How often the background poll reads the log, in seconds. Two
+    /// minutes, not seconds: every save and promotion already polls first
+    /// (`checkNow`), and the signs of an unseen reset (a failed or very
+    /// slow checked submission, a near-miss gradient) ask for a poll at
+    /// once (`requestPoll`). Steps trained after a fault are discarded
+    /// either way (runs resume from the last save before it), so a shorter
+    /// interval only stops a doomed run sooner, and each query scans this
+    /// process's whole log (`ProcessLogStoreFaultSource`), seconds of work.
+    static let pollIntervalSeconds = 120
+
+    /// How long after a pause its closing poll runs: soon, so a fault from
+    /// the run's last seconds is attributed to it before the next start.
+    static let closingPollDelayDefaultSeconds: TimeInterval = 10
 
     /// How far each poll re-reads before the previous one's end: an entry
     /// logged just before a query ran may not have been visible to it.
@@ -158,6 +171,8 @@ final class GPUFaultMonitor: @unchecked Sendable {
     /// Every poll and all mutable state below run on this queue.
     private let queue = DispatchQueue(label: "drewschessmachine.gpu-fault-monitor", qos: .utility)
     private let availabilityBox = SyncBox<Availability>(.notStarted)
+    /// A `requestPoll` is queued and hasn't run yet.
+    private let pollRequested = SyncBox(false)
     /// Poll durations since the last `takePollDurations()`, for the `[MEM]`
     /// line (so the monitor's own cost is visible in a long-lived process).
     private let pollDurationsMs = SyncBox<[Double]>([])
@@ -181,11 +196,11 @@ final class GPUFaultMonitor: @unchecked Sendable {
     private var startPauseGeneration = 0
 
     /// `openLogSource` and `closingPollDelaySeconds` are for tests; production
-    /// reads this process's `OSLogStore` and closes one poll interval after
-    /// a pause.
+    /// reads this process's `OSLogStore` and closes
+    /// `closingPollDelayDefaultSeconds` after a pause.
     init(ledger: GPUFaultLedger,
          openLogSource: @escaping @Sendable () throws -> any GPUFaultLogSource = { try ProcessLogStoreFaultSource() },
-         closingPollDelaySeconds: TimeInterval = TimeInterval(GPUFaultMonitor.pollIntervalSeconds)) {
+         closingPollDelaySeconds: TimeInterval = GPUFaultMonitor.closingPollDelayDefaultSeconds) {
         self.ledger = ledger
         self.openLogSource = openLogSource
         self.closingPollDelaySeconds = closingPollDelaySeconds
@@ -236,6 +251,25 @@ final class GPUFaultMonitor: @unchecked Sendable {
                 self.pollOnQueue()
                 continuation.resume()
             }
+        }
+    }
+
+    /// Asks for a poll now, on the monitor's queue, without waiting for it:
+    /// something looked like an unseen GPU reset (`reason` is logged). Does
+    /// nothing while the monitor isn't polling; requests that arrive while
+    /// one is already queued are folded into it.
+    func requestPoll(reason: String) {
+        let alreadyQueued = pollRequested.mutate { queued -> Bool in
+            defer { queued = true }
+            return queued
+        }
+        guard !alreadyQueued else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pollRequested.value = false
+            guard self.timer != nil else { return }
+            SessionLogger.shared.log("[GPU-SYSLOG] poll requested: \(reason)")
+            self.pollOnQueue()
         }
     }
 
@@ -385,7 +419,11 @@ struct ProcessLogStoreFaultSource: GPUFaultLogSource {
 
     func faultEntries(from date: Date) throws -> [GPUFaultMonitor.LogEntry] {
         let position = store.position(date: date)
-        let predicate = NSPredicate(format: "composedMessage CONTAINS %@", GPUFaultMonitor.faultMarker)
+        // The date is in the predicate as well as the position: this
+        // process's store ignores the position (measured 2026-10-11) and
+        // would return every fault since launch.
+        let predicate = NSPredicate(format: "date >= %@ AND composedMessage CONTAINS %@",
+                                    date as NSDate, GPUFaultMonitor.faultMarker)
         var found: [GPUFaultMonitor.LogEntry] = []
         for case let entry as OSLogEntryLog in try store.getEntries(at: position, matching: predicate) {
             found.append(GPUFaultMonitor.LogEntry(date: entry.date, message: entry.composedMessage))

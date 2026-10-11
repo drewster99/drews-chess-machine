@@ -85,9 +85,13 @@ extension SessionController {
         // UI stall to a specific block of this tick. Cheap enough to
         // leave on at the heartbeat cadence — `os_log` is hundreds of
         // nanoseconds per emit, negligible against the work the tick
-        // body itself does.
+        // body itself does. Debug level: macOS keeps it in memory for a
+        // live `log stream --level debug` and never writes it to the log
+        // store. At the default level its ~300 lines a minute filled this
+        // process's store, which the GPU fault monitor scans in full on
+        // every poll (12 s per poll after 14 h, 2026-10-11).
         func elap(_ s: String) {
-            logger.log(">> \(s): \(Date().timeIntervalSince(start))")
+            logger.debug(">> \(s): \(Date().timeIntervalSince(start))")
         }
         let start = Date()
         _ = start

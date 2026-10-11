@@ -193,7 +193,13 @@ three trainers — to be re-measured in a long-lived GUI process, M2).
 
 - One monitor per process, started by every training path (GUI Play-and-Train
   and `--train`, corpus replay, train-vs-UCI); polls every 10 s on a utility
-  queue.
+  queue. **Changed 2026-10-11:** every 2 min, plus an immediate poll on a
+  failed or ≥5 s checked submission or a near-miss gradient
+  (`requestPoll`). The process-scoped store ignores the query's start
+  position, so each poll scanned the whole process log and slowed with
+  uptime (R-fixedlr: ~7 s per poll after 8 h, ~12 s after 14 h, mostly the
+  heartbeat's own ~300 trace lines a minute, now at debug level and never
+  stored); the date is now in the predicate too.
 - **Allowlist filter:** an entry counts only when its text contains
   `kIOGPUCommandBufferCallbackError` (the three incidents' messages: `…Hang`
   `00000003`, `…InnocentVictim` `00000005`); the incidents' captured lines are

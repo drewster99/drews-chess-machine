@@ -706,6 +706,12 @@ extension CrashDumpWriter {
         runProvenance: String?,
         faults: [GPUFaultLedger.Fault]
     ) async -> URL? {
+        if reason == .nearMiss {
+            // A gradient this far off its reference is what a reset's
+            // discarded buffers produce (2026-10-10: 4.6M and 1,750 against
+            // ~0.2); look for macOS's report now, not at the next poll.
+            GPUFaultMonitor.shared.requestPoll(reason: "a near-miss gradient (\(detail))")
+        }
         let completed = trainer.completedTrainSteps
         let state = await readTrainerState(
             batch: { try await trainer.captureLastBatch() },
