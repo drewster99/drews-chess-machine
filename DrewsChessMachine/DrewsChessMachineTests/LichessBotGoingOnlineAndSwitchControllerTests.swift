@@ -58,6 +58,7 @@ final class LichessBotGoingOnlineAndSwitchControllerTests: XCTestCase {
         let lichess = LichessBotModelFirstFakeLichess(snapshotCount: snapshotCount)
         let token = LichessBotResumeFakeLichess.token
         var services = LichessBotControllerServices(
+            openBotWindow: { _ in },
             makeTransport: { lichess },
             readToken: { _ in token }
         )

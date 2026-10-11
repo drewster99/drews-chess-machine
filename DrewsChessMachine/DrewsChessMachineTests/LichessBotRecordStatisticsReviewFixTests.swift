@@ -128,7 +128,7 @@ final class LichessBotRecordStatisticsReviewFixTests: XCTestCase {
             modelProvider: LichessBotFakeModelProvider(snapshot: nil),
             defaults: defaults,
             dataDirectory: LichessBotDataDirectory(root: root),
-            services: LichessBotControllerServices(makeTransport: { LichessBotFakeLichess() }, readToken: { _ in nil })
+            services: LichessBotControllerServices(openBotWindow: { _ in }, makeTransport: { LichessBotFakeLichess() }, readToken: { _ in nil })
         )
         addTeardownBlock { @MainActor in
             await controller.shutdown(reason: "test teardown")

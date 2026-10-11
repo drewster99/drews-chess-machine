@@ -58,7 +58,7 @@ final class LichessBotChallengeLogControllerTests: XCTestCase {
             modelProvider: try await LichessBotFakeModelProvider.randomChampion(),
             defaults: defaults,
             dataDirectory: LichessBotDataDirectory(root: root),
-            services: LichessBotControllerServices(makeTransport: { lichess }, readToken: { _ in token })
+            services: LichessBotControllerServices(openBotWindow: { _ in }, makeTransport: { lichess }, readToken: { _ in token })
         )
         addTeardownBlock { @MainActor in
             controller.abandonAndStop()

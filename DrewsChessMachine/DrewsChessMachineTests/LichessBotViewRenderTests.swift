@@ -80,6 +80,7 @@ final class LichessBotViewRenderTests: XCTestCase {
             defaults: defaults,
             dataDirectory: LichessBotDataDirectory(root: root),
             services: LichessBotControllerServices(
+                openBotWindow: { _ in },
                 makeTransport: { LichessBotFakeLichess() },
                 readToken: { _ in nil }
             )

@@ -32,6 +32,15 @@ struct LichessBotControllerFeed: LichessBotGameObserver {
 /// so a whole runtime — and a quit — runs without the network, the Keychain
 /// or terminating the test host.
 struct LichessBotControllerServices: Sendable {
+    /// Brings up the Lichess Bot window when the controller needs the
+    /// operator to see it: going offline or quitting with games in play
+    /// (the "Finishing games" state lives in that window). The app opens
+    /// the real window; a test passes its own, so no test puts a
+    /// live-looking bot window on screen (one did on 2026-10-10 and was
+    /// mistaken for the running bot). Required, so a new test can't forget
+    /// it. The menu command and the status chip open the window directly:
+    /// those are the operator's own clicks.
+    let openBotWindow: @MainActor @Sendable (_ controller: LichessBotController) -> Void
     let makeTransport: @Sendable () -> any LichessBotTransport
     /// The stored token for a Lichess account id, or nil if none is stored.
     /// Called on the file queue (Keychain calls block).
@@ -57,6 +66,7 @@ struct LichessBotControllerServices: Sendable {
     var goingOnlineStepBegan: @MainActor @Sendable (_ step: LichessBotGoingOnlineStep) async -> Void = { _ in }
 
     static let live = LichessBotControllerServices(
+        openBotWindow: { controller in LichessBotWindowLauncher.openWindow(controller: controller) },
         makeTransport: { LichessBotURLSessionTransport() },
         readToken: { accountID in try LichessBotTokenStore().read(account: accountID) }
     )
@@ -1230,7 +1240,7 @@ final class LichessBotController {
         if hasGamesInPlay || !gamesAwaitingPostGameChat.isEmpty {
             if hasGamesInPlay {
                 finishing = .goOffline
-                LichessBotWindowLauncher.openWindow(controller: self)
+                services.openBotWindow(self)
             }
             // Draining stops new games and leaves Online, so a challenge
             // still being sent withdraws itself. Finished games still waiting
@@ -1327,7 +1337,7 @@ final class LichessBotController {
         finishing = .quit
         // The "Finishing games" sheet lives in the bot window: bring it up,
         // or quitting would seem to do nothing.
-        LichessBotWindowLauncher.openWindow(controller: self)
+        services.openBotWindow(self)
         let manager = runtime.manager
         Task {
             await drain()

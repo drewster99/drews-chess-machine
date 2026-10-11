@@ -47,6 +47,7 @@ final class LichessBotPostGameChatFilingTests: XCTestCase {
             defaults: defaults,
             dataDirectory: LichessBotDataDirectory(root: root),
             services: LichessBotControllerServices(
+                openBotWindow: { _ in },
                 makeTransport: { lichess },
                 readToken: { _ in token }
             ),

@@ -71,6 +71,7 @@ final class LichessBotOnlineBotsRaceTests: XCTestCase {
             defaults: defaults,
             dataDirectory: LichessBotDataDirectory(root: root),
             services: LichessBotControllerServices(
+                openBotWindow: { _ in },
                 makeTransport: { held },
                 readToken: { _ in token }
             )

@@ -96,6 +96,7 @@ final class LichessBotGoOnlineModelFirstTests: XCTestCase {
     ) -> LichessBotController {
         let token = LichessBotResumeFakeLichess.token
         var services = LichessBotControllerServices(
+            openBotWindow: { _ in },
             makeTransport: { transport },
             readToken: { _ in token }
         )

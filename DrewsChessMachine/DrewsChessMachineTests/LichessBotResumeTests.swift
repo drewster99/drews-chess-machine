@@ -53,6 +53,7 @@ final class LichessBotResumeTests: XCTestCase {
             defaults: installation.defaults,
             dataDirectory: installation.directory,
             services: LichessBotControllerServices(
+                openBotWindow: { _ in },
                 makeTransport: { lichess },
                 readToken: { _ in token }
             ),
@@ -203,6 +204,7 @@ final class LichessBotResumeTests: XCTestCase {
             defaults: installation.defaults,
             dataDirectory: installation.directory,
             services: LichessBotControllerServices(
+                openBotWindow: { _ in },
                 makeTransport: { lichess },
                 readToken: { _ in LichessBotResumeFakeLichess.token }
             ),

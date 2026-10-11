@@ -68,6 +68,7 @@ final class LichessBotShutdownTests: XCTestCase {
             defaults: defaults,
             dataDirectory: LichessBotDataDirectory(root: root),
             services: LichessBotControllerServices(
+                openBotWindow: { _ in },
                 makeTransport: { transport },
                 readToken: { _ in token }
             )

@@ -61,6 +61,7 @@ final class LichessBotLeftoverJournalReportTests: XCTestCase {
             defaults: installation.defaults,
             dataDirectory: installation.directory,
             services: LichessBotControllerServices(
+                openBotWindow: { _ in },
                 makeTransport: { transport },
                 readToken: { _ in token }
             ),

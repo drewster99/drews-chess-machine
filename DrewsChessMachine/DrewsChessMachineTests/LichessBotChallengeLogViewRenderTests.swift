@@ -64,6 +64,7 @@ final class LichessBotChallengeLogViewRenderTests: XCTestCase {
             defaults: defaults,
             dataDirectory: directory,
             services: LichessBotControllerServices(
+                openBotWindow: { _ in },
                 makeTransport: { LichessBotFakeLichess() },
                 readToken: { _ in nil }
             )

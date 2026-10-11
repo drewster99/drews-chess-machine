@@ -42,6 +42,7 @@ final class LichessBotBotLimitTests: XCTestCase {
             defaults: defaults,
             dataDirectory: directory,
             services: LichessBotControllerServices(
+                openBotWindow: { _ in },
                 makeTransport: { lichess },
                 readToken: { _ in token }
             ),

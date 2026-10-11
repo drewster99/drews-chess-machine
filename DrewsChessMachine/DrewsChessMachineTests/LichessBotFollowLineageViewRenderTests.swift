@@ -51,6 +51,7 @@ final class LichessBotFollowLineageViewRenderTests: XCTestCase {
         let root = try temporaryFolder()
         try LichessBotSettingsStore.save(LichessBotSettings.testBaseline(), to: defaults)
         var services = LichessBotControllerServices(
+            openBotWindow: { _ in },
             makeTransport: { LichessBotFakeLichess() },
             readToken: { _ in nil }
         )

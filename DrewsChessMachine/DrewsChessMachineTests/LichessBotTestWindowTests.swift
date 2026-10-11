@@ -55,11 +55,16 @@ final class LichessBotTestWindowTests: XCTestCase {
         settings.matchmaking.enabled = false
         try LichessBotSettingsStore.save(settings, to: defaults)
         let token = LichessBotFakeLichess.token
+        let windowRequests = SyncBox(0)
         let controller = LichessBotController(
             modelProvider: try await LichessBotFakeModelProvider.randomChampion(),
             defaults: defaults,
             dataDirectory: LichessBotDataDirectory(root: root),
-            services: LichessBotControllerServices(makeTransport: { lichess }, readToken: { _ in token })
+            services: LichessBotControllerServices(
+                openBotWindow: { _ in windowRequests.mutate { $0 += 1 } },
+                makeTransport: { lichess },
+                readToken: { _ in token }
+            )
         )
         addTeardownBlock { @MainActor in
             controller.abandonAndStop()
@@ -80,5 +85,6 @@ final class LichessBotTestWindowTests: XCTestCase {
         await controller.goOffline()
 
         XCTAssertEqual(Self.botWindows(), [], "going offline in a test opened the real Lichess Bot window")
+        XCTAssertEqual(windowRequests.value, 1, "the controller asks for the window once, through its services")
     }
 }

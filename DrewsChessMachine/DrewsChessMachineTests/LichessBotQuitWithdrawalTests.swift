@@ -63,6 +63,7 @@ final class LichessBotQuitWithdrawalTests: XCTestCase {
             defaults,
             LichessBotDataDirectory(root: root),
             LichessBotControllerServices(
+                openBotWindow: { _ in },
                 makeTransport: { lichess },
                 readToken: { _ in token }
             )
