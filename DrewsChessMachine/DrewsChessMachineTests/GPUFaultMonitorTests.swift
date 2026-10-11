@@ -8,6 +8,7 @@
 //  2026-10-09 (19:36:49, 21:37:09, 22:59:04), copied from `log show`.
 //
 
+import os
 import XCTest
 @testable import DrewsChessMachine
 
@@ -211,6 +212,25 @@ final class GPUFaultMonitorTests: XCTestCase {
         await monitor.checkNow()
         await monitor.checkNow()
         XCTAssertEqual(ledger.latestSequence, 1, "the same entry was recorded again")
+    }
+
+    /// The real log source must honor the date it is given. This process's
+    /// `OSLogStore` ignores the start position (measured 2026-10-11: a query
+    /// "from now" returned every entry since launch), so a query cost grew
+    /// with the process's age (R-fixedlr: about 7 s per poll after 8 h, 12 s
+    /// after 14 h) and returned old faults. The date has to be in the
+    /// predicate too.
+    func testTheProcessLogSourceReturnsNoEntryFromBeforeTheRequestedDate() throws {
+        let marker = GPUFaultMonitor.faultMarker + "-GPUFaultMonitorTests-\(UUID().uuidString)"
+        Logger(subsystem: "com.drewben.DrewsChessMachine.tests", category: "GPUFaultMonitorTests")
+            .error("\(marker, privacy: .public)")
+        Thread.sleep(forTimeInterval: 1.5)
+        let source = try ProcessLogStoreFaultSource()
+        let fromBefore = try source.faultEntries(from: Date().addingTimeInterval(-60))
+        XCTAssertTrue(fromBefore.contains { $0.message.contains(marker) }, "the test entry is readable at all")
+        let fromNow = try source.faultEntries(from: Date())
+        XCTAssertFalse(fromNow.contains { $0.message.contains(marker) },
+                       "an entry from before the requested date was returned")
     }
 
     /// An entry recorded by one run and returned again by the next run's
