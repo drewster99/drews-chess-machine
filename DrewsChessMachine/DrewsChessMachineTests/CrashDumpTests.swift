@@ -314,4 +314,48 @@ final class CrashDumpTests: XCTestCase {
         XCTAssertFalse(kind.matchesName(".dcmcrash.tmp"))
         XCTAssertFalse(kind.matchesName("x.dcmsession.tmp"))
     }
+
+    /// A trainer without a model ID used to name its dump "no-model-id"
+    /// with nothing saying why: every corpus-replay dump on 2026-10-10
+    /// (those runners never stamped their trainer). The dump now says so in
+    /// its notes and names itself `unidentified`; the runners stamp their
+    /// trainer with the run's model ID, so it no longer happens there.
+    func testATrainerWithoutAModelIDIsNamedUnidentifiedAndNoted() async throws {
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), initialization: .seeded(initSeed: 1))
+        XCTAssertNil(trainer.identifier)
+        let written = await CrashDumpWriter.dump(
+            reason: .nearMiss, detail: "test", pathKind: "replay", trainer: trainer, batchSize: 32,
+            batchTrainerStep: 0, runProvenance: nil, faults: [])
+        let folder = try XCTUnwrap(written)
+        defer {
+            do {
+                try FileManager.default.removeItem(at: folder)
+            } catch {
+                XCTFail("cleanup failed: \(error)")
+            }
+        }
+        XCTAssertTrue(folder.lastPathComponent.contains("-unidentified-step0-near-miss"), folder.lastPathComponent)
+        let manifest = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent("manifest.json"))) as? [String: Any])
+        XCTAssertEqual(manifest["model_id"] as? String, "unidentified")
+        let notes = try XCTUnwrap(manifest["notes"] as? [String])
+        XCTAssertTrue(notes.contains { $0.contains("the trainer carried no model ID") }, "\(notes)")
+    }
+
+    func testAStampedTrainerNamesItsDumpAfterItsModelID() async throws {
+        let trainer = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), initialization: .seeded(initSeed: 1))
+        trainer.identifier = ModelID(value: "20261010-10-E9fy")
+        let written = await CrashDumpWriter.dump(
+            reason: .nearMiss, detail: "test", pathKind: "replay", trainer: trainer, batchSize: 32,
+            batchTrainerStep: 0, runProvenance: nil, faults: [])
+        let folder = try XCTUnwrap(written)
+        defer {
+            do {
+                try FileManager.default.removeItem(at: folder)
+            } catch {
+                XCTFail("cleanup failed: \(error)")
+            }
+        }
+        XCTAssertTrue(folder.lastPathComponent.contains("-20261010-10-E9fy-step0-near-miss"), folder.lastPathComponent)
+    }
 }
