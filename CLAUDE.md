@@ -95,7 +95,7 @@ GUI `.dcmsession` triggers (disk tag in the folder name):
 - **`manual`** — File ▸ Save Session.
 - **`promote`** — automatic after each arena promotion (`autosaveSessionsOnPromote`, a hard-coded `true`), reusing the weight snapshots taken under the arena's pauses; logged `Saved session (post-promotion)`. Train ▸ Promote Trainee Now writes the same tag (`SessionSaveTrigger.promotionDiskTag`, via `saveSessionInternal` with fresh exports), is treated like an arena promotion, and logs `Saved session (promote)`.
 - **`periodic`** — interval autosave during Play-and-Train (`periodicAutosaveIntervalSec`, default 6 h, live from the Sessions tab; the heartbeat re-anchors `PeriodicSaveController` via `updateInterval`). A deadline inside an arena is deferred, then swallowed if a post-promotion save landed meanwhile, else fired late. Any successful save resets the clock.
-- **`sigusr2`** — SIGUSR2 signal save.
+- **`sigusr2`** — SIGUSR2 signal save. (SIGTERM to a GUI process quits it the way ⌘Q does — a Lichess bot finishes its running games first — and saves nothing; `EarlyStopCoordinator.handleTerminationSignal`.)
 
 **`--train-vs-uci` saves session folders** (same `CheckpointManager.saveSession`, into `--out-session-dir`, tags `vsuci-periodic` / `vsuci-final` / `vsuci-abort` / `vsuci-health-stop`, `path_kind` `vsuci`; the GUI refuses to load them via `SessionCheckpointState.guiLoadRefusal`). Full rules: `documentation/UCI.md` "Output: session folders".
 

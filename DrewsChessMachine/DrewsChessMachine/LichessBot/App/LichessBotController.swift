@@ -50,6 +50,11 @@ struct LichessBotControllerServices: Sendable {
     /// The app answers AppKit; only a test that quits needs its own.
     var replyToTerminate: @MainActor @Sendable (_ shouldTerminate: Bool) -> Void = { shouldTerminate in
         NSApp.reply(toApplicationShouldTerminate: shouldTerminate)
+        if !shouldTerminate {
+            // A SIGTERM-started quit that was cancelled can be asked for
+            // again by the next SIGTERM.
+            EarlyStopCoordinator.shared.quitWasCancelled()
+        }
     }
     /// Reads model files for the bot's generations. The app reads the file
     /// itself; a test counts or scripts the reads.

@@ -1389,6 +1389,17 @@ delayed on the network. Launch recovery finalizes those games. The Chess
 menu also gets a **"Drain bot for deploy"** action, so the operator can
 empty the bot before sending SIGUSR2.
 
+**SIGTERM quits nicely** (owner request 2026-10-10,
+`EarlyStopCoordinator.handleTerminationSignal`): `kill <pid>` takes the
+same path as ⌘Q — the bot stops taking games, withdraws its pending
+challenges, finishes every running game however long it takes (the owner
+almost always wants running games finished), then quits. A second SIGTERM
+while it waits only logs; a quit cancelled from the Finishing-games sheet
+can be asked for again by the next SIGTERM; `kill -9` ends the process at
+once. A signal names one process, so it can't reach the wrong instance of
+the app the way an Apple Event `quit` can. CLI corpus-replay and
+train-vs-UCI runs exit before AppKit launches and keep the default SIGTERM.
+
 ## 14. UI
 
 The UI follows project conventions:

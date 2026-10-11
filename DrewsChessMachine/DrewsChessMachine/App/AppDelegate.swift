@@ -6,7 +6,8 @@ import Foundation
 /// - `applicationDidFinishLaunching` opts the process out of macOS's
 ///   sudden-termination optimization (we are explicitly NOT a candidate;
 ///   training runs hold uncommitted in-memory state) and installs
-///   SIGUSR1 / SIGHUP handlers via `EarlyStopCoordinator`.
+///   SIGUSR1 / SIGHUP / SIGUSR2 / SIGTERM handlers via
+///   `EarlyStopCoordinator` (SIGTERM quits as ⌘Q does).
 /// - `applicationShouldTerminate` short-circuits AppKit's normal
 ///   teardown when a CLI training run is in flight, requesting a
 ///   flush+exit through the coordinator. The coordinator's handler
@@ -14,7 +15,7 @@ import Foundation
 ///   own teardown never runs in that case (which is what we want — we
 ///   already have a clean snapshot on disk).
 /// - `applicationWillTerminate` is a belt-and-suspenders flush in
-///   case `applicationShouldTerminate` was bypassed (e.g. SIGTERM).
+///   case `applicationShouldTerminate` was bypassed (some logout flows).
 /// - With Lichess games in progress, quitting drains the bot first and
 ///   quits when the last game ends (plan §13), via `.terminateLater`.
 ///   Without games, a launch that used the bot still answers
@@ -33,7 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // here is enough to stay off for the life of the process.
         ProcessInfo.processInfo.disableSuddenTermination()
         EarlyStopCoordinator.shared.installSignalHandlers()
-        SessionLogger.shared.log("[APP] sudden termination disabled; SIGUSR1/SIGHUP/SIGUSR2 handlers installed")
+        SessionLogger.shared.log("[APP] sudden termination disabled; SIGUSR1/SIGHUP/SIGUSR2/SIGTERM handlers installed")
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

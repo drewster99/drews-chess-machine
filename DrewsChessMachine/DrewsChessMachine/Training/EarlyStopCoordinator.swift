@@ -24,7 +24,7 @@ import Foundation
 /// macOS logout.
 @MainActor
 final class EarlyStopCoordinator {
-    static let shared = EarlyStopCoordinator()
+    static let shared = EarlyStopCoordinator(terminateApp: { NSApp.terminate(nil) })
 
     /// Set by `SessionController` when a CLI training run starts. Captures
     /// the run's `AutoTrainTermination` and start time as a closure that,
@@ -47,12 +47,20 @@ final class EarlyStopCoordinator {
     private var sigusr1Source: DispatchSourceSignal?
     private var sighupSource: DispatchSourceSignal?
     private var sigusr2Source: DispatchSourceSignal?
+    private var sigtermSource: DispatchSourceSignal?
     private var stopRequested: Bool = false
+    /// Set by the first SIGTERM; later ones only log.
+    private var terminationSignalReceived = false
+    /// What SIGTERM does: ask AppKit to quit, exactly as ⌘Q does.
+    private let terminateApp: @MainActor () -> Void
 
-    private init() {}
+    /// The process's coordinator; `terminateApp` is AppKit's quit.
+    init(terminateApp: @escaping @MainActor () -> Void) {
+        self.terminateApp = terminateApp
+    }
 
-    /// Wires libc + Dispatch so SIGUSR1 and SIGHUP route into the
-    /// coordinator on the main queue. Call once from
+    /// Wires libc + Dispatch so SIGUSR1, SIGHUP, SIGUSR2 and SIGTERM route
+    /// into the coordinator on the main queue. Call once from
     /// `applicationDidFinishLaunching`. Calling more than once is a
     /// programmer error (each `DispatchSource.makeSignalSource` consumes
     /// the signal exclusively).
@@ -98,6 +106,46 @@ final class EarlyStopCoordinator {
         }
         usr2.activate()
         sigusr2Source = usr2
+
+        // SIGTERM — "quit nicely from outside" (owner request 2026-10-10):
+        // the same path as ⌘Q, so a `kill <pid>` gets whatever ⌘Q does in
+        // this process. A CLI training run flushes and exits; with Lichess
+        // games in play the bot stops taking games, withdraws its pending
+        // challenges, finishes every running game however long it takes,
+        // then quits. A signal names one process, unlike an Apple Event
+        // `quit` addressed to the app (the bot and a training window can
+        // be two instances of it). `kill -9` still ends the process at once.
+        // CLI corpus-replay and train-vs-UCI runs exit before AppKit
+        // launches, so this never reaches them; they keep the default.
+        signal(SIGTERM, SIG_IGN)
+        let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        term.setEventHandler {
+            Task.detached { @MainActor in
+                EarlyStopCoordinator.shared.handleTerminationSignal()
+            }
+        }
+        term.activate()
+        sigtermSource = term
+    }
+
+    /// A quit was cancelled (the operator cancelled "Finishing games"):
+    /// the next SIGTERM asks to quit again.
+    func quitWasCancelled() {
+        guard terminationSignalReceived else { return }
+        terminationSignalReceived = false
+        SessionLogger.shared.log("[APP] quit cancelled; a new SIGTERM will quit again")
+    }
+
+    /// SIGTERM's handler: the first asks AppKit to quit; a repeat while
+    /// the quit is still finishing games only says so.
+    func handleTerminationSignal() {
+        if terminationSignalReceived {
+            SessionLogger.shared.log("[APP] SIGTERM again: already quitting (running Lichess games finish first; kill -9 ends the process now)")
+            return
+        }
+        terminationSignalReceived = true
+        SessionLogger.shared.log("[APP] SIGTERM: quitting as ⌘Q does")
+        terminateApp()
     }
 
     /// Idempotent early-stop entry point. Multiple signals + AppDelegate
