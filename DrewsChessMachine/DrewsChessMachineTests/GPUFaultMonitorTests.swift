@@ -93,6 +93,13 @@ final class GPUFaultMonitorTests: XCTestCase {
     /// logged at or after its start, oldest first, as `OSLogStore` does.
     private final class ScriptedFaultLog: GPUFaultLogSource, @unchecked Sendable {
         private let entries = SyncBox<[GPUFaultMonitor.LogEntry]>([])
+        /// Return every entry whatever `from` asks for, as this process's
+        /// `OSLogStore` did on 2026-10-10.
+        private let ignoresFrom: Bool
+
+        init(ignoresFrom: Bool = false) {
+            self.ignoresFrom = ignoresFrom
+        }
 
         @discardableResult
         func add(_ message: String, at date: Date) -> GPUFaultMonitor.LogEntry {
@@ -102,7 +109,8 @@ final class GPUFaultMonitorTests: XCTestCase {
         }
 
         func faultEntries(from date: Date) throws -> [GPUFaultMonitor.LogEntry] {
-            entries.read { all in all.filter { $0.date >= date }.sorted { $0.date < $1.date } }
+            let ignoresFrom = self.ignoresFrom
+            return entries.read { all in all.filter { ignoresFrom || $0.date >= date }.sorted { $0.date < $1.date } }
         }
     }
 
@@ -179,6 +187,30 @@ final class GPUFaultMonitorTests: XCTestCase {
         let watch = GPUFaultWatch(ledger: ledger, monitor: monitor)
         await monitor.checkNow()
         XCTAssertEqual(watch.faultsSinceStart.map(\.time), [inWindow.date])
+    }
+
+    /// The bug this pins (R-fixedlr, 2026-10-10): this process's `OSLogStore`
+    /// returns entries from before the position a poll asks for, and the
+    /// monitor forgets an entry `seenHorizonSeconds` after reading it, so
+    /// one 21:15 GPU reset was recorded again at every poll from 21:17 on —
+    /// fault #627 by 22:31. An entry older than the poll's read point is
+    /// never recorded again, whatever the query returns.
+    func testAnOldEntryTheQueryKeepsReturningIsRecordedOnce() async throws {
+        let ledger = GPUFaultLedger()
+        let log = ScriptedFaultLog(ignoresFrom: true)
+        let monitor = Self.makeMonitor(ledger: ledger, log: log)
+        defer { monitor.pause() }
+
+        monitor.start(lookBack: 60)
+        // Inside the window, so it counts, and close to its start, so a few
+        // seconds later it is older than what the monitor remembers.
+        log.add(Self.incidentMessages[0], at: Date().addingTimeInterval(-59))
+        await monitor.checkNow()
+        XCTAssertEqual(ledger.latestSequence, 1)
+        try await Task.sleep(for: .seconds(GPUFaultMonitor.readOverlapSeconds + 2))
+        await monitor.checkNow()
+        await monitor.checkNow()
+        XCTAssertEqual(ledger.latestSequence, 1, "the same entry was recorded again")
     }
 
     /// An entry recorded by one run and returned again by the next run's
