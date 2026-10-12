@@ -214,37 +214,27 @@ extension SessionParameterResume {
         // back to the singleton's default. Restoring re-enables recording
         // (into a fresh corpus, matching the line above).
         restore(RecordSelfPlayGames.self, saved: rs.recordSelfPlayGames, into: \.recordSelfPlayGames)
-        // LR/momentum cycling and its decay envelope, key by key. The
-        // cycle and the envelope are each saved as a whole or not at
-        // all; a session without them predates the feature, so the
-        // enabled flags, the decay horizon and momentum following
-        // resolve to their declared pre-feature values (off) while the
-        // inert numbers keep the live settings for the popover. The
-        // cycle's phase is a pure function of `trainingSteps`, already
-        // restored above, so the schedule continues exactly where it
-        // left off.
-        let cycle = rs.lrMomentumCycle
+        // LR/momentum cycling, key by key, from the session's schedule (a
+        // session written before LR keyframes was converted to it when
+        // decoded, exactly). A session without one predates cycling: the
+        // enabled flags and momentum following resolve to their declared
+        // pre-feature values (off) while the inert numbers and the keyframes
+        // keep the live settings for the popover. The phase is a pure
+        // function of the trainer clock, restored separately, so the
+        // schedule continues exactly where it left off.
+        let cycle = rs.lrSchedule
         restore(LRCycleEnabled.self, saved: cycle?.lrEnabled, into: \.lrCycleEnabled)
         restore(LRCyclePeriodSteps.self, saved: cycle?.lrPeriodSteps, into: \.lrCyclePeriodSteps)
         restore(LRCycleCount.self, saved: cycle?.lrCount, into: \.lrCycleCount)
-        restore(LRCycleMin.self, saved: cycle?.lrMin, into: \.lrCycleMin)
-        restore(LRCycleMax.self, saved: cycle?.lrMax, into: \.lrCycleMax)
         restore(LRCycleInvert.self, saved: cycle?.lrInvert, into: \.lrCycleInvert)
+        restore(LRCycleKeyframes.self, saved: cycle?.lrKeyframes, into: \.lrCycleKeyframes)
         restore(MomentumCycleEnabled.self, saved: cycle?.momentumEnabled, into: \.momentumCycleEnabled)
         restore(MomentumCyclePeriodSteps.self, saved: cycle?.momentumPeriodSteps, into: \.momentumCyclePeriodSteps)
         restore(MomentumCycleCount.self, saved: cycle?.momentumCount, into: \.momentumCycleCount)
         restore(MomentumCycleMin.self, saved: cycle?.momentumMin, into: \.momentumCycleMin)
         restore(MomentumCycleMax.self, saved: cycle?.momentumMax, into: \.momentumCycleMax)
         restore(MomentumCycleInvert.self, saved: cycle?.momentumInvert, into: \.momentumCycleInvert)
-        let envelope = rs.lrMomentumCycleEnvelope
-        restore(LRCyclePeakEnd.self, saved: envelope?.lrPeakEnd, into: \.lrCyclePeakEnd)
-        restore(LRCycleTroughEnd.self, saved: envelope?.lrTroughEnd, into: \.lrCycleTroughEnd)
-        restore(LRCycleDecayHorizonSteps.self, saved: envelope?.decayHorizonSteps, into: \.lrCycleDecayHorizonSteps)
-        restore(MomentumFollowsLRCycle.self, saved: envelope?.momentumFollowsLRCycle, into: \.momentumFollowsLRCycle)
-        restore(MomentumFollowStartLow.self, saved: envelope?.momentumFollowStartLow, into: \.momentumFollowStartLow)
-        restore(MomentumFollowStartHigh.self, saved: envelope?.momentumFollowStartHigh, into: \.momentumFollowStartHigh)
-        restore(MomentumFollowEndLow.self, saved: envelope?.momentumFollowEndLow, into: \.momentumFollowEndLow)
-        restore(MomentumFollowEndHigh.self, saved: envelope?.momentumFollowEndHigh, into: \.momentumFollowEndHigh)
+        restore(MomentumFollowsLRCycle.self, saved: cycle?.momentumFollowsLRCycle, into: \.momentumFollowsLRCycle)
         // Composition-aware replay-buffer sampler constraints. These
         // don't shadow on the trainer — the sampler reads them
         // straight off `TrainingParameters.shared` each

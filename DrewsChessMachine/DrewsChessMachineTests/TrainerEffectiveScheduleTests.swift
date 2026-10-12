@@ -42,20 +42,14 @@ final class TrainerEffectiveScheduleTests: XCTestCase {
             "cycling off → effective momentum is the static momentumCoeff")
 
         // --- Both channels cycling (no invert), 1000-step period. ---
-        // NB: `.disabled` defaults momentumInvert = true; set both inverts
+        // NB: `.constant` defaults momentumInvert = true; set both inverts
         // explicitly to false so the LR and momentum channels share the same
         // (un-inverted) cosine phase — min at the boundary, max at the midpoint.
-        var cycle = LRMomentumCycle.disabled
-        cycle.lrEnabled = true
-        cycle.lrMin = 0.001
-        cycle.lrMax = 0.1
-        cycle.lrPeriodSteps = 1000
-        cycle.lrInvert = false
-        cycle.momentumEnabled = true
-        cycle.momentumMin = 0.8
-        cycle.momentumMax = 0.95
-        cycle.momentumPeriodSteps = 1000
-        cycle.momentumInvert = false
+        // Constant LR bounds (one keyframe), so only the phase moves.
+        let cycle = LRMomentumCycle.constant(
+            lrPeriodSteps: 1000, lrMin: 0.001, lrMax: 0.1, lrInvert: false,
+            momentumEnabled: true, momentumPeriodSteps: 1000, momentumMin: 0.8, momentumMax: 0.95,
+            momentumInvert: false)
         trainer.lrMomentumCycle = cycle
 
         // The cycle starts when the 100-step warmup ends, so global step 1100
@@ -76,24 +70,23 @@ final class TrainerEffectiveScheduleTests: XCTestCase {
             "at the cycle midpoint the effective momentum is momentumMax")
 
         // Must equal the cycle's own math at an arbitrary post-warmup step,
-        // evaluated at the warmup-offset cycle step.
+        // evaluated at the warmup-offset cycle step (the cycle evaluated with
+        // no warmup there, so the offset is computed here, independently).
         let s = 1321
         let cycleStepForS = s - 100
+        let atCycleStep = cycle.values(completedTrainSteps: cycleStepForS, lrWarmupSteps: 0)
         XCTAssertEqual(
             trainer.effectiveLearningRate(forBatchSize: 256, completedSteps: s),
-            Float(cycle.learningRate(forStep: cycleStepForS) ?? -1), accuracy: 1e-5,
-            "effective LR must track LRMomentumCycle.learningRate(forStep:)")
+            Float(atCycleStep.learningRate ?? -1), accuracy: 1e-5,
+            "effective LR must track LRMomentumCycle.values(...).learningRate")
         XCTAssertEqual(
             trainer.effectiveMomentum(completedSteps: s),
-            Float(cycle.momentum(forStep: cycleStepForS) ?? -1), accuracy: 1e-5,
-            "effective momentum must track LRMomentumCycle.momentum(forStep:)")
+            Float(atCycleStep.momentum ?? -1), accuracy: 1e-5,
+            "effective momentum must track LRMomentumCycle.values(...).momentum")
 
         // --- Warmup ramp composes on top of the cycled base LR. ---
-        var flat = LRMomentumCycle.disabled
-        flat.lrEnabled = true
-        flat.lrMin = 0.05
-        flat.lrMax = 0.05    // flat cycle → base LR is exactly 0.05 at every step
-        flat.lrPeriodSteps = 1000
+        // Flat cycle (peak == trough) → base LR is exactly 0.05 at every step.
+        let flat = LRMomentumCycle.constant(lrPeriodSteps: 1000, lrMin: 0.05, lrMax: 0.05)
         trainer.lrMomentumCycle = flat
         // Halfway through warmup (step 50 of 100): warmupMul 0.5 → 0.5 · 0.05.
         XCTAssertEqual(

@@ -229,7 +229,7 @@ final class RelativeGradientCapIntegrationTests: XCTestCase {
         let reloaded = try TrainerResumeSnapshot(checkpoint: try CheckpointManager.decodeAnyModelFile(data),
                                                  fileName: "relcap-matched.safetensors")
         let resumed = try RelativeGradientCapFixture.makeTrainer(initSeed: 2, hardMax: hardMax, configuration: config)
-        try await resumed.restoreExactly(from: reloaded)
+        try await resumed.restoreExactly(from: reloaded, schedule: .snapshots)
         let resumedBuffer = RelativeGradientCapFixture.makeReplayBuffer(arch: .current)
         resumedBuffer.restoreSamplerState(samplerAtSave)
 

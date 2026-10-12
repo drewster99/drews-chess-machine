@@ -18,7 +18,7 @@ The rules mirror the app and CLAUDE.md "Run tracking: three axes":
   reported as unrecorded — nothing is reconstructed for it.
 - A file at or after that version without a record, with a record that does
   not parse, or with a record of a schema outside `OLDEST_SUPPORTED_SCHEMA` ...
-  `SUPPORTED_SCHEMA` (2 ... 4), is refused (the app refuses to load it too).
+  `SUPPORTED_SCHEMA` (2 ... 5), is refused (the app refuses to load it too).
   A schema-2 record (every file written before hyperparameter recording P4)
   is read as written: it has no `configuration` / `run_seeds` / `ancestry`,
   and its corpus position names one corpus as `corpus_id` / `corpus_path`
@@ -62,7 +62,9 @@ LINEAGE_REQUIRED_FROM_VERSION = 7
 # dcm_format_version is.
 UNVERSIONED_LEGACY_VERSION = 3
 # LineageRecord.currentSchema.
-SUPPORTED_SCHEMA = 4
+# Schema 5 (LR keyframes) adds no field: its parameter snapshot may carry
+# `lr_cycle_keyframes` (a list) in place of the single-decay schedule's keys.
+SUPPORTED_SCHEMA = 5
 # LineageRecord.oldestDecodableSchema: the oldest schema the app still reads.
 OLDEST_SUPPORTED_SCHEMA = 2
 # LineageRecord.metadataKey.
@@ -732,8 +734,11 @@ def _header_int(metadata, key, source):
 
 # TrainerScheduleState.MetadataKey.all (Training/TrainerResumeState.swift): the
 # trainer schedule keys, of which `trainer_completed_steps` is the clock.
-TRAINER_SCHEDULE_KEYS = (TRAINER_COMPLETED_STEPS_KEY, "trainer_lr_warmup_steps", "trainer_lr_momentum_cycle",
-                         "trainer_lr_momentum_cycle_envelope")
+# `trainer_lr_schedule` (LR keyframes) is what every file written since LR
+# keyframes carries; the two `trainer_lr_momentum_cycle*` keys are the previous
+# form, still read (the app converts them).
+TRAINER_SCHEDULE_KEYS = (TRAINER_COMPLETED_STEPS_KEY, "trainer_lr_warmup_steps", "trainer_lr_schedule",
+                         "trainer_lr_momentum_cycle", "trainer_lr_momentum_cycle_envelope")
 
 
 def _trainer_clock(metadata, source):

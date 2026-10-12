@@ -78,7 +78,9 @@ final class ModelNamingTests: XCTestCase {
     func testASchemaFourRecordRoundTripsItsNaming() throws {
         let modelNaming = try naming("my-net", preset: "v4_5block_7x7", edited: true)
         let recorded = try freshRecord(modelNaming)
-        XCTAssertEqual(recorded.schema, 4)
+        // Naming arrived in schema 4; records are now written at the current
+        // schema (5 since the LR keyframes), which still carries it.
+        XCTAssertEqual(recorded.schema, LineageRecord.currentSchema)
         XCTAssertEqual(recorded.modelNaming, .recorded(modelNaming))
         let jsonText = try recorded.jsonText()
         XCTAssertEqual(try LineageRecord.decode(jsonText: jsonText), recorded)

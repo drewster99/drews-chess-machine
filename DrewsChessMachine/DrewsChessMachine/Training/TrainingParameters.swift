@@ -11,6 +11,10 @@ public enum ParameterType: String, Codable, Sendable {
     /// Full-range unsigned 64-bit (a random seed). Written as a decimal
     /// string everywhere it is serialized (see `ParameterValue.jsonValue`).
     case uint64
+    /// The LR cycle's keyframe list (`lr_cycle_keyframes`): an array of
+    /// `{step, peak, trough, momentum_at_peak, momentum_at_trough}` objects
+    /// wherever it is serialized; validated by `LRKeyframeSchedule.validated()`.
+    case lrKeyframes
 }
 
 // MARK: - ParameterValue
@@ -20,6 +24,7 @@ public enum ParameterValue: Codable, Equatable, Sendable {
     case int(Int)
     case double(Double)
     case uint64(UInt64)
+    case lrKeyframes(LRKeyframeSchedule)
 
     public var type: ParameterType {
         switch self {
@@ -27,6 +32,7 @@ public enum ParameterValue: Codable, Equatable, Sendable {
         case .int: .int
         case .double: .double
         case .uint64: .uint64
+        case .lrKeyframes: .lrKeyframes
         }
     }
 
@@ -48,11 +54,24 @@ public enum ParameterValue: Codable, Equatable, Sendable {
                 )
             }
             self = .uint64(x)
+        } else if c.decodeNil() == false, let x = Self.decodeKeyframesIfArray(c) {
+            // The only array-valued kind.
+            self = .lrKeyframes(x)
         } else {
             throw DecodingError.typeMismatch(
                 ParameterValue.self,
                 .init(codingPath: decoder.codingPath, debugDescription: "Unsupported parameter value")
             )
+        }
+    }
+
+    /// The keyframe list, when the container holds one; nil for any other
+    /// shape (the caller then reports the value as unsupported).
+    private static func decodeKeyframesIfArray(_ c: SingleValueDecodingContainer) -> LRKeyframeSchedule? {
+        do {
+            return try c.decode(LRKeyframeSchedule.self)
+        } catch {
+            return nil
         }
     }
 
@@ -64,6 +83,7 @@ public enum ParameterValue: Codable, Equatable, Sendable {
         case .int(let x): try c.encode(x)
         case .double(let x): try c.encode(x)
         case .uint64(let x): try c.encode(String(x))
+        case .lrKeyframes(let x): try c.encode(x)
         }
     }
 
@@ -77,6 +97,10 @@ public enum ParameterValue: Codable, Equatable, Sendable {
         case .int(let x): x
         case .double(let x): x
         case .uint64(let x): String(x)
+        case .lrKeyframes(let x): x.keyframes.map { k -> [String: Any] in
+            ["step": k.step, "peak": k.peak, "trough": k.trough,
+             "momentum_at_peak": k.momentumAtPeak, "momentum_at_trough": k.momentumAtTrough]
+        }
         }
     }
 
@@ -105,9 +129,41 @@ public enum ParameterValue: Codable, Equatable, Sendable {
         } else if let text = jsonValue as? String {
             guard let x = UInt64(strictDecimal: text) else { throw TrainingConfigError.wrongType(id: id) }
             self = .uint64(x)
+        } else if let array = jsonValue as? [Any] {
+            self = .lrKeyframes(try Self.keyframes(fromJSONArray: array, id: id))
         } else {
             throw TrainingConfigError.wrongType(id: id)
         }
+    }
+
+    /// An array of keyframe objects as `JSONSerialization` (or a property
+    /// list) delivers it. Each object needs exactly the five keys; `step` an
+    /// integer, the others numbers. The doubles here are only as exact as
+    /// `NSNumber` delivers them; `parametersObject(fromJSON:)` replaces them
+    /// with the exactly-parsed values, as it does for every top-level double.
+    /// Not validated here (see `TrainingParameterDefinition.validate`).
+    static func keyframes(fromJSONArray array: [Any], id: String) throws -> LRKeyframeSchedule {
+        let expectedKeys: Set<String> = ["step", "peak", "trough", "momentum_at_peak", "momentum_at_trough"]
+        var frames: [LRKeyframe] = []
+        for element in array {
+            guard let object = element as? [String: Any], Set(object.keys) == expectedKeys else {
+                throw TrainingConfigError.wrongType(id: id)
+            }
+            func number(_ key: String) throws -> Double {
+                guard let n = object[key] as? NSNumber, !["c", "B"].contains(String(cString: n.objCType)) else {
+                    throw TrainingConfigError.wrongType(id: id)
+                }
+                return n.doubleValue
+            }
+            guard let stepNumber = object["step"] as? NSNumber,
+                  !["c", "B", "d", "f"].contains(String(cString: stepNumber.objCType)) else {
+                throw TrainingConfigError.wrongType(id: id)
+            }
+            frames.append(LRKeyframe(step: stepNumber.intValue, peak: try number("peak"), trough: try number("trough"),
+                                     momentumAtPeak: try number("momentum_at_peak"),
+                                     momentumAtTrough: try number("momentum_at_trough")))
+        }
+        return LRKeyframeSchedule(keyframes: frames)
     }
 }
 
@@ -192,6 +248,13 @@ public struct TrainingParameterDefinition: Sendable {
                 throw TrainingConfigError.outOfRange(id: id, value: "\(x)")
             }
 
+        case (.lrKeyframes, .lrKeyframes(let schedule)):
+            do {
+                try schedule.validated()
+            } catch {
+                throw TrainingConfigError.invalidValue(id: id, reason: "\(error)")
+            }
+
         case (.uint64, .int(let x)) where x >= 0:
             // Tolerate a non-negative JSON integer for a UInt64 parameter
             // (exact up to `Int.max`); the app itself writes a decimal string.
@@ -215,6 +278,8 @@ public enum TrainingConfigError: Error, CustomStringConvertible, LocalizedError 
     case unknownParameter(id: String)
     case wrongType(id: String)
     case outOfRange(id: String, value: String)
+    /// A structured value (the LR keyframe list) its own validator refused.
+    case invalidValue(id: String, reason: String)
 
     public var description: String {
         switch self {
@@ -224,6 +289,8 @@ public enum TrainingConfigError: Error, CustomStringConvertible, LocalizedError 
             "Wrong value type for parameter '\(id)'"
         case .outOfRange(let id, let value):
             "Value \(value) is out of range for parameter '\(id)'"
+        case .invalidValue(let id, let reason):
+            "Invalid value for parameter '\(id)': \(reason)"
         }
     }
 
@@ -1120,12 +1187,12 @@ public enum KLProbeInterval: TrainingParameterKey {}
 // `momentum_cycle_invert = true` at an equal period, or — without having to
 // keep the two in agreement by hand — by `momentum_follows_lr_cycle`, which
 // drives momentum from the LR cycle's own phase. The LR cycle's peak and
-// trough (and the follow-mode momentum bounds) additionally decay over
-// `lr_cycle_decay_horizon_steps`, so a long open-ended run anneals.
+// trough (and the follow-mode momentum bounds) come from `lr_cycle_keyframes`,
+// so a long open-ended run anneals in whatever stages it is given.
 
 @TrainingParameter(
     name: "LR Cycle Enabled",
-    description: "Enable the repeating learning-rate cycle. When on, the base LR each step is set by the cycle (geometric interpolation between LR Cycle Min and Max over LR Cycle Period Steps) instead of the static Learning Rate, then composed with the √batch multiplier. The cycle begins when LR warmup ends; during warmup the LR ramps linearly up to the cycle's starting value. Overrides the static base-LR schedule while enabled.",
+    description: "Enable the repeating learning-rate cycle. When on, the base LR each step is set by the cycle (geometric interpolation between the trough and peak that LR Cycle Keyframes set, over LR Cycle Period Steps) instead of the static Learning Rate, then composed with the √batch multiplier. The cycle begins when LR warmup ends; during warmup the LR ramps linearly up to the cycle's starting value. Overrides the static base-LR schedule while enabled.",
     default: true,
     category: "LR/Momentum Cycling",
     id: "lr_cycle_enabled",
@@ -1148,7 +1215,7 @@ public enum LRCyclePeriodSteps: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "LR Cycle Count",
-    description: "Number of LR cycles (counted from the end of warmup) to run before freezing at the cycle boundary (LR Cycle Min, or Max when inverted). 0 = unbounded (repeat forever), the default for open-ended self-play.",
+    description: "Number of LR cycles (counted from the end of warmup) to run before freezing at the cycle boundary (the trough, or the peak when inverted). 0 = unbounded (repeat forever), the default for open-ended self-play.",
     default: 0,
     range: 0...1000000,
     category: "LR/Momentum Cycling",
@@ -1159,28 +1226,21 @@ public enum LRCyclePeriodSteps: TrainingParameterKey {}
 public enum LRCycleCount: TrainingParameterKey {}
 
 @TrainingParameter(
-    name: "LR Cycle Min",
-    description: "Absolute learning rate at the LR cycle's trough (the period boundaries when not inverted) at the start of the decay horizon — the trough's start value. The trough decays geometrically from here to LR Cycle Trough End over LR Cycle Decay Horizon. Must be > 0 — geometric interpolation is undefined at zero, and LR Cycle Max must be ≥ this value or the cycle is ignored.",
-    default: 0.001,
-    range: 1.0e-7...1.0,
+    name: "LR Cycle Keyframes",
+    description: "The LR cycle's peak and trough over the run, as keyframes: each sets, at a trainer step, the peak and trough LR the cycle swings between and — when momentum follows the LR cycle — the momentum at the LR peak and at the LR trough. Between keyframes the LR bounds move geometrically and the momentum bounds linearly; after the last keyframe they hold. The first keyframe is at step 0; steps strictly increase; at most 64. Each trough > 0, peak ≥ trough, peak ≤ 10; momentum 0…0.99 with momentum at the peak ≤ momentum at the trough. A trough below 1e-4 barely moves the bf16 working weights (documentation/plans-active/LR_KEYFRAMES_PLAN.md).",
+    default: LRKeyframeSchedule(keyframes: [
+        LRKeyframe(step: 0, peak: 0.1, trough: 0.001, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
+        LRKeyframe(step: 1000, peak: 0.1, trough: 0.001, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
+        LRKeyframe(step: 1_001_000, peak: 1.0e-4, trough: 1.0e-6, momentumAtPeak: 0.90, momentumAtTrough: 0.95),
+    ]),
     category: "LR/Momentum Cycling",
-    id: "lr_cycle_min",
+    id: "lr_cycle_keyframes",
     liveTunable: true,
     absentValue: .currentSetting
 )
-public enum LRCycleMin: TrainingParameterKey {}
+public enum LRCycleKeyframes: TrainingParameterKey {}
 
-@TrainingParameter(
-    name: "LR Cycle Max",
-    description: "Absolute learning rate at the LR cycle's peak (the period midpoint when not inverted) at the start of the decay horizon — the peak's start value. The peak decays geometrically from here to LR Cycle Peak End over LR Cycle Decay Horizon. Must be ≥ LR Cycle Min.",
-    default: 0.1,
-    range: 1.0e-7...10.0,
-    category: "LR/Momentum Cycling",
-    id: "lr_cycle_max",
-    liveTunable: true,
-    absentValue: .currentSetting
-)
-public enum LRCycleMax: TrainingParameterKey {}
+
 
 @TrainingParameter(
     name: "LR Cycle Invert",
@@ -1263,45 +1323,12 @@ public enum MomentumCycleMax: TrainingParameterKey {}
 )
 public enum MomentumCycleInvert: TrainingParameterKey {}
 
-@TrainingParameter(
-    name: "LR Cycle Peak End",
-    description: "LR cycle peak at the end of the decay horizon, and held there afterwards. The peak decays geometrically from LR Cycle Max to this value across LR Cycle Decay Horizon. Must be > 0 and ≥ LR Cycle Trough End. Ignored when the horizon is 0.",
-    default: 1.0e-4,
-    range: 1.0e-7...1.0,
-    category: "LR/Momentum Cycling",
-    id: "lr_cycle_peak_end",
-    liveTunable: true,
-    absentValue: .currentSetting
-)
-public enum LRCyclePeakEnd: TrainingParameterKey {}
 
-@TrainingParameter(
-    name: "LR Cycle Trough End",
-    description: "LR cycle trough at the end of the decay horizon, and held there afterwards. The trough decays geometrically from LR Cycle Min to this value across LR Cycle Decay Horizon. Must be > 0 and ≤ LR Cycle Peak End. Ignored when the horizon is 0.",
-    default: 1.0e-6,
-    range: 1.0e-7...1.0,
-    category: "LR/Momentum Cycling",
-    id: "lr_cycle_trough_end",
-    liveTunable: true,
-    absentValue: .currentSetting
-)
-public enum LRCycleTroughEnd: TrainingParameterKey {}
 
-@TrainingParameter(
-    name: "LR Cycle Decay Horizon (steps)",
-    description: "Number of cycle steps (counted from the end of LR warmup) over which the LR cycle's peak and trough decay from their start values (LR Cycle Max / Min) to their end values, and over which follow-mode momentum bounds drift from start to end. After the horizon the envelope holds at the end values and cycling continues. 0 = no decay (the envelope stays at its start values).",
-    default: 1000000,
-    range: 0...1000000000,
-    category: "LR/Momentum Cycling",
-    id: "lr_cycle_decay_horizon_steps",
-    liveTunable: true,
-    absentValue: .preFeature(0)
-)
-public enum LRCycleDecayHorizonSteps: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Momentum Follows LR Cycle",
-    description: "When on (and momentum cycling is enabled), momentum uses the LR cycle's period and phase, inverted: lowest at the LR peak, highest at the LR trough. Its low and high bounds move linearly from the Follow Start values to the Follow End values over LR Cycle Decay Horizon. The separate momentum cycle's period, count, min, max and invert settings are then ignored. Requires the LR cycle to be enabled; otherwise the static momentum coefficient applies.",
+    description: "When on (and momentum cycling is enabled), momentum uses the LR cycle's period and phase, inverted: lowest at the LR peak, highest at the LR trough. Its low and high bounds are the keyframes' momentum at the LR peak and at the LR trough. The separate momentum cycle's period, count, min, max and invert settings are then ignored. Requires the LR cycle to be enabled; otherwise the static momentum coefficient applies.",
     default: true,
     category: "LR/Momentum Cycling",
     id: "momentum_follows_lr_cycle",
@@ -1310,53 +1337,9 @@ public enum LRCycleDecayHorizonSteps: TrainingParameterKey {}
 )
 public enum MomentumFollowsLRCycle: TrainingParameterKey {}
 
-@TrainingParameter(
-    name: "Momentum Follow Start Low",
-    description: "Follow-mode momentum at the LR peak, at the start of the decay horizon. Must be ≤ Momentum Follow Start High.",
-    default: 0.85,
-    range: 0.0...0.99,
-    category: "LR/Momentum Cycling",
-    id: "momentum_follow_start_low",
-    liveTunable: true,
-    absentValue: .currentSetting
-)
-public enum MomentumFollowStartLow: TrainingParameterKey {}
 
-@TrainingParameter(
-    name: "Momentum Follow Start High",
-    description: "Follow-mode momentum at the LR trough, at the start of the decay horizon.",
-    default: 0.95,
-    range: 0.0...0.99,
-    category: "LR/Momentum Cycling",
-    id: "momentum_follow_start_high",
-    liveTunable: true,
-    absentValue: .currentSetting
-)
-public enum MomentumFollowStartHigh: TrainingParameterKey {}
 
-@TrainingParameter(
-    name: "Momentum Follow End Low",
-    description: "Follow-mode momentum at the LR peak, at and after the end of the decay horizon. Must be ≤ Momentum Follow End High.",
-    default: 0.90,
-    range: 0.0...0.99,
-    category: "LR/Momentum Cycling",
-    id: "momentum_follow_end_low",
-    liveTunable: true,
-    absentValue: .currentSetting
-)
-public enum MomentumFollowEndLow: TrainingParameterKey {}
 
-@TrainingParameter(
-    name: "Momentum Follow End High",
-    description: "Follow-mode momentum at the LR trough, at and after the end of the decay horizon.",
-    default: 0.95,
-    range: 0.0...0.99,
-    category: "LR/Momentum Cycling",
-    id: "momentum_follow_end_high",
-    liveTunable: true,
-    absentValue: .currentSetting
-)
-public enum MomentumFollowEndHigh: TrainingParameterKey {}
 
 // MARK: - Sessions / autosave policy
 
@@ -1784,8 +1767,7 @@ public extension TrainingParametersSnapshot {
     var lrCycleEnabled: Bool { value(for: LRCycleEnabled.self) }
     var lrCyclePeriodSteps: Int { value(for: LRCyclePeriodSteps.self) }
     var lrCycleCount: Int { value(for: LRCycleCount.self) }
-    var lrCycleMin: Double { value(for: LRCycleMin.self) }
-    var lrCycleMax: Double { value(for: LRCycleMax.self) }
+    var lrCycleKeyframes: LRKeyframeSchedule { value(for: LRCycleKeyframes.self) }
     var lrCycleInvert: Bool { value(for: LRCycleInvert.self) }
     var momentumCycleEnabled: Bool { value(for: MomentumCycleEnabled.self) }
     var momentumCyclePeriodSteps: Int { value(for: MomentumCyclePeriodSteps.self) }
@@ -1793,14 +1775,7 @@ public extension TrainingParametersSnapshot {
     var momentumCycleMin: Double { value(for: MomentumCycleMin.self) }
     var momentumCycleMax: Double { value(for: MomentumCycleMax.self) }
     var momentumCycleInvert: Bool { value(for: MomentumCycleInvert.self) }
-    var lrCyclePeakEnd: Double { value(for: LRCyclePeakEnd.self) }
-    var lrCycleTroughEnd: Double { value(for: LRCycleTroughEnd.self) }
-    var lrCycleDecayHorizonSteps: Int { value(for: LRCycleDecayHorizonSteps.self) }
     var momentumFollowsLRCycle: Bool { value(for: MomentumFollowsLRCycle.self) }
-    var momentumFollowStartLow: Double { value(for: MomentumFollowStartLow.self) }
-    var momentumFollowStartHigh: Double { value(for: MomentumFollowStartHigh.self) }
-    var momentumFollowEndLow: Double { value(for: MomentumFollowEndLow.self) }
-    var momentumFollowEndHigh: Double { value(for: MomentumFollowEndHigh.self) }
     var periodicAutosaveIntervalSec: Double { value(for: PeriodicAutosaveIntervalSec.self) }
     var maxPeriodicAutosavesKept: Int { value(for: MaxPeriodicAutosavesKept.self) }
     var automaticSavePruningEnabled: Bool { value(for: AutomaticSavePruningEnabled.self) }
@@ -1965,8 +1940,7 @@ public final class TrainingParameters {
     public var lrCycleEnabled: Bool { didSet { if !Self.commitAssignment(LRCycleEnabled.self, value: lrCycleEnabled, oldValue: oldValue) { lrCycleEnabled = oldValue } } }
     public var lrCyclePeriodSteps: Int { didSet { if !Self.commitAssignment(LRCyclePeriodSteps.self, value: lrCyclePeriodSteps, oldValue: oldValue) { lrCyclePeriodSteps = oldValue } } }
     public var lrCycleCount: Int { didSet { if !Self.commitAssignment(LRCycleCount.self, value: lrCycleCount, oldValue: oldValue) { lrCycleCount = oldValue } } }
-    public var lrCycleMin: Double { didSet { if !Self.commitAssignment(LRCycleMin.self, value: lrCycleMin, oldValue: oldValue) { lrCycleMin = oldValue } } }
-    public var lrCycleMax: Double { didSet { if !Self.commitAssignment(LRCycleMax.self, value: lrCycleMax, oldValue: oldValue) { lrCycleMax = oldValue } } }
+    public var lrCycleKeyframes: LRKeyframeSchedule { didSet { if !Self.commitAssignment(LRCycleKeyframes.self, value: lrCycleKeyframes, oldValue: oldValue) { lrCycleKeyframes = oldValue } } }
     public var lrCycleInvert: Bool { didSet { if !Self.commitAssignment(LRCycleInvert.self, value: lrCycleInvert, oldValue: oldValue) { lrCycleInvert = oldValue } } }
     public var momentumCycleEnabled: Bool { didSet { if !Self.commitAssignment(MomentumCycleEnabled.self, value: momentumCycleEnabled, oldValue: oldValue) { momentumCycleEnabled = oldValue } } }
     public var momentumCyclePeriodSteps: Int { didSet { if !Self.commitAssignment(MomentumCyclePeriodSteps.self, value: momentumCyclePeriodSteps, oldValue: oldValue) { momentumCyclePeriodSteps = oldValue } } }
@@ -1974,14 +1948,7 @@ public final class TrainingParameters {
     public var momentumCycleMin: Double { didSet { if !Self.commitAssignment(MomentumCycleMin.self, value: momentumCycleMin, oldValue: oldValue) { momentumCycleMin = oldValue } } }
     public var momentumCycleMax: Double { didSet { if !Self.commitAssignment(MomentumCycleMax.self, value: momentumCycleMax, oldValue: oldValue) { momentumCycleMax = oldValue } } }
     public var momentumCycleInvert: Bool { didSet { if !Self.commitAssignment(MomentumCycleInvert.self, value: momentumCycleInvert, oldValue: oldValue) { momentumCycleInvert = oldValue } } }
-    public var lrCyclePeakEnd: Double { didSet { if !Self.commitAssignment(LRCyclePeakEnd.self, value: lrCyclePeakEnd, oldValue: oldValue) { lrCyclePeakEnd = oldValue } } }
-    public var lrCycleTroughEnd: Double { didSet { if !Self.commitAssignment(LRCycleTroughEnd.self, value: lrCycleTroughEnd, oldValue: oldValue) { lrCycleTroughEnd = oldValue } } }
-    public var lrCycleDecayHorizonSteps: Int { didSet { if !Self.commitAssignment(LRCycleDecayHorizonSteps.self, value: lrCycleDecayHorizonSteps, oldValue: oldValue) { lrCycleDecayHorizonSteps = oldValue } } }
     public var momentumFollowsLRCycle: Bool { didSet { if !Self.commitAssignment(MomentumFollowsLRCycle.self, value: momentumFollowsLRCycle, oldValue: oldValue) { momentumFollowsLRCycle = oldValue } } }
-    public var momentumFollowStartLow: Double { didSet { if !Self.commitAssignment(MomentumFollowStartLow.self, value: momentumFollowStartLow, oldValue: oldValue) { momentumFollowStartLow = oldValue } } }
-    public var momentumFollowStartHigh: Double { didSet { if !Self.commitAssignment(MomentumFollowStartHigh.self, value: momentumFollowStartHigh, oldValue: oldValue) { momentumFollowStartHigh = oldValue } } }
-    public var momentumFollowEndLow: Double { didSet { if !Self.commitAssignment(MomentumFollowEndLow.self, value: momentumFollowEndLow, oldValue: oldValue) { momentumFollowEndLow = oldValue } } }
-    public var momentumFollowEndHigh: Double { didSet { if !Self.commitAssignment(MomentumFollowEndHigh.self, value: momentumFollowEndHigh, oldValue: oldValue) { momentumFollowEndHigh = oldValue } } }
     public var periodicAutosaveIntervalSec: Double { didSet { if !Self.commitAssignment(PeriodicAutosaveIntervalSec.self, value: periodicAutosaveIntervalSec, oldValue: oldValue) { periodicAutosaveIntervalSec = oldValue } } }
     public var maxPeriodicAutosavesKept: Int { didSet { if !Self.commitAssignment(MaxPeriodicAutosavesKept.self, value: maxPeriodicAutosavesKept, oldValue: oldValue) { maxPeriodicAutosavesKept = oldValue } } }
     public var automaticSavePruningEnabled: Bool { didSet { if !Self.commitAssignment(AutomaticSavePruningEnabled.self, value: automaticSavePruningEnabled, oldValue: oldValue) { automaticSavePruningEnabled = oldValue } } }
@@ -2099,8 +2066,7 @@ public final class TrainingParameters {
         self.lrCycleEnabled = Self.read(LRCycleEnabled.self)
         self.lrCyclePeriodSteps = Self.read(LRCyclePeriodSteps.self)
         self.lrCycleCount = Self.read(LRCycleCount.self)
-        self.lrCycleMin = Self.read(LRCycleMin.self)
-        self.lrCycleMax = Self.read(LRCycleMax.self)
+        self.lrCycleKeyframes = Self.read(LRCycleKeyframes.self)
         self.lrCycleInvert = Self.read(LRCycleInvert.self)
         self.momentumCycleEnabled = Self.read(MomentumCycleEnabled.self)
         self.momentumCyclePeriodSteps = Self.read(MomentumCyclePeriodSteps.self)
@@ -2108,14 +2074,7 @@ public final class TrainingParameters {
         self.momentumCycleMin = Self.read(MomentumCycleMin.self)
         self.momentumCycleMax = Self.read(MomentumCycleMax.self)
         self.momentumCycleInvert = Self.read(MomentumCycleInvert.self)
-        self.lrCyclePeakEnd = Self.read(LRCyclePeakEnd.self)
-        self.lrCycleTroughEnd = Self.read(LRCycleTroughEnd.self)
-        self.lrCycleDecayHorizonSteps = Self.read(LRCycleDecayHorizonSteps.self)
         self.momentumFollowsLRCycle = Self.read(MomentumFollowsLRCycle.self)
-        self.momentumFollowStartLow = Self.read(MomentumFollowStartLow.self)
-        self.momentumFollowStartHigh = Self.read(MomentumFollowStartHigh.self)
-        self.momentumFollowEndLow = Self.read(MomentumFollowEndLow.self)
-        self.momentumFollowEndHigh = Self.read(MomentumFollowEndHigh.self)
         self.periodicAutosaveIntervalSec = Self.read(PeriodicAutosaveIntervalSec.self)
         self.maxPeriodicAutosavesKept = Self.read(MaxPeriodicAutosavesKept.self)
         self.automaticSavePruningEnabled = Self.read(AutomaticSavePruningEnabled.self)
@@ -2218,8 +2177,7 @@ public final class TrainingParameters {
         v[LRCycleEnabled.id] = LRCycleEnabled.encode(lrCycleEnabled)
         v[LRCyclePeriodSteps.id] = LRCyclePeriodSteps.encode(lrCyclePeriodSteps)
         v[LRCycleCount.id] = LRCycleCount.encode(lrCycleCount)
-        v[LRCycleMin.id] = LRCycleMin.encode(lrCycleMin)
-        v[LRCycleMax.id] = LRCycleMax.encode(lrCycleMax)
+        v[LRCycleKeyframes.id] = LRCycleKeyframes.encode(lrCycleKeyframes)
         v[LRCycleInvert.id] = LRCycleInvert.encode(lrCycleInvert)
         v[MomentumCycleEnabled.id] = MomentumCycleEnabled.encode(momentumCycleEnabled)
         v[MomentumCyclePeriodSteps.id] = MomentumCyclePeriodSteps.encode(momentumCyclePeriodSteps)
@@ -2227,14 +2185,7 @@ public final class TrainingParameters {
         v[MomentumCycleMin.id] = MomentumCycleMin.encode(momentumCycleMin)
         v[MomentumCycleMax.id] = MomentumCycleMax.encode(momentumCycleMax)
         v[MomentumCycleInvert.id] = MomentumCycleInvert.encode(momentumCycleInvert)
-        v[LRCyclePeakEnd.id] = LRCyclePeakEnd.encode(lrCyclePeakEnd)
-        v[LRCycleTroughEnd.id] = LRCycleTroughEnd.encode(lrCycleTroughEnd)
-        v[LRCycleDecayHorizonSteps.id] = LRCycleDecayHorizonSteps.encode(lrCycleDecayHorizonSteps)
         v[MomentumFollowsLRCycle.id] = MomentumFollowsLRCycle.encode(momentumFollowsLRCycle)
-        v[MomentumFollowStartLow.id] = MomentumFollowStartLow.encode(momentumFollowStartLow)
-        v[MomentumFollowStartHigh.id] = MomentumFollowStartHigh.encode(momentumFollowStartHigh)
-        v[MomentumFollowEndLow.id] = MomentumFollowEndLow.encode(momentumFollowEndLow)
-        v[MomentumFollowEndHigh.id] = MomentumFollowEndHigh.encode(momentumFollowEndHigh)
         v[PeriodicAutosaveIntervalSec.id] = PeriodicAutosaveIntervalSec.encode(periodicAutosaveIntervalSec)
         v[MaxPeriodicAutosavesKept.id] = MaxPeriodicAutosavesKept.encode(maxPeriodicAutosavesKept)
         v[AutomaticSavePruningEnabled.id] = AutomaticSavePruningEnabled.encode(automaticSavePruningEnabled)
@@ -2451,10 +2402,8 @@ public final class TrainingParameters {
             try LRCyclePeriodSteps.definition.validate(raw); lrCyclePeriodSteps = try LRCyclePeriodSteps.decode(raw)
         case LRCycleCount.id:
             try LRCycleCount.definition.validate(raw); lrCycleCount = try LRCycleCount.decode(raw)
-        case LRCycleMin.id:
-            try LRCycleMin.definition.validate(raw); lrCycleMin = try LRCycleMin.decode(raw)
-        case LRCycleMax.id:
-            try LRCycleMax.definition.validate(raw); lrCycleMax = try LRCycleMax.decode(raw)
+        case LRCycleKeyframes.id:
+            try LRCycleKeyframes.definition.validate(raw); lrCycleKeyframes = try LRCycleKeyframes.decode(raw)
         case LRCycleInvert.id:
             try LRCycleInvert.definition.validate(raw); lrCycleInvert = try LRCycleInvert.decode(raw)
         case MomentumCycleEnabled.id:
@@ -2469,22 +2418,8 @@ public final class TrainingParameters {
             try MomentumCycleMax.definition.validate(raw); momentumCycleMax = try MomentumCycleMax.decode(raw)
         case MomentumCycleInvert.id:
             try MomentumCycleInvert.definition.validate(raw); momentumCycleInvert = try MomentumCycleInvert.decode(raw)
-        case LRCyclePeakEnd.id:
-            try LRCyclePeakEnd.definition.validate(raw); lrCyclePeakEnd = try LRCyclePeakEnd.decode(raw)
-        case LRCycleTroughEnd.id:
-            try LRCycleTroughEnd.definition.validate(raw); lrCycleTroughEnd = try LRCycleTroughEnd.decode(raw)
-        case LRCycleDecayHorizonSteps.id:
-            try LRCycleDecayHorizonSteps.definition.validate(raw); lrCycleDecayHorizonSteps = try LRCycleDecayHorizonSteps.decode(raw)
         case MomentumFollowsLRCycle.id:
             try MomentumFollowsLRCycle.definition.validate(raw); momentumFollowsLRCycle = try MomentumFollowsLRCycle.decode(raw)
-        case MomentumFollowStartLow.id:
-            try MomentumFollowStartLow.definition.validate(raw); momentumFollowStartLow = try MomentumFollowStartLow.decode(raw)
-        case MomentumFollowStartHigh.id:
-            try MomentumFollowStartHigh.definition.validate(raw); momentumFollowStartHigh = try MomentumFollowStartHigh.decode(raw)
-        case MomentumFollowEndLow.id:
-            try MomentumFollowEndLow.definition.validate(raw); momentumFollowEndLow = try MomentumFollowEndLow.decode(raw)
-        case MomentumFollowEndHigh.id:
-            try MomentumFollowEndHigh.definition.validate(raw); momentumFollowEndHigh = try MomentumFollowEndHigh.decode(raw)
         case PeriodicAutosaveIntervalSec.id:
             try PeriodicAutosaveIntervalSec.definition.validate(raw); periodicAutosaveIntervalSec = try PeriodicAutosaveIntervalSec.decode(raw)
         case MaxPeriodicAutosavesKept.id:
@@ -2576,6 +2511,7 @@ public final class TrainingParameters {
     /// `invalidStoredSettings`), logged once, and left in `UserDefaults`
     /// untouched until the user resets it.
     private nonisolated static func read<K: TrainingParameterKey>(_ key: K.Type) -> K.Value {
+        _ = legacyLRScheduleSettingsConverted
         switch inspectStored(key, in: .standard) {
         case .absent:
             return K.declaredDefault
@@ -2584,6 +2520,66 @@ public final class TrainingParameters {
         case .invalid(let finding):
             recordInvalidStoredValue(finding)
             return K.declaredDefault
+        }
+    }
+
+    /// The GUI's stored settings from before LR keyframes, converted once
+    /// per process before any setting is read (owner decision Q-6): when
+    /// `lr_cycle_keyframes` is not stored but any of the previous schedule's
+    /// nine keys is, they are converted exactly (`LegacyLRScheduleKeys`) and
+    /// the result stored, so the GUI keeps the schedule it was configured
+    /// with instead of resetting to the defaults. The old entries are read
+    /// and left in place, never deleted.
+    private nonisolated static let legacyLRScheduleSettingsConverted: Void = {
+        convertLegacyLRScheduleSettings(in: .standard)
+    }()
+
+    /// The conversion `legacyLRScheduleSettingsConverted` runs, on any
+    /// defaults (tests use a private suite). Reads kept keys straight from
+    /// `defaults` through `inspectStored` (never `read`, which would re-enter
+    /// the once-only conversion). A stored value the conversion cannot use is
+    /// logged and nothing is written: the GUI then shows the declared
+    /// default, as for any unusable stored setting.
+    nonisolated static func convertLegacyLRScheduleSettings(in defaults: UserDefaults) {
+        guard defaults.object(forKey: LRCycleKeyframes.id) == nil else { return }
+        var values: [String: ParameterValue] = [:]
+        for id in LegacyLRScheduleKeys.removedIDs {
+            guard let object = defaults.object(forKey: id) else { continue }
+            do {
+                values[id] = try ParameterValue(jsonValue: object, id: id)
+            } catch {
+                SessionLogger.shared.log("[PARAM] legacy LR schedule settings not converted: \(id) holds \(object) (\(error))")
+                return
+            }
+        }
+        guard !values.isEmpty else { return }
+        func stored<K: TrainingParameterKey>(_ key: K.Type) -> ParameterValue {
+            switch inspectStored(key, in: defaults) {
+            case .valid(let value): return K.encode(value)
+            case .absent, .invalid: return K.definition.defaultValue
+            }
+        }
+        let kept: [String: ParameterValue] = [
+            LRCycleEnabled.id: stored(LRCycleEnabled.self), LRCyclePeriodSteps.id: stored(LRCyclePeriodSteps.self),
+            LRCycleCount.id: stored(LRCycleCount.self), LRCycleInvert.id: stored(LRCycleInvert.self),
+            MomentumCycleEnabled.id: stored(MomentumCycleEnabled.self),
+            MomentumCyclePeriodSteps.id: stored(MomentumCyclePeriodSteps.self),
+            MomentumCycleCount.id: stored(MomentumCycleCount.self), MomentumCycleMin.id: stored(MomentumCycleMin.self),
+            MomentumCycleMax.id: stored(MomentumCycleMax.self), MomentumCycleInvert.id: stored(MomentumCycleInvert.self),
+            MomentumFollowsLRCycle.id: stored(MomentumFollowsLRCycle.self), LRWarmupSteps.id: stored(LRWarmupSteps.self),
+        ]
+        do {
+            let converted = try LegacyLRScheduleKeys.converting(values, currentValue: { kept[$0] })
+            guard let keyframes = converted.values[LRCycleKeyframes.id] else { return }
+            try LRCycleKeyframes.definition.validate(keyframes)
+            store(keyframes, forKey: LRCycleKeyframes.id, in: defaults)
+            for id in [LRCycleEnabled.id, MomentumCycleEnabled.id] {
+                if let value = converted.values[id] { store(value, forKey: id, in: defaults) }
+            }
+            SessionLogger.shared.log("[PARAM] legacy LR schedule settings converted: " + converted.notes.joined(separator: "; ")
+                + " (the old entries are left in place)")
+        } catch {
+            SessionLogger.shared.log("[PARAM] legacy LR schedule settings not converted: \(error)")
         }
     }
 
@@ -2621,6 +2617,7 @@ public final class TrainingParameters {
             case .bool: return "a true/false value"
             case .int, .uint64: return "a whole number"
             case .double: return "a real number"
+            case .lrKeyframes: return "a keyframe list"
             }
         }
         let raw: ParameterValue
@@ -2630,7 +2627,7 @@ public final class TrainingParameters {
             switch definition.type {
             case .bool: expected = "not a true/false value"
             case .int: expected = "not a whole number"
-            case .double, .uint64: expected = "not a number"
+            case .double, .uint64, .lrKeyframes: expected = "not a number"
             }
             guard let number = object as? NSNumber else {
                 return invalid("\(object)", "stored as \(type(of: object)), \(expected)")
@@ -2655,6 +2652,16 @@ public final class TrainingParameters {
                 return invalid(text, "not a whole number from 0 to \(UInt64.max) written in digits only")
             }
             raw = .uint64(n)
+        case .lrKeyframes:
+            // A property-list array of keyframe dictionaries (`store`).
+            guard let array = object as? [Any] else {
+                return invalid("\(object)", "stored as \(type(of: object)), not a keyframe list")
+            }
+            do {
+                raw = .lrKeyframes(try ParameterValue.keyframes(fromJSONArray: array, id: K.id))
+            } catch {
+                return invalid("\(object)", "\(error)")
+            }
         }
         do {
             try definition.validate(raw)
@@ -2748,6 +2755,8 @@ public final class TrainingParameters {
         // A decimal string, like every other serialization of a UInt64
         // parameter: a property-list integer is signed 64-bit.
         case .uint64(let x): defaults.set(String(x), forKey: id)
+        // A property-list array of dictionaries, the same shape as JSON.
+        case .lrKeyframes: defaults.set(raw.jsonValue, forKey: id)
         }
     }
 
@@ -3090,8 +3099,7 @@ public final class TrainingParameters {
         LRCycleEnabled.self,
         LRCyclePeriodSteps.self,
         LRCycleCount.self,
-        LRCycleMin.self,
-        LRCycleMax.self,
+        LRCycleKeyframes.self,
         LRCycleInvert.self,
         MomentumCycleEnabled.self,
         MomentumCyclePeriodSteps.self,
@@ -3099,14 +3107,7 @@ public final class TrainingParameters {
         MomentumCycleMin.self,
         MomentumCycleMax.self,
         MomentumCycleInvert.self,
-        LRCyclePeakEnd.self,
-        LRCycleTroughEnd.self,
-        LRCycleDecayHorizonSteps.self,
         MomentumFollowsLRCycle.self,
-        MomentumFollowStartLow.self,
-        MomentumFollowStartHigh.self,
-        MomentumFollowEndLow.self,
-        MomentumFollowEndHigh.self,
         PeriodicAutosaveIntervalSec.self,
         MaxPeriodicAutosavesKept.self,
         AutomaticSavePruningEnabled.self,
@@ -3183,6 +3184,8 @@ public final class TrainingParameters {
                 } else {
                     rangeText = "UInt64 as a decimal string"
                 }
+            case .lrKeyframes:
+                rangeText = "array of {step, peak, trough, momentum_at_peak, momentum_at_trough}"
             }
             return "\(def.id): \(def.description) (\(rangeText))"
         }
@@ -3228,6 +3231,10 @@ public final class TrainingParameters {
                     typeText = "UInt64 (written as a decimal string)"
                     rangeText = def.uint64Range.map { "\($0.min)..\($0.max)" } ?? "—"
                     if case .uint64(let x) = def.defaultValue { defaultText = "\"\(x)\"" } else { defaultText = "?" }
+                case .lrKeyframes:
+                    typeText = "Keyframe list (array of {step, peak, trough, momentum_at_peak, momentum_at_trough})"
+                    rangeText = "first step 0, steps increasing, ≤ \(LRKeyframeSchedule.maximumKeyframeCount) keyframes; 0 < trough ≤ peak ≤ \(LRKeyframeSchedule.maximumLearningRate); momentum 0…0.99, at peak ≤ at trough"
+                    defaultText = def.defaultValue.displayText
                 }
                 out += "**Type:** \(typeText) · **Range:** \(rangeText) · **Default:** \(defaultText)"
                 if def.liveTunable {

@@ -61,7 +61,11 @@ final class RelativeGradientCapResumeTests: XCTestCase {
         XCTAssertEqual(ResumeGap.gradNormHistoryGaps(restoring: reloaded.gradNormHistory, runningMode: .clip), [])
 
         let resumed = try RelativeGradientCapFixture.makeTrainer(initSeed: 2, hardMax: hardMax, configuration: config)
-        try await resumed.restoreExactly(from: reloaded)
+        // A CLI `--resume-exact` keeps its configured schedule (owner decision
+        // O-4); both trainers are configured alike, so it is the checkpoint's.
+        try await resumed.restoreExactly(from: reloaded, schedule: .keepConfigured)
+        XCTAssertEqual(resumed.lrWarmupSteps, reloaded.schedule.lrWarmupSteps)
+        XCTAssertEqual(resumed.lrMomentumCycle, reloaded.schedule.lrMomentumCycle)
         let restoredHistory = try await resumed.exportGradNormHistory()
         XCTAssertEqual(restoredHistory, savedHistory)
 
@@ -103,7 +107,7 @@ final class RelativeGradientCapResumeTests: XCTestCase {
         XCTAssertEqual(ResumeGap(rawValue: "grad_norm_history"), .gradNormHistory)
 
         let resumed = try RelativeGradientCapFixture.makeTrainer(initSeed: 2, hardMax: hardMax, configuration: config)
-        try await resumed.restoreExactly(from: reloaded)
+        try await resumed.restoreExactly(from: reloaded, schedule: .keepConfigured)
         let restoredHistory = try await resumed.exportGradNormHistory()
         XCTAssertTrue(restoredHistory.isEmpty)
         // W = 2: the first two resumed steps feed the hard max, the third the

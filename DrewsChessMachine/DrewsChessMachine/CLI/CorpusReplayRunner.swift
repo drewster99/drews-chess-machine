@@ -36,8 +36,8 @@ final class ReplayAbortFlag: @unchecked Sendable {
 /// independently mutable, a caller could change `trainingBatchSize` without
 /// changing `lineageParameters`, and the files said one batch size while the
 /// trainer stepped at another.) A changed value means a new snapshot and a
-/// new `ReplayParams`; `adoptingSchedule(_:)` is the one such change a run
-/// makes.
+/// new `ReplayParams`. An exact resume trains under the configured schedule
+/// (owner decision O-4), so a run makes no such change.
 struct ReplayParams: Sendable {
     /// The snapshot every field below is derived from — what the run's
     /// lineage records and a train-vs-UCI session's `session.json` records
@@ -72,16 +72,6 @@ struct ReplayParams: Sendable {
         samplingConstraints = ReplayBuffer.SamplingConstraints(parameters)
     }
 
-    /// These parameters with a resumed checkpoint's schedule in force: the
-    /// warmup length and LR/momentum cycle it trained under, whatever the
-    /// run was configured with. Rebuilt from one adopted snapshot, so the
-    /// trainer is configured with — and every lineage record of the run
-    /// records — the schedule the file's flat `trainer_*` keys are written
-    /// from. A CLI trainer cannot change its schedule during a run, so this
-    /// one adoption at the start describes every save.
-    func adoptingSchedule(_ schedule: TrainerScheduleState) throws -> ReplayParams {
-        try ReplayParams(parameters.adoptingSchedule(schedule))
-    }
 }
 
 /// Configuration for one offline corpus-replay run.
@@ -1191,18 +1181,14 @@ enum CorpusReplayRunner {
         // two on/off flags are interpolated rather than passed through %@ (Swift
         // String + %@ relies on NSString bridging — avoid it).
         //
-        // An exact resume trains under the checkpoint's own schedule (warmup
-        // length and LR/momentum cycle), whatever `--parameters` says; each
-        // field that differs is logged, and the banner below shows the
-        // schedule actually in force.
-        let p: ReplayParams
-        if let resumeSnapshot {
-            for line in configuredParams.trainer.scheduleDifferences(from: resumeSnapshot.schedule) {
-                emit("[REPLAY-RESUME] WARNING \(line)")
-            }
-            p = try configuredParams.adoptingSchedule(resumeSnapshot.schedule)
-        } else {
-            p = configuredParams
+        // An exact resume trains under the configured schedule (owner
+        // decision O-4). A difference from the checkpoint's that changes what
+        // the trainer is fed (behavior form, owner decision Q-5) is logged
+        // per field and is the `schedule` resume gap, added below.
+        let p = configuredParams
+        let scheduleDifferenceLines = resumeSnapshot.map { p.trainer.scheduleDifferences(from: $0.schedule) } ?? []
+        for line in scheduleDifferenceLines {
+            emit("[RESUME] schedule: \(line)")
         }
         let hp = p.trainer
         let hparamsLine = String(
@@ -1396,7 +1382,7 @@ enum CorpusReplayRunner {
         // run's own, with every stream position it saved.
         var runSeed = config.runRandomSeed
         var resumedStreams: LineageRecord.RunStreams? = nil
-        var resumeGaps: [ResumeGap] = []
+        var resumeGaps: [ResumeGap] = scheduleDifferenceLines.isEmpty ? [] : [.schedule]
         if config.resumeExact {
             // Read the saved resume metadata from the --start-model header (no
             // tensor decode) and validate it's for THIS corpus.
@@ -1678,7 +1664,7 @@ enum CorpusReplayRunner {
             }
             try await net.network.loadWeights(file.networkWeights)
             if let resumeSnapshot {
-                try await trainer.restoreExactly(from: resumeSnapshot)
+                try await trainer.restoreExactly(from: resumeSnapshot, schedule: .keepConfigured)
                 if let resumedStreams {
                     try await trainer.restoreDropoutStreamState(resumedStreams.dropoutStreamState)
                     emit("[RESUME] rng: dropout stream=restored")
@@ -1699,6 +1685,9 @@ enum CorpusReplayRunner {
             : (startModelFile != nil ? .newBranch(fromModelID: parentModelID) : .fresh)
         emit("[REPLAY-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
             + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
+        if let warning = LRMomentumCycleLogFormat.troughFloorWarning(trainer.lrMomentumCycle) {
+            emit(warning)
+        }
 
         try SegmentStartTrainerStepMismatch.require(
             preflight: segmentStartTrainerStep, trainerClock: trainer.completedTrainSteps)

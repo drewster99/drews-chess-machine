@@ -42,6 +42,9 @@ public struct TrainingParameterMacro: MemberMacro {
         case .bool:
             defaultValueFragment = ".bool(\(args.defaultExpr))"
             parameterTypeCase = ".bool"
+        case .lrKeyframes:
+            defaultValueFragment = ".lrKeyframes(\(args.defaultExpr))"
+            parameterTypeCase = ".lrKeyframes"
         }
 
         let definitionDecl: DeclSyntax = """
@@ -99,6 +102,13 @@ public struct TrainingParameterMacro: MemberMacro {
             }
             return x
             """
+        case .lrKeyframes:
+            decodeBody = """
+            guard case .lrKeyframes(let x) = value else {
+                throw TrainingConfigError.wrongType(id: id)
+            }
+            return x
+            """
         }
 
         let decodeDecl: DeclSyntax = """
@@ -139,6 +149,9 @@ private enum ValueKind {
     /// integer literal alone reads as `Int`).
     case uint64(min: String, max: String)
     case bool
+    /// Declared with `default: LRKeyframeSchedule(...)`: the LR cycle's
+    /// keyframe list, validated by the schedule's own validator (no `range:`).
+    case lrKeyframes
 
     var swiftTypeName: String {
         switch self {
@@ -146,6 +159,7 @@ private enum ValueKind {
         case .int: return "Int"
         case .uint64: return "UInt64"
         case .bool: return "Bool"
+        case .lrKeyframes: return "LRKeyframeSchedule"
         }
     }
 }
@@ -155,6 +169,7 @@ private enum MacroError: Error, CustomStringConvertible {
     case missingArgument(String)
     case rangeRequired
     case unknownDefaultType
+    case rangeMaximumOnAList
 
     var description: String {
         switch self {
@@ -165,7 +180,9 @@ private enum MacroError: Error, CustomStringConvertible {
         case .rangeRequired:
             return "@TrainingParameter requires 'range:' for numeric parameters"
         case .unknownDefaultType:
-            return "@TrainingParameter could not infer the parameter type from 'default:' (must be a Double, Int, or Bool literal, or UInt64(<integer literal>))"
+            return "@TrainingParameter could not infer the parameter type from 'default:' (must be a Double, Int, or Bool literal, UInt64(<integer literal>), or LRKeyframeSchedule(...))"
+        case .rangeMaximumOnAList:
+            return "@TrainingParameter: a keyframe list has no range maximum; 'absentValue: .declaredRangeMaximum' does not apply"
         }
     }
 }
@@ -191,6 +208,10 @@ private func parseArguments(_ node: AttributeSyntax) throws -> ParsedArgs {
     let idLiteral: String? = byLabel["id"].flatMap { stringLiteralValue($0) }
 
     let kind = try valueKind(forDefault: defaultExpr, range: byLabel["range"])
+    if case .lrKeyframes = kind, let absent = byLabel["absentValue"],
+       absent.description.contains("declaredRangeMaximum") {
+        throw MacroError.rangeMaximumOnAList
+    }
 
     return ParsedArgs(
         nameExpr: nameExpr.description,
@@ -207,6 +228,11 @@ private func parseArguments(_ node: AttributeSyntax) throws -> ParsedArgs {
 private func valueKind(forDefault defaultExpr: ExprSyntax, range: ExprSyntax?) throws -> ValueKind {
     if defaultExpr.is(BooleanLiteralExprSyntax.self) {
         return .bool
+    }
+    if let call = defaultExpr.as(FunctionCallExprSyntax.self),
+       let callee = call.calledExpression.as(DeclReferenceExprSyntax.self),
+       callee.baseName.text == "LRKeyframeSchedule" {
+        return .lrKeyframes
     }
     if let call = defaultExpr.as(FunctionCallExprSyntax.self),
        let callee = call.calledExpression.as(DeclReferenceExprSyntax.self),

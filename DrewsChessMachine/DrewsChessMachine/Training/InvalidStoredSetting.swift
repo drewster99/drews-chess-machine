@@ -1,4 +1,5 @@
 import Foundation
+import TrainingParametersMacroSupport
 
 /// A stored or saved setting that could not be used as found.
 ///
@@ -40,6 +41,12 @@ extension ParameterValue {
         case .int(let n): return String(n)
         case .double(let d): return "\(d)"
         case .uint64(let n): return String(n)
+        case .lrKeyframes(let s):
+            // One `step:peak/trough m<at peak>/<at trough>` entry per keyframe,
+            // every number as `parameters.json` writes it.
+            return "[" + s.keyframes.map { k in
+                "\(k.step):\(k.peak)/\(k.trough) m\(k.momentumAtPeak)/\(k.momentumAtTrough)"
+            }.joined(separator: ", ") + "]"
         }
     }
 }

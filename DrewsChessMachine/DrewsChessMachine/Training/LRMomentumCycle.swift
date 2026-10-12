@@ -1,4 +1,5 @@
 import Foundation
+import TrainingParametersMacroSupport
 
 /// Repeating cyclical schedule for the optimizer's learning rate and Polyak
 /// momentum, driven purely by the trainer's global step number.
@@ -36,7 +37,7 @@ import Foundation
 ///
 /// - **LR interpolates geometrically, momentum linearly.** LR's effect is
 ///   ~scale-invariant, so log-space interpolation spends equal time per
-///   multiplicative octave (`lrMin · (lrMax/lrMin)^frac`). Momentum's useful
+///   multiplicative octave (`trough · (peak/trough)^frac`). Momentum's useful
 ///   band (~0.85–0.95) is modest, so a plain linear lerp is fine.
 ///
 /// - **Absolute endpoints.** The endpoints are absolute LR / momentum values,
@@ -48,46 +49,45 @@ import Foundation
 /// - **`count` completion freezes at the cycle boundary.** With `count == 0`
 ///   the cycle repeats forever (the open-ended default). With `count != 0`,
 ///   once `step / period ≥ count` the phase is clamped to 0 (the boundary),
-///   which — respecting `invert` — leaves LR at `lrMin` and momentum at
+///   which — respecting `invert` — leaves LR at the trough and momentum at
 ///   `momentumMax`, i.e. the low-LR / high-momentum converged regime. The
 ///   count is measured on the cycle's own step axis, i.e. from the end of
 ///   warmup, so warmup never consumes any of the requested cycles.
 ///
-/// - **Decaying envelope.** The peak and trough the LR swings between each
-///   decay geometrically from a start value (`lrMax` / `lrMin`) to an end
-///   value over a horizon measured on the cycle's own step axis, then hold at
-///   the end values while cycling continues. Open-ended self-play still has
-///   no known end, but a long run wants its LR to come down over time the way
-///   a finite schedule would; the envelope provides that without giving up
-///   the plateau-breaking swings. A zero horizon disables the decay.
+/// - **Keyframed envelope.** The peak and trough the LR swings between come
+///   from `lrKeyframes` (`LRKeyframeSchedule`), read at the **trainer** step:
+///   geometric between keyframes, held after the last. A long run wants its
+///   LR to come down over time the way a finite schedule would, often in
+///   stages (a fast early decay, then a slow one, then a floor); keyframes
+///   express that without giving up the plateau-breaking swings. They replaced
+///   a single start → end decay over one horizon
+///   (documentation/plans-active/LR_KEYFRAMES_PLAN.md); an old schedule
+///   converts to keyframes exactly (`converting(_:)`). The phase stays on the
+///   cycle step, so the cycle still starts after warmup.
 ///
 /// - **Momentum can follow the LR cycle.** Rather than keeping a separate
 ///   momentum period and invert flag in agreement with the LR cycle by hand,
 ///   the follow mode reads the LR cycle's own phase and inverts it, so the
 ///   inverse coupling holds by construction — including after a period edit.
+///   Its bounds (momentum at the LR peak and at the LR trough) ride on the
+///   same keyframes, linear between them: one timeline, not two.
 ///
 /// The struct is `Sendable` + `Equatable` and the math is pure, so it is
 /// carried lock-free across the trainer's main/off-main boundary (in a
 /// `SyncBox`) and is exercised directly by `LRMomentumCycleTests`.
-struct LRMomentumCycle: Sendable, Equatable, Codable {
+struct LRMomentumCycle: Sendable, Equatable {
 
-    // MARK: LR cycle (geometric interpolation between absolute endpoints)
+    // MARK: LR cycle
 
     var lrEnabled: Bool
     /// Full up-then-down period, in optimizer steps.
     var lrPeriodSteps: Int
     /// Number of cycles before freezing at the boundary. 0 = unbounded.
     var lrCount: Int
-    /// Absolute LR at the cycle's trough (the period boundaries when
-    /// `lrInvert == false`) at the start of the decay horizon — the trough's
-    /// start value. Must be > 0 for geometric interpolation.
-    var lrMin: Double
-    /// Absolute LR at the cycle's peak (the period midpoint when
-    /// `lrInvert == false`) at the start of the decay horizon — the peak's
-    /// start value.
-    var lrMax: Double
-    /// Flip the waveform so the cycle starts at `lrMax` instead of `lrMin`.
+    /// Flip the waveform so the cycle starts at its peak instead of its trough.
     var lrInvert: Bool
+    /// The peak and trough over the run (and the follow-momentum bounds).
+    var lrKeyframes: LRKeyframeSchedule
 
     // MARK: Momentum cycle (linear interpolation between absolute endpoints)
 
@@ -97,42 +97,31 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
     var momentumMin: Double
     var momentumMax: Double
     var momentumInvert: Bool
-
-    // MARK: Decay envelope + momentum-follows-LR
-
-    /// The decay envelope and the momentum-follow mode. Deliberately left
-    /// out of this struct's `Codable` form (see `CodingKeys`): session files
-    /// written before the envelope existed carry an `lrMomentumCycle` object
-    /// without it, and adding a required key would make those sessions fail
-    /// to decode outright. The envelope is persisted as its own Optional
-    /// field on `SessionCheckpointState` instead, and resume re-attaches it.
-    /// Its default is the no-decay, no-follow configuration, under which this
-    /// struct behaves exactly as it did before the envelope existed.
-    var envelope: LRMomentumCycleEnvelope = .noDecay
-
-    enum CodingKeys: String, CodingKey {
-        case lrEnabled, lrPeriodSteps, lrCount, lrMin, lrMax, lrInvert
-        case momentumEnabled, momentumPeriodSteps, momentumCount, momentumMin, momentumMax, momentumInvert
-    }
+    /// When on, momentum is driven by the LR cycle's phase (inverted), between
+    /// the keyframes' momentum at the LR peak and at the LR trough, instead of
+    /// by the independent momentum cycle above.
+    var momentumFollowsLRCycle: Bool
 
     /// The all-off configuration: the trainer's value before a session pushes
-    /// the configured cycle onto it. Both channels are off, so the endpoint
-    /// values are inert. They are a fixed, sane set (the unit tests build on
-    /// them) and deliberately do not track the parameter defaults, which live
-    /// only on the `@TrainingParameter` declarations.
+    /// the configured cycle onto it (and the behavior fingerprint's).
+    /// Both channels are off, so every other value is inert; they are a fixed,
+    /// sane set and deliberately do not track the parameter defaults, which
+    /// live only on the `@TrainingParameter` declarations.
     static let disabled = LRMomentumCycle(
         lrEnabled: false,
         lrPeriodSteps: 2000,
         lrCount: 0,
-        lrMin: 0.001,
-        lrMax: 0.03,
         lrInvert: false,
+        lrKeyframes: LRKeyframeSchedule(keyframes: [
+            LRKeyframe(step: 0, peak: 0.03, trough: 0.001, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
+        ]),
         momentumEnabled: false,
         momentumPeriodSteps: 2000,
         momentumCount: 0,
         momentumMin: 0.85,
         momentumMax: 0.95,
-        momentumInvert: true
+        momentumInvert: true,
+        momentumFollowsLRCycle: false
     )
 
     /// Cosine up-then-down position in `[0, 1]` for cycle step `step`, honoring the
@@ -168,53 +157,10 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
         max(0, completedTrainSteps - max(0, lrWarmupSteps))
     }
 
-    /// Cycled learning rate at trainer global step `completedTrainSteps`,
-    /// with the cycle offset to begin after `lrWarmupSteps`. `nil` under the
-    /// same conditions as `learningRate(forStep:)`. The warmup multiplier is
-    /// NOT applied here — callers compose it (and √batch) on top.
-    func learningRate(completedTrainSteps: Int, lrWarmupSteps: Int) -> Double? {
-        learningRate(forStep: Self.cycleStep(completedTrainSteps: completedTrainSteps, lrWarmupSteps: lrWarmupSteps))
-    }
-
-    /// Cycled momentum at trainer global step `completedTrainSteps`, offset
-    /// by the same warmup length as the LR channel so the two stay in phase.
-    /// During warmup this is the cycle's step-0 momentum.
-    func momentum(completedTrainSteps: Int, lrWarmupSteps: Int) -> Double? {
-        momentum(forStep: Self.cycleStep(completedTrainSteps: completedTrainSteps, lrWarmupSteps: lrWarmupSteps))
-    }
-
-    /// Effective learning rate at cycle step `step` (already offset past
-    /// warmup — see `cycleStep`), or `nil` when LR cycling is
-    /// inactive or misconfigured — the caller then falls back to the static
-    /// base learning rate. Geometric (log-space) interpolation requires
-    /// `lrMin > 0` and `lrMax >= lrMin`; otherwise `nil` is returned.
-    func learningRate(forStep step: Int) -> Double? {
-        values(forCycleStep: step).learningRate
-    }
-
-    /// Effective Polyak momentum at cycle step `step` (already offset past
-    /// warmup — see `cycleStep`), or `nil` when momentum cycling
-    /// is inactive or misconfigured — the caller then falls back to the static
-    /// momentum coefficient. Linear interpolation between the endpoints.
-    ///
-    /// Requires `momentumMax >= momentumMin`: an inverted endpoint pair would
-    /// silently run the schedule backwards, which is exactly what the explicit
-    /// `momentumInvert` flag exists to express. Rather than honor an accidental
-    /// reversal, fall back to the static coefficient (mirroring the LR channel's
-    /// `lrMax >= lrMin` guard).
-    ///
-    /// When `envelope.momentumFollowsLRCycle` is on, the separate momentum
-    /// cycle's period, count, endpoints and invert flag are ignored and the
-    /// channel is driven by the LR cycle instead — see `values(forCycleStep:)`.
-    func momentum(forStep step: Int) -> Double? {
-        values(forCycleStep: step).momentum
-    }
-
-    /// Everything the schedule says about one cycle step. `lrPeak` /
-    /// `lrTrough` are the (possibly decayed) envelope bounds the LR is
-    /// swinging between at that step; they exist for the log lines, so a
-    /// reader can see where in the decay the run sits, and are `nil`
-    /// exactly when `learningRate` is.
+    /// Everything the schedule says about one trainer step. `lrPeak` /
+    /// `lrTrough` are the bounds the LR swings between there; they exist for
+    /// the log lines, so a reader can see where in the schedule the run sits,
+    /// and are `nil` exactly when `learningRate` is.
     struct Values: Sendable, Equatable {
         let learningRate: Double?
         let momentum: Double?
@@ -222,87 +168,172 @@ struct LRMomentumCycle: Sendable, Equatable, Codable {
         let lrTrough: Double?
     }
 
-    /// Position along the decay horizon in `[0, 1]`: the fraction of the
-    /// horizon elapsed at cycle step `step`, held at 1 once the horizon is
-    /// passed so the envelope stays at its end values and cycling continues
-    /// between them. A non-positive horizon means "no decay", which pins the
-    /// envelope at its start values forever — the pre-envelope behavior.
-    static func decayFraction(step: Int, horizonSteps: Int) -> Double {
-        guard horizonSteps > 0 else { return 0.0 }
-        return Double(min(max(0, step), horizonSteps)) / Double(horizonSteps)
-    }
-
-    /// The single source of truth for the schedule: learning rate and
-    /// momentum (plus the LR envelope bounds) at cycle step `step`, which is
-    /// already offset past warmup (see `cycleStep`). Every other accessor
-    /// reads through here so the SGD feed, the status readouts and the logs
-    /// can never disagree.
+    /// The single source of truth for the schedule at trainer step
+    /// `completedTrainSteps`. Every other reader goes through here so the SGD
+    /// feed, the status readouts and the logs can never disagree.
     ///
-    /// LR: the cycle's cosine fraction interpolates geometrically between
-    /// this step's trough and peak. Each bound decays geometrically from its
-    /// start value (`lrMin` for the trough, `lrMax` for the peak) to its end
-    /// value in the envelope across the decay horizon — log-space, for the
-    /// same scale-invariance reason the in-cycle interpolation is log-space.
-    /// `nil` when LR cycling is off or any bound pair is unusable (a bound
-    /// not > 0, or a peak below its trough), so the caller falls back to the
-    /// static base LR rather than running a nonsensical schedule.
+    /// LR: the cycle's cosine fraction (from the cycle step: trainer step −
+    /// warmup) interpolates geometrically between this step's trough and peak
+    /// (from the keyframes, at the trainer step). `nil` when LR cycling is off
+    /// or the period is not positive, so the caller uses the static base LR.
     ///
-    /// Momentum, following the LR cycle: the same cosine fraction, inverted,
-    /// so momentum is at its low bound exactly where LR is at its peak and at
-    /// its high bound where LR bottoms out — Smith's inverse coupling without
-    /// having to keep two periods and two invert flags in agreement by hand.
-    /// Its bounds move linearly (momentum's useful band is narrow) across the
-    /// same horizon. Following requires an active LR cycle: without one there
-    /// is no phase to follow, so the channel reports `nil` (static momentum).
+    /// Momentum, following the LR cycle: the same fraction, inverted, so
+    /// momentum is at its low bound exactly where LR peaks and at its high
+    /// bound where LR bottoms out. Following needs an active LR cycle: without
+    /// one there is no phase to follow, so the channel reports `nil` (static
+    /// momentum). The `high >= low` guard is unreachable for a validated
+    /// schedule and stays so an unvalidated one can never run backwards.
     ///
-    /// Momentum, not following: the independent momentum cycle, unchanged.
-    func values(forCycleStep step: Int) -> Values {
-        let decay = Self.decayFraction(step: step, horizonSteps: envelope.decayHorizonSteps)
+    /// Momentum, not following: the independent momentum cycle.
+    ///
+    /// The gates, their order and the arithmetic are the previous
+    /// single-decay cycle's; a converted old schedule feeds bit-identical
+    /// values (LRKeyframeScheduleTests).
+    func values(completedTrainSteps: Int, lrWarmupSteps: Int) -> Values {
+        let cycleStep = Self.cycleStep(completedTrainSteps: completedTrainSteps, lrWarmupSteps: lrWarmupSteps)
+        let bounds = lrKeyframes.bounds(atTrainerStep: completedTrainSteps)
 
         var learningRate: Double? = nil
         var lrPeak: Double? = nil
         var lrTrough: Double? = nil
         var lrFraction: Double? = nil
-        let decayEndsUsable = envelope.decayHorizonSteps <= 0
-            || (envelope.lrPeakEnd > 0 && envelope.lrTroughEnd > 0 && envelope.lrPeakEnd >= envelope.lrTroughEnd)
-        if lrEnabled, lrPeriodSteps > 0, lrMin > 0, lrMax >= lrMin, decayEndsUsable {
-            let peak = lrMax * pow(envelope.lrPeakEnd / lrMax, decay)
-            let trough = lrMin * pow(envelope.lrTroughEnd / lrMin, decay)
-            let frac = Self.cycleFraction(step: step, period: lrPeriodSteps, count: lrCount, invert: lrInvert)
-            learningRate = trough * pow(peak / trough, frac)
-            lrPeak = peak
-            lrTrough = trough
+        if lrEnabled, lrPeriodSteps > 0 {
+            let frac = Self.cycleFraction(step: cycleStep, period: lrPeriodSteps, count: lrCount, invert: lrInvert)
+            learningRate = bounds.trough * pow(bounds.peak / bounds.trough, frac)
+            lrPeak = bounds.peak
+            lrTrough = bounds.trough
             lrFraction = frac
         }
 
         var momentum: Double? = nil
         if momentumEnabled {
-            if envelope.momentumFollowsLRCycle {
-                let low = envelope.momentumFollowStartLow
-                    + (envelope.momentumFollowEndLow - envelope.momentumFollowStartLow) * decay
-                let high = envelope.momentumFollowStartHigh
-                    + (envelope.momentumFollowEndHigh - envelope.momentumFollowStartHigh) * decay
+            if momentumFollowsLRCycle {
+                let low = bounds.momentumAtPeak
+                let high = bounds.momentumAtTrough
                 if let lrFraction, high >= low {
                     momentum = high - (high - low) * lrFraction
                 }
             } else if momentumPeriodSteps > 0, momentumMax >= momentumMin {
-                let frac = Self.cycleFraction(step: step, period: momentumPeriodSteps, count: momentumCount, invert: momentumInvert)
+                let frac = Self.cycleFraction(step: cycleStep, period: momentumPeriodSteps,
+                                              count: momentumCount, invert: momentumInvert)
                 momentum = momentumMin + (momentumMax - momentumMin) * frac
             }
         }
-
         return Values(learningRate: learningRate, momentum: momentum, lrPeak: lrPeak, lrTrough: lrTrough)
-    }
-
-    /// `values(forCycleStep:)` at trainer global step `completedTrainSteps`,
-    /// with the warmup offset applied.
-    func values(completedTrainSteps: Int, lrWarmupSteps: Int) -> Values {
-        values(forCycleStep: Self.cycleStep(completedTrainSteps: completedTrainSteps, lrWarmupSteps: lrWarmupSteps))
     }
 
     /// True when either channel is actively cycling — used to decide whether
     /// to emit the effective values into `[STATS]`.
     var isActive: Bool { lrEnabled || momentumEnabled }
+
+    /// The schedule in behavior form: the fields that can change a value the
+    /// trainer is fed. Two cycles with equal behavior forms feed the same LR
+    /// and momentum at every step, whatever their inert fields hold (a
+    /// disabled channel's numbers, the independent momentum cycle while
+    /// momentum follows the LR). An exact resume compares these (owner
+    /// decision Q-5), so an inert difference never costs a resume its
+    /// exactness.
+    var behaviorForm: LRMomentumCycle {
+        var form = LRMomentumCycle.disabled
+        let lrActive = lrEnabled && lrPeriodSteps > 0
+        if lrActive {
+            form.lrEnabled = true
+            form.lrPeriodSteps = lrPeriodSteps
+            form.lrCount = lrCount
+            form.lrInvert = lrInvert
+            form.lrKeyframes = lrKeyframes
+        }
+        if momentumEnabled {
+            if momentumFollowsLRCycle {
+                // Following reads the LR phase and the keyframes' momentum pair.
+                if lrActive {
+                    form.momentumEnabled = true
+                    form.momentumFollowsLRCycle = true
+                }
+            } else if momentumPeriodSteps > 0, momentumMax >= momentumMin {
+                form.momentumEnabled = true
+                form.momentumPeriodSteps = momentumPeriodSteps
+                form.momentumCount = momentumCount
+                form.momentumMin = momentumMin
+                form.momentumMax = momentumMax
+                form.momentumInvert = momentumInvert
+            }
+        }
+        return form
+    }
+}
+
+// MARK: - Persisted form
+
+/// The one encoded form of a schedule: trainer files (`trainer_lr_schedule`),
+/// session files (`lrSchedule`) and anything else that stores one. Versioned
+/// by `schedule_format` so a later change can be told apart; a decode
+/// validates the keyframes, so no stored schedule bypasses the validator.
+extension LRMomentumCycle: Codable {
+    static let currentScheduleFormat = 1
+
+    enum CodingKeys: String, CodingKey {
+        case scheduleFormat = "schedule_format"
+        case lrEnabled = "lr_enabled"
+        case lrPeriodSteps = "lr_period_steps"
+        case lrCount = "lr_count"
+        case lrInvert = "lr_invert"
+        case lrKeyframes = "lr_keyframes"
+        case momentumEnabled = "momentum_enabled"
+        case momentumPeriodSteps = "momentum_period_steps"
+        case momentumCount = "momentum_count"
+        case momentumMin = "momentum_min"
+        case momentumMax = "momentum_max"
+        case momentumInvert = "momentum_invert"
+        case momentumFollowsLRCycle = "momentum_follows_lr_cycle"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let format = try c.decode(Int.self, forKey: .scheduleFormat)
+        guard format == Self.currentScheduleFormat else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .scheduleFormat, in: c,
+                debugDescription: "LR schedule format \(format) is not one this build reads (\(Self.currentScheduleFormat))")
+        }
+        let keyframes = try c.decode(LRKeyframeSchedule.self, forKey: .lrKeyframes)
+        do {
+            try keyframes.validated()
+        } catch {
+            throw DecodingError.dataCorruptedError(forKey: .lrKeyframes, in: c, debugDescription: "\(error)")
+        }
+        self.init(
+            lrEnabled: try c.decode(Bool.self, forKey: .lrEnabled),
+            lrPeriodSteps: try c.decode(Int.self, forKey: .lrPeriodSteps),
+            lrCount: try c.decode(Int.self, forKey: .lrCount),
+            lrInvert: try c.decode(Bool.self, forKey: .lrInvert),
+            lrKeyframes: keyframes,
+            momentumEnabled: try c.decode(Bool.self, forKey: .momentumEnabled),
+            momentumPeriodSteps: try c.decode(Int.self, forKey: .momentumPeriodSteps),
+            momentumCount: try c.decode(Int.self, forKey: .momentumCount),
+            momentumMin: try c.decode(Double.self, forKey: .momentumMin),
+            momentumMax: try c.decode(Double.self, forKey: .momentumMax),
+            momentumInvert: try c.decode(Bool.self, forKey: .momentumInvert),
+            momentumFollowsLRCycle: try c.decode(Bool.self, forKey: .momentumFollowsLRCycle)
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(Self.currentScheduleFormat, forKey: .scheduleFormat)
+        try c.encode(lrEnabled, forKey: .lrEnabled)
+        try c.encode(lrPeriodSteps, forKey: .lrPeriodSteps)
+        try c.encode(lrCount, forKey: .lrCount)
+        try c.encode(lrInvert, forKey: .lrInvert)
+        try c.encode(lrKeyframes, forKey: .lrKeyframes)
+        try c.encode(momentumEnabled, forKey: .momentumEnabled)
+        try c.encode(momentumPeriodSteps, forKey: .momentumPeriodSteps)
+        try c.encode(momentumCount, forKey: .momentumCount)
+        try c.encode(momentumMin, forKey: .momentumMin)
+        try c.encode(momentumMax, forKey: .momentumMax)
+        try c.encode(momentumInvert, forKey: .momentumInvert)
+        try c.encode(momentumFollowsLRCycle, forKey: .momentumFollowsLRCycle)
+    }
 }
 
 @MainActor
@@ -315,195 +346,119 @@ extension TrainingParameters {
     var lrMomentumCycle: LRMomentumCycle {
         snapshot().lrMomentumCycle
     }
-
-    /// The decay envelope + momentum-follow configuration, read live from the
-    /// singleton. Also persisted on its own in session files (see
-    /// `LRMomentumCycle.envelope` for why it is not part of the cycle's
-    /// encoded form).
-    var lrMomentumCycleEnvelope: LRMomentumCycleEnvelope {
-        snapshot().lrMomentumCycleEnvelope
-    }
 }
 
 extension TrainingParametersSnapshot {
-    /// The LR/momentum cycle these parameters describe, envelope included —
-    /// the single mapping from the `lr_cycle_*` / `momentum_cycle_*` /
-    /// `momentum_follow*` parameters to the struct the trainer consumes.
-    /// Pushed onto a trainer via `TrainerHyperparameters.apply(to:)`.
+    /// The LR/momentum cycle these parameters describe — the single mapping
+    /// from the `lr_cycle_*` / `momentum_cycle_*` / `momentum_follows_lr_cycle`
+    /// parameters to the struct the trainer consumes. Pushed onto a trainer
+    /// via `TrainerHyperparameters.apply(to:)`.
     var lrMomentumCycle: LRMomentumCycle {
         LRMomentumCycle(
             lrEnabled: lrCycleEnabled,
             lrPeriodSteps: lrCyclePeriodSteps,
             lrCount: lrCycleCount,
-            lrMin: lrCycleMin,
-            lrMax: lrCycleMax,
             lrInvert: lrCycleInvert,
+            lrKeyframes: lrCycleKeyframes,
             momentumEnabled: momentumCycleEnabled,
             momentumPeriodSteps: momentumCyclePeriodSteps,
             momentumCount: momentumCycleCount,
             momentumMin: momentumCycleMin,
             momentumMax: momentumCycleMax,
             momentumInvert: momentumCycleInvert,
-            envelope: lrMomentumCycleEnvelope
+            momentumFollowsLRCycle: momentumFollowsLRCycle
         )
     }
 
+    /// The ids `adoptingSchedule(_:)` writes: the warmup length and every
+    /// cycle key. The schedule backstop of a trainer file
+    /// (`SafetensorsModelIO.checkScheduleAgrees`) compares exactly these.
+    static let scheduleKeyIDs: [String] = [
+        LRWarmupSteps.id,
+        LRCycleEnabled.id, LRCyclePeriodSteps.id, LRCycleCount.id, LRCycleInvert.id, LRCycleKeyframes.id,
+        MomentumCycleEnabled.id, MomentumCyclePeriodSteps.id, MomentumCycleCount.id, MomentumCycleMin.id,
+        MomentumCycleMax.id, MomentumCycleInvert.id, MomentumFollowsLRCycle.id,
+    ]
+
     /// These parameters with the schedule a trainer runs under written in:
-    /// `lr_warmup_steps` and every `lr_cycle_*` / `momentum_cycle_*` /
-    /// `momentum_follow*` key, taken from `schedule` — the exact inverse of
-    /// `lrMomentumCycle` / `lrMomentumCycleEnvelope` above, so
+    /// `lr_warmup_steps` and every cycle key, taken from `schedule` — the
+    /// exact inverse of `lrMomentumCycle`, so
     /// `adoptingSchedule(s).lrMomentumCycle == s.lrMomentumCycle` for every
     /// schedule. Every other key is unchanged.
     ///
-    /// Why: an exact resume trains under the checkpoint's own schedule
-    /// (`TrainerHyperparameters.adoptingSchedule`), whatever the run was
-    /// configured with. The lineage record's parameter snapshot must say the
-    /// same, or a file resumed under a parameters file with another cycle
-    /// period records that period while the weights were trained at the
-    /// checkpoint's. Composing the record from this one
-    /// value is what keeps the snapshot and the file's flat `trainer_*` keys
-    /// equal by construction.
+    /// Why: the lineage record's parameter snapshot must state the schedule
+    /// the weights were trained under, and composing the record from this one
+    /// value keeps the snapshot and the file's `trainer_*` keys equal by
+    /// construction.
     ///
     /// The values are written as they are, **never validated or clamped**
     /// against today's declared ranges (`TrainingParametersSnapshot.replacing`):
-    /// the checkpoint's value is what ran, even when a range has narrowed
-    /// since it was saved.
-    /// The ids `adoptingSchedule(_:)` writes: the warmup length and the 20
-    /// cycle, envelope and follow keys. The schedule backstop of a trainer
-    /// file (`SafetensorsModelIO.checkScheduleAgrees`) compares exactly
-    /// these.
-    static let scheduleKeyIDs: [String] = [
-        LRWarmupSteps.id,
-        LRCycleEnabled.id, LRCyclePeriodSteps.id, LRCycleCount.id, LRCycleMin.id, LRCycleMax.id, LRCycleInvert.id,
-        MomentumCycleEnabled.id, MomentumCyclePeriodSteps.id, MomentumCycleCount.id, MomentumCycleMin.id,
-        MomentumCycleMax.id, MomentumCycleInvert.id,
-        LRCyclePeakEnd.id, LRCycleTroughEnd.id, LRCycleDecayHorizonSteps.id,
-        MomentumFollowsLRCycle.id, MomentumFollowStartLow.id, MomentumFollowStartHigh.id,
-        MomentumFollowEndLow.id, MomentumFollowEndHigh.id,
-    ]
-
+    /// the schedule's values are what ran, even when a range has narrowed
+    /// since.
     func adoptingSchedule(_ schedule: TrainerScheduleState) -> TrainingParametersSnapshot {
         let cycle = schedule.lrMomentumCycle
-        let envelope = cycle.envelope
         return self
             .replacing(LRWarmupSteps.self, with: schedule.lrWarmupSteps)
             .replacing(LRCycleEnabled.self, with: cycle.lrEnabled)
             .replacing(LRCyclePeriodSteps.self, with: cycle.lrPeriodSteps)
             .replacing(LRCycleCount.self, with: cycle.lrCount)
-            .replacing(LRCycleMin.self, with: cycle.lrMin)
-            .replacing(LRCycleMax.self, with: cycle.lrMax)
             .replacing(LRCycleInvert.self, with: cycle.lrInvert)
+            .replacing(LRCycleKeyframes.self, with: cycle.lrKeyframes)
             .replacing(MomentumCycleEnabled.self, with: cycle.momentumEnabled)
             .replacing(MomentumCyclePeriodSteps.self, with: cycle.momentumPeriodSteps)
             .replacing(MomentumCycleCount.self, with: cycle.momentumCount)
             .replacing(MomentumCycleMin.self, with: cycle.momentumMin)
             .replacing(MomentumCycleMax.self, with: cycle.momentumMax)
             .replacing(MomentumCycleInvert.self, with: cycle.momentumInvert)
-            .replacing(LRCyclePeakEnd.self, with: envelope.lrPeakEnd)
-            .replacing(LRCycleTroughEnd.self, with: envelope.lrTroughEnd)
-            .replacing(LRCycleDecayHorizonSteps.self, with: envelope.decayHorizonSteps)
-            .replacing(MomentumFollowsLRCycle.self, with: envelope.momentumFollowsLRCycle)
-            .replacing(MomentumFollowStartLow.self, with: envelope.momentumFollowStartLow)
-            .replacing(MomentumFollowStartHigh.self, with: envelope.momentumFollowStartHigh)
-            .replacing(MomentumFollowEndLow.self, with: envelope.momentumFollowEndLow)
-            .replacing(MomentumFollowEndHigh.self, with: envelope.momentumFollowEndHigh)
+            .replacing(MomentumFollowsLRCycle.self, with: cycle.momentumFollowsLRCycle)
     }
-
-    /// The decay envelope + momentum-follow configuration these parameters
-    /// describe.
-    var lrMomentumCycleEnvelope: LRMomentumCycleEnvelope {
-        LRMomentumCycleEnvelope(
-            lrPeakEnd: lrCyclePeakEnd,
-            lrTroughEnd: lrCycleTroughEnd,
-            decayHorizonSteps: lrCycleDecayHorizonSteps,
-            momentumFollowsLRCycle: momentumFollowsLRCycle,
-            momentumFollowStartLow: momentumFollowStartLow,
-            momentumFollowStartHigh: momentumFollowStartHigh,
-            momentumFollowEndLow: momentumFollowEndLow,
-            momentumFollowEndHigh: momentumFollowEndHigh
-        )
-    }
-}
-
-/// The part of the LR/momentum schedule that changes over the long run: where
-/// the LR cycle's peak and trough decay to, over how many cycle steps, and
-/// whether (and between which bounds) momentum follows the LR cycle. See
-/// `LRMomentumCycle.values(forCycleStep:)` for the math.
-struct LRMomentumCycleEnvelope: Sendable, Equatable, Codable {
-    /// LR peak at and after the end of the decay horizon.
-    var lrPeakEnd: Double
-    /// LR trough at and after the end of the decay horizon.
-    var lrTroughEnd: Double
-    /// Length of the decay, in cycle steps (i.e. counted from the end of
-    /// warmup). Zero disables the decay: the envelope stays at its start
-    /// values forever.
-    var decayHorizonSteps: Int
-    /// When on, momentum is driven by the LR cycle's phase (inverted) instead
-    /// of the independent momentum cycle.
-    var momentumFollowsLRCycle: Bool
-    /// Follow-mode momentum at the LR peak, at the start of the horizon.
-    var momentumFollowStartLow: Double
-    /// Follow-mode momentum at the LR trough, at the start of the horizon.
-    var momentumFollowStartHigh: Double
-    /// Follow-mode momentum at the LR peak, at and after the horizon's end.
-    var momentumFollowEndLow: Double
-    /// Follow-mode momentum at the LR trough, at and after the horizon's end.
-    var momentumFollowEndHigh: Double
-
-    /// No decay and no momentum following: the configuration under which
-    /// `LRMomentumCycle` computes exactly what it did before the envelope
-    /// existed. The end values are inert while the horizon is zero and
-    /// following is off; they mirror the parameter defaults so a
-    /// freshly-enabled-but-unedited envelope is sane.
-    static let noDecay = LRMomentumCycleEnvelope(
-        lrPeakEnd: 1.0e-4,
-        lrTroughEnd: 1.0e-6,
-        decayHorizonSteps: 0,
-        momentumFollowsLRCycle: false,
-        momentumFollowStartLow: 0.85,
-        momentumFollowStartHigh: 0.95,
-        momentumFollowEndLow: 0.90,
-        momentumFollowEndHigh: 0.95
-    )
 }
 
 /// Log-line renderings of the schedule, shared by every tag that reports it
-/// (`[PARAM]`, `[RESUME-PARAM]`, `[STATS]`) so the same configuration always
-/// reads the same way wherever it is grepped.
+/// (`[PARAM]`, `[RESUME-PARAM]`, `[STATS]`, the CLI cycle lines) so the same
+/// configuration always reads the same way wherever it is grepped.
 enum LRMomentumCycleLogFormat {
-    /// The decay envelope and momentum-follow configuration, e.g. for the
-    /// `lr_momentum_cycle` audit lines.
-    static func envelopeDescription(_ envelope: LRMomentumCycleEnvelope) -> String {
-        let decayPart = envelope.decayHorizonSteps > 0
-            ? String(
-                format: "decay=[peak->%.2e trough->%.2e over %dst]",
-                envelope.lrPeakEnd, envelope.lrTroughEnd, envelope.decayHorizonSteps
-            )
-            : "decay=off"
-        let followPart = envelope.momentumFollowsLRCycle
-            ? String(
-                format: "momFollow=[low %.3f->%.3f high %.3f->%.3f]",
-                envelope.momentumFollowStartLow, envelope.momentumFollowEndLow,
-                envelope.momentumFollowStartHigh, envelope.momentumFollowEndHigh
-            )
-            : "momFollow=off"
-        return "\(decayPart) \(followPart)"
+    /// The keyframes, e.g. `kf=[0:1.00e+00/1.00e-03 m.85/.95, 1000:…]`
+    /// (step: peak/trough, then the follow-momentum pair).
+    static func keyframesDescription(_ schedule: LRKeyframeSchedule) -> String {
+        let frames = schedule.keyframes.map { k in
+            String(format: "%d:%.2e/%.2e m%.3f/%.3f", k.step, k.peak, k.trough, k.momentumAtPeak, k.momentumAtTrough)
+        }
+        return "kf=[\(frames.joined(separator: ", "))]"
     }
 
-    /// The whole schedule configuration — both channels plus the envelope —
-    /// e.g. `lr=[trough 1.00e-03,peak 1.00e-01]^20000st cnt=0 inv=true
-    /// mom=off decay=… momFollow=…`. A disabled channel renders as `lr=off` /
-    /// `mom=off`, meaning the trainer uses the static value. Shared by the
-    /// `[PARAM] lr_momentum_cycle` audit line and the CLI runners' startup
-    /// cycle lines.
+    /// The whole schedule configuration — both channels plus the keyframes —
+    /// e.g. `lr=^10000st cnt=0 inv=true mom=off momFollow=on kf=[…]`. A
+    /// disabled channel renders as `lr=off` / `mom=off`, meaning the trainer
+    /// uses the static value. Shared by the `[PARAM] lr_momentum_cycle` audit
+    /// line and the CLI runners' startup cycle lines.
     static func cycleDescription(_ cycle: LRMomentumCycle) -> String {
         let lrPart = cycle.lrEnabled
-            ? "lr=[trough \(String(format: "%.2e", cycle.lrMin)),peak \(String(format: "%.2e", cycle.lrMax))]^\(cycle.lrPeriodSteps)st cnt=\(cycle.lrCount) inv=\(cycle.lrInvert)"
+            ? "lr=^\(cycle.lrPeriodSteps)st cnt=\(cycle.lrCount) inv=\(cycle.lrInvert)"
             : "lr=off"
         let momPart = cycle.momentumEnabled
             ? "mom=[\(String(format: "%.2f", cycle.momentumMin)),\(String(format: "%.2f", cycle.momentumMax))]^\(cycle.momentumPeriodSteps)st cnt=\(cycle.momentumCount) inv=\(cycle.momentumInvert)"
             : "mom=off"
-        return "\(lrPart) \(momPart) \(envelopeDescription(cycle.envelope))"
+        let followPart = cycle.momentumFollowsLRCycle ? "momFollow=on" : "momFollow=off"
+        return "\(lrPart) \(momPart) \(followPart) \(keyframesDescription(cycle.lrKeyframes))"
+    }
+
+    /// The practical floor for a trough: below it the bf16 working weights
+    /// barely move (measured 2026-10-12: at an LR of ≈ 0.0007–0.0013 half the
+    /// bf16 weights change per 1,000 steps, and motion scales with the LR;
+    /// documentation/plans-active/LR_KEYFRAMES_PLAN.md, owner decision O-5).
+    static let practicalTroughFloor = 1.0e-4
+
+    /// A `[PARAM]` warning when an active LR cycle's keyframes put a trough
+    /// below `practicalTroughFloor`; nil otherwise. A warning, never a
+    /// refusal (O-5).
+    static func troughFloorWarning(_ cycle: LRMomentumCycle) -> String? {
+        guard cycle.lrEnabled else { return nil }
+        let low = cycle.lrKeyframes.keyframes.filter { $0.trough < practicalTroughFloor }
+        guard !low.isEmpty else { return nil }
+        let steps = low.map { "\($0.step):\(String(format: "%.1e", $0.trough))" }.joined(separator: ", ")
+        return "[PARAM] WARNING lr_cycle_keyframes: trough below \(practicalTroughFloor) at step(s) \(steps); "
+            + "the bf16 working weights barely move at such an LR (LR_KEYFRAMES_PLAN.md)"
     }
 
     /// The current LR envelope bounds for the `[STATS]` `lr=` field, e.g.

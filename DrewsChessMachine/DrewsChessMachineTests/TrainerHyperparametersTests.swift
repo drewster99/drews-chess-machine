@@ -21,6 +21,7 @@
 //
 
 import XCTest
+import TrainingParametersMacroSupport
 @testable import DrewsChessMachine
 
 @MainActor
@@ -40,6 +41,13 @@ final class TrainerHyperparametersTests: XCTestCase {
         try await super.tearDown()
     }
 
+    /// The one keyframe of `configureActiveCycle`: peak 0.1, trough 0.001
+    /// from step 0 on (no decay). The momentum pair is inert while momentum
+    /// does not follow the LR cycle.
+    private static let constantKeyframes = LRKeyframeSchedule(keyframes: [
+        LRKeyframe(step: 0, peak: 0.1, trough: 0.001, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
+    ])
+
     /// A fully specified cycle with no warmup, no √batch scaling and no decay,
     /// so the effective values can be checked against the waveform's known
     /// trough and peak positions.
@@ -50,8 +58,7 @@ final class TrainerHyperparametersTests: XCTestCase {
         p.lrWarmupSteps = 0
         p.sqrtBatchScalingLR = false
         p.lrCycleEnabled = true
-        p.lrCycleMin = 0.001
-        p.lrCycleMax = 0.1
+        p.lrCycleKeyframes = Self.constantKeyframes
         p.lrCyclePeriodSteps = 1000
         p.lrCycleCount = 0
         p.lrCycleInvert = false
@@ -61,25 +68,27 @@ final class TrainerHyperparametersTests: XCTestCase {
         p.momentumCyclePeriodSteps = 1000
         p.momentumCycleCount = 0
         p.momentumCycleInvert = false
-        p.lrCycleDecayHorizonSteps = 0
         p.momentumFollowsLRCycle = false
     }
 
     // MARK: - Resolution from parameters
 
+    /// LR keyframes: the LR bounds and the decay (lrMin / lrMax, the
+    /// envelope's horizon) are now the cycle's keyframes, so those are
+    /// checked as the one no-decay keyframe; momentum following moved from
+    /// the envelope onto the cycle.
     func test_init_carriesTheCycleFromParameters() {
         configureActiveCycle()
         let hyperparameters = TrainerHyperparameters(TrainingParameters.shared.snapshot())
         let cycle = hyperparameters.lrMomentumCycle
         XCTAssertTrue(cycle.lrEnabled)
-        XCTAssertEqual(cycle.lrMin, 0.001)
-        XCTAssertEqual(cycle.lrMax, 0.1)
+        XCTAssertEqual(cycle.lrKeyframes, Self.constantKeyframes)
+        XCTAssertEqual(cycle.lrKeyframes.keyframes.count, 1, "no decay: one keyframe")
         XCTAssertEqual(cycle.lrPeriodSteps, 1000)
         XCTAssertTrue(cycle.momentumEnabled)
         XCTAssertEqual(cycle.momentumMin, 0.8)
         XCTAssertEqual(cycle.momentumMax, 0.95)
-        XCTAssertEqual(cycle.envelope.decayHorizonSteps, 0)
-        XCTAssertFalse(cycle.envelope.momentumFollowsLRCycle)
+        XCTAssertFalse(cycle.momentumFollowsLRCycle)
         XCTAssertEqual(cycle, TrainingParameters.shared.lrMomentumCycle)
     }
 
@@ -174,14 +183,23 @@ final class TrainerHyperparametersTests: XCTestCase {
     /// configured the way the GUI session reconfigures a live one end up with
     /// the same configuration and the same effective LR and momentum at every
     /// step.
+    ///
+    /// LR keyframes: the decay that was `lr_cycle_decay_horizon_steps` 5000,
+    /// `lr_cycle_peak_end` 0.01, `lr_cycle_trough_end` 0.0001 after a
+    /// 100-step warmup is now written as its exact keyframe form (start values
+    /// held through warmup, end values at warmup + horizon; follow bounds the
+    /// previous defaults).
     func test_cliBuiltAndGUIConfiguredTrainers_matchStepForStep() throws {
         configureActiveCycle()
         let p = TrainingParameters.shared
         p.lrWarmupSteps = 100
         p.sqrtBatchScalingLR = true
-        p.lrCycleDecayHorizonSteps = 5000
-        p.lrCyclePeakEnd = 0.01
-        p.lrCycleTroughEnd = 0.0001
+        p.lrCycleKeyframes = LRKeyframeSchedule(keyframes: [
+            LRKeyframe(step: 0, peak: 0.1, trough: 0.001, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
+            LRKeyframe(step: 100, peak: 0.1, trough: 0.001, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
+            LRKeyframe(step: 5100, peak: 0.01, trough: 0.0001, momentumAtPeak: 0.90, momentumAtTrough: 0.95),
+        ])
+        XCTAssertEqual(p.lrCycleKeyframes.keyframes.count, 3, "the keyframes must have been accepted")
         p.momentumFollowsLRCycle = true
         p.dropoutRate = 0.1
         p.klProbeInterval = 100
@@ -303,5 +321,172 @@ final class TrainerHyperparametersTests: XCTestCase {
         XCTAssertNil(SelfPlayTargetTau.parsedInDeclaredRange("abc"))
         XCTAssertNil(LRWarmupSteps.parsedInDeclaredRange("-1"))
         XCTAssertEqual(LRWarmupSteps.parsedInDeclaredRange("0"), 0)
+    }
+
+    // MARK: - LR keyframes: one validator for every writer
+
+    func test_invalidKeyframes_errorDescriptionIsTheValidatorsMessage() {
+        let error: Error = TrainingConfigError.invalidValue(
+            id: LRCycleKeyframes.id,
+            reason: LRKeyframeScheduleError.peakBelowTrough(index: 0, peak: 0.01, trough: 0.1).description
+        )
+        XCTAssertEqual(
+            error.localizedDescription,
+            "Invalid value for parameter 'lr_cycle_keyframes': keyframe 0: peak 0.01 is below trough 0.1"
+        )
+    }
+
+    /// The singleton's setter refuses a schedule its validator refuses, like
+    /// an out-of-range number, and keeps the previous schedule.
+    func test_singletonSetter_revertsAnInvalidKeyframeSchedule() {
+        let p = TrainingParameters.shared
+        p.lrCycleKeyframes = Self.constantKeyframes
+        XCTAssertEqual(p.lrCycleKeyframes, Self.constantKeyframes)
+        p.lrCycleKeyframes = LRKeyframeSchedule(keyframes: [
+            LRKeyframe(step: 0, peak: 0.01, trough: 0.1, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
+        ])
+        XCTAssertEqual(p.lrCycleKeyframes, Self.constantKeyframes, "peak below trough must be refused")
+        p.lrCycleKeyframes = LRKeyframeSchedule(keyframes: [
+            LRKeyframe(step: 0, peak: 0.1, trough: 0.001, momentumAtPeak: 0.95, momentumAtTrough: 0.85),
+        ])
+        XCTAssertEqual(p.lrCycleKeyframes, Self.constantKeyframes, "momentum at the peak above momentum at the trough must be refused")
+        p.lrCycleKeyframes = LRKeyframeSchedule(keyframes: [])
+        XCTAssertEqual(p.lrCycleKeyframes, Self.constantKeyframes, "an empty schedule must be refused")
+    }
+
+    /// A schedule written to `UserDefaults` by the one writer (`store`) reads
+    /// back as the same schedule through the one reader (`inspectStored`).
+    func test_storedKeyframes_roundTripThroughUserDefaults() throws {
+        let defaults = try makeTemporaryDefaults()
+        let schedule = LRKeyframeSchedule(keyframes: [
+            LRKeyframe(step: 0, peak: 0.1, trough: 0.001, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
+            LRKeyframe(step: 1000, peak: 0.1, trough: 0.001, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
+            LRKeyframe(step: 1_001_000, peak: 1.0e-4, trough: 1.0e-6, momentumAtPeak: 0.90, momentumAtTrough: 0.95),
+        ])
+        guard case .absent = TrainingParameters.inspectStored(LRCycleKeyframes.self, in: defaults) else {
+            return XCTFail("a new suite must hold no keyframes")
+        }
+        TrainingParameters.store(.lrKeyframes(schedule), forKey: LRCycleKeyframes.id, in: defaults)
+        switch TrainingParameters.inspectStored(LRCycleKeyframes.self, in: defaults) {
+        case .valid(let read):
+            XCTAssertEqual(read, schedule)
+        case .absent:
+            XCTFail("the stored schedule was not found")
+        case .invalid(let finding):
+            XCTFail("the stored schedule read back as invalid: \(finding.problem)")
+        }
+    }
+
+    /// A stored schedule the validator refuses is reported, with the
+    /// validator's message, not used.
+    func test_storedInvalidKeyframes_areReportedWithTheValidatorsMessage() throws {
+        let defaults = try makeTemporaryDefaults()
+        TrainingParameters.store(.lrKeyframes(LRKeyframeSchedule(keyframes: [
+            LRKeyframe(step: 0, peak: 0.01, trough: 0.1, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
+        ])), forKey: LRCycleKeyframes.id, in: defaults)
+        guard case .invalid(let finding) = TrainingParameters.inspectStored(LRCycleKeyframes.self, in: defaults) else {
+            return XCTFail("a peak below its trough must not read back as usable")
+        }
+        XCTAssertEqual(finding.id, LRCycleKeyframes.id)
+        XCTAssertTrue(finding.problem.contains("keyframe 0: peak 0.01 is below trough 0.1"), finding.problem)
+    }
+
+    // MARK: - Owner decision Q-6: stored settings from before LR keyframes
+
+    /// The previous schedule's nine settings, as the previous build stored
+    /// them: a decay from 0.05 / 0.002 to 0.0005 / 0.00001 over 20,000 cycle
+    /// steps, with momentum-follow bounds drifting from 0.8 / 0.95 to
+    /// 0.88 / 0.97.
+    private static let previousScheduleSettings: [String: Any] = [
+        "lr_cycle_min": 0.002,
+        "lr_cycle_max": 0.05,
+        "lr_cycle_peak_end": 0.0005,
+        "lr_cycle_trough_end": 0.00001,
+        "lr_cycle_decay_horizon_steps": 20_000,
+        "momentum_follow_start_low": 0.8,
+        "momentum_follow_start_high": 0.95,
+        "momentum_follow_end_low": 0.88,
+        "momentum_follow_end_high": 0.97,
+    ]
+
+    /// Kept cycle settings stored beside the previous ones, so the conversion
+    /// reads them from the suite and not from the declared defaults.
+    private func storeKeptCycleSettings(in defaults: UserDefaults, lrWarmupSteps: Int) {
+        TrainingParameters.store(.int(lrWarmupSteps), forKey: LRWarmupSteps.id, in: defaults)
+        TrainingParameters.store(.bool(true), forKey: LRCycleEnabled.id, in: defaults)
+        TrainingParameters.store(.int(1000), forKey: LRCyclePeriodSteps.id, in: defaults)
+        TrainingParameters.store(.int(0), forKey: LRCycleCount.id, in: defaults)
+        TrainingParameters.store(.bool(false), forKey: LRCycleInvert.id, in: defaults)
+        TrainingParameters.store(.bool(true), forKey: MomentumCycleEnabled.id, in: defaults)
+        TrainingParameters.store(.bool(true), forKey: MomentumFollowsLRCycle.id, in: defaults)
+    }
+
+    func test_previousScheduleSettings_areConvertedToKeyframes_andLeftInPlace() throws {
+        let defaults = try makeTemporaryDefaults()
+        for (id, value) in Self.previousScheduleSettings {
+            defaults.set(value, forKey: id)
+        }
+        storeKeptCycleSettings(in: defaults, lrWarmupSteps: 300)
+
+        TrainingParameters.convertLegacyLRScheduleSettings(in: defaults)
+
+        var reference = LegacyLRMomentumCycleReference.disabledReference
+        reference.lrEnabled = true
+        reference.lrPeriodSteps = 1000
+        reference.lrMin = 0.002
+        reference.lrMax = 0.05
+        reference.momentumEnabled = true
+        reference.envelope = LegacyLRMomentumCycleEnvelopeReference(
+            lrPeakEnd: 0.0005, lrTroughEnd: 0.00001, decayHorizonSteps: 20_000, momentumFollowsLRCycle: true,
+            momentumFollowStartLow: 0.8, momentumFollowStartHigh: 0.95,
+            momentumFollowEndLow: 0.88, momentumFollowEndHigh: 0.97)
+        let expected = try LRMomentumCycle.converted(from: reference, lrWarmupSteps: 300).lrKeyframes
+        XCTAssertEqual(expected, LRKeyframeSchedule(keyframes: [
+            LRKeyframe(step: 0, peak: 0.05, trough: 0.002, momentumAtPeak: 0.8, momentumAtTrough: 0.95),
+            LRKeyframe(step: 300, peak: 0.05, trough: 0.002, momentumAtPeak: 0.8, momentumAtTrough: 0.95),
+            LRKeyframe(step: 20_300, peak: 0.0005, trough: 0.00001, momentumAtPeak: 0.88, momentumAtTrough: 0.97),
+        ]))
+        switch TrainingParameters.inspectStored(LRCycleKeyframes.self, in: defaults) {
+        case .valid(let stored):
+            XCTAssertEqual(stored, expected)
+        case .absent:
+            XCTFail("the previous settings were not converted")
+        case .invalid(let finding):
+            XCTFail("the converted schedule was stored unusable: \(finding.problem)")
+        }
+        guard case .valid(let lrEnabled) = TrainingParameters.inspectStored(LRCycleEnabled.self, in: defaults) else {
+            return XCTFail("lr_cycle_enabled must still be stored")
+        }
+        XCTAssertTrue(lrEnabled, "a usable cycle stays enabled")
+        for (id, value) in Self.previousScheduleSettings {
+            let stored = defaults.object(forKey: id) as? NSNumber
+            XCTAssertNotNil(stored, "\(id) must be left in place")
+            if let stored, let number = value as? NSNumber {
+                XCTAssertEqual(stored, number, "\(id) must be left unchanged")
+            }
+        }
+    }
+
+    func test_previousScheduleSettings_beside_storedKeyframes_areLeftAlone() throws {
+        let defaults = try makeTemporaryDefaults()
+        for (id, value) in Self.previousScheduleSettings {
+            defaults.set(value, forKey: id)
+        }
+        storeKeptCycleSettings(in: defaults, lrWarmupSteps: 300)
+        TrainingParameters.store(.lrKeyframes(Self.constantKeyframes), forKey: LRCycleKeyframes.id, in: defaults)
+
+        TrainingParameters.convertLegacyLRScheduleSettings(in: defaults)
+
+        guard case .valid(let stored) = TrainingParameters.inspectStored(LRCycleKeyframes.self, in: defaults) else {
+            return XCTFail("the stored keyframes must still be there and usable")
+        }
+        XCTAssertEqual(stored, Self.constantKeyframes, "stored keyframes win; the previous settings are not converted over them")
+        for (id, value) in Self.previousScheduleSettings {
+            let stored = defaults.object(forKey: id) as? NSNumber
+            XCTAssertNotNil(stored, "\(id) must be left in place")
+            if let stored, let number = value as? NSNumber {
+                XCTAssertEqual(stored, number, "\(id) must be left unchanged")
+            }
+        }
     }
 }

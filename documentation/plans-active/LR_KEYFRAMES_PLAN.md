@@ -1,6 +1,6 @@
 # LR keyframes plan: peak and trough set by a list of keyframes, and a chart of the schedule
 
-Status (2026-10-12): plan written from a code survey; owner decisions K1–K4, O-1 … O-6 and Q-1 … Q-4 recorded below (O-1 revised by Q-4). Revised the same day after an independent review (17 findings, all addressed below). Q-5 and Q-6 decided by the owner the same day. **Approved for implementation by the owner, 2026-10-12.**
+Status (2026-10-12): plan written from a code survey; owner decisions K1–K4, O-1 … O-6 and Q-1 … Q-4 recorded below (O-1 revised by Q-4). Revised the same day after an independent review (17 findings, all addressed below). Q-5 and Q-6 decided by the owner the same day. **Approved by the owner 2026-10-12; implemented 2026-10-12** (deviations below, "As implemented").
 
 Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachine/`, `DrewsChessMachineTests/`, `documentation/`, `scripts/` or `experiments/`.
 
@@ -166,3 +166,14 @@ Each phase: implement, build (no new warnings), run the touched test classes, re
 - **Q-6 — agreed.** At launch, when `lr_cycle_keyframes` isn't stored but the old keys are, the GUI converts them once with the same converter, stores the result, logs `[PARAM] legacy LR schedule settings converted`, and leaves the old entries in place (read, never deleted). Test: a `UserDefaults` suite holding only the old keys (`makeTemporaryDefaults()`) yields the converted schedule after launch-time load, and the old entries are still there.
 
 No questions outstanding.
+
+## As implemented (2026-10-12)
+
+- **Phases 2–5 landed as one commit.** The persisted cycle (`LRMomentumCycle`'s Codable form) is used by trainer files, sessions and the parameter system at once, so no subset of phases 2–5 built on its own. Phase 1 (additive) was committed separately (`babcf3ca`).
+- **`configuration.schedule_at_save` was not extended with `lr_peak` / `lr_trough`.** The bounds at a save follow from the keyframes in the record's parameter snapshot; adding fields to a schema-3 sub-object would have needed its own decode gating for no information gain. Schema 5 therefore adds no field (it marks that a snapshot may hold the list).
+- **`results.json`:** the per-row `lr_cycle_decay_horizon_steps` is dropped; no top-level `lr_schedule` was added — the keyframes are in `lineage.parameters`, which `results.json` already carries; per-row `lr_cycle_peak` / `lr_cycle_trough` stay.
+- **The settings chart has no current-step rule** (the settings popover has no trainer clock to show); everything else in K4 is there. The keyframe table and chart landed with phase 2–3's settings change, since the old start/end fields had to go then.
+- **Legacy keys are converted inside `ParameterValue.parametersObject(fromJSON:currentValue:)`**, the one reader every parameter JSON goes through, rather than in each caller.
+- **A partial legacy parameters file** fills missing removed keys from the previous declarations' defaults and logs it (the two v5 dashboard records are the only such files).
+- **Old schedules the previous code ran as "no cycle"**: an unusable LR pair converts to `lr_cycle_enabled = false`; follow bounds inverted at every step convert to `momentum_cycle_enabled = false` (static momentum, as before); bounds inverted on only part of the run are refused (none found in the repo).
+

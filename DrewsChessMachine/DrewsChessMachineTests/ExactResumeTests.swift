@@ -5,8 +5,8 @@
 //  Resume means training continues exactly as if it had never stopped. The
 //  bugs these pin: corpus replay and train-vs-UCI restarted the trainer's
 //  completed-step clock at zero on every resume (`phaseOrigin=segment-step-0`),
-//  so warmup re-ran and the LR/momentum cycle phase and the decay envelope
-//  restarted; they saved no optimizer velocity (and, under mixed precision,
+//  so warmup re-ran and the LR/momentum cycle phase and its keyframed
+//  envelope restarted; they saved no optimizer velocity (and, under mixed precision,
 //  the bf16 working copy instead of the fp32 masters), so momentum restarted
 //  cold; and a GUI session saved after "New Session, keep trainer" recorded
 //  the stats box's step count, not the trainer's clock. Also pinned: a
@@ -15,9 +15,16 @@
 //
 //  The resume tests train a real trainer for N steps, save it through the
 //  path under test, keep training it for k more steps (the uninterrupted
-//  run), and compare against a second trainer — built from deliberately
-//  different hyperparameters, as a resumed process with other settings would
-//  be — restored from the save and trained the same k steps. The effective
+//  run), and compare against a second trainer — built from other
+//  hyperparameters, as a resumed process with other settings would be —
+//  restored from the save and trained the same k steps. Which schedule the
+//  resumed trainer runs follows the path's rule: a GUI session resume
+//  installs the session's (`.snapshots`); a CLI `--resume-exact` keeps the
+//  configured one (`.keepConfigured`, owner decision O-4), so its exact case
+//  is configured with a schedule that feeds the same values (it differs only
+//  in inert fields, owner decision Q-5), and a schedule that feeds different
+//  values is the `schedule` gap and trains as configured from the restored
+//  clock (LR_KEYFRAMES_PLAN.md). The effective
 //  learning rate and momentum the optimizer is fed must agree at every one of
 //  the k steps. Both trainers take real-data steps from one fixture buffer of
 //  real positions, but each batch is sampled at random (the sampler is not
@@ -26,6 +33,7 @@
 //
 
 import XCTest
+import TrainingParametersMacroSupport
 @testable import DrewsChessMachine
 
 @MainActor
@@ -55,37 +63,62 @@ final class ExactResumeTests: XCTestCase {
     /// resumed trainer. Crosses an LR-cycle period boundary.
     private let stepsAfterSave = 6
 
+    /// The original run's schedule in the single-decay form these tests were
+    /// written against: a short LR cycle, momentum following it, and a decay
+    /// over a few steps. Converted exactly to keyframes below.
+    private static let originalRunLegacyCycle = LegacyLRMomentumCycleReference(
+        lrEnabled: true, lrPeriodSteps: 4, lrCount: 0, lrMin: 1.0e-4, lrMax: 1.0e-2, lrInvert: false,
+        momentumEnabled: true, momentumPeriodSteps: 4, momentumCount: 0,
+        momentumMin: 0.8, momentumMax: 0.95, momentumInvert: true,
+        envelope: LegacyLRMomentumCycleEnvelopeReference(
+            lrPeakEnd: 1.0e-3, lrTroughEnd: 1.0e-5, decayHorizonSteps: 10,
+            momentumFollowsLRCycle: true,
+            momentumFollowStartLow: 0.85, momentumFollowStartHigh: 0.95,
+            momentumFollowEndLow: 0.9, momentumFollowEndHigh: 0.97
+        )
+    )
+    private static let originalRunWarmupSteps = 3
+
     /// A schedule whose every piece moves on a scale of a few steps: warmup,
-    /// a short LR cycle, momentum following it, and a decay envelope.
-    private func originalRunHyperparameters() -> TrainerHyperparameters {
+    /// a short LR cycle, momentum following it, and a keyframed decay.
+    private func originalRunHyperparameters() throws -> TrainerHyperparameters {
         var h = TrainerHyperparameters(TrainingParameters.shared.snapshot())
         h.learningRate = 0.001
         h.momentumCoeff = 0.5
-        h.lrWarmupSteps = 3
+        h.lrWarmupSteps = Self.originalRunWarmupSteps
         h.sqrtBatchScalingForLR = true
-        h.lrMomentumCycle = LRMomentumCycle(
-            lrEnabled: true, lrPeriodSteps: 4, lrCount: 0, lrMin: 1.0e-4, lrMax: 1.0e-2, lrInvert: false,
-            momentumEnabled: true, momentumPeriodSteps: 4, momentumCount: 0,
-            momentumMin: 0.8, momentumMax: 0.95, momentumInvert: true,
-            envelope: LRMomentumCycleEnvelope(
-                lrPeakEnd: 1.0e-3, lrTroughEnd: 1.0e-5, decayHorizonSteps: 10,
-                momentumFollowsLRCycle: true,
-                momentumFollowStartLow: 0.85, momentumFollowStartHigh: 0.95,
-                momentumFollowEndLow: 0.9, momentumFollowEndHigh: 0.97
-            )
-        )
+        h.lrMomentumCycle = try LRMomentumCycle.converted(
+            from: Self.originalRunLegacyCycle, lrWarmupSteps: Self.originalRunWarmupSteps)
         return h
     }
 
     /// What a resumed process might be configured with: a different warmup
-    /// and a different cycle. An exact resume must ignore both in favour of
-    /// the checkpoint's.
-    private func differentlyConfiguredHyperparameters() -> TrainerHyperparameters {
-        var h = originalRunHyperparameters()
+    /// and a cycle that feeds different values (period, peak, decay length).
+    /// A GUI session resume installs the session's schedule over it; a CLI
+    /// `--resume-exact` trains under it (owner decision O-4) and reports the
+    /// `schedule` gap.
+    private func differentlyConfiguredHyperparameters() throws -> TrainerHyperparameters {
+        var h = try originalRunHyperparameters()
+        var legacy = Self.originalRunLegacyCycle
+        legacy.lrPeriodSteps = 20
+        legacy.lrMax = 3.0e-2
+        legacy.envelope.decayHorizonSteps = 1_000
         h.lrWarmupSteps = 50
-        h.lrMomentumCycle.lrPeriodSteps = 20
-        h.lrMomentumCycle.lrMax = 3.0e-2
-        h.lrMomentumCycle.envelope.decayHorizonSteps = 1_000
+        h.lrMomentumCycle = try LRMomentumCycle.converted(from: legacy, lrWarmupSteps: h.lrWarmupSteps)
+        return h
+    }
+
+    /// What a CLI `--resume-exact` of the original run is configured with
+    /// when it resumes exactly: the original schedule with only inert fields
+    /// changed — the independent momentum cycle, unused while momentum
+    /// follows the LR cycle. Same behavior form, so no `schedule` gap (owner
+    /// decision Q-5), and the trainer keeps these values.
+    private func behaviorEqualCLIHyperparameters() throws -> TrainerHyperparameters {
+        var h = try originalRunHyperparameters()
+        h.lrMomentumCycle.momentumPeriodSteps = 17
+        h.lrMomentumCycle.momentumMin = 0.5
+        h.lrMomentumCycle.momentumMax = 0.6
+        h.lrMomentumCycle.momentumInvert = false
         return h
     }
 
@@ -198,14 +231,17 @@ final class ExactResumeTests: XCTestCase {
 
     /// Run the uninterrupted trainer, save through `saveAndReload`, restore a
     /// differently configured trainer from what comes back through `resume`,
-    /// and compare the two over the next `stepsAfterSave` steps.
+    /// and compare the two over the next `stepsAfterSave` steps. The resumed
+    /// trainer must hold `expectedResumedCycle` exactly (the path's rule says
+    /// which) and feed what the original's does.
     private func assertExactResume(
         _ path: String,
         saveAndReload: (TrainerResumeSnapshot) async throws -> TrainerResumeSnapshot,
         resume: (ChessTrainer, TrainerResumeSnapshot) async throws -> Void,
-        resumedTrainerHyperparameters: (TrainerResumeSnapshot) -> TrainerHyperparameters
+        resumedTrainerHyperparameters: (TrainerResumeSnapshot) throws -> TrainerHyperparameters,
+        expectedResumedCycle: LRMomentumCycle
     ) async throws {
-        let original = originalRunHyperparameters()
+        let original = try originalRunHyperparameters()
         let uninterrupted = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: original, arch: .current, initialization: .seeded(initSeed: 1))
         let buffer = makeReplayBuffer(arch: .current)
         _ = try await train(uninterrupted, steps: stepsBeforeSave, buffer: buffer)
@@ -217,13 +253,15 @@ final class ExactResumeTests: XCTestCase {
         XCTAssertEqual(reloaded.schedule, saved.schedule, "\(path): schedule round trip")
         assertBitExact(reloaded.trainerWeights, saved.trainerWeights, "\(path): trainer state round trip")
 
-        let resumed = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: resumedTrainerHyperparameters(reloaded), arch: .current, initialization: .seeded(initSeed: 2))
+        let resumed = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: try resumedTrainerHyperparameters(reloaded), arch: .current, initialization: .seeded(initSeed: 2))
         try await resume(resumed, reloaded)
 
         // Restored state, bit-exact, before any step.
         XCTAssertEqual(resumed.completedTrainSteps, stepsBeforeSave, "\(path): clock")
         XCTAssertEqual(resumed.lrWarmupSteps, original.lrWarmupSteps, "\(path): warmup length")
-        XCTAssertEqual(resumed.lrMomentumCycle, original.lrMomentumCycle, "\(path): cycle")
+        XCTAssertEqual(resumed.lrMomentumCycle, expectedResumedCycle, "\(path): cycle")
+        XCTAssertEqual(resumed.lrMomentumCycle.behaviorForm, original.lrMomentumCycle.behaviorForm,
+                       "\(path): the resumed cycle feeds what the original's does")
         assertBitExact(try await resumed.exportTrainerWeights(), saved.trainerWeights, "\(path): masters + velocity")
 
         // Warmup does not re-run: the first resumed step is fed the full,
@@ -246,43 +284,62 @@ final class ExactResumeTests: XCTestCase {
 
     // MARK: - Corpus replay and train-vs-UCI (`--resume-exact`)
 
+    /// Encode `snapshot` exactly as the CLI runners' `saveTrainerModel`
+    /// encodes it, decode it as `CheckpointManager.loadModelFile` decodes it,
+    /// and turn it back into a snapshot by `TrainerResumeSnapshot(checkpoint:)`.
+    private func cliSaveAndReload(_ snapshot: TrainerResumeSnapshot, creator: String,
+                                  corpus: LineageRecord.CorpusPosition?) throws -> TrainerResumeSnapshot {
+        let data = try SafetensorsModelIO.encode(
+            modelID: "20260929-1-TEST",
+            createdAtUnix: 1_780_000_000,
+            metadata: ModelCheckpointMetadata(
+                creator: creator,
+                trainingStep: snapshot.schedule.completedTrainSteps,
+                parentModelID: "",
+                notes: "unit test",
+                trainerSchedule: snapshot.schedule
+            ),
+            weights: snapshot.trainerWeights,
+            architecture: .current,
+            includesVelocity: true,
+            lineage: try LineageRecord.forTests(
+                trainerCompletedSteps: snapshot.schedule.completedTrainSteps, corpus: corpus)
+        )
+        let file = try CheckpointManager.decodeAnyModelFile(data)
+        // `training_step` is the trainer step (format v11).
+        XCTAssertEqual(file.metadata.trainingStep, snapshot.schedule.completedTrainSteps)
+        return try TrainerResumeSnapshot(checkpoint: file, fileName: "unit-test.safetensors")
+    }
+
     /// The CLI runners' save → `--start-model … --resume-exact` path: the
-    /// checkpoint is encoded exactly as their `saveTrainerModel` encodes it,
-    /// decoded as `CheckpointManager.loadModelFile` decodes it, turned back
-    /// into a snapshot by `TrainerResumeSnapshot(checkpoint:)`, the trainer
-    /// is built from `--parameters` with the checkpoint's schedule adopted,
-    /// and `restoreExactly` restores it.
+    /// checkpoint round-trips through `cliSaveAndReload`, the trainer is
+    /// built from `--parameters`, and `restoreExactly(…, .keepConfigured)`
+    /// restores it under its configured schedule.
+    ///
+    /// Changed with LR keyframes: this used to build the trainer from
+    /// different `--parameters` with the checkpoint's schedule adopted. A CLI
+    /// exact resume now trains under the configured schedule (owner decision
+    /// O-4), so the exact case is a configuration whose schedule feeds the
+    /// same values — differing only in inert fields, which must not cost
+    /// exactness (owner decision Q-5) and which the trainer keeps.
     private func assertCLIExactResume(creator: String, corpus: LineageRecord.CorpusPosition?) async throws {
+        let configured = try behaviorEqualCLIHyperparameters()
+        XCTAssertNotEqual(configured.lrMomentumCycle, try originalRunHyperparameters().lrMomentumCycle,
+                          "the fixture must differ from the checkpoint's cycle in its inert fields")
         try await assertExactResume(
             creator,
             saveAndReload: { snapshot in
-                let data = try SafetensorsModelIO.encode(
-                    modelID: "20260929-1-TEST",
-                    createdAtUnix: 1_780_000_000,
-                    metadata: ModelCheckpointMetadata(
-                        creator: creator,
-                        trainingStep: snapshot.schedule.completedTrainSteps,
-                        parentModelID: "",
-                        notes: "unit test",
-                        trainerSchedule: snapshot.schedule
-                    ),
-                    weights: snapshot.trainerWeights,
-                    architecture: .current,
-                    includesVelocity: true,
-                    lineage: try LineageRecord.forTests(
-                        trainerCompletedSteps: snapshot.schedule.completedTrainSteps, corpus: corpus)
-                )
-                let file = try CheckpointManager.decodeAnyModelFile(data)
-                // `training_step` is the trainer step (format v11).
-                XCTAssertEqual(file.metadata.trainingStep, snapshot.schedule.completedTrainSteps)
-                return try TrainerResumeSnapshot(checkpoint: file, fileName: "unit-test.safetensors")
+                try self.cliSaveAndReload(snapshot, creator: creator, corpus: corpus)
             },
             resume: { trainer, snapshot in
-                try await trainer.restoreExactly(from: snapshot)
+                try await trainer.restoreExactly(from: snapshot, schedule: .keepConfigured)
             },
             resumedTrainerHyperparameters: { snapshot in
-                differentlyConfiguredHyperparameters().adoptingSchedule(snapshot.schedule)
-            }
+                XCTAssertEqual(configured.scheduleDifferences(from: snapshot.schedule), [],
+                               "\(creator): an inert difference is not a schedule difference, so no `schedule` gap")
+                return configured
+            },
+            expectedResumedCycle: configured.lrMomentumCycle
         )
     }
 
@@ -296,6 +353,61 @@ final class ExactResumeTests: XCTestCase {
 
     func test_trainVsUci_resumeExact_continuesTheScheduleAsIfNeverStopped() async throws {
         try await assertCLIExactResume(creator: "train-vs-uci", corpus: nil)
+    }
+
+    /// A CLI `--resume-exact` configured with a schedule that feeds different
+    /// values (owner decision O-4): the difference is reported per field in
+    /// the runners' `[RESUME] schedule:` form (the `schedule` gap), and
+    /// `restoreExactly(…, .keepConfigured)` restores the weights, velocity
+    /// and clock while leaving the configured warmup and cycle on the
+    /// trainer, which then feeds the configured schedule from the restored
+    /// clock — neither the checkpoint's schedule nor a restarted clock.
+    func test_cliResumeExact_underADifferentSchedule_keepsTheConfiguredScheduleAndRestoresTheClock() async throws {
+        let original = try originalRunHyperparameters()
+        let configured = try differentlyConfiguredHyperparameters()
+        let uninterrupted = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: original, arch: .current, initialization: .seeded(initSeed: 1))
+        let buffer = makeReplayBuffer(arch: .current)
+        _ = try await train(uninterrupted, steps: stepsBeforeSave, buffer: buffer)
+        let saved = try await uninterrupted.exportResumeSnapshot()
+        let reloaded = try cliSaveAndReload(saved, creator: "replay", corpus: nil)
+
+        XCTAssertEqual(configured.scheduleDifferences(from: reloaded.schedule), [
+            "lr_warmup_steps checkpoint=\(original.lrWarmupSteps) configured=\(configured.lrWarmupSteps)",
+            "lr_momentum_cycle checkpoint=[\(LRMomentumCycleLogFormat.cycleDescription(original.lrMomentumCycle))] "
+                + "configured=[\(LRMomentumCycleLogFormat.cycleDescription(configured.lrMomentumCycle))]",
+        ])
+
+        let resumed = try ChessTrainer(dropoutStream: DCMRandom(seed: 1), hyperparameters: configured, arch: .current, initialization: .seeded(initSeed: 2))
+        try await resumed.restoreExactly(from: reloaded, schedule: .keepConfigured)
+        XCTAssertEqual(resumed.completedTrainSteps, stepsBeforeSave, "the clock is restored")
+        XCTAssertEqual(resumed.lrWarmupSteps, configured.lrWarmupSteps, "the configured warmup stays")
+        XCTAssertEqual(resumed.lrMomentumCycle, configured.lrMomentumCycle, "the configured cycle stays")
+        assertBitExact(try await resumed.exportTrainerWeights(), saved.trainerWeights, "masters + velocity")
+
+        // The oracle: the one fed-value function, evaluated on the configured
+        // schedule at each clock the resumed trainer steps from.
+        func configuredReading(atClock clock: Int) -> ScheduleReading {
+            func fed(batch: Int) -> LRMomentumCycleReadout.Fed {
+                LRMomentumCycleReadout.values(
+                    completedTrainSteps: clock, lrWarmupSteps: configured.lrWarmupSteps,
+                    cycle: configured.lrMomentumCycle, staticLearningRate: configured.learningRate,
+                    staticMomentum: configured.momentumCoeff, batchSize: batch,
+                    sqrtBatchScaling: configured.sqrtBatchScalingForLR,
+                    sqrtScaleBaseBatchSize: ChessTrainer.sqrtScaleBaseBatchSize)
+            }
+            return ScheduleReading(completedSteps: clock, learningRate: fed(batch: batchSize).learningRate,
+                                   momentum: fed(batch: ChessTrainer.sqrtScaleBaseBatchSize).momentum)
+        }
+        let uninterruptedReadings = try await train(uninterrupted, steps: stepsAfterSave, buffer: buffer)
+        let resumedReadings = try await train(resumed, steps: stepsAfterSave, buffer: buffer)
+        XCTAssertEqual(resumedReadings.count, stepsAfterSave + 1)
+        for (k, r) in resumedReadings.enumerated() {
+            XCTAssertEqual(r, configuredReading(atClock: stepsBeforeSave + k), "configured schedule at N+\(k)")
+        }
+        XCTAssertNotEqual(resumedReadings.first, uninterruptedReadings.first,
+                          "the fixture must feed differently from the checkpoint's schedule at the restored clock")
+        XCTAssertNotEqual(resumedReadings.first?.learningRate, configuredReading(atClock: 0).learningRate,
+                          "the fixture must tell the restored clock apart from a restarted one")
     }
 
     // MARK: - GUI Play-and-Train session resume
@@ -373,27 +485,116 @@ final class ExactResumeTests: XCTestCase {
                 trainer.lrMomentumCycle = snapshot.schedule.lrMomentumCycle
                 try await trainer.resetNetwork(initialization: .seeded(initSeed: 1))
                 XCTAssertEqual(trainer.completedTrainSteps, 0)
-                try await trainer.restoreExactly(from: snapshot)
+                try await trainer.restoreExactly(from: snapshot, schedule: .snapshots)
             },
-            resumedTrainerHyperparameters: { _ in differentlyConfiguredHyperparameters() }
+            resumedTrainerHyperparameters: { _ in try self.differentlyConfiguredHyperparameters() },
+            expectedResumedCycle: try originalRunHyperparameters().lrMomentumCycle
         )
     }
 
     // MARK: - Checkpoint format
 
+    /// Changed with LR keyframes: the schedule is one key
+    /// (`trainer_lr_schedule`), so the partial file drops that key instead of
+    /// the retired envelope key; it is still half a schedule and refused.
     func test_trainerScheduleState_metadataRoundTripsBitExactly() throws {
         let schedule = TrainerScheduleState(
             completedTrainSteps: 1_234_567,
             lrWarmupSteps: 1000,
-            lrMomentumCycle: originalRunHyperparameters().lrMomentumCycle
+            lrMomentumCycle: try originalRunHyperparameters().lrMomentumCycle
         )
-        let decoded = try TrainerScheduleState.decode(fromMetadata: try schedule.metadataEntries())
+        let entries = try schedule.metadataEntries()
+        XCTAssertEqual(Set(entries.keys), Set(TrainerScheduleState.MetadataKey.current),
+                       "a writer writes the current keys only, never the previous form's")
+        let decoded = try TrainerScheduleState.decode(fromMetadata: entries)
         XCTAssertEqual(decoded, schedule)
         XCTAssertNil(try TrainerScheduleState.decode(fromMetadata: ["model_id": "x"]))
 
-        var partial = try schedule.metadataEntries()
-        partial[TrainerScheduleState.MetadataKey.lrMomentumCycleEnvelope] = nil
+        var partial = entries
+        partial[TrainerScheduleState.MetadataKey.lrSchedule] = nil
         XCTAssertThrowsError(try TrainerScheduleState.decode(fromMetadata: partial))
+    }
+
+    /// The previous build's trainer-file schedule keys: `trainer_lr_momentum_cycle`
+    /// and `trainer_lr_momentum_cycle_envelope`, each the synthesized
+    /// `Codable` JSON (camelCase keys) of the structs before LR keyframes —
+    /// `originalRunLegacyCycle`, spelled out.
+    private static let legacyCycleJSON =
+        #"{"lrEnabled":true,"lrPeriodSteps":4,"lrCount":0,"lrMin":0.0001,"lrMax":0.01,"lrInvert":false,"#
+        + #""momentumEnabled":true,"momentumPeriodSteps":4,"momentumCount":0,"momentumMin":0.8,"momentumMax":0.95,"#
+        + #""momentumInvert":true}"#
+    private static let legacyEnvelopeJSON =
+        #"{"lrPeakEnd":0.001,"lrTroughEnd":1.0e-05,"decayHorizonSteps":10,"momentumFollowsLRCycle":true,"#
+        + #""momentumFollowStartLow":0.85,"momentumFollowStartHigh":0.95,"momentumFollowEndLow":0.9,"#
+        + #""momentumFollowEndHigh":0.97}"#
+
+    private func legacyScheduleMetadata(completedTrainSteps: Int) -> [String: String] {
+        [
+            TrainerScheduleState.MetadataKey.completedTrainSteps: String(completedTrainSteps),
+            TrainerScheduleState.MetadataKey.lrWarmupSteps: String(Self.originalRunWarmupSteps),
+            TrainerScheduleState.MetadataKey.legacyLRMomentumCycle: Self.legacyCycleJSON,
+            TrainerScheduleState.MetadataKey.legacyLRMomentumCycleEnvelope: Self.legacyEnvelopeJSON,
+        ]
+    }
+
+    /// An old-format trainer file's schedule decodes and converts exactly
+    /// (owner decision Q-4): the converted cycle is the converter's result
+    /// for the old settings, and it feeds bit-identical LR and momentum to
+    /// the previous code at every step — through warmup, the decay and after.
+    func test_trainerScheduleState_legacyMetadataDecodesAndConvertsExactly() throws {
+        let legacy = Self.originalRunLegacyCycle
+        let warmup = Self.originalRunWarmupSteps
+        let decoded = try XCTUnwrap(
+            try TrainerScheduleState.decodeReportingConversion(fromMetadata: legacyScheduleMetadata(completedTrainSteps: 9)))
+        XCTAssertEqual(decoded.state.completedTrainSteps, 9)
+        XCTAssertEqual(decoded.state.lrWarmupSteps, warmup)
+        XCTAssertEqual(decoded.state.lrMomentumCycle, try LRMomentumCycle.converted(from: legacy, lrWarmupSteps: warmup))
+        XCTAssertEqual(decoded.state.lrMomentumCycle.lrKeyframes.keyframes.map(\.step),
+                       [0, warmup, warmup + legacy.envelope.decayHorizonSteps])
+        XCTAssertTrue(decoded.conversionNotes.contains(
+            LRMomentumCycleLogFormat.keyframesDescription(decoded.state.lrMomentumCycle.lrKeyframes)),
+                      "the resume log names the converted keyframes: \(decoded.conversionNotes)")
+        XCTAssertEqual(try TrainerScheduleState.decode(fromMetadata: legacyScheduleMetadata(completedTrainSteps: 9)),
+                       decoded.state)
+        for step in 0...60 {
+            let old = legacy.values(completedTrainSteps: step, lrWarmupSteps: warmup)
+            let new = decoded.state.lrMomentumCycle.values(completedTrainSteps: step, lrWarmupSteps: warmup)
+            XCTAssertNotNil(new.learningRate, "LR at step \(step)")
+            XCTAssertEqual(new.learningRate.map(\.bitPattern), old.learningRate.map(\.bitPattern), "LR at step \(step)")
+            XCTAssertEqual(new.momentum.map(\.bitPattern), old.momentum.map(\.bitPattern), "momentum at step \(step)")
+        }
+        // Written again, it is in the current form only, and reads back unchanged.
+        let rewritten = try decoded.state.metadataEntries()
+        XCTAssertEqual(Set(rewritten.keys), Set(TrainerScheduleState.MetadataKey.current))
+        XCTAssertEqual(try TrainerScheduleState.decode(fromMetadata: rewritten), decoded.state)
+    }
+
+    /// A file carrying both schedule forms is refused, naming the previous
+    /// form's keys: nothing writes one, and two sources for one schedule
+    /// cannot be resolved.
+    func test_trainerScheduleState_metadataWithBothScheduleFormsIsRefused() throws {
+        let current = try TrainerScheduleState(
+            completedTrainSteps: 9, lrWarmupSteps: Self.originalRunWarmupSteps,
+            lrMomentumCycle: try originalRunHyperparameters().lrMomentumCycle).metadataEntries()
+        var both = legacyScheduleMetadata(completedTrainSteps: 9)
+        both[TrainerScheduleState.MetadataKey.lrSchedule] = current[TrainerScheduleState.MetadataKey.lrSchedule]
+        XCTAssertThrowsError(try TrainerScheduleState.decode(fromMetadata: both)) { error in
+            guard case .bothScheduleForms(let legacyKeys) = error as? TrainerScheduleState.MetadataError else {
+                XCTFail("expected bothScheduleForms, got \(error)")
+                return
+            }
+            XCTAssertEqual(Set(legacyKeys), Set(TrainerScheduleState.MetadataKey.legacy))
+        }
+        // One previous-form key beside the current one is refused the same way.
+        var oneLegacy = current
+        oneLegacy[TrainerScheduleState.MetadataKey.legacyLRMomentumCycleEnvelope] = Self.legacyEnvelopeJSON
+        XCTAssertThrowsError(try TrainerScheduleState.decode(fromMetadata: oneLegacy)) { error in
+            guard case .bothScheduleForms(let legacyKeys) = error as? TrainerScheduleState.MetadataError else {
+                XCTFail("expected bothScheduleForms, got \(error)")
+                return
+            }
+            XCTAssertEqual(legacyKeys, [TrainerScheduleState.MetadataKey.legacyLRMomentumCycleEnvelope])
+        }
     }
 
     func test_safetensors_refusesTrainerScheduleWithoutVelocity() throws {

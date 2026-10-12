@@ -6,7 +6,7 @@
 //  ramps linearly to the cycle's starting value and momentum holds the
 //  cycle's starting value; afterwards both channels run on a step axis
 //  shifted back by the warmup length. These tests pin that contract at the
-//  pure-math level (`LRMomentumCycle.cycleStep` and the offset accessors)
+//  pure-math level (`LRMomentumCycle.cycleStep` and `values(completedTrainSteps:lrWarmupSteps:)`)
 //  and at the trainer level (`effectiveLearningRate` / `effectiveMomentum`,
 //  which mirror the SGD feed resolution).
 //
@@ -23,21 +23,31 @@ final class LRCycleWarmupOffsetTests: XCTestCase {
     /// Inverted LR + inverted momentum: LR starts at its max, which is the
     /// case where an un-offset cycle would already be descending while
     /// warmup ramps up.
+    /// Constant bounds (one keyframe), so the LR envelope does not move and
+    /// only the cycle phase depends on the step.
     private func invertedCycle(lrCount: Int = 0, momentumCount: Int = 0) -> LRMomentumCycle {
-        var cycle = LRMomentumCycle.disabled
-        cycle.lrEnabled = true
-        cycle.lrMin = 0.001
-        cycle.lrMax = 0.1
-        cycle.lrPeriodSteps = period
-        cycle.lrCount = lrCount
-        cycle.lrInvert = true
-        cycle.momentumEnabled = true
-        cycle.momentumMin = 0.85
-        cycle.momentumMax = 0.95
-        cycle.momentumPeriodSteps = period
-        cycle.momentumCount = momentumCount
-        cycle.momentumInvert = false
-        return cycle
+        LRMomentumCycle.constant(
+            lrPeriodSteps: period, lrCount: lrCount, lrMin: 0.001, lrMax: 0.1, lrInvert: true,
+            momentumEnabled: true, momentumPeriodSteps: period, momentumCount: momentumCount,
+            momentumMin: 0.85, momentumMax: 0.95, momentumInvert: false)
+    }
+
+    /// The cycle evaluated directly at cycle step `step` (no warmup offset).
+    private func learningRate(_ cycle: LRMomentumCycle, atCycleStep step: Int) -> Double? {
+        cycle.values(completedTrainSteps: step, lrWarmupSteps: 0).learningRate
+    }
+
+    private func momentum(_ cycle: LRMomentumCycle, atCycleStep step: Int) -> Double? {
+        cycle.values(completedTrainSteps: step, lrWarmupSteps: 0).momentum
+    }
+
+    /// The cycle at trainer step `completedTrainSteps` with the warmup offset.
+    private func learningRate(_ cycle: LRMomentumCycle, completedTrainSteps: Int, lrWarmupSteps: Int) -> Double? {
+        cycle.values(completedTrainSteps: completedTrainSteps, lrWarmupSteps: lrWarmupSteps).learningRate
+    }
+
+    private func momentum(_ cycle: LRMomentumCycle, completedTrainSteps: Int, lrWarmupSteps: Int) -> Double? {
+        cycle.values(completedTrainSteps: completedTrainSteps, lrWarmupSteps: lrWarmupSteps).momentum
     }
 
     func test_cycleStep_isZeroThroughWarmupThenOffset() {
@@ -52,36 +62,36 @@ final class LRCycleWarmupOffsetTests: XCTestCase {
     func test_afterWarmup_lrCycleIsOffsetByWarmup() throws {
         let cycle = invertedCycle()
         for globalStep in [warmupSteps, warmupSteps + 1, warmupSteps + 250, warmupSteps + 500, warmupSteps + 1733] {
-            let offset = try XCTUnwrap(cycle.learningRate(completedTrainSteps: globalStep, lrWarmupSteps: warmupSteps))
-            let direct = try XCTUnwrap(cycle.learningRate(forStep: globalStep - warmupSteps))
+            let offset = try XCTUnwrap(learningRate(cycle, completedTrainSteps: globalStep, lrWarmupSteps: warmupSteps))
+            let direct = try XCTUnwrap(learningRate(cycle, atCycleStep: globalStep - warmupSteps))
             XCTAssertEqual(offset, direct, accuracy: 1e-15, "global step \(globalStep)")
         }
         // Inverted cycle: max at the cycle start, min at the cycle midpoint.
         XCTAssertEqual(
-            try XCTUnwrap(cycle.learningRate(completedTrainSteps: warmupSteps, lrWarmupSteps: warmupSteps)),
+            try XCTUnwrap(learningRate(cycle, completedTrainSteps: warmupSteps, lrWarmupSteps: warmupSteps)),
             0.1, accuracy: 1e-12)
         XCTAssertEqual(
-            try XCTUnwrap(cycle.learningRate(completedTrainSteps: warmupSteps + period / 2, lrWarmupSteps: warmupSteps)),
+            try XCTUnwrap(learningRate(cycle, completedTrainSteps: warmupSteps + period / 2, lrWarmupSteps: warmupSteps)),
             0.001, accuracy: 1e-12)
     }
 
     func test_momentumCycleIsOffsetAndHeldDuringWarmup() throws {
         let cycle = invertedCycle()
-        let momentumAtCycleStart = try XCTUnwrap(cycle.momentum(forStep: 0))
+        let momentumAtCycleStart = try XCTUnwrap(momentum(cycle, atCycleStep: 0))
         for globalStep in [0, 1, warmupSteps / 2, warmupSteps - 1, warmupSteps] {
             XCTAssertEqual(
-                try XCTUnwrap(cycle.momentum(completedTrainSteps: globalStep, lrWarmupSteps: warmupSteps)),
+                try XCTUnwrap(momentum(cycle, completedTrainSteps: globalStep, lrWarmupSteps: warmupSteps)),
                 momentumAtCycleStart, accuracy: 1e-15, "warmup step \(globalStep) holds cycle-start momentum")
         }
         for globalStep in [warmupSteps + 1, warmupSteps + 250, warmupSteps + 500, warmupSteps + 1733] {
             XCTAssertEqual(
-                try XCTUnwrap(cycle.momentum(completedTrainSteps: globalStep, lrWarmupSteps: warmupSteps)),
-                try XCTUnwrap(cycle.momentum(forStep: globalStep - warmupSteps)),
+                try XCTUnwrap(momentum(cycle, completedTrainSteps: globalStep, lrWarmupSteps: warmupSteps)),
+                try XCTUnwrap(momentum(cycle, atCycleStep: globalStep - warmupSteps)),
                 accuracy: 1e-15, "global step \(globalStep)")
         }
         // Un-inverted momentum peaks at the cycle midpoint, which is offset.
         XCTAssertEqual(
-            try XCTUnwrap(cycle.momentum(completedTrainSteps: warmupSteps + period / 2, lrWarmupSteps: warmupSteps)),
+            try XCTUnwrap(momentum(cycle, completedTrainSteps: warmupSteps + period / 2, lrWarmupSteps: warmupSteps)),
             0.95, accuracy: 1e-12)
     }
 
@@ -91,22 +101,22 @@ final class LRCycleWarmupOffsetTests: XCTestCase {
         // freezes at the boundary (inverted → max). Just before that it is
         // still inside the first cycle, near its end.
         let justBeforeFreeze = warmupSteps + period - 1
-        let lrJustBefore = try XCTUnwrap(cycle.learningRate(completedTrainSteps: justBeforeFreeze, lrWarmupSteps: warmupSteps))
-        XCTAssertEqual(lrJustBefore, try XCTUnwrap(cycle.learningRate(forStep: period - 1)), accuracy: 1e-15)
+        let lrJustBefore = try XCTUnwrap(learningRate(cycle, completedTrainSteps: justBeforeFreeze, lrWarmupSteps: warmupSteps))
+        XCTAssertEqual(lrJustBefore, try XCTUnwrap(learningRate(cycle, atCycleStep: period - 1)), accuracy: 1e-15)
         // At global step `period` (inside the first cycle once offset), the
         // cycle must NOT be frozen yet — it is at cycle step period - warmup.
         XCTAssertEqual(
-            try XCTUnwrap(cycle.learningRate(completedTrainSteps: period, lrWarmupSteps: warmupSteps)),
-            try XCTUnwrap(cycle.learningRate(forStep: period - warmupSteps)), accuracy: 1e-15)
+            try XCTUnwrap(learningRate(cycle, completedTrainSteps: period, lrWarmupSteps: warmupSteps)),
+            try XCTUnwrap(learningRate(cycle, atCycleStep: period - warmupSteps)), accuracy: 1e-15)
         XCTAssertNotEqual(
-            try XCTUnwrap(cycle.learningRate(completedTrainSteps: period + warmupSteps / 2, lrWarmupSteps: warmupSteps)),
+            try XCTUnwrap(learningRate(cycle, completedTrainSteps: period + warmupSteps / 2, lrWarmupSteps: warmupSteps)),
             0.1, accuracy: 1e-6)
         for globalStep in [warmupSteps + period, warmupSteps + period + period / 2, warmupSteps + 5 * period] {
             XCTAssertEqual(
-                try XCTUnwrap(cycle.learningRate(completedTrainSteps: globalStep, lrWarmupSteps: warmupSteps)),
+                try XCTUnwrap(learningRate(cycle, completedTrainSteps: globalStep, lrWarmupSteps: warmupSteps)),
                 0.1, accuracy: 1e-12, "frozen LR at global step \(globalStep)")
             XCTAssertEqual(
-                try XCTUnwrap(cycle.momentum(completedTrainSteps: globalStep, lrWarmupSteps: warmupSteps)),
+                try XCTUnwrap(momentum(cycle, completedTrainSteps: globalStep, lrWarmupSteps: warmupSteps)),
                 0.85, accuracy: 1e-12, "frozen momentum at global step \(globalStep)")
         }
     }
@@ -125,8 +135,8 @@ final class LRCycleWarmupOffsetTests: XCTestCase {
         )
         let cycle = invertedCycle()
         trainer.lrMomentumCycle = cycle
-        let lrAtCycleStart = try XCTUnwrap(cycle.learningRate(forStep: 0))
-        let momentumAtCycleStart = try XCTUnwrap(cycle.momentum(forStep: 0))
+        let lrAtCycleStart = try XCTUnwrap(learningRate(cycle, atCycleStep: 0))
+        let momentumAtCycleStart = try XCTUnwrap(momentum(cycle, atCycleStep: 0))
 
         // The warmup ramp is a linear ramp to the cycle's starting LR.
         for globalStep in [0, 1, warmupSteps / 4, warmupSteps / 2, warmupSteps - 1] {
@@ -155,7 +165,7 @@ final class LRCycleWarmupOffsetTests: XCTestCase {
         }
         XCTAssertEqual(
             trainer.effectiveLearningRate(forBatchSize: 256, completedSteps: warmupSteps + 1),
-            Float(try XCTUnwrap(cycle.learningRate(forStep: 1))), accuracy: 1e-6)
+            Float(try XCTUnwrap(learningRate(cycle, atCycleStep: 1))), accuracy: 1e-6)
 
         // Cycling off: static LR × warmup, static momentum, as before.
         trainer.lrMomentumCycle = .disabled

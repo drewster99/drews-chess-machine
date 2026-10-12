@@ -40,7 +40,7 @@ final class TrainingSettingsPopoverModel {
     // MARK: - Optimizer tab
 
     var lrText = "" { didSet { lrError = false } }
-    var warmupText = "" { didSet { warmupError = false } }
+    var warmupText = "" { didSet { warmupError = false; refreshScheduleChartInput() } }
     var momentumText = "" { didSet { momentumError = false } }
     var sqrtBatchScalingValue = true
     var signedAdvantageComplementCEValue = true
@@ -104,42 +104,40 @@ final class TrainingSettingsPopoverModel {
     // cross-tab disable reads these pending model values, so it responds the
     // instant the toggle flips, before Save.
 
-    var lrCycleEnabledValue = false
-    var lrCycleMinText = "" { didSet { lrCycleMinError = false } }
-    var lrCycleMaxText = "" { didSet { lrCycleMaxError = false } }
-    var lrCyclePeriodText = "" { didSet { lrCyclePeriodError = false } }
-    var lrCycleCountText = "" { didSet { lrCycleCountError = false } }
-    var lrCycleInvertValue = false
-    var momentumCycleEnabledValue = false
+    var lrCycleEnabledValue = false { didSet { refreshScheduleChartInput() } }
+    var lrCyclePeriodText = "" { didSet { lrCyclePeriodError = false; refreshScheduleChartInput() } }
+    var lrCycleCountText = "" { didSet { lrCycleCountError = false; refreshScheduleChartInput() } }
+    var lrCycleInvertValue = false { didSet { refreshScheduleChartInput() } }
+    var momentumCycleEnabledValue = false { didSet { refreshScheduleChartInput() } }
     var momentumCycleMinText = "" { didSet { momentumCycleMinError = false } }
     var momentumCycleMaxText = "" { didSet { momentumCycleMaxError = false } }
     var momentumCyclePeriodText = "" { didSet { momentumCyclePeriodError = false } }
     var momentumCycleCountText = "" { didSet { momentumCycleCountError = false } }
     var momentumCycleInvertValue = true
-    var lrCyclePeakEndText = "" { didSet { lrCyclePeakEndError = false } }
-    var lrCycleTroughEndText = "" { didSet { lrCycleTroughEndError = false } }
-    var lrCycleDecayHorizonText = "" { didSet { lrCycleDecayHorizonError = false } }
-    var momentumFollowsLRCycleValue = true
-    var momentumFollowStartLowText = "" { didSet { momentumFollowStartLowError = false } }
-    var momentumFollowStartHighText = "" { didSet { momentumFollowStartHighError = false } }
-    var momentumFollowEndLowText = "" { didSet { momentumFollowEndLowError = false } }
-    var momentumFollowEndHighText = "" { didSet { momentumFollowEndHighError = false } }
+    var momentumFollowsLRCycleValue = true { didSet { refreshScheduleChartInput() } }
+    /// The LR keyframes being edited, one text row per keyframe
+    /// (`LRKeyframeTable`). Parsed and validated as one schedule on Save.
+    var lrKeyframeRows: [LRKeyframeRowDraft] = [] { didSet { lrKeyframesError = nil; refreshScheduleChartInput() } }
+    /// What the Cycling tab's schedule chart draws: the draft keyframes and
+    /// cycle fields as edited (the saved value where a field's text does not
+    /// parse), with the saved static LR, momentum, batch size and √batch
+    /// setting. Nil while the keyframe rows are not a valid schedule. Kept as
+    /// a stored value, refreshed when a field it reads changes, so the chart
+    /// is handed a value rather than a computation.
+    private(set) var scheduleChartInput: LRScheduleChartInput?
+    /// The rows as seeded, so Save leaves an untouched schedule alone (its
+    /// text never has to round-trip exactly).
+    private var seededLRKeyframeRows: [LRKeyframeRowDraft] = []
 
-    private(set) var lrCycleMinError = false
-    private(set) var lrCycleMaxError = false
     private(set) var lrCyclePeriodError = false
     private(set) var lrCycleCountError = false
     private(set) var momentumCycleMinError = false
     private(set) var momentumCycleMaxError = false
     private(set) var momentumCyclePeriodError = false
     private(set) var momentumCycleCountError = false
-    private(set) var lrCyclePeakEndError = false
-    private(set) var lrCycleTroughEndError = false
-    private(set) var lrCycleDecayHorizonError = false
-    private(set) var momentumFollowStartLowError = false
-    private(set) var momentumFollowStartHighError = false
-    private(set) var momentumFollowEndLowError = false
-    private(set) var momentumFollowEndHighError = false
+    /// Why the edited keyframes were refused, naming the keyframe and field;
+    /// nil when they are valid or untouched.
+    private(set) var lrKeyframesError: String?
 
     // MARK: - Self Play tab
 
@@ -406,11 +404,8 @@ final class TrainingSettingsPopoverModel {
         \.valueLabelSmoothingText, \.drawPenaltyText,
         \.policyLabelSmoothingText, \.policyLabelSmoothingPerMoveText, \.policyLabelSmoothingPerMoveCapText,
         \.trainingBatchSizeText,
-        \.lrCycleMinText, \.lrCycleMaxText, \.lrCyclePeriodText, \.lrCycleCountText,
+        \.lrCyclePeriodText, \.lrCycleCountText,
         \.momentumCycleMinText, \.momentumCycleMaxText, \.momentumCyclePeriodText, \.momentumCycleCountText,
-        \.lrCyclePeakEndText, \.lrCycleTroughEndText, \.lrCycleDecayHorizonText,
-        \.momentumFollowStartLowText, \.momentumFollowStartHighText,
-        \.momentumFollowEndLowText, \.momentumFollowEndHighText,
         \.selfPlayConcurrencyText, \.selfPlayStartTauText, \.selfPlayDecayPerPlyText, \.selfPlayFloorTauText,
         \.selfPlayDrawKeepFractionText, \.selfPlayMaxPliesPerGameText,
         \.drawWatchPDrawThresholdText, \.drawWatchStreakLengthText,
@@ -478,6 +473,33 @@ final class TrainingSettingsPopoverModel {
     /// Seed the edit fields from the live `trainingParams` snapshot. Called
     /// when the popover opens so it always reflects current state, even if a
     /// CLI / parameters-file override changed something since the last open.
+    /// Recompute `scheduleChartInput` from the draft (see its doc).
+    private func refreshScheduleChartInput() {
+        let p = TrainingParameters.shared
+        guard case .success(let keyframes) = LRKeyframeRowDraft.schedule(from: lrKeyframeRows) else {
+            scheduleChartInput = nil
+            return
+        }
+        func draftInt<K: TrainingParameterKey>(_ key: K.Type, _ text: String, saved: Int) -> Int where K.Value == Int {
+            K.parsedInDeclaredRange(text) ?? saved
+        }
+        let cycle = LRMomentumCycle(
+            lrEnabled: lrCycleEnabledValue,
+            lrPeriodSteps: draftInt(LRCyclePeriodSteps.self, lrCyclePeriodText, saved: p.lrCyclePeriodSteps),
+            lrCount: draftInt(LRCycleCount.self, lrCycleCountText, saved: p.lrCycleCount),
+            lrInvert: lrCycleInvertValue,
+            lrKeyframes: keyframes,
+            momentumEnabled: momentumCycleEnabledValue,
+            momentumPeriodSteps: p.momentumCyclePeriodSteps, momentumCount: p.momentumCycleCount,
+            momentumMin: p.momentumCycleMin, momentumMax: p.momentumCycleMax, momentumInvert: p.momentumCycleInvert,
+            momentumFollowsLRCycle: momentumFollowsLRCycleValue)
+        scheduleChartInput = LRScheduleChartInput(
+            cycle: cycle,
+            lrWarmupSteps: draftInt(LRWarmupSteps.self, warmupText, saved: p.lrWarmupSteps),
+            staticLearningRate: Float(p.learningRate), staticMomentum: Float(p.momentumCoeff),
+            batchSize: p.trainingBatchSize, sqrtBatchScaling: p.sqrtBatchScalingLR)
+    }
+
     func seedFromParams() {
         let p = TrainingParameters.shared
         // --- Optimizer tab ---
@@ -511,8 +533,6 @@ final class TrainingSettingsPopoverModel {
         trainingBatchSizeText = String(p.trainingBatchSize)
         // --- Cycling tab ---
         lrCycleEnabledValue = p.lrCycleEnabled
-        lrCycleMinText = String(format: "%.2e", p.lrCycleMin)
-        lrCycleMaxText = String(format: "%.2e", p.lrCycleMax)
         lrCyclePeriodText = String(p.lrCyclePeriodSteps)
         lrCycleCountText = String(p.lrCycleCount)
         lrCycleInvertValue = p.lrCycleInvert
@@ -522,14 +542,9 @@ final class TrainingSettingsPopoverModel {
         momentumCyclePeriodText = String(p.momentumCyclePeriodSteps)
         momentumCycleCountText = String(p.momentumCycleCount)
         momentumCycleInvertValue = p.momentumCycleInvert
-        lrCyclePeakEndText = String(format: "%.2e", p.lrCyclePeakEnd)
-        lrCycleTroughEndText = String(format: "%.2e", p.lrCycleTroughEnd)
-        lrCycleDecayHorizonText = String(p.lrCycleDecayHorizonSteps)
         momentumFollowsLRCycleValue = p.momentumFollowsLRCycle
-        momentumFollowStartLowText = String(format: "%.3f", p.momentumFollowStartLow)
-        momentumFollowStartHighText = String(format: "%.3f", p.momentumFollowStartHigh)
-        momentumFollowEndLowText = String(format: "%.3f", p.momentumFollowEndLow)
-        momentumFollowEndHighText = String(format: "%.3f", p.momentumFollowEndHigh)
+        lrKeyframeRows = p.lrCycleKeyframes.keyframes.map(LRKeyframeRowDraft.init(keyframe:))
+        seededLRKeyframeRows = lrKeyframeRows
         // --- Self Play tab ---
         selfPlayConcurrencyText = String(p.selfPlayConcurrency)
         selfPlayStartTauText = String(format: "%.2f", p.selfPlayStartTau)
@@ -615,21 +630,13 @@ final class TrainingSettingsPopoverModel {
         policyLabelSmoothingPerMoveCapError = false
         drawPenaltyError = false
         trainingBatchSizeError = false
-        lrCycleMinError = false
-        lrCycleMaxError = false
         lrCyclePeriodError = false
         lrCycleCountError = false
         momentumCycleMinError = false
         momentumCycleMaxError = false
         momentumCyclePeriodError = false
         momentumCycleCountError = false
-        lrCyclePeakEndError = false
-        lrCycleTroughEndError = false
-        lrCycleDecayHorizonError = false
-        momentumFollowStartLowError = false
-        momentumFollowStartHighError = false
-        momentumFollowEndLowError = false
-        momentumFollowEndHighError = false
+        lrKeyframesError = nil
         selfPlayConcurrencyError = false
         selfPlayStartTauError = false
         selfPlayDecayPerPlyError = false
@@ -1025,29 +1032,6 @@ final class TrainingSettingsPopoverModel {
         // 12-line-per-Save log spew.
         if lrCycleEnabledValue != p.lrCycleEnabled { p.lrCycleEnabled = lrCycleEnabledValue }
         if lrCycleInvertValue != p.lrCycleInvert { p.lrCycleInvert = lrCycleInvertValue }
-        if let v = editedValue(LRCycleMin.self, \.lrCycleMinText, current: p.lrCycleMin) {
-            lrCycleMinError = false
-            if abs(v - p.lrCycleMin) > Double.ulpOfOne { p.lrCycleMin = v }
-        } else {
-            lrCycleMinError = true
-            anyError = true
-        }
-        if let v = editedValue(LRCycleMax.self, \.lrCycleMaxText, current: p.lrCycleMax) {
-            lrCycleMaxError = false
-            if abs(v - p.lrCycleMax) > Double.ulpOfOne { p.lrCycleMax = v }
-        } else {
-            lrCycleMaxError = true
-            anyError = true
-        }
-        // Cross-field: LR max must be >= min. The cycle guards itself
-        // (`learningRate(forStep:)` returns nil and falls back to the static
-        // LR when lrMax < lrMin), so an inverted pair would silently make the
-        // cycle inert while the UI reads "enabled" — flag the max field so the
-        // misconfiguration is visible instead.
-        if !lrCycleMinError, !lrCycleMaxError, p.lrCycleMax < p.lrCycleMin {
-            lrCycleMaxError = true
-            anyError = true
-        }
         if let n = editedValue(LRCyclePeriodSteps.self, \.lrCyclePeriodText, current: p.lrCyclePeriodSteps) {
             lrCyclePeriodError = false
             if n != p.lrCyclePeriodSteps { p.lrCyclePeriodSteps = n }
@@ -1101,77 +1085,20 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
         // Decay envelope. Ranges mirror the `@TrainingParameter` declarations.
-        if let v = editedValue(LRCyclePeakEnd.self, \.lrCyclePeakEndText, current: p.lrCyclePeakEnd) {
-            lrCyclePeakEndError = false
-            if abs(v - p.lrCyclePeakEnd) > Double.ulpOfOne { p.lrCyclePeakEnd = v }
-        } else {
-            lrCyclePeakEndError = true
-            anyError = true
+        // The keyframes: written only when edited, parsed and validated as
+        // one schedule by the parameter's own validator, so the message names
+        // the keyframe and the field.
+        if lrKeyframeRows != seededLRKeyframeRows {
+            switch LRKeyframeRowDraft.schedule(from: lrKeyframeRows) {
+            case .success(let schedule):
+                lrKeyframesError = nil
+                if schedule != p.lrCycleKeyframes { p.lrCycleKeyframes = schedule }
+            case .failure(let problem):
+                lrKeyframesError = problem.description
+                anyError = true
+            }
         }
-        if let v = editedValue(LRCycleTroughEnd.self, \.lrCycleTroughEndText, current: p.lrCycleTroughEnd) {
-            lrCycleTroughEndError = false
-            if abs(v - p.lrCycleTroughEnd) > Double.ulpOfOne { p.lrCycleTroughEnd = v }
-        } else {
-            lrCycleTroughEndError = true
-            anyError = true
-        }
-        // Cross-field: the end peak must not sit below the end trough. The
-        // schedule refuses such an envelope (falls back to the static LR), so
-        // without this flag the cycle would go inert while reading "enabled".
-        if !lrCyclePeakEndError, !lrCycleTroughEndError, p.lrCyclePeakEnd < p.lrCycleTroughEnd {
-            lrCyclePeakEndError = true
-            anyError = true
-        }
-        if let n = editedValue(LRCycleDecayHorizonSteps.self, \.lrCycleDecayHorizonText, current: p.lrCycleDecayHorizonSteps) {
-            lrCycleDecayHorizonError = false
-            if n != p.lrCycleDecayHorizonSteps { p.lrCycleDecayHorizonSteps = n }
-        } else {
-            lrCycleDecayHorizonError = true
-            anyError = true
-        }
-        // Momentum-follow bounds.
         if momentumFollowsLRCycleValue != p.momentumFollowsLRCycle { p.momentumFollowsLRCycle = momentumFollowsLRCycleValue }
-        if let v = editedValue(MomentumFollowStartLow.self, \.momentumFollowStartLowText, current: p.momentumFollowStartLow) {
-            momentumFollowStartLowError = false
-            if abs(v - p.momentumFollowStartLow) > Double.ulpOfOne { p.momentumFollowStartLow = v }
-        } else {
-            momentumFollowStartLowError = true
-            anyError = true
-        }
-        if let v = editedValue(MomentumFollowStartHigh.self, \.momentumFollowStartHighText, current: p.momentumFollowStartHigh) {
-            momentumFollowStartHighError = false
-            if abs(v - p.momentumFollowStartHigh) > Double.ulpOfOne { p.momentumFollowStartHigh = v }
-        } else {
-            momentumFollowStartHighError = true
-            anyError = true
-        }
-        if let v = editedValue(MomentumFollowEndLow.self, \.momentumFollowEndLowText, current: p.momentumFollowEndLow) {
-            momentumFollowEndLowError = false
-            if abs(v - p.momentumFollowEndLow) > Double.ulpOfOne { p.momentumFollowEndLow = v }
-        } else {
-            momentumFollowEndLowError = true
-            anyError = true
-        }
-        if let v = editedValue(MomentumFollowEndHigh.self, \.momentumFollowEndHighText, current: p.momentumFollowEndHigh) {
-            momentumFollowEndHighError = false
-            if abs(v - p.momentumFollowEndHigh) > Double.ulpOfOne { p.momentumFollowEndHigh = v }
-        } else {
-            momentumFollowEndHighError = true
-            anyError = true
-        }
-        // Cross-field: each follow pair's high must be >= its low. The
-        // schedule reports no momentum (static fallback) for an inverted
-        // pair, so flag it rather than let following silently switch off.
-        if !momentumFollowStartLowError, !momentumFollowStartHighError,
-           p.momentumFollowStartHigh < p.momentumFollowStartLow {
-            momentumFollowStartHighError = true
-            anyError = true
-        }
-        if !momentumFollowEndLowError, !momentumFollowEndHighError,
-           p.momentumFollowEndHigh < p.momentumFollowEndLow {
-            momentumFollowEndHighError = true
-            anyError = true
-        }
         // √batch scaling toggle — Bool, cannot fail to parse.
         if sqrtBatchScalingValue != p.sqrtBatchScalingLR {
             SessionLogger.shared.log(

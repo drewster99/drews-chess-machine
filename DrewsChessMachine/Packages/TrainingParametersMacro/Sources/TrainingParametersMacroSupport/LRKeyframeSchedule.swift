@@ -75,6 +75,13 @@ public struct LRKeyframeSchedule: Sendable, Equatable, Hashable, Codable {
         public let trough: Double
         public let momentumAtPeak: Double
         public let momentumAtTrough: Double
+
+        public init(peak: Double, trough: Double, momentumAtPeak: Double, momentumAtTrough: Double) {
+            self.peak = peak
+            self.trough = trough
+            self.momentumAtPeak = momentumAtPeak
+            self.momentumAtTrough = momentumAtTrough
+        }
     }
 
     /// The bounds at trainer step `step`. Segment k covers
@@ -115,7 +122,7 @@ public struct LRKeyframeSchedule: Sendable, Equatable, Hashable, Codable {
     /// (`lrMax * pow(lrPeakEnd / lrMax, decay)`,
     /// `startLow + (endLow - startLow) * decay`); bit-identity with it depends
     /// on keeping them so.
-    static func interpolate(_ a: LRKeyframe, _ b: LRKeyframe, fraction f: Double) -> Bounds {
+    public static func interpolate(_ a: LRKeyframe, _ b: LRKeyframe, fraction f: Double) -> Bounds {
         Bounds(
             peak: a.peak * pow(b.peak / a.peak, f),
             trough: a.trough * pow(b.trough / a.trough, f),
@@ -128,7 +135,7 @@ public struct LRKeyframeSchedule: Sendable, Equatable, Hashable, Codable {
     /// `parameters.json`, `UserDefaults`, the converter, the editor) calls it.
     /// Returns the schedule unchanged, or throws the first problem found.
     @discardableResult
-    public func validated() throws -> LRKeyframeSchedule {
+    public func validated() throws(LRKeyframeScheduleError) -> LRKeyframeSchedule {
         guard !keyframes.isEmpty else { throw LRKeyframeScheduleError.empty }
         guard keyframes.count <= Self.maximumKeyframeCount else {
             throw LRKeyframeScheduleError.tooManyKeyframes(count: keyframes.count, maximum: Self.maximumKeyframeCount)

@@ -11,6 +11,8 @@ enum SessionCheckpointError: LocalizedError {
     case targetDirectoryExists(URL)
     /// A session.json at a format version that requires a lineage has none.
     case missingLineage(formatVersion: Int)
+    /// The previous LR schedule form could not be read as LR keyframes.
+    case legacyLRSchedule(detail: String)
 
     var errorDescription: String? {
         switch self {
@@ -30,6 +32,8 @@ enum SessionCheckpointError: LocalizedError {
         case .missingLineage(let version):
             return "session.json format version \(version) requires a lineage record (required from version "
                 + "\(SessionCheckpointState.lineageRequiredFromFormatVersion)), and this one has none"
+        case .legacyLRSchedule(let detail):
+            return "session.json's LR schedule (previous form) cannot be read as LR keyframes: \(detail)"
         }
     }
 }
@@ -513,47 +517,6 @@ struct SessionCheckpointState: Codable, Equatable {
         saved ?? TrainingParameterResolution.absentValue(of: MaxPliesFromAnyOneGame.self)
     }
 
-    /// Pre-feature behavior: no decay envelope and no momentum following.
-    /// On nil the caller's current envelope values are preserved (so the
-    /// settings popover keeps them) but the horizon is zeroed and following
-    /// is turned off — the saved run cycled without either, and resume must
-    /// not change its schedule.
-    static func resolvedLRMomentumCycleEnvelope(
-        saved: LRMomentumCycleEnvelope?,
-        current: LRMomentumCycleEnvelope
-    ) -> LRMomentumCycleEnvelope {
-        if let saved { return saved }
-        var resolved = current
-        resolved.decayHorizonSteps = TrainingParameterResolution.absentValue(of: LRCycleDecayHorizonSteps.self)
-        resolved.momentumFollowsLRCycle = TrainingParameterResolution.absentValue(of: MomentumFollowsLRCycle.self)
-        return resolved
-    }
-
-    /// Pre-feature behavior: no LR/momentum cycling. On nil the
-    /// caller's current cycle numbers (periods, bounds) are preserved
-    /// so the settings popover keeps the user's values, but both
-    /// enabled flags are forced off — a live cycle must never be
-    /// applied to a session that predates the cycling feature.
-    static func resolvedLRMomentumCycle(
-        saved: LRMomentumCycle?,
-        current: LRMomentumCycle
-    ) -> LRMomentumCycle {
-        if let saved { return saved }
-        return LRMomentumCycle(
-            lrEnabled: TrainingParameterResolution.absentValue(of: LRCycleEnabled.self),
-            lrPeriodSteps: current.lrPeriodSteps,
-            lrCount: current.lrCount,
-            lrMin: current.lrMin,
-            lrMax: current.lrMax,
-            lrInvert: current.lrInvert,
-            momentumEnabled: TrainingParameterResolution.absentValue(of: MomentumCycleEnabled.self),
-            momentumPeriodSteps: current.momentumPeriodSteps,
-            momentumCount: current.momentumCount,
-            momentumMin: current.momentumMin,
-            momentumMax: current.momentumMax,
-            momentumInvert: current.momentumInvert
-        )
-    }
     var replayBufferMinPositionsBeforeTraining: Int?
     var arenaAutoIntervalSec: Double?
     var candidateProbeIntervalSec: Double?
@@ -666,23 +629,25 @@ struct SessionCheckpointState: Codable, Equatable {
     /// recording (into a fresh corpus). Optional + defaulted for back-compat
     /// with older session files (absent → loader falls through to current).
     var recordSelfPlayGames: Bool? = nil
-    /// LR/momentum cycling configuration in effect at save time (the 12
-    /// `lr_cycle_*` / `momentum_cycle_*` parameters bundled into the runtime
-    /// `LRMomentumCycle` struct). Optional for back-compat with session files
-    /// written before cycling landed; absent → loader falls through to the
-    /// user's current `TrainingParameters.shared` cycling values. Because the
-    /// schedule's phase is a pure function of the global step (which is also
-    /// persisted as `trainingSteps`), restoring this is all resume needs to
-    /// continue the cycle seamlessly.
-    var lrMomentumCycle: LRMomentumCycle?
-    /// LR-cycle decay envelope + momentum-follow configuration in effect at
-    /// save time (the `lr_cycle_peak_end` / `lr_cycle_trough_end` /
-    /// `lr_cycle_decay_horizon_steps` / `momentum_follow*` parameters). Kept
-    /// separate from `lrMomentumCycle` so sessions written before the
-    /// envelope existed still decode that field. Optional for back-compat;
-    /// absent → the resumed run gets no decay and no following (the saved
-    /// run had neither), with the user's other envelope values preserved.
-    var lrMomentumCycleEnvelope: LRMomentumCycleEnvelope?
+    /// The LR/momentum schedule in effect at save time — cycle, keyframes and
+    /// momentum following (`LRMomentumCycle`'s persisted form). Optional:
+    /// absent in a session written before cycling existed (the resume then
+    /// resolves each key by its declared absent value: cycling off, the
+    /// keyframes from the current setting), and in one written before LR
+    /// keyframes, which carries the two legacy fields below instead — the
+    /// decode converts those into this one. Because the phase is a pure
+    /// function of the trainer clock, restoring this is all resume needs to
+    /// continue the schedule.
+    var lrSchedule: LRMomentumCycle?
+    /// The previous schedule's cycle, in a session written before LR
+    /// keyframes. Read only: `decode` converts it (with
+    /// `lrMomentumCycleEnvelope`) into `lrSchedule` and clears both, so they
+    /// are never written back.
+    var lrMomentumCycle: LegacyLRMomentumCycleCoding?
+    /// The previous schedule's decay envelope; absent in a session written
+    /// before the envelope existed (no decay, no momentum following). Read
+    /// only, like `lrMomentumCycle`.
+    var lrMomentumCycleEnvelope: LegacyLRMomentumCycleEnvelopeCoding?
     /// Composition-aware replay-buffer sampler constraints in effect at
     /// save time. All Optional for back-compat with session files written
     /// before these knobs existed; absent → loader falls through to the
@@ -932,17 +897,7 @@ struct SessionCheckpointState: Codable, Equatable {
     static func decode(_ data: Data) throws -> SessionCheckpointState {
         do {
             var state = try JSONDecoder().decode(SessionCheckpointState.self, from: data)
-            // `LRMomentumCycle` leaves its envelope out of its encoded form
-            // and the envelope is stored beside it, so the cycle comes back
-            // with the no-decay envelope. Put the saved one back, as the
-            // trainer's safetensors metadata does, so the decoded cycle is
-            // the one that was saved — `CheckpointManager.saveSession`'s
-            // round-trip check compares the whole struct. A session without
-            // a saved envelope predates it and ran without decay, which is
-            // what the cycle already holds.
-            if let savedEnvelope = state.lrMomentumCycleEnvelope {
-                state.lrMomentumCycle?.envelope = savedEnvelope
-            }
+            try state.convertLegacyLRSchedule()
             guard (1...Self.currentFormatVersion).contains(state.formatVersion) else {
                 throw SessionCheckpointError.unsupportedVersion(state.formatVersion)
             }
@@ -1384,5 +1339,41 @@ extension SessionCheckpointState {
             ))
         }
         return findings
+    }
+}
+
+extension SessionCheckpointState {
+    /// A session written before LR keyframes carries the previous schedule
+    /// (`lrMomentumCycle` + `lrMomentumCycleEnvelope`); convert it to
+    /// `lrSchedule`, exactly (`LRMomentumCycle.converting`, owner decision
+    /// Q-4), and clear the legacy fields so nothing writes them again. The
+    /// conversion offsets the old decay by the session's warmup length; a
+    /// session too old to record one uses the current setting, which is what
+    /// its resume applies too (`lr_warmup_steps` is `.refuseExact`, so such a
+    /// GUI resume is already NOT EXACT). A session carrying both forms is
+    /// refused: nothing writes one.
+    mutating func convertLegacyLRSchedule() throws {
+        guard let legacyCycle = lrMomentumCycle else {
+            if lrMomentumCycleEnvelope != nil {
+                throw SessionCheckpointError.legacyLRSchedule(detail: "a decay envelope without its cycle")
+            }
+            return
+        }
+        guard lrSchedule == nil else {
+            throw SessionCheckpointError.legacyLRSchedule(detail: "both lrSchedule and the previous form (lrMomentumCycle)")
+        }
+        let warmup = lrWarmupSteps ?? TrainingParameters.persistedValue(LRWarmupSteps.self)
+        let converted: (cycle: LRMomentumCycle, notes: [String])
+        do {
+            converted = try LRMomentumCycle.converting(
+                LegacyLRSchedule(cycle: legacyCycle, envelope: lrMomentumCycleEnvelope, lrWarmupSteps: warmup))
+        } catch let error as LegacyLRScheduleConversionError {
+            throw SessionCheckpointError.legacyLRSchedule(detail: error.description)
+        }
+        lrSchedule = converted.cycle
+        lrMomentumCycle = nil
+        lrMomentumCycleEnvelope = nil
+        SessionLogger.shared.log("[RESUME] legacy LR schedule in session.json converted: "
+            + (converted.notes + [LRMomentumCycleLogFormat.keyframesDescription(converted.cycle.lrKeyframes)]).joined(separator: "; "))
     }
 }

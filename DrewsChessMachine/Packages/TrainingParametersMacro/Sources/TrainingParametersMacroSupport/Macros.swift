@@ -72,3 +72,19 @@ public macro TrainingParameter(
     liveTunable: Bool = false,
     absentValue: TrainingParameterAbsence<Bool>? = nil
 ) = #externalMacro(module: "TrainingParametersMacroPlugin", type: "TrainingParameterMacro")
+
+/// The LR cycle's keyframe list (`LRKeyframeSchedule`). No `range:`: the
+/// schedule's own validator (`LRKeyframeSchedule.validated()`) is its range,
+/// reached through `TrainingParameterDefinition.validate` like every other
+/// key's. `absentValue:` must not be `.declaredRangeMaximum` (a list has no
+/// maximum); the macro refuses it.
+@attached(member, names: named(id), named(definition), named(encode), named(decode), named(absentValue))
+public macro TrainingParameter(
+    name: String,
+    description: String,
+    default: LRKeyframeSchedule,
+    category: String,
+    id: String? = nil,
+    liveTunable: Bool = false,
+    absentValue: TrainingParameterAbsence<LRKeyframeSchedule>? = nil
+) = #externalMacro(module: "TrainingParametersMacroPlugin", type: "TrainingParameterMacro")

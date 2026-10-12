@@ -144,6 +144,10 @@ enum CommandLineHelp {
                                       --group <0-based index>, repeatable, narrows them. Full list, with
                                       what each rewrites: --derive-model --help.
       --show-default-parameters       Print every default training parameter as JSON and exit.
+      --show-lr-schedule [--parameters <file>] [--from <step>] [--to <step>] [--buckets <n>] [--csv <path>]
+                                      Print the LR and momentum a run would be fed, per step bucket (peak,
+                                      trough, LR min/max/last, momentum min/max), from the declared defaults
+                                      overridden by <file>, and exit. --csv writes a new file instead.
       --create-parameters-file [<path>] [--force]
                                       Write parameters.json + parameters.md and exit. <path> is a folder
                                       (existing, or ending in /) to write both into, or the .json file

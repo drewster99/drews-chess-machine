@@ -102,7 +102,7 @@ final class DropoutRNGStateTests: XCTestCase {
         XCTAssertEqual(carried, sourceNow)
 
         let target = try makeTrainer(dropoutSeed: 99)
-        try await target.restoreExactly(from: snapshot)
+        try await target.restoreExactly(from: snapshot, schedule: .snapshots)
         let targetNow = try await target.captureDropoutState()
         XCTAssertEqual(targetNow, carried)
         let sourceNext = try await stateSequence(of: source, steps: 2)
@@ -192,7 +192,7 @@ final class DropoutRNGStateTests: XCTestCase {
         XCTAssertEqual(reloaded.dropoutRNG, .philox(carried))
 
         let target = try makeTrainer(dropoutSeed: 77)
-        try await target.restoreExactly(from: reloaded)
+        try await target.restoreExactly(from: reloaded, schedule: .snapshots)
         let targetNow = try await target.captureDropoutState()
         XCTAssertEqual(targetNow, carried)
         let sourceNext = try await stateSequence(of: source, steps: 2)

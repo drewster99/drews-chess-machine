@@ -134,6 +134,10 @@ struct DrewsChessMachineApp: App {
         // variant) followed by `_exit(0)`.
         Self.handleDefaultsFlagsIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: `--show-lr-schedule` prints the LR schedule a run would
+        // be fed (or writes it as CSV) and exits; no GUI, no GPU.
+        ShowLRScheduleCLI.handleIfRequested(rawArgs: rawArgs)
+
         // Pre-flight: offline training-health replay (--replay-health-log).
         // Parses saved session logs and runs the real training-health
         // evaluator over them, synchronously on the launching thread; no

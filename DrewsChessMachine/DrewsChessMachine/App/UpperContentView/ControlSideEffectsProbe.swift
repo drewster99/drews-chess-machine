@@ -83,6 +83,9 @@ struct ControlSideEffectsProbe: View {
         content
             .onChange(of: trainingParams.lrMomentumCycle) { _, c in
                 SessionLogger.shared.log("[PARAM] lr_momentum_cycle: \(LRMomentumCycleLogFormat.cycleDescription(c))")
+                if let warning = LRMomentumCycleLogFormat.troughFloorWarning(c) {
+                    SessionLogger.shared.log(warning)
+                }
                 trainer?.lrMomentumCycle = c
             }
     }

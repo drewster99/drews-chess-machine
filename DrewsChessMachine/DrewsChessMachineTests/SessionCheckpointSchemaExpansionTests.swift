@@ -27,6 +27,7 @@
 //
 
 import XCTest
+import TrainingParametersMacroSupport
 @testable import DrewsChessMachine
 
 final class SessionCheckpointSchemaExpansionTests: XCTestCase {
@@ -185,15 +186,18 @@ final class SessionCheckpointSchemaExpansionTests: XCTestCase {
         """
         // Back-compat: a session.json without the field decodes to nil.
         let base = try SessionCheckpointState.decode(Data(baseJSON.utf8))
-        XCTAssertNil(base.lrMomentumCycle,
-                     "a session without lrMomentumCycle must decode to nil")
+        // LR keyframes: the schedule's field is `lrSchedule` (the legacy
+        // `lrMomentumCycle` is read-only and converted on decode).
+        XCTAssertNil(base.lrSchedule,
+                     "a session without a schedule must decode to nil")
 
         // Populate a non-default cycle (both channels active, momentum inverted
         // and frozen after a count) and round-trip through the disk format.
         var cycle = LRMomentumCycle.disabled
         cycle.lrEnabled = true
-        cycle.lrMin = 1.0e-5
-        cycle.lrMax = 3.0e-3
+        cycle.lrKeyframes = LRKeyframeSchedule(keyframes: [
+            LRKeyframe(step: 0, peak: 3.0e-3, trough: 1.0e-5, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
+        ])
         cycle.lrPeriodSteps = 2000
         cycle.lrCount = 5
         cycle.lrInvert = false
@@ -205,11 +209,11 @@ final class SessionCheckpointSchemaExpansionTests: XCTestCase {
         cycle.momentumInvert = true
 
         var populated = base
-        populated.lrMomentumCycle = cycle
+        populated.lrSchedule = cycle
 
         let decoded = try SessionCheckpointState.decode(try populated.encode())
-        XCTAssertEqual(decoded.lrMomentumCycle, cycle,
-                       "lrMomentumCycle must survive session encode → decode intact")
+        XCTAssertEqual(decoded.lrSchedule, cycle,
+                       "lrSchedule must survive session encode → decode intact")
     }
 
     // MARK: - Cross-format compat (parameters JSON ↔ session.json)

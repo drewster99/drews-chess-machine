@@ -133,21 +133,14 @@ struct TrainingSettingsPopover: View {
     }
 
     private var cyclingHasError: Bool {
-        model.lrCycleMinError
-            || model.lrCycleMaxError
+        model.lrKeyframesError != nil
             || model.lrCyclePeriodError
             || model.lrCycleCountError
             || model.momentumCycleMinError
             || model.momentumCycleMaxError
             || model.momentumCyclePeriodError
             || model.momentumCycleCountError
-            || model.lrCyclePeakEndError
-            || model.lrCycleTroughEndError
-            || model.lrCycleDecayHorizonError
-            || model.momentumFollowStartLowError
-            || model.momentumFollowStartHighError
-            || model.momentumFollowEndLowError
-            || model.momentumFollowEndHighError
+
     }
 
     private var selfPlayHasError: Bool {
@@ -247,8 +240,8 @@ struct TrainingSettingsPopover: View {
             case .cycling:
                 CyclingTab(
                     lrCycleEnabled: $model.lrCycleEnabledValue,
-                    lrCycleMinText: $model.lrCycleMinText,
-                    lrCycleMaxText: $model.lrCycleMaxText,
+                    lrKeyframeRows: $model.lrKeyframeRows,
+                    scheduleChartInput: model.scheduleChartInput,
                     lrCyclePeriodText: $model.lrCyclePeriodText,
                     lrCycleCountText: $model.lrCycleCountText,
                     lrCycleInvert: $model.lrCycleInvertValue,
@@ -258,29 +251,14 @@ struct TrainingSettingsPopover: View {
                     momentumCyclePeriodText: $model.momentumCyclePeriodText,
                     momentumCycleCountText: $model.momentumCycleCountText,
                     momentumCycleInvert: $model.momentumCycleInvertValue,
-                    lrCyclePeakEndText: $model.lrCyclePeakEndText,
-                    lrCycleTroughEndText: $model.lrCycleTroughEndText,
-                    lrCycleDecayHorizonText: $model.lrCycleDecayHorizonText,
                     momentumFollowsLRCycle: $model.momentumFollowsLRCycleValue,
-                    momentumFollowStartLowText: $model.momentumFollowStartLowText,
-                    momentumFollowStartHighText: $model.momentumFollowStartHighText,
-                    momentumFollowEndLowText: $model.momentumFollowEndLowText,
-                    momentumFollowEndHighText: $model.momentumFollowEndHighText,
-                    lrCycleMinError: model.lrCycleMinError,
-                    lrCycleMaxError: model.lrCycleMaxError,
+                    lrKeyframesError: model.lrKeyframesError,
                     lrCyclePeriodError: model.lrCyclePeriodError,
                     lrCycleCountError: model.lrCycleCountError,
                     momentumCycleMinError: model.momentumCycleMinError,
                     momentumCycleMaxError: model.momentumCycleMaxError,
                     momentumCyclePeriodError: model.momentumCyclePeriodError,
-                    momentumCycleCountError: model.momentumCycleCountError,
-                    lrCyclePeakEndError: model.lrCyclePeakEndError,
-                    lrCycleTroughEndError: model.lrCycleTroughEndError,
-                    lrCycleDecayHorizonError: model.lrCycleDecayHorizonError,
-                    momentumFollowStartLowError: model.momentumFollowStartLowError,
-                    momentumFollowStartHighError: model.momentumFollowStartHighError,
-                    momentumFollowEndLowError: model.momentumFollowEndLowError,
-                    momentumFollowEndHighError: model.momentumFollowEndHighError
+                    momentumCycleCountError: model.momentumCycleCountError
                 )
             case .optimizer:
                 OptimizerTab(
@@ -642,8 +620,8 @@ fileprivate struct LiveRatioBadge: View {
 /// inverse coupling — but that's a usage, not a hard tie.)
 private struct CyclingTab: View {
     @Binding var lrCycleEnabled: Bool
-    @Binding var lrCycleMinText: String
-    @Binding var lrCycleMaxText: String
+    @Binding var lrKeyframeRows: [LRKeyframeRowDraft]
+    let scheduleChartInput: LRScheduleChartInput?
     @Binding var lrCyclePeriodText: String
     @Binding var lrCycleCountText: String
     @Binding var lrCycleInvert: Bool
@@ -653,29 +631,14 @@ private struct CyclingTab: View {
     @Binding var momentumCyclePeriodText: String
     @Binding var momentumCycleCountText: String
     @Binding var momentumCycleInvert: Bool
-    @Binding var lrCyclePeakEndText: String
-    @Binding var lrCycleTroughEndText: String
-    @Binding var lrCycleDecayHorizonText: String
     @Binding var momentumFollowsLRCycle: Bool
-    @Binding var momentumFollowStartLowText: String
-    @Binding var momentumFollowStartHighText: String
-    @Binding var momentumFollowEndLowText: String
-    @Binding var momentumFollowEndHighText: String
-    let lrCycleMinError: Bool
-    let lrCycleMaxError: Bool
+    let lrKeyframesError: String?
     let lrCyclePeriodError: Bool
     let lrCycleCountError: Bool
     let momentumCycleMinError: Bool
     let momentumCycleMaxError: Bool
     let momentumCyclePeriodError: Bool
     let momentumCycleCountError: Bool
-    let lrCyclePeakEndError: Bool
-    let lrCycleTroughEndError: Bool
-    let lrCycleDecayHorizonError: Bool
-    let momentumFollowStartLowError: Bool
-    let momentumFollowStartHighError: Bool
-    let momentumFollowEndLowError: Bool
-    let momentumFollowEndHighError: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -685,41 +648,6 @@ private struct CyclingTab: View {
                     .toggleStyle(.checkbox)
                     .font(.system(size: 13, weight: .semibold))
                 VStack(alignment: .leading, spacing: 6) {
-                    PopoverRow(label: "Peak LR, start:", text: $lrCycleMaxText, error: lrCycleMaxError, placeholder: LRCycleMax.declaredDefaultText(format: "%.2e")) {
-                        Stepper(
-                            "",
-                            onIncrement: { stepLogText($lrCycleMaxText, factor: sqrt(10.0), key: LRCycleMax.self) },
-                            onDecrement: { stepLogText($lrCycleMaxText, factor: 1.0 / sqrt(10.0), key: LRCycleMax.self) }
-                        )
-                    }
-                    PopoverRow(label: "Peak LR, end:", text: $lrCyclePeakEndText, error: lrCyclePeakEndError, placeholder: LRCyclePeakEnd.declaredDefaultText(format: "%.2e")) {
-                        Stepper(
-                            "",
-                            onIncrement: { stepLogText($lrCyclePeakEndText, factor: sqrt(10.0), key: LRCyclePeakEnd.self) },
-                            onDecrement: { stepLogText($lrCyclePeakEndText, factor: 1.0 / sqrt(10.0), key: LRCyclePeakEnd.self) }
-                        )
-                    }
-                    PopoverRow(label: "Trough LR, start:", text: $lrCycleMinText, error: lrCycleMinError, placeholder: LRCycleMin.declaredDefaultText(format: "%.2e")) {
-                        Stepper(
-                            "",
-                            onIncrement: { stepLogText($lrCycleMinText, factor: sqrt(10.0), key: LRCycleMin.self) },
-                            onDecrement: { stepLogText($lrCycleMinText, factor: 1.0 / sqrt(10.0), key: LRCycleMin.self) }
-                        )
-                    }
-                    PopoverRow(label: "Trough LR, end:", text: $lrCycleTroughEndText, error: lrCycleTroughEndError, placeholder: LRCycleTroughEnd.declaredDefaultText(format: "%.2e")) {
-                        Stepper(
-                            "",
-                            onIncrement: { stepLogText($lrCycleTroughEndText, factor: sqrt(10.0), key: LRCycleTroughEnd.self) },
-                            onDecrement: { stepLogText($lrCycleTroughEndText, factor: 1.0 / sqrt(10.0), key: LRCycleTroughEnd.self) }
-                        )
-                    }
-                    PopoverRow(label: "Decay steps (0=off):", text: $lrCycleDecayHorizonText, error: lrCycleDecayHorizonError, placeholder: LRCycleDecayHorizonSteps.declaredDefaultText) {
-                        Stepper(
-                            "",
-                            onIncrement: { stepHorizonText($lrCycleDecayHorizonText, up: true) },
-                            onDecrement: { stepHorizonText($lrCycleDecayHorizonText, up: false) }
-                        )
-                    }
                     PopoverRow(label: "Period (steps):", text: $lrCyclePeriodText, error: lrCyclePeriodError, placeholder: LRCyclePeriodSteps.declaredDefaultText) {
                         Stepper(
                             "",
@@ -736,6 +664,11 @@ private struct CyclingTab: View {
                             .toggleStyle(.checkbox)
                         Spacer()
                     }
+                    Text("Peak and trough over the run (keyframes; trainer steps):")
+                        .font(.system(size: 12))
+                    LRKeyframeTable(rows: $lrKeyframeRows, error: lrKeyframesError,
+                                    periodSteps: scheduleChartInput?.cycle.lrPeriodSteps ?? LRCyclePeriodSteps.declaredDefault)
+                    LRScheduleChart(input: scheduleChartInput)
                 }
                 .padding(.leading, 20)
                 .disabled(!lrCycleEnabled)
@@ -754,23 +687,6 @@ private struct CyclingTab: View {
                     .padding(.leading, 20)
                     .disabled(!momentumCycleEnabled)
                     .opacity(momentumCycleEnabled ? 1.0 : 0.5)
-                VStack(alignment: .leading, spacing: 6) {
-                    PopoverRow(label: "Low μ, start:", text: $momentumFollowStartLowText, error: momentumFollowStartLowError, placeholder: MomentumFollowStartLow.declaredDefaultText(format: "%.3f")) {
-                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowStartLowText, fallback: MomentumFollowStartLow.declaredDefault, format: "%.3f"), in: MomentumFollowStartLow.declaredClosedRange, step: 0.01)
-                    }
-                    PopoverRow(label: "Low μ, end:", text: $momentumFollowEndLowText, error: momentumFollowEndLowError, placeholder: MomentumFollowEndLow.declaredDefaultText(format: "%.3f")) {
-                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowEndLowText, fallback: MomentumFollowEndLow.declaredDefault, format: "%.3f"), in: MomentumFollowEndLow.declaredClosedRange, step: 0.01)
-                    }
-                    PopoverRow(label: "High μ, start:", text: $momentumFollowStartHighText, error: momentumFollowStartHighError, placeholder: MomentumFollowStartHigh.declaredDefaultText(format: "%.3f")) {
-                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowStartHighText, fallback: MomentumFollowStartHigh.declaredDefault, format: "%.3f"), in: MomentumFollowStartHigh.declaredClosedRange, step: 0.01)
-                    }
-                    PopoverRow(label: "High μ, end:", text: $momentumFollowEndHighText, error: momentumFollowEndHighError, placeholder: MomentumFollowEndHigh.declaredDefaultText(format: "%.3f")) {
-                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumFollowEndHighText, fallback: MomentumFollowEndHigh.declaredDefault, format: "%.3f"), in: MomentumFollowEndHigh.declaredClosedRange, step: 0.01)
-                    }
-                }
-                .padding(.leading, 20)
-                .disabled(!(momentumCycleEnabled && momentumFollowsLRCycle))
-                .opacity(momentumCycleEnabled && momentumFollowsLRCycle ? 1.0 : 0.5)
                 VStack(alignment: .leading, spacing: 6) {
                     PopoverRow(label: "Min μ:", text: $momentumCycleMinText, error: momentumCycleMinError, placeholder: MomentumCycleMin.declaredDefaultText(format: "%.2f")) {
                         Stepper("", value: PopoverBindings.doubleBinding(text: $momentumCycleMinText, fallback: MomentumCycleMin.declaredDefault, format: "%.2f"), in: MomentumCycleMin.declaredClosedRange, step: 0.01)
@@ -802,42 +718,12 @@ private struct CyclingTab: View {
 
             Divider()
 
-            Text("LR interpolates geometrically (equal time per octave) between the current peak and trough; both decay geometrically from their start to their end values over the decay span, then hold while cycling continues. Following momentum mirrors the LR cycle's phase, and its bounds drift linearly over the same span. Otherwise momentum runs its own linear cycle. The cycle phase keys off the global training step, so stop/resume is seamless. While a cycle is enabled it overrides the matching field on the Optimizer tab. Tip: equal periods with one channel reversed gives Smith-style super-convergence (high LR paired with low momentum).")
+            Text("LR interpolates geometrically (equal time per octave) between the current peak and trough. The keyframes set the peak and trough at trainer steps; between keyframes they move geometrically, and after the last they hold while cycling continues. Following momentum mirrors the LR cycle's phase, between the keyframes' μ at the peak and μ at the trough (linear between keyframes). Otherwise momentum runs its own linear cycle. The cycle phase keys off the global training step, so stop/resume is seamless. While a cycle is enabled it overrides the matching field on the Optimizer tab. Tip: equal periods with one channel reversed gives Smith-style super-convergence (high LR paired with low momentum).")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 4)
-    }
-
-    /// Multiply the edit text by `factor`, snap into `key`'s declared range,
-    /// and re-format. Half-decade (×√10) ladder matching the Optimizer tab's
-    /// base-LR stepper — a linear step is unusable across this many decades.
-    /// Text that does not parse steps from the key's declared default. The
-    /// actual write to `trainingParams` still happens on Save; this only
-    /// nudges the displayed text.
-    private func stepLogText<Key: TrainingParameterKey>(
-        _ text: Binding<String>,
-        factor: Double,
-        key: Key.Type
-    ) where Key.Value == Double {
-        let current = Double(text.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? Key.declaredDefault
-        let next = Key.snappedToDeclaredRange(current * factor)
-        text.wrappedValue = String(format: "%.2e", next)
-    }
-
-    /// Multiply / divide the decay-horizon edit text by 2, within the
-    /// parameter's declared range. Zero (decay off) steps up to one;
-    /// stepping down from one lands on zero, so "off" is reachable from the
-    /// stepper. Text that does not parse steps from the declared default.
-    private func stepHorizonText(_ text: Binding<String>, up: Bool) {
-        let current = Int(text.wrappedValue.trimmingCharacters(in: .whitespaces))
-            ?? LRCycleDecayHorizonSteps.declaredDefault
-        let range = LRCycleDecayHorizonSteps.declaredClosedRange
-        let next = up
-            ? min(range.upperBound, max(1, current * 2))
-            : max(range.lowerBound, current / 2)
-        text.wrappedValue = String(next)
     }
 
     /// Multiply / divide a period edit text by 2, clamped to `key`'s declared

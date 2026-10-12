@@ -61,7 +61,7 @@ struct CliTrainingConfig: Sendable {
             switch raw {
             case .int(let seconds): trainingTimeLimitSec = Double(seconds)
             case .double(let seconds): trainingTimeLimitSec = seconds
-            case .bool, .uint64: throw TrainingConfigError.wrongType(id: trainingTimeLimitKey)
+            case .bool, .uint64, .lrKeyframes: throw TrainingConfigError.wrongType(id: trainingTimeLimitKey)
             }
         }
         if let raw = values.removeValue(forKey: trainingStepLimitKey) {
@@ -73,7 +73,7 @@ struct CliTrainingConfig: Sendable {
                     throw TrainingConfigError.wrongType(id: trainingStepLimitKey)
                 }
                 trainingStepLimit = whole
-            case .bool, .uint64:
+            case .bool, .uint64, .lrKeyframes:
                 throw TrainingConfigError.wrongType(id: trainingStepLimitKey)
             }
         }

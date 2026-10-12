@@ -68,6 +68,11 @@ enum ResumeGap: String, CaseIterable, Sendable {
     /// cap. In `off` and `log_only` the history does not change what is fed,
     /// so its absence is logged, not a gap.
     case gradNormHistory = "grad_norm_history"
+    /// CLI `--resume-exact`: the configured LR schedule (warmup length,
+    /// cycle, keyframes) feeds different values from the checkpoint's, and
+    /// the configured one is used (owner decision O-4). Compared in behavior
+    /// form (owner decision Q-5): an inert difference is not this gap.
+    case schedule
 
     /// The token logged and recorded for this gap.
     var token: String { rawValue }

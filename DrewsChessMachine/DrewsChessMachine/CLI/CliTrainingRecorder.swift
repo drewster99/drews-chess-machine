@@ -982,10 +982,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// the LR cycle is not driving the LR, or on a path with no cycle.
         var lrCyclePeak: Double? = nil
         var lrCycleTrough: Double? = nil
-        /// The decay horizon and momentum-follow mode in effect, so runs that
-        /// differ only in their envelope are distinguishable in `results.json`.
-        /// Nil on paths with no LR/momentum cycle.
-        var lrCycleDecayHorizonSteps: Int? = nil
+        /// The momentum-follow mode in effect. Nil on paths with no
+        /// LR/momentum cycle. (The keyframes themselves are in the run's
+        /// parameter snapshot, `lineage.parameters`; `lr_cycle_peak` /
+        /// `lr_cycle_trough` above are where they put the bounds this tick.)
         var momentumFollowsLRCycle: Bool? = nil
         /// The policy-target label smoothing in effect this tick: the mode
         /// (`PolicyLabelSmoothingMode.logToken`), the fixed-total ε, and the
@@ -1116,7 +1116,6 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case valueLogitMean = "value_logit_mean"
             case lrCyclePeak = "lr_cycle_peak"
             case lrCycleTrough = "lr_cycle_trough"
-            case lrCycleDecayHorizonSteps = "lr_cycle_decay_horizon_steps"
             case momentumFollowsLRCycle = "momentum_follows_lr_cycle"
             case policyLabelSmoothingEpsilon = "policy_label_smoothing_epsilon"
             case policyLabelSmoothingMode = "policy_label_smoothing_mode"
@@ -1405,7 +1404,6 @@ extension CliTrainingRecorder.StatsLine {
             valueLogitMean: valueLogitMean,
             lrCyclePeak: nil,
             lrCycleTrough: nil,
-            lrCycleDecayHorizonSteps: nil,
             momentumFollowsLRCycle: nil,
             cumTrainerStep: lineageTotals.cumTrainerStep,
             cumTrainStepSec: lineageTotals.cumTrainStepSec,
@@ -1496,8 +1494,7 @@ extension CliTrainingRecorder.StatsLine {
         momentumCycleActive = cycleValues.momentum != nil
         lrCyclePeak = cycleValues.lrPeak
         lrCycleTrough = cycleValues.lrTrough
-        lrCycleDecayHorizonSteps = hyperparameters.lrMomentumCycle.envelope.decayHorizonSteps
-        momentumFollowsLRCycle = hyperparameters.lrMomentumCycle.envelope.momentumFollowsLRCycle
+        momentumFollowsLRCycle = hyperparameters.lrMomentumCycle.momentumFollowsLRCycle
         policyLabelSmoothingEpsilon = Double(hyperparameters.policyLabelSmoothingEpsilon)
         policyLabelSmoothingMode = hyperparameters.policyLabelSmoothingMode.logToken
         policyLabelSmoothingPerMove = Double(hyperparameters.policyLabelSmoothingPerMove)

@@ -240,10 +240,9 @@ enum TrainVsUciRunner {
             try TrainVsUciSession.startSource(path: $0)
         }
         var startSession: LoadedSession? = nil
-        // The parameters the run trains under: the configured ones, with the
-        // checkpoint's own schedule adopted on an exact resume (see
-        // `ReplayParams.adoptingSchedule`).
-        let p: ReplayParams
+        // The parameters the run trains under: the configured ones, schedule
+        // included, on an exact resume too (owner decision O-4).
+        let p = configuredParams
         if let startSource {
             let file: ModelCheckpointFile
             let fileName: String
@@ -275,12 +274,15 @@ enum TrainVsUciRunner {
                 }
                 let snapshot = try TrainerResumeSnapshot(checkpoint: file, fileName: fileName)
                 resumeSnapshot = snapshot
-                // An exact resume trains under the checkpoint's own schedule
-                // — see `[REPLAY-RESUME]` in CorpusReplayRunner.
-                for line in configuredParams.trainer.scheduleDifferences(from: snapshot.schedule) {
-                    emit("[VS-UCI-RESUME] WARNING \(line)")
+                // The configured schedule wins; a behavior difference from the
+                // checkpoint's is the `schedule` gap (owner decisions O-4, Q-5).
+                let scheduleDifferenceLines = p.trainer.scheduleDifferences(from: snapshot.schedule)
+                for line in scheduleDifferenceLines {
+                    emit("[RESUME] schedule: \(line)")
                 }
-                p = try configuredParams.adoptingSchedule(snapshot.schedule)
+                if !scheduleDifferenceLines.isEmpty {
+                    resumeGaps.append(.schedule)
+                }
                 resumeGaps += ResumeGap.dropoutGaps(restoring: snapshot.dropoutRNG)
                 // A history-less checkpoint is a gap only when this run clips
                 // with the relative cap.
@@ -332,11 +334,8 @@ enum TrainVsUciRunner {
                 if let refusal = exactness.refusal(accepting: config.acceptInexact) {
                     throw CLIRunRefusal(message: refusal)
                 }
-            } else {
-                p = configuredParams
             }
         } else {
-            p = configuredParams
             startModelFile = nil
             parentModelID = ""
             let freshPreset: NetworkArchitecture.Preset
@@ -501,7 +500,7 @@ enum TrainVsUciRunner {
             }
             try await evalNet.network.loadWeights(file.networkWeights)
             if let resumeSnapshot {
-                try await trainer.restoreExactly(from: resumeSnapshot)
+                try await trainer.restoreExactly(from: resumeSnapshot, schedule: .keepConfigured)
                 if let resumedStreams {
                     try await trainer.restoreDropoutStreamState(resumedStreams.dropoutStreamState)
                     emit("[RESUME] rng: dropout stream=restored")
@@ -524,6 +523,9 @@ enum TrainVsUciRunner {
             : (startModelFile != nil ? .newBranch(fromModelID: parentModelID) : .fresh)
         emit("[VS-UCI-CYCLE] \(LRMomentumCycleLogFormat.cycleDescription(trainer.lrMomentumCycle)) "
             + LRMomentumCycleLogFormat.scheduleOrigin(of: trainer, launch: launch))
+        if let warning = LRMomentumCycleLogFormat.troughFloorWarning(trainer.lrMomentumCycle) {
+            emit(warning)
+        }
 
         // The trainer's move selection, handed to the driver and recorded
         // from this one value (plan B1).

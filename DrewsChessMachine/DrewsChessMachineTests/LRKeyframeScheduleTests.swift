@@ -36,7 +36,7 @@ final class LRKeyframeScheduleTests: XCTestCase {
         XCTAssertEqual(schedule.bounds(atTrainerStep: 100).momentumAtPeak, 0.85)
         // Geometric: halfway from 1.0 to 0.1 is √0.1, not 0.55.
         XCTAssertEqual(schedule.bounds(atTrainerStep: 50).peak, sqrt(0.1), accuracy: 1e-15)
-        XCTAssertEqual(schedule.bounds(atTrainerStep: 50).trough, sqrt(0.01) * 0.1, accuracy: 1e-15)
+        XCTAssertEqual(schedule.bounds(atTrainerStep: 50).trough, sqrt(0.01 * 0.001), accuracy: 1e-15)
         // Momentum linear.
         XCTAssertEqual(schedule.bounds(atTrainerStep: 50).momentumAtPeak, 0.825, accuracy: 1e-15)
         XCTAssertEqual(schedule.bounds(atTrainerStep: 200).peak, sqrt(0.001), accuracy: 1e-15)
@@ -128,16 +128,16 @@ final class LRKeyframeScheduleTests: XCTestCase {
 
     // MARK: - V-2 conversion of the previous schedule is bit-identical
 
-    /// The previous cycle (the code under replacement) built from the same
-    /// legacy settings.
-    private func previousCycle(_ legacy: LegacyLRSchedule) -> LRMomentumCycle {
-        LRMomentumCycle(
+    /// The previous cycle (the code under replacement, kept verbatim in the
+    /// test target) built from the same legacy settings.
+    private func previousCycle(_ legacy: LegacyLRSchedule) -> LegacyLRMomentumCycleReference {
+        LegacyLRMomentumCycleReference(
             lrEnabled: legacy.lrEnabled, lrPeriodSteps: legacy.lrPeriodSteps, lrCount: legacy.lrCount,
             lrMin: legacy.lrMin, lrMax: legacy.lrMax, lrInvert: legacy.lrInvert,
             momentumEnabled: legacy.momentumEnabled, momentumPeriodSteps: legacy.momentumPeriodSteps,
             momentumCount: legacy.momentumCount, momentumMin: legacy.momentumMin, momentumMax: legacy.momentumMax,
             momentumInvert: legacy.momentumInvert,
-            envelope: LRMomentumCycleEnvelope(
+            envelope: LegacyLRMomentumCycleEnvelopeReference(
                 lrPeakEnd: legacy.lrPeakEnd, lrTroughEnd: legacy.lrTroughEnd, decayHorizonSteps: legacy.decayHorizonSteps,
                 momentumFollowsLRCycle: legacy.momentumFollowsLRCycle,
                 momentumFollowStartLow: legacy.momentumFollowStartLow, momentumFollowStartHigh: legacy.momentumFollowStartHigh,
@@ -151,7 +151,7 @@ final class LRKeyframeScheduleTests: XCTestCase {
     /// mismatching step, if any.
     private func firstMismatch(_ legacy: LegacyLRSchedule, through lastStep: Int) throws -> (step: Int, detail: String)? {
         let old = previousCycle(legacy)
-        let new = try LRKeyframeCycle.converting(legacy).cycle
+        let new = try LRMomentumCycle.converting(legacy).cycle
         let w = legacy.lrWarmupSteps
         let chunks = 64
         let chunk = (lastStep + chunks) / chunks
@@ -201,7 +201,7 @@ final class LRKeyframeScheduleTests: XCTestCase {
     func testWarmupZeroConvertsWithoutADuplicateKeyframe() throws {
         var legacy = rReplay
         legacy.lrWarmupSteps = 0
-        let converted = try LRKeyframeCycle.converting(legacy).cycle
+        let converted = try LRMomentumCycle.converting(legacy).cycle
         XCTAssertEqual(converted.lrKeyframes.keyframes.map(\.step), [0, 1_000_000])
         try assertBitIdentical(legacy, through: 1_100_000, "warmup 0")
     }
@@ -209,7 +209,7 @@ final class LRKeyframeScheduleTests: XCTestCase {
     func testNoDecayConvertsToOneKeyframe() throws {
         var legacy = rReplay
         legacy.decayHorizonSteps = 0
-        let converted = try LRKeyframeCycle.converting(legacy).cycle
+        let converted = try LRMomentumCycle.converting(legacy).cycle
         XCTAssertEqual(converted.lrKeyframes.keyframes.count, 1)
         try assertBitIdentical(legacy, through: 300_000, "no decay")
     }
@@ -236,7 +236,7 @@ final class LRKeyframeScheduleTests: XCTestCase {
         var legacy = rReplay
         legacy.lrMin = 0.5
         legacy.lrMax = 0.1   // peak below trough: the previous code ran the static LR
-        let (cycle, notes) = try LRKeyframeCycle.converting(legacy)
+        let (cycle, notes) = try LRMomentumCycle.converting(legacy)
         XCTAssertFalse(cycle.lrEnabled)
         XCTAssertFalse(notes.isEmpty)
         try assertBitIdentical(legacy, through: 100_000, "unusable start pair")
@@ -244,7 +244,7 @@ final class LRKeyframeScheduleTests: XCTestCase {
         legacy = rReplay
         legacy.lrPeakEnd = 1e-7
         legacy.lrTroughEnd = 1e-6   // end pair inverted: the previous code ran the static LR throughout
-        XCTAssertFalse(try LRKeyframeCycle.converting(legacy).cycle.lrEnabled)
+        XCTAssertFalse(try LRMomentumCycle.converting(legacy).cycle.lrEnabled)
         try assertBitIdentical(legacy, through: 100_000, "unusable end pair")
     }
 
@@ -254,7 +254,7 @@ final class LRKeyframeScheduleTests: XCTestCase {
         legacy.momentumFollowStartHigh = 0.85
         legacy.momentumFollowEndLow = 0.95
         legacy.momentumFollowEndHigh = 0.90
-        let (cycle, notes) = try LRKeyframeCycle.converting(legacy)
+        let (cycle, notes) = try LRMomentumCycle.converting(legacy)
         XCTAssertFalse(cycle.momentumEnabled)
         XCTAssertFalse(notes.isEmpty)
         try assertBitIdentical(legacy, through: 100_000, "follow inverted throughout")
@@ -266,7 +266,7 @@ final class LRKeyframeScheduleTests: XCTestCase {
         legacy.momentumFollowStartHigh = 0.90
         legacy.momentumFollowEndLow = 0.85
         legacy.momentumFollowEndHigh = 0.95
-        XCTAssertThrowsError(try LRKeyframeCycle.converting(legacy))
+        XCTAssertThrowsError(try LRMomentumCycle.converting(legacy))
     }
 
     func testInertInvalidFollowBoundsAreReplacedAndStayInert() throws {
@@ -274,7 +274,7 @@ final class LRKeyframeScheduleTests: XCTestCase {
         legacy.momentumFollowsLRCycle = false   // independent momentum cycle drives momentum
         legacy.momentumFollowStartLow = 0.95
         legacy.momentumFollowStartHigh = 0.85
-        let (cycle, _) = try LRKeyframeCycle.converting(legacy)
+        let (cycle, _) = try LRMomentumCycle.converting(legacy)
         XCTAssertNoThrow(try cycle.lrKeyframes.validated())
         try assertBitIdentical(legacy, through: 100_000, "inert inverted follow bounds")
     }
@@ -292,8 +292,14 @@ final class LRKeyframeScheduleTests: XCTestCase {
             let path = url.path
             if path.contains("/.git/") || path.contains("/DerivedData/") || url.pathExtension != "json"
                 || url.lastPathComponent.hasPrefix("results") { continue }
-            guard let data = FileManager.default.contents(atPath: path),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            guard let data = FileManager.default.contents(atPath: path) else { continue }
+            let parsed: Any
+            do {
+                parsed = try JSONSerialization.jsonObject(with: data)
+            } catch {
+                continue   // Not a JSON document (fixtures, partial files): not a parameters file.
+            }
+            guard let object = parsed as? [String: Any],
                   object["lr_cycle_decay_horizon_steps"] != nil, object["momentum_follow_end_high"] != nil,
                   object["lr_cycle_min"] != nil else { continue }
             func number(_ key: String) throws -> Double {
@@ -331,7 +337,7 @@ final class LRKeyframeScheduleTests: XCTestCase {
     // MARK: - Sampler
 
     func testSamplerBucketsContainEveryStepsValue() throws {
-        let cycle = try LRKeyframeCycle.converting(rReplay).cycle
+        let cycle = try LRMomentumCycle.converting(rReplay).cycle
         let point = { (step: Int) -> LRScheduleSample.Point in
             let v = cycle.values(completedTrainSteps: step, lrWarmupSteps: 1000)
             return .init(learningRate: v.learningRate ?? 0, momentum: v.momentum ?? 0, lrPeak: v.lrPeak, lrTrough: v.lrTrough)

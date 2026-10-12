@@ -294,7 +294,7 @@ enum SafetensorsModelIO {
         return PreparedModelFile(weights: weights, names: names, plan: plan, metadata: md)
     }
 
-    /// Refuse a lineage snapshot whose 21 schedule keys are not exactly
+    /// Refuse a lineage snapshot whose schedule keys (`scheduleKeyIDs`) are not exactly
     /// `schedule`'s (compared by each key's declared type, so a whole-number
     /// `Double` written as a JSON integer is the same value).
     static func checkScheduleAgrees(_ parameters: LineageRecord.Parameters, with schedule: TrainerScheduleState) throws {

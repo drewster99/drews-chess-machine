@@ -32,11 +32,11 @@ import Foundation
 /// was never taken from it.
 struct TrainerScheduleState: Sendable, Equatable {
     /// The trainer's completed SGD steps — the clock warmup, the cycle phase
-    /// and the decay envelope are evaluated against.
+    /// and the keyframes are evaluated against.
     var completedTrainSteps: Int
     /// LR warmup length, in trainer steps.
     var lrWarmupSteps: Int
-    /// The LR/momentum cycle, with its decay envelope attached.
+    /// The LR/momentum cycle, keyframes included.
     var lrMomentumCycle: LRMomentumCycle
 
     /// The schedule a trainer is running right now. Callers must have paused
@@ -115,6 +115,8 @@ struct TrainerScheduleState: Sendable, Equatable {
         case missingKey(String)
         case malformedValue(key: String, value: String)
         case undecodableJSON(key: String, detail: String)
+        case bothScheduleForms(legacyKeys: [String])
+        case unconvertibleLegacySchedule(detail: String)
 
         var description: String {
             switch self {
@@ -124,6 +126,11 @@ struct TrainerScheduleState: Sendable, Equatable {
                 return "trainer schedule metadata '\(key)' has malformed value '\(value)'"
             case .undecodableJSON(let key, let detail):
                 return "trainer schedule metadata '\(key)' failed to decode: \(detail)"
+            case .bothScheduleForms(let legacyKeys):
+                return "trainer schedule metadata carries '\(MetadataKey.lrSchedule)' and the previous form's "
+                    + "\(legacyKeys.joined(separator: ", ")); a file has one or the other"
+            case .unconvertibleLegacySchedule(let detail):
+                return "trainer schedule metadata (previous form) cannot be converted to LR keyframes: \(detail)"
             }
         }
 
@@ -134,26 +141,34 @@ struct TrainerScheduleState: Sendable, Equatable {
     enum MetadataKey {
         static let completedTrainSteps = "trainer_completed_steps"
         static let lrWarmupSteps = "trainer_lr_warmup_steps"
-        static let lrMomentumCycle = "trainer_lr_momentum_cycle"
-        static let lrMomentumCycleEnvelope = "trainer_lr_momentum_cycle_envelope"
-        static let all: [String] = [completedTrainSteps, lrWarmupSteps, lrMomentumCycle, lrMomentumCycleEnvelope]
+        /// The schedule (`LRMomentumCycle`'s persisted form, keyframes and
+        /// all) — every file written since LR keyframes.
+        static let lrSchedule = "trainer_lr_schedule"
+        /// The keys this build writes.
+        static let current: [String] = [completedTrainSteps, lrWarmupSteps, lrSchedule]
+
+        /// The previous schedule's two keys (the cycle, and its decay
+        /// envelope as a separate object). Read and converted; never written.
+        static let legacyLRMomentumCycle = "trainer_lr_momentum_cycle"
+        static let legacyLRMomentumCycleEnvelope = "trainer_lr_momentum_cycle_envelope"
+        static let legacy: [String] = [legacyLRMomentumCycle, legacyLRMomentumCycleEnvelope]
+
+        /// Every key that marks a file as carrying trainer state, in either
+        /// form — what `ModelDerivation.requirePlainModelSource` refuses.
+        static let all: [String] = current + legacy
     }
 
-    /// The metadata entries for this state. The cycle and its envelope are
-    /// encoded as separate JSON objects because `LRMomentumCycle`'s `Codable`
-    /// form deliberately excludes the envelope (see `LRMomentumCycle.envelope`).
-    /// `JSONEncoder` writes doubles in shortest round-trip form, so every
-    /// endpoint decodes back bit-exactly.
+    /// The metadata entries for this state. `JSONEncoder` writes doubles in
+    /// shortest round-trip form, so every keyframe value decodes back
+    /// bit-exactly.
     func metadataEntries() throws -> [String: String] {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let cycleJSON = try encoder.encode(lrMomentumCycle)
-        let envelopeJSON = try encoder.encode(lrMomentumCycle.envelope)
+        let scheduleJSON = try encoder.encode(lrMomentumCycle)
         return [
             MetadataKey.completedTrainSteps: String(completedTrainSteps),
             MetadataKey.lrWarmupSteps: String(lrWarmupSteps),
-            MetadataKey.lrMomentumCycle: String(decoding: cycleJSON, as: UTF8.self),
-            MetadataKey.lrMomentumCycleEnvelope: String(decoding: envelopeJSON, as: UTF8.self),
+            MetadataKey.lrSchedule: String(decoding: scheduleJSON, as: UTF8.self),
         ]
     }
 
@@ -161,7 +176,20 @@ struct TrainerScheduleState: Sendable, Equatable {
     /// the `trainer_*` keys (a plain model file, or a trainer file written
     /// before exact resume existed). A file carrying only some of them, or a
     /// malformed value, throws: half a schedule is not a resumable one.
+    ///
+    /// A file written before LR keyframes carries the previous schedule's two
+    /// keys instead of `trainer_lr_schedule`; they are converted
+    /// (`LRMomentumCycle.converting`), so the resumed run feeds exactly what
+    /// the saved one would have (owner decision Q-4). `conversionNotes` says
+    /// what was converted, for the resume log. A file with both forms is
+    /// refused: nothing ever writes one.
     static func decode(fromMetadata metadata: [String: String]) throws -> TrainerScheduleState? {
+        try decodeReportingConversion(fromMetadata: metadata)?.state
+    }
+
+    static func decodeReportingConversion(
+        fromMetadata metadata: [String: String]
+    ) throws -> (state: TrainerScheduleState, conversionNotes: [String])? {
         guard MetadataKey.all.contains(where: { metadata[$0] != nil }) else { return nil }
         func required(_ key: String) throws -> String {
             guard let value = metadata[key] else { throw MetadataError.missingKey(key) }
@@ -179,16 +207,29 @@ struct TrainerScheduleState: Sendable, Equatable {
             do {
                 return try JSONDecoder().decode(T.self, from: Data(text.utf8))
             } catch {
-                throw MetadataError.undecodableJSON(key: key, detail: error.localizedDescription)
+                throw MetadataError.undecodableJSON(key: key, detail: "\(error)")
             }
         }
-        var cycle = try json(LRMomentumCycle.self, MetadataKey.lrMomentumCycle)
-        cycle.envelope = try json(LRMomentumCycleEnvelope.self, MetadataKey.lrMomentumCycleEnvelope)
-        return TrainerScheduleState(
-            completedTrainSteps: try integer(MetadataKey.completedTrainSteps),
-            lrWarmupSteps: try integer(MetadataKey.lrWarmupSteps),
-            lrMomentumCycle: cycle
-        )
+        let completed = try integer(MetadataKey.completedTrainSteps)
+        let warmup = try integer(MetadataKey.lrWarmupSteps)
+        let hasCurrent = metadata[MetadataKey.lrSchedule] != nil
+        let legacyPresent = MetadataKey.legacy.filter { metadata[$0] != nil }
+        if hasCurrent {
+            guard legacyPresent.isEmpty else { throw MetadataError.bothScheduleForms(legacyKeys: legacyPresent) }
+            let cycle = try json(LRMomentumCycle.self, MetadataKey.lrSchedule)
+            return (TrainerScheduleState(completedTrainSteps: completed, lrWarmupSteps: warmup, lrMomentumCycle: cycle), [])
+        }
+        let legacyCycle = try json(LegacyLRMomentumCycleCoding.self, MetadataKey.legacyLRMomentumCycle)
+        let legacyEnvelope = try json(LegacyLRMomentumCycleEnvelopeCoding.self, MetadataKey.legacyLRMomentumCycleEnvelope)
+        let converted: (cycle: LRMomentumCycle, notes: [String])
+        do {
+            converted = try LRMomentumCycle.converting(
+                LegacyLRSchedule(cycle: legacyCycle, envelope: legacyEnvelope, lrWarmupSteps: warmup))
+        } catch let error as LegacyLRScheduleConversionError {
+            throw MetadataError.unconvertibleLegacySchedule(detail: error.description)
+        }
+        return (TrainerScheduleState(completedTrainSteps: completed, lrWarmupSteps: warmup, lrMomentumCycle: converted.cycle),
+                converted.notes + [LRMomentumCycleLogFormat.keyframesDescription(converted.cycle.lrKeyframes)])
     }
 }
 
@@ -325,9 +366,21 @@ extension ChessTrainer {
         )
     }
 
+    /// Which schedule a restore leaves on the trainer.
+    enum ScheduleOnRestore: Sendable, Equatable {
+        /// The snapshot's warmup length and cycle (the GUI: the session's
+        /// schedule is the configured one, already resolved onto the snapshot).
+        case snapshots
+        /// The schedule the trainer was configured with before the restore —
+        /// the CLI `--resume-exact` rule (owner decision O-4): the configured
+        /// schedule wins; a behavior difference from the checkpoint's is the
+        /// `schedule` resume gap, decided before this call.
+        case keepConfigured
+    }
+
     /// Restore a trainer to `snapshot` exactly: weights and fp32 masters,
-    /// optimizer velocity, the completed-step clock, the warmup length, the
-    /// LR/momentum cycle and — when the snapshot carries it — the dropout
+    /// optimizer velocity, the completed-step clock, the schedule as
+    /// `schedule` says, and — when the snapshot carries it — the dropout
     /// Philox state. The single restore path for GUI session resume,
     /// corpus-replay `--resume-exact` and train-vs-UCI `--resume-exact`.
     ///
@@ -335,10 +388,15 @@ extension ChessTrainer {
     /// `min(1, completedTrainSteps / lrWarmupSteps)`, so restoring the clock
     /// restores the multiplier at exactly the value the saved run had reached.
     /// Caller MUST have paused training.
-    func restoreExactly(from snapshot: TrainerResumeSnapshot) async throws {
+    func restoreExactly(from snapshot: TrainerResumeSnapshot, schedule: ScheduleOnRestore) async throws {
         try await loadTrainerWeights(snapshot.trainerWeights)
-        lrWarmupSteps = snapshot.schedule.lrWarmupSteps
-        lrMomentumCycle = snapshot.schedule.lrMomentumCycle
+        switch schedule {
+        case .snapshots:
+            lrWarmupSteps = snapshot.schedule.lrWarmupSteps
+            lrMomentumCycle = snapshot.schedule.lrMomentumCycle
+        case .keepConfigured:
+            break
+        }
         completedTrainSteps = snapshot.schedule.completedTrainSteps
         switch snapshot.dropoutRNG {
         case .philox(let state):
@@ -462,32 +520,32 @@ extension LRMomentumCycleLogFormat {
 }
 
 extension TrainerHyperparameters {
-    /// These hyperparameters with the schedule fields replaced by a resumed
-    /// checkpoint's. The CLI runners adopt a schedule through
-    /// `ReplayParams.adoptingSchedule`, which rebuilds everything — these
-    /// hyperparameters and the lineage snapshot — from one adopted parameter
-    /// snapshot; the trainer configuration that yields equals this one.
-    func adoptingSchedule(_ schedule: TrainerScheduleState) -> TrainerHyperparameters {
-        var adopted = self
-        adopted.lrWarmupSteps = schedule.lrWarmupSteps
-        adopted.lrMomentumCycle = schedule.lrMomentumCycle
-        return adopted
-    }
-
     /// One line per schedule field whose configured value (from
-    /// `--parameters` / the app's settings) differs from the value the
-    /// resumed checkpoint trained under. An exact resume restores the
-    /// checkpoint's value; the lines say so.
+    /// `--parameters` / the app's settings) changes what the trainer is fed
+    /// relative to the resumed checkpoint's, compared in behavior form
+    /// (`LRMomentumCycle.behaviorForm`, owner decision Q-5): an inert
+    /// difference (a disabled channel's numbers, the independent momentum
+    /// cycle while momentum follows the LR) is not a difference. Empty when
+    /// the two feed the same values at every step from `clock` on.
+    ///
+    /// The warmup length matters while either run is still warming up at
+    /// `clock`, or whenever a cycle is active (it offsets the cycle's phase).
+    ///
+    /// An exact CLI resume runs the **configured** schedule (owner decision
+    /// O-4); a non-empty result is the `schedule` resume gap.
     func scheduleDifferences(from schedule: TrainerScheduleState) -> [String] {
         var lines: [String] = []
-        if lrWarmupSteps != schedule.lrWarmupSteps {
-            lines.append("lr_warmup_steps: configured \(lrWarmupSteps) but the checkpoint trained under \(schedule.lrWarmupSteps); restoring the checkpoint's value")
+        let configured = lrMomentumCycle.behaviorForm
+        let checkpoint = schedule.lrMomentumCycle.behaviorForm
+        let anyCycleActive = configured.isActive || checkpoint.isActive
+        let stillWarmingUp = schedule.completedTrainSteps < max(lrWarmupSteps, schedule.lrWarmupSteps)
+        if lrWarmupSteps != schedule.lrWarmupSteps, anyCycleActive || stillWarmingUp {
+            lines.append("lr_warmup_steps checkpoint=\(schedule.lrWarmupSteps) configured=\(lrWarmupSteps)")
         }
-        if lrMomentumCycle != schedule.lrMomentumCycle {
+        if configured != checkpoint {
             lines.append(
-                "lr_momentum_cycle: configured [\(LRMomentumCycleLogFormat.cycleDescription(lrMomentumCycle))] "
-                    + "but the checkpoint trained under [\(LRMomentumCycleLogFormat.cycleDescription(schedule.lrMomentumCycle))]; "
-                    + "restoring the checkpoint's value"
+                "lr_momentum_cycle checkpoint=[\(LRMomentumCycleLogFormat.cycleDescription(schedule.lrMomentumCycle))] "
+                    + "configured=[\(LRMomentumCycleLogFormat.cycleDescription(lrMomentumCycle))]"
             )
         }
         return lines

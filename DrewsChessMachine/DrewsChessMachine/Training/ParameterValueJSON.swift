@@ -1,4 +1,5 @@
 import Foundation
+import TrainingParametersMacroSupport
 
 extension ParameterValue {
 
@@ -24,10 +25,26 @@ extension ParameterValue {
     /// (never `1`). So the kind of each value comes from `JSONSerialization`,
     /// exactly as before, and the value of every `.double` from `JSONDecoder`.
     ///
+    /// The LR keyframe list's numbers are read the same way: kind and shape
+    /// from `JSONSerialization`, every value from `JSONDecoder`.
+    ///
+    /// **Previous LR schedule keys.** Text written before LR keyframes
+    /// carries the single-decay schedule's nine keys (`lr_cycle_min` …
+    /// `momentum_follow_end_high`). They are converted here, in the one
+    /// reader, to `lr_cycle_keyframes` (`LegacyLRScheduleKeys.converting`),
+    /// so every old `parameters.json`, settings file and lineage snapshot
+    /// reads as the schedule it described, bit for bit (owner decision Q-4).
+    /// `currentValue` supplies a key the conversion needs that the text
+    /// omits — a partial `parameters.json` leaves it to the current setting,
+    /// as `--parameters` always has; the default reads the persisted setting.
+    ///
     /// Throws `TrainingConfigError.wrongType(id: "<root>")` when the text is
     /// not a JSON object, `wrongType(id:)` for a value no parameter kind
     /// reads, and the underlying error for text that is not JSON.
-    static func parametersObject(fromJSON data: Data) throws -> [String: ParameterValue] {
+    static func parametersObject(
+        fromJSON data: Data,
+        currentValue: (String) -> ParameterValue? = LegacyLRScheduleKeys.persistedSetting
+    ) throws -> [String: ParameterValue] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw TrainingConfigError.wrongType(id: "<root>")
         }
@@ -44,20 +61,31 @@ extension ParameterValue {
                     throw TrainingConfigError.wrongType(id: id)
                 }
                 values[id] = .double(exact)
+            } else if case .lrKeyframes = value {
+                guard case .keyframes(let exact) = exactNumbers[id] else {
+                    throw TrainingConfigError.wrongType(id: id)
+                }
+                values[id] = .lrKeyframes(exact)
             } else {
                 values[id] = value
             }
         }
-        return values
+        let converted = try LegacyLRScheduleKeys.converting(values, currentValue: currentValue)
+        if !converted.notes.isEmpty {
+            SessionLogger.shared.log("[PARAM] legacy LR schedule keys converted: " + converted.notes.joined(separator: "; "))
+        }
+        return converted.values
     }
 }
 
 /// One value of a parameter JSON object as `JSONDecoder` reads it: a number,
-/// read exactly as a `Double`, or anything else (true/false, a string, null,
-/// an array or object), which `ParameterValue.parametersObject(fromJSON:)`
-/// takes from `JSONSerialization` instead.
+/// read exactly as a `Double`; an LR keyframe list, its numbers read exactly;
+/// or anything else (true/false, a string, null, another array or object),
+/// which `ParameterValue.parametersObject(fromJSON:)` takes from
+/// `JSONSerialization` instead.
 private enum ExactJSONNumber: Decodable {
     case number(Double)
+    case keyframes(LRKeyframeSchedule)
     case notANumber
 
     init(from decoder: Decoder) throws {
@@ -69,7 +97,15 @@ private enum ExactJSONNumber: Decodable {
         do {
             self = .number(try container.decode(Double.self))
         } catch DecodingError.typeMismatch {
-            self = .notANumber
+            // Not a number: a keyframe list, or a kind `JSONSerialization`
+            // supplies (a mismatch here is classification, not an error; a
+            // keyframe value that fails to decode is refused by the caller's
+            // `guard case .keyframes`).
+            do {
+                self = .keyframes(try container.decode(LRKeyframeSchedule.self))
+            } catch is DecodingError {
+                self = .notANumber
+            }
         }
     }
 }

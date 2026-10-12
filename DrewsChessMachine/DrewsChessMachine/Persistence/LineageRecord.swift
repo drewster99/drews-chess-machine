@@ -63,8 +63,11 @@ struct LineageRecord: Codable, Equatable, Sendable {
     /// ancestry, per-segment summaries of every earlier segment's
     /// configuration, the corpus identity of mixed corpora and the build's
     /// diff hash and toolchain (see the file comment). Schema 4 adds
-    /// `model_naming`.
-    static let currentSchema = 4
+    /// `model_naming`. Schema 5 (LR keyframes) adds no field: its parameter
+    /// snapshot carries `lr_cycle_keyframes` (a list value) in place of the
+    /// single-decay schedule's nine keys, which no older build can read; the
+    /// bump makes an older build refuse the record instead of misreading it.
+    static let currentSchema = 5
     /// The oldest schema this build reads (owner decision O-23). Schema 1
     /// stays refused.
     static let oldestDecodableSchema = 2
@@ -592,14 +595,12 @@ struct LineageRecord: Codable, Equatable, Sendable {
         init(values: [String: ParameterValue]) throws {
             var dictionary: [String: Any] = [:]
             for (id, value) in values {
-                switch value {
-                case .bool(let x): dictionary[id] = x
-                case .int(let x): dictionary[id] = x
-                case .double(let x): dictionary[id] = x
-                // A decimal string, as parameters.json writes it, so a seed
-                // above 2^53 survives JSON number parsing.
-                case .uint64(let x): dictionary[id] = String(x)
-                }
+                // `jsonValue`, as parameters.json writes it: a UInt64 as a
+                // decimal string so a seed above 2^53 survives JSON number
+                // parsing, the LR keyframe list as an array of objects
+                // (sorted keys below apply inside it too, so the hash is
+                // stable).
+                dictionary[id] = value.jsonValue
             }
             let data = try JSONSerialization.data(withJSONObject: dictionary, options: [.sortedKeys])
             let text = String(decoding: data, as: UTF8.self)

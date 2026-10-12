@@ -997,7 +997,7 @@ extension SessionController {
                             gradNormHistory: resumedTrainerGradNormHistory
                         )
                         try await Task.detached(priority: .userInitiated) {
-                            try await trainer.restoreExactly(from: snapshot)
+                            try await trainer.restoreExactly(from: snapshot, schedule: .snapshots)
                         }.value
                     } else {
                         try await Task.detached(priority: .userInitiated) {
@@ -2233,8 +2233,7 @@ extension SessionController {
                                 valueLogitMean: trainingSnap.rollingValueLogitMean,
                                 lrCyclePeak: cycleValues.lrPeak,
                                 lrCycleTrough: cycleValues.lrTrough,
-                                lrCycleDecayHorizonSteps: cycle.envelope.decayHorizonSteps,
-                                momentumFollowsLRCycle: cycle.envelope.momentumFollowsLRCycle,
+                                momentumFollowsLRCycle: cycle.momentumFollowsLRCycle,
                                 policyLabelSmoothingEpsilon: Double(policySmoothingConfig.policyLabelSmoothingEpsilon),
                                 policyLabelSmoothingMode: policySmoothingConfig.policyLabelSmoothingMode.logToken,
                                 policyLabelSmoothingPerMove: Double(policySmoothingConfig.policyLabelSmoothingPerMove),
