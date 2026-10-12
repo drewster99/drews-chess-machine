@@ -1964,6 +1964,44 @@ enum CheckpointManager {
         }
     }
 
+    /// A model file's bytes and the modified time of exactly the file read:
+    /// one open, the descriptor's `fstat` time, then the read. Taking the time
+    /// from the open descriptor (not the path) means a rolling save renamed
+    /// over the path meanwhile can't pair these bytes with another file's
+    /// time. For a reader that shows when the file it plays was written (the
+    /// Lichess bot's model in use).
+    static func readModelFileBytesAndModificationDate(at url: URL) throws -> (bytes: Data, modifiedAt: Date) {
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: url)
+        } catch {
+            throw CheckpointManagerError.readFailed(url, error)
+        }
+        defer {
+            do {
+                try handle.close()
+            } catch {
+                SessionLogger.shared.log("[CHECKPOINT] closing \(url.lastPathComponent) after reading it failed: \(error)")
+            }
+        }
+        var status = stat()
+        guard fstat(handle.fileDescriptor, &status) == 0 else {
+            let code = errno
+            // NSError keeps the raw errno, whatever its value.
+            throw CheckpointManagerError.readFailed(url, NSError(domain: NSPOSIXErrorDomain, code: Int(code)))
+        }
+        let modifiedAt = Date(timeIntervalSince1970: TimeInterval(status.st_mtimespec.tv_sec)
+                              + TimeInterval(status.st_mtimespec.tv_nsec) / 1_000_000_000)
+        do {
+            guard let bytes = try handle.readToEnd() else {
+                return (Data(), modifiedAt)
+            }
+            return (bytes, modifiedAt)
+        } catch {
+            throw CheckpointManagerError.readFailed(url, error)
+        }
+    }
+
     /// `loadModelFile(at:)` over bytes already read, so a caller that also
     /// needs the bytes (to hash exactly what was decoded) reads the file
     /// once. `source` names the file in errors and log lines.

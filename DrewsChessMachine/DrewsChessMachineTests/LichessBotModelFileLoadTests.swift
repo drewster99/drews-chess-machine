@@ -38,11 +38,34 @@ final class LichessBotModelFileLoadTests: XCTestCase {
                 count += 1
                 return count
             }
-            return read == 1 ? first : second
+            return (read == 1 ? first : second, Date(timeIntervalSince1970: 1_791_800_000 + Double(read)))
         })
         let loaded = try await loader.load(at: URL(fileURLWithPath: "/models/run-replay-latest.safetensors"))
         XCTAssertEqual(loaded.snapshot.modelID, "20261006-1-AAAA", "the first read is what was decoded")
+        XCTAssertEqual(loaded.fileModifiedAt, Date(timeIntervalSince1970: 1_791_800_001),
+                       "the modified time is the one read with the decoded bytes")
         XCTAssertEqual(loaded.sha256, sha256(first), "the recorded hash names the decoded bytes")
         XCTAssertEqual(reads.value, 1, "the file is read once")
+    }
+
+    /// The live reader takes the modified time of the file it read (issue
+    /// #20: the bot shows when the file it plays was written).
+    func testTheLiveReaderReturnsTheFilesModifiedTime() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ModelFileTime-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        addTeardownBlock {
+            do {
+                try FileManager.default.removeItem(at: folder)
+            } catch {
+                XCTFail("cleanup failed: \(error)")
+            }
+        }
+        let url = folder.appendingPathComponent("m.safetensors")
+        try Data([1, 2, 3, 4]).write(to: url)
+        let stamped = Date(timeIntervalSince1970: 1_700_000_123)
+        try FileManager.default.setAttributes([.modificationDate: stamped], ofItemAtPath: url.path)
+        let read = try CheckpointManager.readModelFileBytesAndModificationDate(at: url)
+        XCTAssertEqual(read.bytes, Data([1, 2, 3, 4]))
+        XCTAssertEqual(read.modifiedAt.timeIntervalSince1970, stamped.timeIntervalSince1970, accuracy: 0.001)
     }
 }

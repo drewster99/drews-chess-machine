@@ -21,6 +21,10 @@ struct LichessBotModelLinePicker: View {
     /// loads and when the search changes, so a redraw (every selection
     /// click) doesn't rebuild every row.
     @State private var listedRows: [ModelLineageNode] = []
+    /// The most recently active branch tips of the same (searched) tree,
+    /// listed above it (issue #20), so the run being trained now is the
+    /// first row however deep it sits.
+    @State private var recentTips: [ModelLineageNode] = []
     @State private var modelCount = (lineages: 0, files: 0, sessions: 0)
     @State private var unreadable: [UnreadableModelFile] = []
     @State private var scanError: String?
@@ -33,7 +37,7 @@ struct LichessBotModelLinePicker: View {
             Text(purpose.title)
                 .font(.title2.weight(.semibold))
             HStack {
-                TextField("Filter by model ID or session (a seed's ID shows its whole family)", text: $search)
+                TextField("Filter by model ID, file name or session (a seed's ID shows its whole family)", text: $search)
                     .textFieldStyle(.roundedBorder)
                 Text(summary)
                     .font(.system(.callout, design: .monospaced))
@@ -51,11 +55,21 @@ struct LichessBotModelLinePicker: View {
                     .shown(scanError != nil)
                 List(selection: $selection) {
                     LichessBotUnreadableModelFilesSection(files: unreadable)
-                    OutlineGroup(listedRows, children: \.children) { node in
-                        LichessBotLineageNodeRow(node: node)
-                            .tag(node.id)
-                            .selectionDisabled(purpose.selectableEntry(for: node) == nil)
-                            .help(purpose.unselectableReason(for: node) ?? "")
+                    Section("Recent branch tips") {
+                        ForEach(recentTips, id: \.id) { node in
+                            LichessBotLineageNodeRow(node: node)
+                                .tag(node.id)
+                                .selectionDisabled(purpose.selectableEntry(for: node) == nil)
+                                .help(purpose.unselectableReason(for: node) ?? "")
+                        }
+                    }
+                    Section("All lineages") {
+                        OutlineGroup(listedRows, children: \.children) { node in
+                            LichessBotLineageNodeRow(node: node)
+                                .tag(node.id)
+                                .selectionDisabled(purpose.selectableEntry(for: node) == nil)
+                                .help(purpose.unselectableReason(for: node) ?? "")
+                        }
                     }
                 }
                 .shown(tree != nil)
@@ -88,7 +102,7 @@ struct LichessBotModelLinePicker: View {
         .frame(width: 1100 + LichessBotModelFileRow.trainingMethodWidth, height: 760)
         .onChange(of: search) {
             DispatchQueue.main.async {
-                listedRows = ModelLineageTree.listedRows(of: tree ?? [], matching: search)
+                showRows(of: tree ?? [])
             }
         }
         .task {
@@ -120,13 +134,24 @@ struct LichessBotModelLinePicker: View {
         modelCount = (scan.lines.count, scan.lines.reduce(0) { $0 + $1.files.count }, champions.count)
         let built = ModelLineageTree.build(lines: scan.lines, champions: champions)
         tree = built
-        listedRows = ModelLineageTree.listedRows(of: built, matching: search)
+        showRows(of: built)
     }
 
-    /// Looked up in the listed rows, so a selected row the search has since
-    /// hidden can't be chosen.
+    /// How many branch tips the section above the tree lists.
+    private static let recentTipCount = 8
+
+    /// The tree's rows and recent branch tips for the current search, from
+    /// one pruned tree so the two never disagree.
+    private func showRows(of tree: [ModelLineageNode]) {
+        let pruned = ModelLineageTree.prunedTree(tree, matching: search)
+        listedRows = ModelLineageTree.flatteningSoleChildren(pruned)
+        recentTips = ModelLineageTree.recentBranchTips(of: pruned, limit: Self.recentTipCount)
+    }
+
+    /// Looked up in the listed rows and tips, so a selected row the search
+    /// has since hidden can't be chosen.
     private var selectedEntry: ModelFileEntry? {
-        guard let selection, let node = Self.find(selection, in: listedRows) else { return nil }
+        guard let selection, let node = Self.find(selection, in: recentTips + listedRows) else { return nil }
         return purpose.selectableEntry(for: node)
     }
 
@@ -196,6 +221,14 @@ struct LichessBotLineageSegmentRow: View {
                     .shown(isBranchTip && path.count > 1)
             }
             .lineLimit(1)
+            // The latest file's name and when it was last written: what a
+            // reader recognizes a run by, and whether it is still being
+            // trained (issue #20).
+            Text("\(line.latest.url.lastPathComponent) · modified \(LichessBotModelFileRow.dateText(line.latest.fileModifiedAt))")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 
@@ -302,7 +335,7 @@ struct LichessBotModelFileRow: View {
             Text(file.trainingStep.map { "step \($0)" } ?? "no step")
                 .font(.system(.callout, design: .monospaced))
                 .frame(width: 130, alignment: .trailing)
-            Text(Self.dateFormatter.string(from: file.createdAt ?? file.fileModifiedAt))
+            Text(Self.dateText(file.createdAt ?? file.fileModifiedAt))
                 .font(.system(.callout, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .frame(width: 140, alignment: .leading)
@@ -331,11 +364,9 @@ struct LichessBotModelFileRow: View {
     /// a longer one truncates, with the whole chain in the tooltip.
     static let trainingMethodWidth: CGFloat = 190
 
-    /// Fixed-width local date and time, so the column never wraps.
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter
-    }()
+    /// `date` in the model views' fixed-width local form, so the column
+    /// never wraps.
+    static func dateText(_ date: Date) -> String {
+        LichessBotModelTimeText.absolute(date)
+    }
 }

@@ -51,8 +51,8 @@ struct LichessBotControllerServices: Sendable {
     var replyToTerminate: @MainActor @Sendable (_ shouldTerminate: Bool) -> Void = { shouldTerminate in
         NSApp.reply(toApplicationShouldTerminate: shouldTerminate)
         if !shouldTerminate {
-            // A SIGTERM-started quit that was cancelled can be asked for
-            // again by the next SIGTERM.
+            // A cancelled quit can be asked for again by the next SIGTERM
+            // or ⌘Q.
             EarlyStopCoordinator.shared.quitWasCancelled()
         }
     }
@@ -232,6 +232,12 @@ final class LichessBotController {
     private(set) var account: LichessBotAccount?
     private(set) var gateSnapshot: LichessBotRequestGate.Snapshot?
     private(set) var generation: LichessBotGenerationInfo?
+    /// The generation new games start with and how it got there (issue #20):
+    /// mirrored from `LichessBotModelSlots.lastSwitch` at the moments
+    /// `generation` is mirrored from the slots, and cleared with it. Unlike
+    /// `generation`, a game start never overwrites it, so it always names the
+    /// slots' current generation rather than the last game's.
+    private(set) var modelInUse: LichessBotModelSwitch?
     /// What going online is doing; nil unless Connecting.
     private(set) var goingOnlineStep: LichessBotGoingOnlineStep?
     /// The operator pressed Go Offline while going online. Going online
@@ -552,7 +558,7 @@ final class LichessBotController {
         modelProvider: any LichessBotModelProvider,
         defaults: UserDefaults = .standard,
         dataDirectory: LichessBotDataDirectory = .standard,
-        services: LichessBotControllerServices = .live,
+        services: LichessBotControllerServices,
         finishedGameHold: Duration = LichessBotController.finishedGameHold,
         challengeWithdrawalShutdownLimit: Duration = LichessBotController.challengeWithdrawalShutdownLimit,
         postGameChatFetchDelays: [Duration] = LichessBotController.postGameChatFetchDelays
@@ -3469,6 +3475,7 @@ final class LichessBotController {
         updateAutoFollow()
         gateSnapshot = nil
         generation = nil
+        modelInUse = nil
         modelRefreshFailure = nil
         lineageFollowStatus = nil
     }
@@ -3489,11 +3496,11 @@ final class LichessBotController {
             raiseAlarm("Lineage check failed: \(Self.safeDescription(error))")
         }
         guard runtimeGeneration == generationAtStart else { return }
-        let info = await slots.current.info
-        let followStatus = await slots.lineageFollowStatus
+        let shown = await slots.shown
         guard runtimeGeneration == generationAtStart else { return }
-        generation = info
-        lineageFollowStatus = followStatus
+        generation = shown.generation
+        modelInUse = shown.lastSwitch
+        lineageFollowStatus = shown.lineageFollowStatus
     }
 
     /// "<source> <model_id>", plus the file's step and its run's cumulative
@@ -3522,13 +3529,14 @@ final class LichessBotController {
             let snapshot = await gate.snapshot()
             guard current() else { return }
             gateSnapshot = snapshot
-            let info = await slots.current.info
+            let shown = await slots.shown
             guard current() else { return }
-            generation = info
-            let followStatus = await slots.lineageFollowStatus
-            guard current() else { return }
-            if followStatus != lineageFollowStatus {
-                lineageFollowStatus = followStatus
+            generation = shown.generation
+            if shown.lastSwitch != modelInUse {
+                modelInUse = shown.lastSwitch
+            }
+            if shown.lineageFollowStatus != lineageFollowStatus {
+                lineageFollowStatus = shown.lineageFollowStatus
             }
             let accepted = await manager.acceptedAwaitingStartIDs()
             guard current() else { return }

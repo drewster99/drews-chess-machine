@@ -165,7 +165,7 @@ final class LichessBotFollowLineageSlotsTests: XCTestCase {
         LichessBotModelFileLoader(readBytes: { url in
             reads.modify { $0 += 1 }
             if let bytes = substitutes.value[url] {
-                return bytes
+                return (bytes, Date(timeIntervalSince1970: 1_791_800_000))
             }
             return try LichessBotModelFileLoader.live.readBytes(url)
         })

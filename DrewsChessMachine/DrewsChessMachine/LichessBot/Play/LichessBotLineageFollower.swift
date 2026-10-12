@@ -37,6 +37,8 @@ struct LichessBotLineageFile: Sendable, Equatable {
     let segmentLocalStep: Int
     let cumTrainerStep: Int?
     let contentSHA256: String
+    /// The file's modified time as the folder scan read it.
+    let fileModifiedAt: Date?
 
     init(_ candidate: ModelLineageTip.Candidate) {
         url = candidate.entry.url
@@ -46,6 +48,7 @@ struct LichessBotLineageFile: Sendable, Equatable {
         segmentLocalStep = candidate.position.segmentLocalStep
         cumTrainerStep = candidate.position.cumTrainerStep
         contentSHA256 = candidate.contentSHA256
+        fileModifiedAt = candidate.entry.fileModifiedAt
     }
 
     /// "<file> (<model_id>) seg k segment step s cum n|—": `s` is the

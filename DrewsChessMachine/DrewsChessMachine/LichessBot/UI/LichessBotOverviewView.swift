@@ -125,6 +125,7 @@ struct LichessBotControlsCard: View {
                         .disabled(connection != .online || !controller.hasChallengeScope)
                         .help(controller.hasChallengeScope ? "Challenge an online bot or any player" : "The token lacks challenge:write")
                 }
+                LichessBotModelInUseLine(controller: controller)
                 LichessBotMatchmakingStatusLine(controller: controller)
                 LichessBotChallengeCreditsLine(controller: controller)
                 ForEach(controller.pendingChallenges, id: \.id) { pending in

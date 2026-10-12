@@ -218,7 +218,8 @@ final class ModelLineageTreeTests: XCTestCase {
         let run = listed[seed + 1]
         XCTAssertEqual(run.id, "segment:R-run")
         XCTAssertTrue(run.isSoleChildOfRowAbove)
-        XCTAssertEqual(run.children?.map(\.id), ["file:/m/R-run-10.safetensors", "segment:R-next"])
+        // Child lineages come before the segment's earlier files (issue #20).
+        XCTAssertEqual(run.children?.map(\.id), ["segment:R-next", "file:/m/R-run-10.safetensors"])
         XCTAssertEqual(run.trainedBelow, try XCTUnwrap(node("R-run", in: tree)).trainedBelow)
         XCTAssertEqual(run.trainedBelow.trainedSegments, 1)
 
@@ -239,5 +240,94 @@ final class ModelLineageTreeTests: XCTestCase {
         XCTAssertEqual(ModelLineageTree.listedRows(of: tree, matching: "  o-RUN ").map(\.id), ["segment:O-seed", "segment:O-run"])
         XCTAssertEqual(ModelLineageTree.listedRows(of: tree, matching: "").map(\.id), ["segment:Z-other", "segment:O-seed", "segment:O-run"])
         XCTAssertEqual(ModelLineageTree.listedRows(of: tree, matching: "nothing"), [])
+    }
+
+    // MARK: Findability (issue #20)
+
+    /// A six-deep chain like R-replay → R-elite → R-elitecyc, each segment
+    /// with several earlier files.
+    private func deepChain() -> [ModelLine] {
+        let ids = ["D-seed", "D-s0", "D-s1", "D-s2", "D-elite", "D-cyc"]
+        var lines: [ModelLine] = []
+        for (index, id) in ids.enumerated() {
+            let parent = index == 0 ? nil : ids[index - 1]
+            let base = Double(index * 10)
+            let files = (1...3).map { k in
+                ModelFileEntry(
+                    url: URL(fileURLWithPath: "/m/run-\(id == "D-cyc" ? "elitecyc" : id)-step\(k * 1000).safetensors"),
+                    modelID: id, trainingStep: index == 0 ? nil : k * 1000, createdAt: nil, architectureLabel: "a",
+                    fileModifiedAt: Date(timeIntervalSince1970: base + Double(k)), parentModelID: parent,
+                    creator: index == 0 ? "manual" : "replay")
+            }
+            lines.append(line(id, files))
+        }
+        lines.append(line("Z-other", [entry("Z-other", step: 5, parent: nil, modified: 1000)]))
+        return lines
+    }
+
+    func testChildLineagesComeBeforeEarlierFiles() throws {
+        let tree = ModelLineageTree.build(lines: deepChain(), champions: [])
+        let s2 = try XCTUnwrap(node("D-s2", in: tree))
+        XCTAssertEqual(s2.children?.first?.id, "segment:D-elite", "the child lineage leads")
+        XCTAssertEqual(s2.children?.dropFirst().allSatisfy { if case .file = $0.kind { return true } else { return false } }, true)
+    }
+
+    func testAFileNameSearchFindsADeepLineAndListsItsPathFlat() {
+        let tree = ModelLineageTree.build(lines: deepChain(), champions: [])
+        let rows = ModelLineageTree.listedRows(of: tree, matching: " EliteCyc ")
+        // The ancestors are kept only as the path: each the sole row of the
+        // one above, so the listing shows the whole chain without expanding.
+        XCTAssertEqual(rows.map(\.id), ["segment:D-seed", "segment:D-s0", "segment:D-s1", "segment:D-s2", "segment:D-elite", "segment:D-cyc"])
+        XCTAssertEqual(rows.map(\.isSoleChildOfRowAbove), [false, true, true, true, true, true])
+        XCTAssertNotNil(rows.last?.children, "the matching segment keeps its own earlier files")
+        XCTAssertFalse(rows.contains { $0.id == "segment:Z-other" })
+    }
+
+    /// A matching row whose subtree holds more matches keeps only the paths
+    /// to them, so a match below a matching ancestor isn't left inside a
+    /// collapsed group among the ancestor's non-matching rows. Every segment
+    /// here matches "step3000" (its newest file); their earlier files don't,
+    /// so the chain lists flat, as for a match that only the tip has.
+    func testAMatchBelowAMatchingRowIsListedOnItsPath() {
+        let tree = ModelLineageTree.build(lines: deepChain(), champions: [])
+        let rows = ModelLineageTree.listedRows(of: tree, matching: "step3000")
+        XCTAssertEqual(rows.map(\.id), ["segment:D-seed", "segment:D-s0", "segment:D-s1", "segment:D-s2", "segment:D-elite", "segment:D-cyc"])
+        XCTAssertEqual(rows.map(\.isSoleChildOfRowAbove), [false, true, true, true, true, true])
+        XCTAssertNotNil(rows.last?.children, "the deepest match keeps its whole subtree")
+    }
+
+    /// Every row id in `rows`, depth first, so two listings compare whole.
+    private func nestedIDs(_ rows: [ModelLineageNode]) -> [String] {
+        rows.flatMap { [$0.id] + nestedIDs($0.children ?? []) }
+    }
+
+    /// The seed's own earlier files carry its ID ("run-D-seed-…"), so a
+    /// search for it matches them too; the whole family, nested segments
+    /// included, must still be listed.
+    func testAModelIDSearchKeepsTheNestedFamily() {
+        let tree = ModelLineageTree.build(lines: deepChain(), champions: [])
+        let all = ModelLineageTree.listedRows(of: tree, matching: "")
+        let seed = ModelLineageTree.listedRows(of: tree, matching: "d-seed")
+        XCTAssertEqual(nestedIDs(seed), nestedIDs(all.filter { $0.id != "segment:Z-other" }))
+        XCTAssertTrue(nestedIDs(seed).contains("segment:D-cyc"))
+    }
+
+    func testAModelIDSearchStillShowsTheWholeFamily() {
+        let tree = ModelLineageTree.build(lines: deepChain(), champions: [])
+        let all = ModelLineageTree.listedRows(of: tree, matching: "")
+        let seed = ModelLineageTree.listedRows(of: tree, matching: "d-seed")
+        XCTAssertEqual(seed.map(\.id), all.filter { $0.id != "segment:Z-other" }.map(\.id))
+    }
+
+    func testRecentBranchTipsAreTheNewestTrainedTips() {
+        let tree = ModelLineageTree.build(lines: deepChain(), champions: [])
+        let tips = ModelLineageTree.recentBranchTips(of: tree, limit: 8)
+        XCTAssertEqual(tips.map(\.id), ["tip:segment:Z-other", "tip:segment:D-cyc"], "newest activity first; only tips")
+        XCTAssertTrue(tips.allSatisfy { $0.children == nil })
+        XCTAssertEqual(ModelLineageTree.recentBranchTips(of: tree, limit: 1).map(\.id), ["tip:segment:Z-other"])
+        let searched = ModelLineageTree.recentBranchTips(of: ModelLineageTree.prunedTree(tree, matching: "elitecyc"), limit: 8)
+        XCTAssertEqual(searched.map(\.id), ["tip:segment:D-cyc"])
+        guard case .segment(_, let path, _, _) = searched[0].kind else { return XCTFail("a tip is a segment") }
+        XCTAssertEqual(path, ["D-seed", "D-s0", "D-s1", "D-s2", "D-elite", "D-cyc"])
     }
 }

@@ -419,6 +419,9 @@ struct LichessBotModelSettingsSection: View {
                     Text(kind.displayName).tag(kind)
                 }
             }
+            // What plays now, which the rows below (the next game's) may not
+            // be yet (issue #20).
+            LichessBotModelInUseRow(controller: controller)
             // Rows for other sources stay in place, disabled, so the form
             // doesn't reshuffle as the source changes.
             LabeledContent("Model file") {

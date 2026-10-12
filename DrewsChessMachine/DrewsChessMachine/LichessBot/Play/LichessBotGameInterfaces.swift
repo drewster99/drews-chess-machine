@@ -57,6 +57,21 @@ struct LichessBotGenerationInfo: Sendable, Equatable, Codable {
     /// existed (the default keeps them decoding); the index then reads it
     /// from the played file (`LichessBotPlayedFileHistories`).
     var trainingHistory: ModelTrainingHistory? = nil
+    /// The modified time of the file the weights were read from, taken from
+    /// the descriptor that read them (`CheckpointManager
+    /// .readModelFileBytesAndModificationDate`). Nil for in-memory sources
+    /// and in records written before this field existed (the default keeps
+    /// them decoding).
+    var fileModifiedAt: Date? = nil
+
+    /// Whether this generation plays `file` of `followed`: it follows that
+    /// lineage and was built from the same content. The one rule for "the
+    /// newest file is the one playing", shared by the slots' retry check
+    /// and the settings' "(in use)" mark.
+    func plays(_ file: LichessBotLineageFile, of followed: LichessBotFollowedLineage) -> Bool {
+        guard let lineage else { return false }
+        return lineage.followed == followed && lineage.contentSHA256 == file.contentSHA256
+    }
 
     /// The weights this generation was built from, comparable with the
     /// settings' `LichessBotModelSettings.generationSource`.

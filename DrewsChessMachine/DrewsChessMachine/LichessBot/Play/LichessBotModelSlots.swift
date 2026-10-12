@@ -126,6 +126,9 @@ struct LichessBotBuiltModel: Sendable {
     let snapshot: LichessBotWeightsSnapshot
     let filePath: String?
     let fileSHA256: String?
+    /// The modified time of the file the weights were read from; nil for a
+    /// source with no file.
+    let fileModifiedAt: Date?
     let valueHeadRecenteredOnLoad: Bool?
     /// Where the file played sits in its run, for a file that records it.
     let lineage: LichessBotGenerationLineage?
@@ -148,7 +151,8 @@ struct LichessBotBuiltModel: Sendable {
             fileSHA256: fileSHA256,
             valueHeadRecenteredOnLoad: valueHeadRecenteredOnLoad,
             lineage: lineage,
-            trainingHistory: snapshot.trainingHistory
+            trainingHistory: snapshot.trainingHistory,
+            fileModifiedAt: fileModifiedAt
         )
         return LichessBotModelGeneration(info: info, network: network)
     }
@@ -156,7 +160,7 @@ struct LichessBotBuiltModel: Sendable {
     /// The session-log line announcing generation `id`. A file-backed
     /// generation adds the file, its lineage position (or the file's own
     /// hash when it records none) and the architecture.
-    func readyLine(generationID id: Int, reason: String) -> String {
+    func readyLine(generationID id: Int, reason: String, replacing replaced: LichessBotGenerationInfo? = nil) -> String {
         var line = "[LICHESS-BOT] model generation \(id) ready: \(sourceKind.rawValue) \(snapshot.modelID) step=\(snapshot.trainingStep.map(String.init) ?? "-") (\(reason)) snapshot ms=\(String(format: "%.1f", milliseconds))"
         if let filePath {
             line += " file=\(URL(fileURLWithPath: filePath).lastPathComponent)"
@@ -170,6 +174,12 @@ struct LichessBotBuiltModel: Sendable {
         line += " trained=\(snapshot.trainingHistory.logText)"
         if let loadNote {
             line += " (\(loadNote))"
+        }
+        if let replaced {
+            line += " replacing generation \(replaced.generationID) \(replaced.modelID)"
+            if let path = replaced.filePath {
+                line += " file=\(URL(fileURLWithPath: path).lastPathComponent)"
+            }
         }
         return line
     }
@@ -202,6 +212,7 @@ struct LichessBotGenerationBuilder: Sendable {
         let snapshot: LichessBotWeightsSnapshot
         var filePath: String?
         var fileSHA256: String?
+        var fileModifiedAt: Date?
         var valueHeadRecenteredOnLoad: Bool?
         var lineage: LichessBotGenerationLineage?
         var loadNote: String?
@@ -219,6 +230,7 @@ struct LichessBotGenerationBuilder: Sendable {
             snapshot = loaded.snapshot
             filePath = path
             fileSHA256 = loaded.sha256
+            fileModifiedAt = loaded.fileModifiedAt
             valueHeadRecenteredOnLoad = loaded.valueHeadRecentered
             lineage = Self.recordedLineage(of: loaded.parent)
         case .followed(let target):
@@ -233,6 +245,7 @@ struct LichessBotGenerationBuilder: Sendable {
             snapshot = loaded.snapshot
             filePath = target.url.path
             fileSHA256 = loaded.sha256
+            fileModifiedAt = loaded.fileModifiedAt
             valueHeadRecenteredOnLoad = loaded.valueHeadRecentered
             lineage = verified.lineage
             loadNote = verified.note
@@ -245,6 +258,7 @@ struct LichessBotGenerationBuilder: Sendable {
             snapshot: snapshot,
             filePath: filePath,
             fileSHA256: fileSHA256,
+            fileModifiedAt: fileModifiedAt,
             valueHeadRecenteredOnLoad: valueHeadRecenteredOnLoad,
             lineage: lineage,
             loadNote: loadNote,
@@ -318,14 +332,17 @@ struct LichessBotModelFileLoader: Sendable {
         let valueHeadRecentered: Bool
         /// The decoded file's identity and lineage, from the same bytes.
         let parent: LineageTracker.ParentFile
+        /// The modified time of the file these bytes were read from.
+        let fileModifiedAt: Date
     }
 
-    /// Reads a file's bytes: the file itself in the app; scripted bytes in a
-    /// test.
-    let readBytes: @Sendable (URL) throws -> Data
+    /// Reads a file's bytes and that file's modified time: the file itself
+    /// in the app (`CheckpointManager.readModelFileBytesAndModificationDate`);
+    /// scripted values in a test.
+    let readBytes: @Sendable (URL) throws -> (bytes: Data, modifiedAt: Date)
 
     static let live = LichessBotModelFileLoader(readBytes: { url in
-        try CheckpointManager.readModelFileBytes(at: url)
+        try CheckpointManager.readModelFileBytesAndModificationDate(at: url)
     })
 
     func load(at url: URL) async throws -> Loaded {
@@ -336,10 +353,10 @@ struct LichessBotModelFileLoader: Sendable {
                     // One read, decoded and hashed: the hash names exactly
                     // the bytes played. A second read could see another file
                     // renamed over the path in between (a rolling save).
-                    // `Data(contentsOf:)` keeps reading the inode it opened,
-                    // so the bytes are one file, and the decode's
+                    // The read keeps one open descriptor, so the bytes and
+                    // their modified time are one file's, and the decode's
                     // `content_sha256` check refuses a half-copied one.
-                    let bytes = try readBytes(url)
+                    let (bytes, modifiedAt) = try readBytes(url)
                     let file = try CheckpointManager.loadModelFile(fromBytes: bytes, source: url.lastPathComponent)
                     let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
                     let snapshot = LichessBotWeightsSnapshot(
@@ -357,7 +374,8 @@ struct LichessBotModelFileLoader: Sendable {
                     }
                     let recentered: Bool
                     if case .recentered = centering { recentered = true } else { recentered = false }
-                    continuation.resume(returning: Loaded(snapshot: snapshot, sha256: digest, valueHeadRecentered: recentered, parent: file.lineageParent))
+                    continuation.resume(returning: Loaded(snapshot: snapshot, sha256: digest, valueHeadRecentered: recentered,
+                                                          parent: file.lineageParent, fileModifiedAt: modifiedAt))
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -400,6 +418,9 @@ actor LichessBotModelSlots {
 
     /// The generation new games use.
     private(set) var current: LichessBotModelGeneration
+    /// The switch that made `current` current: set with `current`, by the
+    /// initializer (the first generation, from nothing) and by `publish`.
+    private(set) var lastSwitch: LichessBotModelSwitch
     /// The model settings in force: `current`'s generation source, with
     /// the newest values of the fields that don't select weights (the
     /// refresh and check intervals, the mid-game toggle).
@@ -424,15 +445,32 @@ actor LichessBotModelSlots {
         follower.status
     }
 
+    /// What the controller shows of the slots, read in one actor turn so a
+    /// publish can't land between the parts: the generation, the switch
+    /// that made it current, and the lineage status (issue #20).
+    struct Shown: Sendable {
+        let generation: LichessBotGenerationInfo
+        let lastSwitch: LichessBotModelSwitch
+        let lineageFollowStatus: LichessBotLineageFollowStatus?
+    }
+
+    var shown: Shown {
+        Shown(generation: current.info, lastSwitch: lastSwitch, lineageFollowStatus: follower.status)
+    }
+
     private init(builder: LichessBotGenerationBuilder, first: LichessBotModelGeneration, settings: LichessBotModelSettings, follower: LichessBotLineageFollower, log: @escaping @Sendable (String) -> Void) {
         self.builder = builder
         self.log = log
         self.current = first
+        self.lastSwitch = LichessBotModelSwitch(to: first.info, from: nil, reason: Self.goingOnlineReason)
         self.currentSettings = settings
         self.lastSnapshotAt = builder.time.now()
         self.nextGenerationID = first.info.generationID + 1
         self.follower = follower
     }
+
+    /// The build reason of the first generation.
+    static let goingOnlineReason = "going online"
 
     /// How a problem line ends while nothing plays yet: going online stops.
     private static let offlineConsequence = "the bot stays offline"
@@ -485,7 +523,7 @@ actor LichessBotModelSlots {
         }
         let firstID = 1
         let slots = LichessBotModelSlots(builder: builder, first: built.generation(id: firstID), settings: settings, follower: follower, log: log)
-        log(built.readyLine(generationID: firstID, reason: "going online"))
+        log(built.readyLine(generationID: firstID, reason: goingOnlineReason))
         return slots
     }
 
@@ -551,10 +589,12 @@ actor LichessBotModelSlots {
         let generationID = nextGenerationID
         nextGenerationID += 1
         let generation = built.generation(id: generationID)
+        let replaced = current.info
         current = generation
         currentSettings = settings
         lastSnapshotAt = builder.time.now()
-        log(built.readyLine(generationID: generationID, reason: reason))
+        lastSwitch = LichessBotModelSwitch(to: generation.info, from: replaced, reason: reason)
+        log(built.readyLine(generationID: generationID, reason: reason, replacing: replaced))
         return generation
     }
 
@@ -699,7 +739,7 @@ actor LichessBotModelSlots {
         guard let status = follower.status, status.followed == followed, case .following(let newest) = status.outcome else {
             return false
         }
-        return current.info.lineage?.followed != followed || current.info.lineage?.contentSHA256 != newest.contentSHA256
+        return !current.info.plays(newest, of: followed)
     }
 
     /// The playing generation's rank when it plays `followed`, else nil.

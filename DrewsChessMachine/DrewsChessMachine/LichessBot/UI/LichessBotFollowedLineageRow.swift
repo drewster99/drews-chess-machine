@@ -21,7 +21,8 @@ struct LichessBotFollowedLineageRow: View {
     var body: some View {
         LabeledContent("Lineage") {
             HStack(alignment: .firstTextBaseline) {
-                LichessBotFollowedLineageSummary(followedLineage: followedLineage, status: shownStatus, resolution: resolution)
+                LichessBotFollowedLineageSummary(followedLineage: followedLineage, status: shownStatus, resolution: resolution,
+                                                 newestFileMark: newestFileMark)
                 Button("Choose Lineage…") {
                     showingPicker = true
                 }
@@ -49,6 +50,18 @@ struct LichessBotFollowedLineageRow: View {
 
     private var shownStatus: LichessBotLineageFollowStatus? {
         liveStatus ?? resolution.status
+    }
+
+    /// "(in use)" / "(next game once loaded)" for the newest file while the
+    /// running bot follows this lineage (issue #20).
+    private var newestFileMark: String? {
+        guard controller.isRunning, let followedLineage, let shownStatus,
+              case .following(let newest) = shownStatus.outcome else {
+            return nil
+        }
+        return LichessBotModelInUseText.newestFileMark(
+            newest: newest, followed: followedLineage, modelInUse: controller.modelInUse,
+            appliedLineage: LichessBotModelInUseText.appliedFollowedLineage(of: controller.settings.model))
     }
 
     private func resolve() async {
@@ -121,6 +134,9 @@ struct LichessBotFollowedLineageSummary: View {
     let followedLineage: LichessBotFollowedLineage?
     let status: LichessBotLineageFollowStatus?
     let resolution: LichessBotFollowedLineageResolution
+    /// The running bot's mark for the newest file, nil when it isn't
+    /// playing this lineage.
+    var newestFileMark: String? = nil
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -132,7 +148,7 @@ struct LichessBotFollowedLineageSummary: View {
             Text(detailText)
                 .font(.caption)
                 .foregroundStyle(isProblem ? Color.orange : Color.secondary)
-                .lineLimit(2)
+                .lineLimit(3)
                 .multilineTextAlignment(.trailing)
                 .textSelection(.enabled)
         }
@@ -152,7 +168,14 @@ struct LichessBotFollowedLineageSummary: View {
     private var detailText: String {
         guard followedLineage != nil else { return "" }
         if let status {
-            return status.outcome.description
+            var text = status.outcome.description
+            if case .following(let newest) = status.outcome, let modifiedAt = newest.fileModifiedAt {
+                text += " · modified \(LichessBotModelTimeText.absolute(modifiedAt))"
+            }
+            if let newestFileMark {
+                text += " \(newestFileMark)"
+            }
+            return text
         }
         return resolution == .reading ? "Reading model headers…" : ""
     }

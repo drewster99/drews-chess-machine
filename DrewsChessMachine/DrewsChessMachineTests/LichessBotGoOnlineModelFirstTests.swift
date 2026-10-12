@@ -372,4 +372,29 @@ final class LichessBotGoOnlineModelFirstTests: XCTestCase {
         XCTAssertEqual(fileController.generation?.filePath, file.path)
         XCTAssertEqual(fileController.generation?.generationID, 1)
     }
+
+    /// Issue #20: the poll mirrors the slots' switch record into
+    /// `modelInUse` — the first generation, from nothing, for going online —
+    /// and going offline clears it with `generation`.
+    func testThePollPublishesTheModelInUseAndGoingOfflineClearsIt() async throws {
+        let installation = try makeInstallation { settings in
+            settings.model.source = .champion
+        }
+        let provider = try await LichessBotHoldableModelProvider.make()
+        let lichess = LichessBotModelFirstFakeLichess(snapshotCount: { provider.championSnapshots.value })
+        let controller = makeController(installation, transport: lichess, modelProvider: provider)
+        XCTAssertNil(controller.modelInUse, "offline")
+        await controller.goOnline()
+        XCTAssertEqual(controller.connection, .online)
+        try await waitUntil("the poll publishes the model in use") { controller.modelInUse != nil }
+        let modelInUse = try XCTUnwrap(controller.modelInUse)
+        XCTAssertEqual(modelInUse.to.sourceKind, .champion)
+        XCTAssertEqual(modelInUse.to.generationID, 1)
+        XCTAssertNil(modelInUse.from)
+        XCTAssertEqual(modelInUse.reason, LichessBotModelSlots.goingOnlineReason)
+        await controller.goOffline()
+        try await waitUntil("the bot goes offline") { controller.connection == .offline }
+        XCTAssertNil(controller.modelInUse)
+        XCTAssertNil(controller.generation)
+    }
 }
