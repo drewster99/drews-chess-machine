@@ -48,11 +48,18 @@ struct LichessBotGameTileContent: View {
                 Text(game.opponent?.rating.map { String(format: "%4d", $0) } ?? "")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .fixedSize()
+                Spacer(minLength: 0)
                 LichessBotGameAnomalyBadge(anomalies: game.anomalies)
+                // One line, never compressed: when the header is short of
+                // room the opponent's name truncates instead. A wrapped
+                // "DCM lost" made those tiles a line taller than the rest
+                // (owner report 2026-10-12).
                 Text(resultText)
                     .font(.system(.callout, design: .monospaced).weight(.bold))
                     .foregroundStyle(resultColor)
+                    .lineLimit(1)
+                    .fixedSize()
                     .shown(game.isFinished)
                 Button(action: onDismiss) {
                     Image(systemName: "xmark.circle.fill")

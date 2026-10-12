@@ -114,4 +114,41 @@ final class LichessBotViewRenderTests: XCTestCase {
             )
         }
     }
+
+    /// A finished game against a long-named opponent, with `winner` the
+    /// side Lichess reports (nil for a draw).
+    private func makeFinishedGame(opponent: String, winner: String?) throws -> LichessBotLiveGame {
+        let game = LichessBotLiveGame(id: "fin12345", startedAt: Date(), ourAccountID: "drewschessmachine")
+        let status = winner == nil ? "draw" : "mate"
+        let winnerField = winner.map { #","winner":"\#($0)""# } ?? ""
+        let fullJSON = #"{"type":"gameFull","id":"fin12345","variant":{"key":"standard"},"clock":{"initial":300000,"increment":3000},"speed":"blitz","rated":false,"createdAt":1700000000000,"white":{"id":"drewschessmachine","name":"DrewsChessMachine","title":"BOT","rating":1500},"black":{"id":"\#(opponent.lowercased())","name":"\#(opponent)","title":"BOT","rating":1743},"initialFen":"startpos","state":{"type":"gameState","moves":"e2e4 e7e5","wtime":290000,"btime":280000,"winc":3000,"binc":3000,"status":"started"}}"#
+        let full = Data(fullJSON.utf8)
+        guard case .gameFull(let decoded) = try LichessBotGameStreamLine.decode(full) else {
+            throw CocoaError(.coderReadCorrupt)
+        }
+        game.apply(.streamOpened(attempt: 0))
+        game.apply(.streamLine(full, receivedAt: Date()))
+        game.apply(.gameInfo(decoded, ourColor: .white))
+        let end = #"{"type":"gameState","moves":"e2e4 e7e5","wtime":290000,"btime":280000,"winc":3000,"binc":3000,"status":"\#(status)"\#(winnerField)}"#
+        game.apply(.streamLine(Data(end.utf8), receivedAt: Date()))
+        return game
+    }
+
+    /// Owner report 2026-10-12: tiles of lost games were a line taller than
+    /// the rest, because "DCM lost" wrapped beside a long name. Every
+    /// result's tile has the same height at the grid's width.
+    func testFinishedTilesAreTheSameHeightWhateverTheResult() throws {
+        let controller = try makeController()
+        let name = "Vietnamese_Chess_Engine_Bot"
+        var heights: [String: CGFloat] = [:]
+        for (label, winner) in [("won", Optional("white")), ("lost", Optional("black")), ("draw", nil)] {
+            let game = try makeFinishedGame(opponent: name, winner: winner)
+            XCTAssertTrue(game.isFinished, label)
+            let hosting = NSHostingView(rootView: LichessBotGameTileView(controller: controller, game: game, onOpen: {}, onDismiss: {})
+                .frame(width: 260))
+            heights[label] = hosting.fittingSize.height
+        }
+        XCTAssertEqual(heights["lost"], heights["won"], "\(heights)")
+        XCTAssertEqual(heights["draw"], heights["won"], "\(heights)")
+    }
 }
