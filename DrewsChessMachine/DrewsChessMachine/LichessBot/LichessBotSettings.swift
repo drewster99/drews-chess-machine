@@ -37,7 +37,16 @@ struct LichessBotChallengeSettings: Sendable, Equatable, Codable {
     var gamesReservedForHumans = 2
     var maxSimultaneousGamesPerOpponent = 1
     var maxGamesPerDay = 2000
-    var maxGamesPerOpponentPerDay = 5
+    /// Games per rolling day against one human, and against one bot
+    /// (owner request 2026-10-12: humans and bots are limited separately).
+    /// Acceptance (`LichessBotChallengePolicy`) applies the one matching the
+    /// challenger; matchmaking, which only challenges bots, the bot one; the
+    /// challenge sheet warns with the one matching each chosen opponent.
+    /// Settings saved with the single limit these replaced
+    /// (`maxGamesPerOpponentPerDay`) load it into both
+    /// (`LichessBotSettingsStore`).
+    var maxGamesPerHumanOpponentPerDay = 5
+    var maxGamesPerBotOpponentPerDay = 5
     /// Of Lichess' daily bot-vs-bot games (`LichessBotLimits.botGamesPerDay`),
     /// how many DCM's own challenges leave for bots that challenge DCM:
     /// matchmaking and the challenge queue stop this many short of the
@@ -317,7 +326,8 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(c.maxConcurrentGames >= 1, "Allow at least one concurrent game")
         require(c.gamesReservedForHumans >= 0 && c.gamesReservedForHumans <= c.maxConcurrentGames, "Reserved human slots must be between zero and the concurrent-game limit")
         require(c.maxSimultaneousGamesPerOpponent >= 1, "Allow at least one game per opponent")
-        require(c.maxGamesPerDay >= 1 && c.maxGamesPerOpponentPerDay >= 1, "Daily limits must be at least one")
+        require(c.maxGamesPerDay >= 1 && c.maxGamesPerHumanOpponentPerDay >= 1 && c.maxGamesPerBotOpponentPerDay >= 1,
+                "Daily limits must be at least one")
         require(c.botGamesReservedForIncoming >= 0 && c.botGamesReservedForChallengeQueue >= 0, "Reserved bot games cannot be negative")
         require(matchmaking.noBotDeclineBlockDays >= 0 && matchmaking.specificDeclineBlockDays >= 0 && matchmaking.ratedCasualDeclineBlockDays >= 0, "Decline block days cannot be negative")
         require(matchmaking.recentContactHours >= 0, "Recent-contact hours cannot be negative")

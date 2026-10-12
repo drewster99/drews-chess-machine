@@ -38,6 +38,9 @@ enum LichessBotSettingsStore {
         /// Dotted paths in the saved blob that the current settings no longer
         /// have (removed or renamed fields); ignored.
         let ignoredSavedKeys: [String]
+        /// Saved values carried into fields that replaced theirs, as
+        /// `old → new` descriptions (see `carryForwardReplacedFields`).
+        var carriedForward: [String] = []
     }
 
     /// The saved settings. With nothing saved yet (first run), the defaults;
@@ -76,13 +79,16 @@ enum LichessBotSettingsStore {
         let settings: LichessBotSettings
         var filled: [String] = []
         var ignored: [String] = []
+        var carriedForward: [String] = []
         do {
             guard let saved = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 throw LichessBotSettingsStoreError.unreadable(detail: "the saved settings are not a JSON object")
             }
             let defaultObject = try defaultSettingsObject()
+            let (carried, carriedNotes) = carryForwardReplacedFields(saved)
+            carriedForward = carriedNotes
             let merged = try overlay(
-                saved: saved, onto: defaultObject, path: [], defaultRoot: defaultObject,
+                saved: carried, onto: defaultObject, path: [], defaultRoot: defaultObject,
                 filled: &filled, ignored: &ignored)
             settings = try JSONDecoder().decode(
                 LichessBotSettings.self, from: JSONSerialization.data(withJSONObject: merged))
@@ -95,7 +101,31 @@ enum LichessBotSettingsStore {
         guard problems.isEmpty else {
             throw LichessBotSettingsStoreError.invalid(problems: problems)
         }
-        return LoadResult(settings: settings, filledFromDefaults: filled.sorted(), ignoredSavedKeys: ignored.sorted())
+        return LoadResult(settings: settings, filledFromDefaults: filled.sorted(), ignoredSavedKeys: ignored.sorted(),
+                          carriedForward: carriedForward)
+    }
+
+    /// A saved value whose field was replaced by others keeps its meaning
+    /// instead of falling to today's defaults (owner rule: saved settings
+    /// survive changes). `challenge.maxGamesPerOpponentPerDay` (one limit for
+    /// every opponent) became `maxGamesPerHumanOpponentPerDay` and
+    /// `maxGamesPerBotOpponentPerDay` (2026-10-12): an old save's value
+    /// becomes both, unless the save already holds either new field. The old
+    /// key is then dropped from what is decoded; the stored blob itself is
+    /// not touched until the operator next saves.
+    static func carryForwardReplacedFields(_ saved: [String: Any]) -> (saved: [String: Any], notes: [String]) {
+        guard var challenge = saved["challenge"] as? [String: Any],
+              let old = challenge["maxGamesPerOpponentPerDay"] else { return (saved, []) }
+        challenge["maxGamesPerOpponentPerDay"] = nil
+        var notes: [String] = []
+        if challenge["maxGamesPerHumanOpponentPerDay"] == nil && challenge["maxGamesPerBotOpponentPerDay"] == nil {
+            challenge["maxGamesPerHumanOpponentPerDay"] = old
+            challenge["maxGamesPerBotOpponentPerDay"] = old
+            notes.append("challenge.maxGamesPerOpponentPerDay \(old) → challenge.maxGamesPerHumanOpponentPerDay and challenge.maxGamesPerBotOpponentPerDay")
+        }
+        var result = saved
+        result["challenge"] = challenge
+        return (result, notes)
     }
 
     /// `LichessBotSettings()` as a JSON object.

@@ -160,7 +160,7 @@ final class LichessBotOpponentHistoryTests: XCTestCase {
 
     private func context(_ history: LichessBotOpponentHistory) -> LichessBotMatchmaking.CandidateContext {
         LichessBotMatchmaking.CandidateContext(ourAccountID: "dcm", blockedUserIDs: [], engagedUserIDs: [], notes: LichessBotPlayerNotes(),
-                                               gamesTodayByOpponent: [:], maxGamesPerOpponentPerDay: 5, opponentHistory: history, now: now)
+                                               gamesTodayByOpponent: [:], maxGamesPerBotOpponentPerDay: 5, opponentHistory: history, now: now)
     }
 
     func testDeclinesExcludeCandidates() {

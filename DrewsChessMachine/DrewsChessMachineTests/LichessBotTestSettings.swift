@@ -33,7 +33,8 @@ extension LichessBotChallengeSettings {
         settings.gamesReservedForHumans = 0
         settings.maxSimultaneousGamesPerOpponent = 1
         settings.maxGamesPerDay = 200
-        settings.maxGamesPerOpponentPerDay = 20
+        settings.maxGamesPerHumanOpponentPerDay = 20
+        settings.maxGamesPerBotOpponentPerDay = 20
         settings.outgoingChallengeTimeoutSeconds = 180
         return settings
     }

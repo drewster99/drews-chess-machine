@@ -257,6 +257,9 @@ struct LichessBotChallengeSheet: View {
     struct ChosenOpponent: Equatable {
         let username: String
         let id: String
+        /// Whether the opponent is a bot, where the source says; nil when it
+        /// doesn't (a favorite whose profile hasn't loaded).
+        let isBot: Bool?
     }
 
     /// The opponents chosen on the current tab, in the order they are sent:
@@ -266,19 +269,20 @@ struct LichessBotChallengeSheet: View {
         switch source {
         case .onlineBots, .favorites, .onlinePlayers:
             // An offline bot can't accept; a favorite of unknown status may.
+            let sourceKind: Bool? = source == .onlineBots ? true : (source == .onlinePlayers ? false : nil)
             return orderedRows
                 .filter { selectedBotIDs.contains($0.id) && $0.isOnline != false }
-                .map { ChosenOpponent(username: $0.username, id: $0.id) }
+                .map { ChosenOpponent(username: $0.username, id: $0.id, isBot: $0.summary?.isBot ?? sourceKind) }
         case .leaderboard:
             return (controller.leaderboards[clock.speed]?.users ?? [])
                 .filter { selectedLeaderboardIDs.contains($0.id) }
-                .map { ChosenOpponent(username: $0.username, id: $0.id) }
+                .map { ChosenOpponent(username: $0.username, id: $0.id, isBot: $0.title == "BOT") }
         case .history:
             return controller.pastOpponents
                 .filter { selectedHistoryIDs.contains($0.id) }
-                .map { ChosenOpponent(username: $0.name, id: $0.id) }
+                .map { ChosenOpponent(username: $0.name, id: $0.id, isBot: $0.kind == .bot) }
         case .username:
-            return lookedUp.map { [ChosenOpponent(username: $0.username, id: $0.id)] } ?? []
+            return lookedUp.map { [ChosenOpponent(username: $0.username, id: $0.id, isBot: $0.isBot)] } ?? []
         }
     }
 
@@ -296,16 +300,26 @@ struct LichessBotChallengeSheet: View {
     }
 
     /// Chosen opponents DCM has already played today up to the daily
-    /// per-opponent acceptance limit: a warning only (plan §7.1).
+    /// per-opponent acceptance limit — the bot limit for a bot, the human
+    /// limit for a human, the lower of the two when the kind isn't known: a
+    /// warning only (plan §7.1).
     private func dailyOpponentWarning(_ chosen: [ChosenOpponent]) -> String {
-        let limit = controller.settings.challenge.maxGamesPerOpponentPerDay
-        let over = chosen.filter { controller.gamesTodayByOpponent[$0.id.lowercased(), default: 0] >= limit }
+        let challenge = controller.settings.challenge
+        func limit(_ opponent: ChosenOpponent) -> Int {
+            switch opponent.isBot {
+            case true?: return challenge.maxGamesPerBotOpponentPerDay
+            case false?: return challenge.maxGamesPerHumanOpponentPerDay
+            case nil: return min(challenge.maxGamesPerBotOpponentPerDay, challenge.maxGamesPerHumanOpponentPerDay)
+            }
+        }
+        func played(_ opponent: ChosenOpponent) -> Int { controller.gamesTodayByOpponent[opponent.id.lowercased(), default: 0] }
+        let over = chosen.filter { played($0) >= limit($0) }
         guard !over.isEmpty else { return "" }
         if over.count == 1, let only = over.first {
-            let played = controller.gamesTodayByOpponent[only.id.lowercased(), default: 0]
-            return "DCM has played \(only.username) \(played) times today; the acceptance settings allow \(limit) per opponent per day"
+            let kind = only.isBot.map { $0 ? "bot" : "human opponent" } ?? "opponent"
+            return "DCM has played \(only.username) \(played(only)) times today; the acceptance settings allow \(limit(only)) per \(kind) per day"
         }
-        return "DCM has played \(over.map(\.username).joined(separator: ", ")) at least \(limit) times each today, the acceptance settings' per-opponent daily limit"
+        return "DCM has played \(over.map { "\($0.username) (\(played($0))/\(limit($0)))" }.joined(separator: ", ")) today, at or past the acceptance settings' per-opponent daily limits"
     }
 
     /// Choices outside the acceptance policy are allowed, with a warning

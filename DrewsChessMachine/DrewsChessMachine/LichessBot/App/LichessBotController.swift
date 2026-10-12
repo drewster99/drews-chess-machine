@@ -578,6 +578,9 @@ final class LichessBotController {
             if !loaded.filledFromDefaults.isEmpty {
                 SessionLogger.shared.log("[LICHESS-BOT] settings: saved settings predate \(loaded.filledFromDefaults.count) field(s); using today's defaults for: \(loaded.filledFromDefaults.joined(separator: ", "))")
             }
+            if !loaded.carriedForward.isEmpty {
+                SessionLogger.shared.log("[LICHESS-BOT] settings: carried saved value(s) into the fields that replaced them: \(loaded.carriedForward.joined(separator: "; "))")
+            }
             if !loaded.ignoredSavedKeys.isEmpty {
                 SessionLogger.shared.log("[LICHESS-BOT] settings: ignoring saved field(s) that no longer exist: \(loaded.ignoredSavedKeys.joined(separator: ", "))")
             }
@@ -2853,7 +2856,7 @@ final class LichessBotController {
             engagedUserIDs: engaged,
             notes: playerNotesWithLiveBotLimits,
             gamesTodayByOpponent: gamesTodayByOpponent,
-            maxGamesPerOpponentPerDay: settings.challenge.maxGamesPerOpponentPerDay,
+            maxGamesPerBotOpponentPerDay: settings.challenge.maxGamesPerBotOpponentPerDay,
             opponentHistory: opponentHistory(now: now),
             now: now
         )

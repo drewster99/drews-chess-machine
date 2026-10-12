@@ -143,4 +143,43 @@ final class LichessBotSettingsStoreTests: XCTestCase {
             }
         }
     }
+
+    // MARK: Per-opponent daily limit split (2026-10-12)
+
+    /// A save with the single per-opponent daily limit carries its value into
+    /// both the human and the bot limit; nothing is filled or ignored.
+    func testTheSinglePerOpponentLimitCarriesIntoBothNewLimits() throws {
+        let defaults = try makeTemporaryDefaults()
+        try store(LichessBotSettings(), in: defaults) { object in
+            var challenge = try XCTUnwrap(object["challenge"] as? [String: Any])
+            challenge["maxGamesPerHumanOpponentPerDay"] = nil
+            challenge["maxGamesPerBotOpponentPerDay"] = nil
+            challenge["maxGamesPerOpponentPerDay"] = 17
+            object["challenge"] = challenge
+        }
+        let result = try LichessBotSettingsStore.loadReporting(from: defaults)
+        XCTAssertEqual(result.settings.challenge.maxGamesPerHumanOpponentPerDay, 17)
+        XCTAssertEqual(result.settings.challenge.maxGamesPerBotOpponentPerDay, 17)
+        XCTAssertEqual(result.filledFromDefaults, [])
+        XCTAssertEqual(result.ignoredSavedKeys, [])
+        XCTAssertEqual(result.carriedForward.count, 1)
+    }
+
+    /// A save that already holds a new limit keeps it; the old key is dropped.
+    func testASaveWithTheNewLimitsKeepsThem() throws {
+        let defaults = try makeTemporaryDefaults()
+        var settings = LichessBotSettings()
+        settings.challenge.maxGamesPerHumanOpponentPerDay = 3
+        settings.challenge.maxGamesPerBotOpponentPerDay = 9
+        try store(settings, in: defaults) { object in
+            var challenge = try XCTUnwrap(object["challenge"] as? [String: Any])
+            challenge["maxGamesPerOpponentPerDay"] = 17
+            object["challenge"] = challenge
+        }
+        let result = try LichessBotSettingsStore.loadReporting(from: defaults)
+        XCTAssertEqual(result.settings.challenge.maxGamesPerHumanOpponentPerDay, 3)
+        XCTAssertEqual(result.settings.challenge.maxGamesPerBotOpponentPerDay, 9)
+        XCTAssertEqual(result.carriedForward, [])
+        XCTAssertEqual(result.ignoredSavedKeys, [])
+    }
 }

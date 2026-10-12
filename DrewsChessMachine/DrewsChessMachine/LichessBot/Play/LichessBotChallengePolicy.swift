@@ -129,8 +129,8 @@ enum LichessBotChallengePolicy {
             return .decline(.later, rule: "daily game limit reached")
         }
         let todayAgainst = context.gamesTodayByOpponent[challenger.id.lowercased()] ?? 0
-        if todayAgainst >= settings.maxGamesPerOpponentPerDay {
-            return .decline(.later, rule: "daily limit against this opponent reached")
+        if todayAgainst >= (isBot ? settings.maxGamesPerBotOpponentPerDay : settings.maxGamesPerHumanOpponentPerDay) {
+            return .decline(.later, rule: isBot ? "daily limit against this bot reached" : "daily limit against this player reached")
         }
         // Lichess itself limits each bot to a fixed number of games against
         // other bots per rolling day, and refuses challenges beyond it

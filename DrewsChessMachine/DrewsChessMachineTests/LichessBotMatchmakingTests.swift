@@ -45,7 +45,7 @@ final class LichessBotMatchmakingTests: XCTestCase {
             engagedUserIDs: engaged,
             notes: notes,
             gamesTodayByOpponent: gamesToday,
-            maxGamesPerOpponentPerDay: 3,
+            maxGamesPerBotOpponentPerDay: 3,
             opponentHistory: .empty,
             now: now
         )

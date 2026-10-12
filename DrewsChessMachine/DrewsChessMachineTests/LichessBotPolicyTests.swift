@@ -159,7 +159,23 @@ final class LichessBotPolicyTests: XCTestCase {
         XCTAssertEqual(reason(decide(challenge(), context: context(activeGames: baseline.maxConcurrentGames))), .later)
         XCTAssertEqual(reason(decide(challenge(), context: context(activeGames: 1, activeByOpponent: ["alice": 1]))), .later)
         XCTAssertEqual(reason(decide(challenge(), context: context(gamesToday: baseline.maxGamesPerDay))), .later)
-        XCTAssertEqual(reason(decide(challenge(), context: context(todayByOpponent: ["alice": baseline.maxGamesPerOpponentPerDay]))), .later)
+        XCTAssertEqual(reason(decide(challenge(), context: context(todayByOpponent: ["alice": baseline.maxGamesPerHumanOpponentPerDay]))), .later)
+    }
+
+    /// Humans and bots have separate per-opponent daily limits (owner
+    /// request 2026-10-12): each challenger meets the one for its kind.
+    func testPerOpponentDailyLimitsAreSeparateForHumansAndBots() {
+        var settings = baseline
+        settings.maxGamesPerHumanOpponentPerDay = 2
+        settings.maxGamesPerBotOpponentPerDay = 5
+        let playedThree = context(todayByOpponent: ["alice": 3])
+        XCTAssertEqual(reason(decide(challenge(), settings: settings, context: playedThree)), .later,
+                       "a human past the human limit is declined")
+        XCTAssertEqual(decide(challenge(title: "BOT"), settings: settings, context: playedThree), .accept,
+                       "a bot under the bot limit is accepted")
+        let playedFive = context(todayByOpponent: ["alice": 5])
+        XCTAssertEqual(reason(decide(challenge(title: "BOT"), settings: settings, context: playedFive)), .later,
+                       "a bot at the bot limit is declined")
     }
 
     func testReservedHumanSlotsTurnAwayBots() {

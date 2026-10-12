@@ -186,7 +186,8 @@ enum LichessBotMatchmaking {
         var notes: LichessBotPlayerNotes?
         /// Games started today, by lowercased opponent id.
         var gamesTodayByOpponent: [String: Int]
-        var maxGamesPerOpponentPerDay: Int
+        /// Matchmaking only challenges bots, so the per-bot daily limit.
+        var maxGamesPerBotOpponentPerDay: Int
         /// Declines still in force and each bot's latest contact.
         var opponentHistory: LichessBotOpponentHistory
         var now: Date
@@ -224,7 +225,7 @@ enum LichessBotMatchmaking {
         if let block = context.opponentHistory.blockingDecline(of: id, terms: terms) {
             return block.scope == .everyChallenge ? .refusesBots : .declinedThisKind
         }
-        if context.gamesTodayByOpponent[id, default: 0] >= context.maxGamesPerOpponentPerDay {
+        if context.gamesTodayByOpponent[id, default: 0] >= context.maxGamesPerBotOpponentPerDay {
             return .dailyOpponentLimit
         }
         return nil
