@@ -51,15 +51,16 @@ struct LichessBotGameTileContent: View {
                     .fixedSize()
                 Spacer(minLength: 0)
                 LichessBotGameAnomalyBadge(anomalies: game.anomalies)
-                // One line, never compressed: when the header is short of
-                // room the opponent's name truncates instead. A wrapped
-                // "DCM lost" made those tiles a line taller than the rest
-                // (owner report 2026-10-12).
+                // One line, laid out first: when the header is short of room
+                // the opponent's name truncates instead. A wrapped "DCM
+                // lost" made those tiles a line taller than the rest (owner
+                // report 2026-10-12). Not `fixedSize`: every label is short,
+                // but the header must still fit the narrowest grid column.
                 Text(resultText)
                     .font(.system(.callout, design: .monospaced).weight(.bold))
                     .foregroundStyle(resultColor)
                     .lineLimit(1)
-                    .fixedSize()
+                    .layoutPriority(1)
                     .shown(game.isFinished)
                 Button(action: onDismiss) {
                     Image(systemName: "xmark.circle.fill")
@@ -149,7 +150,17 @@ struct LichessBotGameTileContent: View {
         case .won: return "DCM won"
         case .lost: return "DCM lost"
         case .drew: return "Draw"
-        case .noResult: return game.status
+        case .noResult: return Self.noResultLabel(status: game.status)
+        }
+    }
+
+    /// A short label for a finished game without a result, so the header's
+    /// result keeps a known, small width; the detail view words it in full.
+    static func noResultLabel(status: String) -> String {
+        switch status {
+        case "aborted", "noStart": return "Aborted"
+        case LichessBotLiveGame.leftUnfinishedStatus: return "Unfinished"
+        default: return "No result"
         }
     }
 

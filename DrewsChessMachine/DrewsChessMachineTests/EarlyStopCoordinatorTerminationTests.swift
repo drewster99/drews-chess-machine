@@ -41,4 +41,29 @@ final class EarlyStopCoordinatorTerminationTests: XCTestCase {
         coordinator.handleTerminationSignal()
         XCTAssertEqual(quits, 1)
     }
+
+    /// The quit SIGTERM asks for runs AppKit's `applicationShouldTerminate`
+    /// inside `terminateApp`; it must not already see a quit in progress,
+    /// or it answers `.terminateLater` without asking the bot and nothing
+    /// ever answers (the app hangs half-quit).
+    func testTheSigtermQuitIsNotPendingWhileAppKitAsks() {
+        var pendingWhileAsked: [Bool] = []
+        var coordinator: EarlyStopCoordinator?
+        coordinator = EarlyStopCoordinator(terminateApp: {
+            pendingWhileAsked.append(coordinator?.isQuitInProgress ?? true)
+        })
+        coordinator?.handleTerminationSignal()
+        XCTAssertEqual(pendingWhileAsked, [false])
+        XCTAssertEqual(coordinator?.isQuitInProgress, true, "a quit that returned is waiting")
+    }
+
+    /// A quit AppKit deferred, whatever started it (⌘Q), makes a SIGTERM
+    /// only log.
+    func testAQuitDeferredByTheAppMakesASigtermOnlyLog() {
+        var quits = 0
+        let coordinator = EarlyStopCoordinator(terminateApp: { quits += 1 })
+        coordinator.quitDeferred()
+        coordinator.handleTerminationSignal()
+        XCTAssertEqual(quits, 0)
+    }
 }

@@ -205,6 +205,28 @@ final class LRKeyframeParametersTests: XCTestCase {
         }
     }
 
+    /// A `--from` past the default end, or a step past the bound, is a
+    /// usage error, never a trapped range.
+    func testShowLRScheduleRefusesARangeItCannotBuild() throws {
+        let snapshot = try ShowLRScheduleCLI.snapshot(parametersPath: nil)
+        let options = try ShowLRScheduleCLI.parse(["--show-lr-schedule", "--from", "1900000000"])
+        XCTAssertThrowsError(try ShowLRScheduleCLI.render(snapshot: snapshot, options: options))
+        XCTAssertThrowsError(try ShowLRScheduleCLI.parse(["--show-lr-schedule", "--to", "9223372036854775807"]))
+        XCTAssertThrowsError(try ShowLRScheduleCLI.parse(["--show-lr-schedule", "--from", String(ShowLRScheduleCLI.maximumStep + 1)]))
+    }
+
+    /// Add Keyframe after a step that isn't usable copies it rather than
+    /// guessing (or overflowing).
+    @MainActor
+    func testAddingAfterAnUnusableStepCopiesIt() {
+        func row(_ step: String) -> LRKeyframeRowDraft {
+            LRKeyframeRowDraft(step: step, peak: "0.1", trough: "0.001", momentumAtPeak: "0.85", momentumAtTrough: "0.95")
+        }
+        XCTAssertEqual(LRKeyframeRowDraft.appended(after: [row("9223372036854775807")], periodSteps: 10_000).step, "9223372036854775807")
+        XCTAssertEqual(LRKeyframeRowDraft.appended(after: [row("12a")], periodSteps: 10_000).step, "12a")
+        XCTAssertEqual(LRKeyframeRowDraft.appended(after: [row(" 5000 ")], periodSteps: 10_000).step, "15000")
+    }
+
     func testShowLRScheduleRefusesBadArguments() {
         XCTAssertThrowsError(try ShowLRScheduleCLI.parse(["--show-lr-schedule", "--bogus"]))
         XCTAssertThrowsError(try ShowLRScheduleCLI.parse(["--show-lr-schedule", "--from", "10", "--to", "5"]))

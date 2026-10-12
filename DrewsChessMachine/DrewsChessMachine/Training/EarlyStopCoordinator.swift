@@ -49,8 +49,11 @@ final class EarlyStopCoordinator {
     private var sigusr2Source: DispatchSourceSignal?
     private var sigtermSource: DispatchSourceSignal?
     private var stopRequested: Bool = false
-    /// Set by the first SIGTERM; later ones only log.
-    private var terminationSignalReceived = false
+    /// A quit is under way and waiting (AppKit was told `.terminateLater`,
+    /// or a SIGTERM asked AppKit to quit): a SIGTERM then only logs. Set by
+    /// SIGTERM and by `quitDeferred` (whatever started the quit: ⌘Q, the
+    /// menu, a signal); cleared only by `quitWasCancelled`.
+    private var quitInProgress = false
     /// What SIGTERM does: ask AppKit to quit, exactly as ⌘Q does.
     private let terminateApp: @MainActor () -> Void
 
@@ -128,24 +131,47 @@ final class EarlyStopCoordinator {
         sigtermSource = term
     }
 
-    /// A quit was cancelled (the operator cancelled "Finishing games"):
-    /// the next SIGTERM asks to quit again.
-    func quitWasCancelled() {
-        guard terminationSignalReceived else { return }
-        terminationSignalReceived = false
-        SessionLogger.shared.log("[APP] quit cancelled; a new SIGTERM will quit again")
+    /// The app answered a quit with `.terminateLater` (running Lichess
+    /// games finish first): until it is cancelled, a SIGTERM only logs, so
+    /// it never starts a second quit over the pending one.
+    func quitDeferred() {
+        quitInProgress = true
     }
 
-    /// SIGTERM's handler: the first asks AppKit to quit; a repeat while
-    /// the quit is still finishing games only says so.
+    /// Whether a deferred quit is pending, so `applicationShouldTerminate`
+    /// doesn't start a second one.
+    var isQuitInProgress: Bool { quitInProgress }
+
+    /// A quit was cancelled (the operator cancelled "Finishing games"):
+    /// the next SIGTERM or ⌘Q asks to quit again.
+    func quitWasCancelled() {
+        guard quitInProgress else { return }
+        quitInProgress = false
+        SessionLogger.shared.log("[APP] quit cancelled; a new SIGTERM or ⌘Q will quit again")
+    }
+
+    /// SIGTERM's handler. During a GUI `--train` run it stops the run
+    /// through the early-stop flush, labelled `SIGTERM-received` (autotrain's
+    /// watchdog sends it); otherwise the first asks AppKit to quit, and a
+    /// repeat while a quit is pending only says so.
     func handleTerminationSignal() {
-        if terminationSignalReceived {
+        if quitInProgress {
             SessionLogger.shared.log("[APP] SIGTERM again: already quitting (running Lichess games finish first; kill -9 ends the process now)")
             return
         }
-        terminationSignalReceived = true
+        if hasActiveCLIFlush {
+            SessionLogger.shared.log("[APP] SIGTERM: stopping the --train run (result written as SIGTERM-received)")
+            requestEarlyStop(reason: .sigtermReceived)
+            return
+        }
+        // Marked in progress only after `terminateApp` returns: it runs
+        // AppKit's `applicationShouldTerminate` synchronously, which must
+        // reach the bot (a pending quit there returns `.terminateLater`
+        // without asking it, and nothing would ever answer). A quit AppKit
+        // finishes at once never returns here; one that returns is waiting.
         SessionLogger.shared.log("[APP] SIGTERM: quitting as ⌘Q does")
         terminateApp()
+        quitInProgress = true
     }
 
     /// Idempotent early-stop entry point. Multiple signals + AppDelegate
@@ -169,7 +195,7 @@ final class EarlyStopCoordinator {
         // (`appWillTerminate`) AppKit's normal teardown handles exit;
         // we just no-op so the regular `.terminateNow` reply runs.
         switch reason {
-        case .sigusr1Requested, .sighupReceived:
+        case .sigusr1Requested, .sighupReceived, .sigtermReceived:
             Darwin._exit(0)
         default:
             return

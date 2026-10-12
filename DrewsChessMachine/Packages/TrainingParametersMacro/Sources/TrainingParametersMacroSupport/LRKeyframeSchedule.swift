@@ -63,6 +63,11 @@ public struct LRKeyframeSchedule: Sendable, Equatable, Hashable, Codable {
     /// Owner decision Q-3: any real schedule needs a handful; the bound keeps
     /// the editor, the log lines and the parameter snapshot small.
     public static let maximumKeyframeCount = 64
+    /// The latest keyframe step: past every schedule the previous keys
+    /// could express (warmup ≤ 100,000 plus a decay horizon ≤ 10⁹), and far
+    /// enough below `Int.max` that step arithmetic (a step plus cycle
+    /// periods, a range's width) can't overflow.
+    public static let maximumStep = 2_000_000_000
     /// The previous `lr_cycle_max` ceiling; an LR above it is a typo, not a
     /// schedule.
     public static let maximumLearningRate = 10.0
@@ -146,6 +151,9 @@ public struct LRKeyframeSchedule: Sendable, Equatable, Hashable, Codable {
             if index > 0, k.step <= keyframes[index - 1].step {
                 throw LRKeyframeScheduleError.stepsNotIncreasing(index: index, step: k.step, previous: keyframes[index - 1].step)
             }
+            guard k.step <= Self.maximumStep else {
+                throw LRKeyframeScheduleError.stepTooLarge(index: index, step: k.step, maximum: Self.maximumStep)
+            }
             for (field, value) in [("peak", k.peak), ("trough", k.trough),
                                    ("momentum_at_peak", k.momentumAtPeak), ("momentum_at_trough", k.momentumAtTrough)]
             where !value.isFinite {
@@ -190,6 +198,7 @@ public enum LRKeyframeScheduleError: Error, Equatable, CustomStringConvertible {
     case tooManyKeyframes(count: Int, maximum: Int)
     case firstStepNotZero(step: Int)
     case stepsNotIncreasing(index: Int, step: Int, previous: Int)
+    case stepTooLarge(index: Int, step: Int, maximum: Int)
     case notFinite(index: Int, field: String)
     case troughNotPositive(index: Int, trough: Double)
     case peakBelowTrough(index: Int, peak: Double, trough: Double)
@@ -202,7 +211,7 @@ public enum LRKeyframeScheduleError: Error, Equatable, CustomStringConvertible {
         switch self {
         case .empty, .tooManyKeyframes: return nil
         case .firstStepNotZero: return 0
-        case .stepsNotIncreasing(let index, _, _), .notFinite(let index, _), .troughNotPositive(let index, _),
+        case .stepsNotIncreasing(let index, _, _), .stepTooLarge(let index, _, _), .notFinite(let index, _), .troughNotPositive(let index, _),
              .peakBelowTrough(let index, _, _), .peakTooLarge(let index, _, _), .momentumOutOfRange(let index, _, _, _),
              .momentumAtPeakAboveTrough(let index, _, _):
             return index
@@ -219,6 +228,8 @@ public enum LRKeyframeScheduleError: Error, Equatable, CustomStringConvertible {
             return "the first keyframe must be at step 0, not \(step)"
         case .stepsNotIncreasing(let index, let step, let previous):
             return "keyframe \(index): step \(step) is not after the previous keyframe's step \(previous)"
+        case .stepTooLarge(let index, let step, let maximum):
+            return "keyframe \(index): step \(step) is past the latest allowed step \(maximum)"
         case .notFinite(let index, let field):
             return "keyframe \(index): \(field) is not a finite number"
         case .troughNotPositive(let index, let trough):

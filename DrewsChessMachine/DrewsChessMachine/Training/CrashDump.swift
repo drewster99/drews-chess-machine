@@ -98,8 +98,22 @@ enum CrashDumpWriter {
     static let trainerStateReadTimeLimitSeconds: UInt64 = 60
     /// How many session-log lines `log-tail.txt` keeps.
     static let logTailLines = 5_000
-    /// How far back `system-log.txt` reads this process's system log.
+    /// How far before the earliest fault (or now, with none)
+    /// `system-log.txt` and the GPU event reports reach.
     static let systemLogLookBackSeconds: TimeInterval = 120
+    /// The furthest back those windows reach however old the earliest fault
+    /// is, so a long fault list can't make the system-log read unbounded.
+    static let systemLogMaximumLookBackSeconds: TimeInterval = 900
+
+    /// Where the system-log and GPU-event-report windows start: before the
+    /// earliest fault, not before `now`. A fault found by the monitor's
+    /// timer poll is recorded minutes after it happened; a window ending at
+    /// `now` would miss Metal's messages and macOS's report (stamped at the
+    /// reset) for it.
+    static func forensicWindowStart(faults: [GPUFaultLedger.Fault], now: Date) -> Date {
+        let anchor = min(now, faults.map(\.time).min() ?? now)
+        return max(anchor.addingTimeInterval(-systemLogLookBackSeconds), now.addingTimeInterval(-systemLogMaximumLookBackSeconds))
+    }
 
     /// Writes the dump into `directory` and returns its folder, or nil when
     /// it couldn't be written (logged). `weights` reads the trainer's weights
@@ -189,11 +203,12 @@ enum CrashDumpWriter {
         }
         SessionLogger.shared.flush()
         try FileSafety.writeNewFile(Data(sessionLogTail().utf8), at: stagingURL.appendingPathComponent("log-tail.txt"))
-        try FileSafety.writeNewFile(Data(systemLogText(now: now).utf8),
+        let windowStart = forensicWindowStart(faults: context.faults, now: now)
+        try FileSafety.writeNewFile(Data(systemLogText(since: windowStart).utf8),
                                     at: stagingURL.appendingPathComponent("system-log.txt"))
         try FileSafety.writeNewFile(try gpuSubmissionsFile(GPUFlightRecorder.shared),
                                     at: stagingURL.appendingPathComponent("gpu-submissions.json"))
-        copyGPUEventReports(into: stagingURL, since: now.addingTimeInterval(-systemLogLookBackSeconds),
+        copyGPUEventReports(into: stagingURL, since: windowStart,
                             from: gpuEventReportFolders, processName: ProcessInfo.processInfo.processName)
         try FileSafety.renameWithoutReplacing(from: stagingURL, to: finalURL)
         return finalURL
@@ -309,11 +324,11 @@ enum CrashDumpWriter {
         }
     }
 
-    /// This process's system-log entries for the last two minutes.
-    private static func systemLogText(now: Date) -> String {
+    /// This process's system-log entries from `since` on.
+    private static func systemLogText(since: Date) -> String {
         do {
             let store = try OSLogStore(scope: .currentProcessIdentifier)
-            let entries = try store.getEntries(at: store.position(date: now.addingTimeInterval(-systemLogLookBackSeconds)))
+            let entries = try store.getEntries(at: store.position(date: since))
             var lines: [String] = []
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")

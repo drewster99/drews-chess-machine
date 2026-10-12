@@ -172,7 +172,8 @@ final class LichessBotGroupBFixTests: XCTestCase {
         let controller = LichessBotController(
             modelProvider: LichessBotFakeModelProvider(snapshot: nil),
             defaults: defaults,
-            dataDirectory: LichessBotDataDirectory(root: root)
+            dataDirectory: LichessBotDataDirectory(root: root),
+            services: LichessBotControllerServices(openBotWindow: { _ in }, makeTransport: { LichessBotFakeLichess() }, readToken: { _ in nil })
         )
         addTeardownBlock { @MainActor in
             // Raising an alarm records a protocol event, appended on the

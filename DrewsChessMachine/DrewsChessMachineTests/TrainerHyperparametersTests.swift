@@ -467,6 +467,82 @@ final class TrainerHyperparametersTests: XCTestCase {
         }
     }
 
+    private func storedKeyframes(_ defaults: UserDefaults) -> LRKeyframeSchedule? {
+        guard case .valid(let stored) = TrainingParameters.inspectStored(LRCycleKeyframes.self, in: defaults) else { return nil }
+        return stored
+    }
+
+    /// The declared keyframe default is the previous defaults converted at
+    /// the declared warmup, so a user who never stored a schedule key keeps
+    /// the schedule the previous build ran.
+    func test_declaredKeyframes_areThePreviousDefaultsAtTheDeclaredWarmup() throws {
+        let previous = LegacyLRScheduleKeys.previousDefaults
+        let converted = try LegacyLRScheduleKeys.converting(previous) { id in
+            TrainingParameters.allKeys.first { $0.id == id }?.definition.defaultValue
+        }
+        XCTAssertEqual(converted.values[LRCycleKeyframes.id], .lrKeyframes(LRCycleKeyframes.declaredDefault))
+    }
+
+    /// With none of the nine keys stored but another warmup stored, the
+    /// previous build ran its defaults at that warmup.
+    func test_aStoredWarmupAlone_convertsThePreviousDefaultsAtThatWarmup() throws {
+        let defaults = try makeTemporaryDefaults()
+        storeKeptCycleSettings(in: defaults, lrWarmupSteps: 500)
+        TrainingParameters.convertLegacyLRScheduleSettings(in: defaults)
+        let stored = try XCTUnwrap(storedKeyframes(defaults), "a stored warmup that isn't the declared one converts")
+        XCTAssertEqual(stored.keyframes.map(\.step), [0, 500, 1_000_500])
+        XCTAssertEqual(stored.keyframes.map(\.peak), LRCycleKeyframes.declaredDefault.keyframes.map(\.peak))
+
+        let atDeclared = try makeTemporaryDefaults()
+        storeKeptCycleSettings(in: atDeclared, lrWarmupSteps: LRWarmupSteps.declaredDefault)
+        TrainingParameters.convertLegacyLRScheduleSettings(in: atDeclared)
+        XCTAssertNil(atDeclared.object(forKey: LRCycleKeyframes.id), "the declared default already is that schedule")
+    }
+
+    /// Once checked, never again: a warmup changed later, in this build,
+    /// doesn't rewrite the keyframes as if the previous build had run it.
+    func test_theConversionRunsOnlyUntilItHasChecked() throws {
+        let defaults = try makeTemporaryDefaults()
+        storeKeptCycleSettings(in: defaults, lrWarmupSteps: LRWarmupSteps.declaredDefault)
+        TrainingParameters.convertLegacyLRScheduleSettings(in: defaults)
+        XCTAssertTrue(defaults.bool(forKey: TrainingParameters.legacyLRScheduleCheckDoneKey), "nothing to convert is a finished check")
+        TrainingParameters.store(.int(500), forKey: LRWarmupSteps.id, in: defaults)
+        TrainingParameters.convertLegacyLRScheduleSettings(in: defaults)
+        XCTAssertNil(defaults.object(forKey: LRCycleKeyframes.id), "a later warmup edit converts nothing")
+    }
+
+    func test_aWholeNumberStoredForARealKeyReadsAsThatNumber() throws {
+        let defaults = try makeTemporaryDefaults()
+        for (id, value) in Self.previousScheduleSettings {
+            defaults.set(value, forKey: id)
+        }
+        defaults.set(1, forKey: "lr_cycle_max")   // an Int, as `defaults write -int` stores it
+        storeKeptCycleSettings(in: defaults, lrWarmupSteps: 300)
+        TrainingParameters.convertLegacyLRScheduleSettings(in: defaults)
+        let stored = try XCTUnwrap(storedKeyframes(defaults))
+        XCTAssertEqual(stored.keyframes.first?.peak, 1.0)
+    }
+
+    /// An unusable stored entry was read as its default by the previous
+    /// build; it converts as that default and doesn't stop the others.
+    func test_unusableStoredPreviousEntries_convertAsThePreviousDefaults() throws {
+        let defaults = try makeTemporaryDefaults()
+        for (id, value) in Self.previousScheduleSettings {
+            defaults.set(value, forKey: id)
+        }
+        defaults.set(50.0, forKey: "lr_cycle_max")                    // outside the previous 1e-7...10
+        defaults.set("oops", forKey: "momentum_follow_end_high")      // wrong type
+        storeKeptCycleSettings(in: defaults, lrWarmupSteps: 300)
+        TrainingParameters.convertLegacyLRScheduleSettings(in: defaults)
+        let stored = try XCTUnwrap(storedKeyframes(defaults))
+        XCTAssertEqual(stored.keyframes.first?.peak, 0.1, "lr_cycle_max read as its previous default")
+        XCTAssertEqual(stored.keyframes.last?.momentumAtTrough, 0.95, "momentum_follow_end_high read as its previous default")
+        guard case .valid(let lrEnabled) = TrainingParameters.inspectStored(LRCycleEnabled.self, in: defaults) else {
+            return XCTFail("lr_cycle_enabled must still be stored")
+        }
+        XCTAssertTrue(lrEnabled, "the cycle the previous build ran stays on")
+    }
+
     func test_previousScheduleSettings_beside_storedKeyframes_areLeftAlone() throws {
         let defaults = try makeTemporaryDefaults()
         for (id, value) in Self.previousScheduleSettings {

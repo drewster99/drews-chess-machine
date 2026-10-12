@@ -67,6 +67,10 @@ struct LineageRecord: Codable, Equatable, Sendable {
     /// snapshot carries `lr_cycle_keyframes` (a list value) in place of the
     /// single-decay schedule's nine keys, which no older build can read; the
     /// bump makes an older build refuse the record instead of misreading it.
+    /// A record carried from an older one (a champion file, a derive, a
+    /// resume) keeps that record's snapshot word for word, nine old keys
+    /// included, so its hash still names it: a schema-5 record's snapshot
+    /// may hold either form, and every reader converts the old one.
     static let currentSchema = 5
     /// The oldest schema this build reads (owner decision O-23). Schema 1
     /// stays refused.

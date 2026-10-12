@@ -37,8 +37,11 @@ struct LRScheduleSample: Sendable, Equatable {
 
     /// Samples every step in `range` (no step is skipped, so no extreme is
     /// missed) into at most `bucketCount` buckets of equal width (the last may
-    /// be shorter). `isCancelled` is polled once per bucket, so an editor can
-    /// abandon a stale sampling when the draft changes.
+    /// be shorter). `isCancelled` is polled at each bucket and every
+    /// `cancellationCheckSteps` steps inside one, so an editor abandons a
+    /// stale sampling promptly however wide its buckets are.
+    static let cancellationCheckSteps = 65_536
+
     static func sample(steps range: ClosedRange<Int>, bucketCount: Int,
                        isCancelled: () -> Bool = { false },
                        valueAt: (Int) -> Point) -> LRScheduleSample? {
@@ -56,6 +59,7 @@ struct LRScheduleSample: Sendable, Equatable {
             var momMin = head.momentum, momMax = head.momentum, momLast = head.momentum
             if last > first {
                 for step in (first + 1)...last {
+                    if (step - first) % cancellationCheckSteps == 0, isCancelled() { return nil }
                     let p = valueAt(step)
                     lrMin = min(lrMin, p.learningRate)
                     lrMax = max(lrMax, p.learningRate)

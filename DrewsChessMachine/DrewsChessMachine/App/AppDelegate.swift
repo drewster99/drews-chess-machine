@@ -50,8 +50,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // shouldn't), .terminateNow lets AppKit finish teardown.
             return .terminateNow
         }
+        if EarlyStopCoordinator.shared.isQuitInProgress {
+            // A quit is already waiting on running games; its one deferred
+            // reply settles this request too.
+            SessionLogger.shared.log("[APP] quit requested again while one is pending; still finishing games")
+            return .terminateLater
+        }
         if let lichessBotController {
-            return lichessBotController.applicationShouldTerminate()
+            let reply = lichessBotController.applicationShouldTerminate()
+            if reply == .terminateLater {
+                EarlyStopCoordinator.shared.quitDeferred()
+            }
+            return reply
         }
         return .terminateNow
     }

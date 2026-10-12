@@ -897,10 +897,10 @@ struct SessionCheckpointState: Codable, Equatable {
     static func decode(_ data: Data) throws -> SessionCheckpointState {
         do {
             var state = try JSONDecoder().decode(SessionCheckpointState.self, from: data)
-            try state.convertLegacyLRSchedule()
             guard (1...Self.currentFormatVersion).contains(state.formatVersion) else {
                 throw SessionCheckpointError.unsupportedVersion(state.formatVersion)
             }
+            try state.convertLegacyLRSchedule()
             if state.formatVersion >= Self.lineageRequiredFromFormatVersion && state.lineage == nil {
                 throw SessionCheckpointError.missingLineage(formatVersion: state.formatVersion)
             }
@@ -1363,6 +1363,9 @@ extension SessionCheckpointState {
             throw SessionCheckpointError.legacyLRSchedule(detail: "both lrSchedule and the previous form (lrMomentumCycle)")
         }
         let warmup = lrWarmupSteps ?? TrainingParameters.persistedValue(LRWarmupSteps.self)
+        let warmupSource = lrWarmupSteps == nil
+            ? "warmup \(warmup) from the current setting (the session records none)"
+            : "warmup \(warmup) from the session"
         let converted: (cycle: LRMomentumCycle, notes: [String])
         do {
             converted = try LRMomentumCycle.converting(
@@ -1374,6 +1377,6 @@ extension SessionCheckpointState {
         lrMomentumCycle = nil
         lrMomentumCycleEnvelope = nil
         SessionLogger.shared.log("[RESUME] legacy LR schedule in session.json converted: "
-            + (converted.notes + [LRMomentumCycleLogFormat.keyframesDescription(converted.cycle.lrKeyframes)]).joined(separator: "; "))
+            + (converted.notes + [warmupSource, LRMomentumCycleLogFormat.keyframesDescription(converted.cycle.lrKeyframes)]).joined(separator: "; "))
     }
 }

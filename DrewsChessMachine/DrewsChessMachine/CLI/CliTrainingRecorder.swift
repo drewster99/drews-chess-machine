@@ -328,6 +328,11 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// AppDelegate's applicationShouldTerminate/applicationWillTerminate
         /// flush hooks. Same truncated-window semantics.
         case appWillTerminate = "app-will-terminate"
+        /// SIGTERM received during a GUI `--train` run (autotrain's
+        /// watchdog sends it when a run overruns). Flushed like the Quit
+        /// path, but labelled, so a cut-short run never reads as a Quit.
+        /// Same truncated-window semantics.
+        case sigtermReceived = "SIGTERM-received"
         /// A training-health alarm whose rule's action stops the run
         /// requested a stop (`TrainingHealthStopPolicy`); the command-line
         /// paths wrote their final save first and exit with status 35.

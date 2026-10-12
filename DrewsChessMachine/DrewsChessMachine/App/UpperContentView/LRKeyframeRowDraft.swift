@@ -78,8 +78,12 @@ struct LRKeyframeRowDraft: Identifiable, Equatable, Sendable {
         guard let last = rows.last else {
             return LRKeyframeRowDraft(keyframe: LRMomentumCycle.disabled.lrKeyframes.keyframes[0])
         }
-        let nextStep = (Int(last.step.trimmingCharacters(in: .whitespaces)) ?? 0) + max(1, periodSteps)
-        return LRKeyframeRowDraft(step: String(nextStep), peak: last.peak, trough: last.trough,
+        // A last step that isn't a usable step yet (still being typed, or
+        // past the latest allowed) is copied as it is: the table shows the
+        // problem on both rows rather than a step guessed from it.
+        let lastStep = Int(last.step.trimmingCharacters(in: .whitespaces))
+        let nextStep = lastStep.flatMap { $0 >= 0 && $0 <= LRKeyframeSchedule.maximumStep ? String($0 + max(1, periodSteps)) : nil }
+        return LRKeyframeRowDraft(step: nextStep ?? last.step, peak: last.peak, trough: last.trough,
                                   momentumAtPeak: last.momentumAtPeak, momentumAtTrough: last.momentumAtTrough)
     }
 }

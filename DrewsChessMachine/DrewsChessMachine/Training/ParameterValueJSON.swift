@@ -72,7 +72,7 @@ extension ParameterValue {
         }
         let converted = try LegacyLRScheduleKeys.converting(values, currentValue: currentValue)
         if !converted.notes.isEmpty {
-            SessionLogger.shared.log("[PARAM] legacy LR schedule keys converted: " + converted.notes.joined(separator: "; "))
+            LegacyLRScheduleKeys.logNote("[PARAM] legacy LR schedule keys converted: " + converted.notes.joined(separator: "; "))
         }
         return converted.values
     }

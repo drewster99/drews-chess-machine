@@ -14,6 +14,11 @@ import TrainingParametersMacroSupport
 /// the previous schedule's keys is converted as everywhere else). Never the
 /// machine's saved settings: the same command prints the same table anywhere.
 enum ShowLRScheduleCLI {
+    /// The largest step `--from` / `--to` take: twice the latest keyframe
+    /// step, past any schedule's last change, and small enough that a
+    /// range's width can't overflow.
+    static let maximumStep = 2 * LRKeyframeSchedule.maximumStep
+
     static let flag = "--show-lr-schedule"
 
     struct Options: Equatable {
@@ -60,7 +65,9 @@ enum ShowLRScheduleCLI {
         }
         func integer(after name: String) throws -> Int {
             let text = try value(after: name)
-            guard let n = Int(text), n >= 0 else { throw UsageError(errorDescription: "\(name) \(text) is not a whole number ≥ 0") }
+            guard let n = Int(text), n >= 0, n <= maximumStep else {
+                throw UsageError(errorDescription: "\(name) \(text) is not a whole number from 0 to \(maximumStep)")
+            }
             return n
         }
         while i < rawArgs.count {
@@ -111,6 +118,10 @@ enum ShowLRScheduleCLI {
         let lastKeyframe = cycle.lrKeyframes.keyframes.last?.step ?? 0
         let from = options.fromStep ?? 0
         let to = options.toStep ?? max(50_000, lastKeyframe + 2 * max(1, cycle.lrPeriodSteps))
+        guard from <= to else {
+            throw UsageError(errorDescription: "--from \(from) is after the range's end \(to)"
+                             + (options.toStep == nil ? " (the default end; give --to)" : ""))
+        }
         guard let sample = LRScheduleSample.sample(steps: from...to, bucketCount: options.bucketCount, valueAt: { step in
             let fed = LRMomentumCycleReadout.values(
                 completedTrainSteps: step, lrWarmupSteps: p.lrWarmupSteps, cycle: cycle,

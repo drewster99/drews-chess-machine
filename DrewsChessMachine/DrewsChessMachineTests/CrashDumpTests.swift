@@ -358,4 +358,31 @@ final class CrashDumpTests: XCTestCase {
         }
         XCTAssertTrue(folder.lastPathComponent.contains("-20261010-10-E9fy-step0-near-miss"), folder.lastPathComponent)
     }
+
+    /// The system-log and GPU-report windows start before the earliest
+    /// fault (a fault the timer poll found minutes late still has its
+    /// messages), never later than now's own window, and never more than
+    /// the maximum back.
+    func testTheForensicWindowStartsBeforeTheEarliestFault() {
+        let now = Date(timeIntervalSince1970: 1_791_700_000)
+        func fault(_ secondsAgo: TimeInterval) -> GPUFaultLedger.Fault {
+            GPUFaultLedger.Fault(sequence: 1, time: now.addingTimeInterval(-secondsAgo), source: .systemLog(message: "test fault"))
+        }
+        let lookBack = CrashDumpWriter.systemLogLookBackSeconds
+        XCTAssertEqual(CrashDumpWriter.forensicWindowStart(faults: [], now: now), now.addingTimeInterval(-lookBack))
+        XCTAssertEqual(CrashDumpWriter.forensicWindowStart(faults: [fault(150), fault(30)], now: now),
+                       now.addingTimeInterval(-150 - lookBack), "before the earliest fault")
+        XCTAssertEqual(CrashDumpWriter.forensicWindowStart(faults: [fault(-20)], now: now), now.addingTimeInterval(-lookBack),
+                       "a fault stamped after now (another clock) doesn't move the window later")
+        XCTAssertEqual(CrashDumpWriter.forensicWindowStart(faults: [fault(7_200)], now: now),
+                       now.addingTimeInterval(-CrashDumpWriter.systemLogMaximumLookBackSeconds), "bounded")
+    }
+
+    /// The flight recorder keeps a fault's summary window for as long as
+    /// the timer poll can take to find it, plus the query and the dump's
+    /// trainer-state reads.
+    func testTheFlightRecorderOutlastsAPollInterval() {
+        XCTAssertGreaterThanOrEqual(GPUFlightRecorder.retentionSeconds,
+                                    TimeInterval(GPUFaultMonitor.pollIntervalSeconds) + GPUFlightRecorder.summaryWindowSeconds + 60)
+    }
 }

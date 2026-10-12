@@ -24,8 +24,10 @@ import os
 /// `pollIntervalSeconds` on a utility queue, and at once when `requestPoll`
 /// is called (a failed or very slow checked submission, a near-miss
 /// gradient). This process's store ignores the start position it is given,
-/// so every query scans the process's whole log: seconds, growing with the
-/// process's age and how much it logs. It is never run on a training thread;
+/// so every query scans the process's whole log: seconds to tens of seconds
+/// (p50 5–11 s, peak 47 s over a 15 h corpus replay, 2026-10-12; already
+/// ≈ 8 s ten minutes in, so the date in the predicate filters while
+/// scanning rather than seeking). It is never run on a training thread;
 /// `checkNow()` runs one on the monitor's queue and is awaited only before
 /// actions that make state durable (saves, promotions).
 ///
@@ -227,8 +229,9 @@ final class GPUFaultMonitor: @unchecked Sendable {
     }
 
     /// Stops the background poll until the next `start()` — between GUI
-    /// runs, when no training is left to protect, so the ≈2 s query every
-    /// 10 s isn't spent for nothing. One closing poll runs
+    /// runs, when no training is left to protect, so the query every
+    /// `pollIntervalSeconds` (seconds to tens of seconds each) isn't spent
+    /// for nothing. One closing poll runs
     /// `closingPollDelaySeconds` later (unless a start comes first; its polls
     /// cover the same entries), so a fault macOS logged in the run's last
     /// seconds, after its last poll, is still logged and recorded. After it,

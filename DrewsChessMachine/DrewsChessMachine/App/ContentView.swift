@@ -158,7 +158,7 @@ struct ContentView: View {
     let provider = LichessBotSessionModelProvider()
     ContentView(
         commandHub: AppCommandHub(),
-        lichessBot: LichessBotController(modelProvider: provider),
+        lichessBot: LichessBotController(modelProvider: provider, services: .live),
         lichessBotProvider: provider,
         autoTrainOnLaunch: false,
         autoPlayChessOnLaunch: false,

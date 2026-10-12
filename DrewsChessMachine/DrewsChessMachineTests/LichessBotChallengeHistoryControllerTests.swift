@@ -25,7 +25,8 @@ final class LichessBotChallengeHistoryControllerTests: XCTestCase {
         let controller = LichessBotController(
             modelProvider: try await LichessBotFakeModelProvider.randomChampion(),
             defaults: defaults,
-            dataDirectory: directory
+            dataDirectory: directory,
+            services: LichessBotControllerServices(openBotWindow: { _ in }, makeTransport: { LichessBotFakeLichess() }, readToken: { _ in nil })
         )
         addTeardownBlock { @MainActor in
             await controller.shutdown(reason: "test teardown")

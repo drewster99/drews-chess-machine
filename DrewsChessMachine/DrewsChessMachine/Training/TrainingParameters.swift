@@ -1227,7 +1227,7 @@ public enum LRCycleCount: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "LR Cycle Keyframes",
-    description: "The LR cycle's peak and trough over the run, as keyframes: each sets, at a trainer step, the peak and trough LR the cycle swings between and — when momentum follows the LR cycle — the momentum at the LR peak and at the LR trough. Between keyframes the LR bounds move geometrically and the momentum bounds linearly; after the last keyframe they hold. The first keyframe is at step 0; steps strictly increase; at most 64. Each trough > 0, peak ≥ trough, peak ≤ 10; momentum 0…0.99 with momentum at the peak ≤ momentum at the trough. A trough below 1e-4 barely moves the bf16 working weights (documentation/plans-active/LR_KEYFRAMES_PLAN.md).",
+    description: "The LR cycle's peak and trough over the run, as keyframes: each sets, at a trainer step, the peak and trough LR the cycle swings between and — when momentum follows the LR cycle — the momentum at the LR peak and at the LR trough. Between keyframes the LR bounds move geometrically and the momentum bounds linearly; after the last keyframe they hold. The first keyframe is at step 0; steps strictly increase, none past 2,000,000,000; at most 64. Each trough > 0, peak ≥ trough, peak ≤ 10; momentum 0…0.99 with momentum at the peak ≤ momentum at the trough. A trough below 1e-4 barely moves the bf16 working weights (documentation/plans-active/LR_KEYFRAMES_PLAN.md).",
     default: LRKeyframeSchedule(keyframes: [
         LRKeyframe(step: 0, peak: 0.1, trough: 0.001, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
         LRKeyframe(step: 1000, peak: 0.1, trough: 0.001, momentumAtPeak: 0.85, momentumAtTrough: 0.95),
@@ -2530,6 +2530,10 @@ public final class TrainingParameters {
     /// the result stored, so the GUI keeps the schedule it was configured
     /// with instead of resetting to the defaults. The old entries are read
     /// and left in place, never deleted.
+    /// Set once the stored settings were checked for the previous
+    /// schedule's form (converted, or nothing to convert); not a parameter.
+    nonisolated static let legacyLRScheduleCheckDoneKey = "lr_cycle_keyframes_legacy_settings_checked"
+
     private nonisolated static let legacyLRScheduleSettingsConverted: Void = {
         convertLegacyLRScheduleSettings(in: .standard)
     }()
@@ -2537,22 +2541,48 @@ public final class TrainingParameters {
     /// The conversion `legacyLRScheduleSettingsConverted` runs, on any
     /// defaults (tests use a private suite). Reads kept keys straight from
     /// `defaults` through `inspectStored` (never `read`, which would re-enter
-    /// the once-only conversion). A stored value the conversion cannot use is
-    /// logged and nothing is written: the GUI then shows the declared
-    /// default, as for any unusable stored setting.
+    /// the once-only conversion). A removed key's stored entry is read as
+    /// the previous build read it (`previousStoredValue`: an unusable one
+    /// stands for its previous default). With none of the nine stored, the
+    /// previous build ran their defaults with the stored warmup; that is the
+    /// declared keyframe default only at the declared warmup, so another
+    /// stored warmup converts the previous defaults too. A conversion that
+    /// fails is logged and nothing is written: the GUI then shows the
+    /// declared default, as for any unusable stored setting.
+    ///
+    /// It runs until it has converted or found nothing to convert once, then
+    /// never again (`legacyLRScheduleCheckDoneKey`): after that, stored
+    /// settings come from this build, and a warmup changed here must not
+    /// rewrite the keyframes as if the previous build had run it.
     nonisolated static func convertLegacyLRScheduleSettings(in defaults: UserDefaults) {
-        guard defaults.object(forKey: LRCycleKeyframes.id) == nil else { return }
+        guard !defaults.bool(forKey: legacyLRScheduleCheckDoneKey) else { return }
+        guard defaults.object(forKey: LRCycleKeyframes.id) == nil else {
+            defaults.set(true, forKey: legacyLRScheduleCheckDoneKey)
+            return
+        }
         var values: [String: ParameterValue] = [:]
+        var replacements: [String] = []
         for id in LegacyLRScheduleKeys.removedIDs {
             guard let object = defaults.object(forKey: id) else { continue }
             do {
-                values[id] = try ParameterValue(jsonValue: object, id: id)
+                let read = try LegacyLRScheduleKeys.previousStoredValue(id, object: object)
+                values[id] = read.value
+                if let reason = read.replacedBecause { replacements.append(reason) }
             } catch {
-                SessionLogger.shared.log("[PARAM] legacy LR schedule settings not converted: \(id) holds \(object) (\(error))")
+                LegacyLRScheduleKeys.logNote("[PARAM] legacy LR schedule settings not converted: \(error)")
                 return
             }
         }
-        guard !values.isEmpty else { return }
+        if values.isEmpty {
+            guard case .valid(let warmup) = inspectStored(LRWarmupSteps.self, in: defaults),
+                  warmup != LRWarmupSteps.declaredDefault else {
+                defaults.set(true, forKey: legacyLRScheduleCheckDoneKey)
+                return
+            }
+            values = LegacyLRScheduleKeys.previousDefaults
+            replacements.append("none of the previous schedule's keys is stored, and \(LRWarmupSteps.id) is \(warmup): "
+                                + "the previous defaults converted at that warmup")
+        }
         func stored<K: TrainingParameterKey>(_ key: K.Type) -> ParameterValue {
             switch inspectStored(key, in: defaults) {
             case .valid(let value): return K.encode(value)
@@ -2570,16 +2600,20 @@ public final class TrainingParameters {
         ]
         do {
             let converted = try LegacyLRScheduleKeys.converting(values, currentValue: { kept[$0] })
-            guard let keyframes = converted.values[LRCycleKeyframes.id] else { return }
+            guard let keyframes = converted.values[LRCycleKeyframes.id] else {
+                defaults.set(true, forKey: legacyLRScheduleCheckDoneKey)
+                return
+            }
             try LRCycleKeyframes.definition.validate(keyframes)
             store(keyframes, forKey: LRCycleKeyframes.id, in: defaults)
+            defaults.set(true, forKey: legacyLRScheduleCheckDoneKey)
             for id in [LRCycleEnabled.id, MomentumCycleEnabled.id] {
                 if let value = converted.values[id] { store(value, forKey: id, in: defaults) }
             }
-            SessionLogger.shared.log("[PARAM] legacy LR schedule settings converted: " + converted.notes.joined(separator: "; ")
-                + " (the old entries are left in place)")
+            LegacyLRScheduleKeys.logNote("[PARAM] legacy LR schedule settings converted: "
+                + (replacements + converted.notes).joined(separator: "; ") + " (the old entries are left in place)")
         } catch {
-            SessionLogger.shared.log("[PARAM] legacy LR schedule settings not converted: \(error)")
+            LegacyLRScheduleKeys.logNote("[PARAM] legacy LR schedule settings not converted: \(error)")
         }
     }
 

@@ -98,6 +98,8 @@ final class LRKeyframeScheduleTests: XCTestCase {
             ("unsorted", [good, keyframe(10, 0.1, 0.01), keyframe(5, 0.1, 0.01)],
              .stepsNotIncreasing(index: 2, step: 5, previous: 10)),
             ("duplicate", [good, keyframe(0, 0.1, 0.01)], .stepsNotIncreasing(index: 1, step: 0, previous: 0)),
+            ("step too large", [good, keyframe(LRKeyframeSchedule.maximumStep + 1, 0.1, 0.01)],
+             .stepTooLarge(index: 1, step: LRKeyframeSchedule.maximumStep + 1, maximum: LRKeyframeSchedule.maximumStep)),
             ("non-finite", [keyframe(0, .nan, 0.01)], .notFinite(index: 0, field: "peak")),
             ("trough 0", [keyframe(0, 0.1, 0)], .troughNotPositive(index: 0, trough: 0)),
             ("peak < trough", [keyframe(0, 0.001, 0.01)], .peakBelowTrough(index: 0, peak: 0.001, trough: 0.01)),
@@ -258,6 +260,44 @@ final class LRKeyframeScheduleTests: XCTestCase {
         XCTAssertFalse(cycle.momentumEnabled)
         XCTAssertFalse(notes.isEmpty)
         try assertBitIdentical(legacy, through: 100_000, "follow inverted throughout")
+    }
+
+    /// With no decay the start bounds hold at every step, so an inverted
+    /// start pair is inverted throughout (the previous code fed static
+    /// momentum): it converts, not refuses.
+    func testNoDecayWithInvertedStartFollowBoundsConvertsAsMomentumOff() throws {
+        var legacy = rReplay
+        legacy.decayHorizonSteps = 0
+        legacy.momentumFollowStartLow = 0.95
+        legacy.momentumFollowStartHigh = 0.85
+        let (cycle, notes) = try LRMomentumCycle.converting(legacy)
+        XCTAssertFalse(cycle.momentumEnabled)
+        XCTAssertFalse(notes.isEmpty)
+        try assertBitIdentical(legacy, through: 100_000, "no decay, inverted start")
+    }
+
+    /// The keyframes' momentum pairs are read only by following momentum;
+    /// otherwise a difference in them is no difference in behavior (Q-5).
+    func testBehaviorFormIgnoresMomentumPairsFollowingDoesNotRead() throws {
+        let a = try LRMomentumCycle.converting(rReplay).cycle
+        var b = a
+        b.lrKeyframes = LRKeyframeSchedule(keyframes: a.lrKeyframes.keyframes.map {
+            LRKeyframe(step: $0.step, peak: $0.peak, trough: $0.trough, momentumAtPeak: 0.5, momentumAtTrough: 0.6)
+        })
+        XCTAssertNotEqual(a.behaviorForm, b.behaviorForm, "following reads the pairs")
+        var independentA = a, independentB = b
+        independentA.momentumFollowsLRCycle = false
+        independentB.momentumFollowsLRCycle = false
+        XCTAssertEqual(independentA.behaviorForm, independentB.behaviorForm, "an independent momentum cycle doesn't")
+        var offA = a, offB = b
+        offA.momentumEnabled = false
+        offB.momentumEnabled = false
+        XCTAssertEqual(offA.behaviorForm, offB.behaviorForm, "momentum cycling off doesn't")
+        var lrChanged = independentB
+        lrChanged.lrKeyframes = LRKeyframeSchedule(keyframes: b.lrKeyframes.keyframes.map {
+            LRKeyframe(step: $0.step, peak: $0.peak * 2, trough: $0.trough, momentumAtPeak: 0.5, momentumAtTrough: 0.6)
+        })
+        XCTAssertNotEqual(independentA.behaviorForm, lrChanged.behaviorForm, "the LR bounds still count")
     }
 
     func testFollowBoundsInvertedOnPartOfTheRunAreRefused() {

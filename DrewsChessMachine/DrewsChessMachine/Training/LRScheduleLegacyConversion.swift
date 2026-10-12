@@ -99,11 +99,15 @@ extension LRMomentumCycle {
         }
         let followDrivesMomentum = momentumEnabled && legacy.momentumFollowsLRCycle
             && lrEnabled && legacy.lrPeriodSteps > 0
+        // With no decay (h == 0) the start bounds hold at every step, so an
+        // inverted start pair is inverted throughout whatever the end pair.
+        let invertedThroughout = !startOrdered
+            && (h == 0 || legacy.momentumFollowEndHigh < legacy.momentumFollowEndLow)
         if followDrivesMomentum && !followValid {
-            if followValuesInRange && !startOrdered && !endOrdered {
-                // Inverted at the start and at the end; the bounds move
-                // linearly between, so inverted at every step: the old code
-                // fed the static momentum throughout.
+            if followValuesInRange && invertedThroughout {
+                // Inverted at the start and at the end (or with no decay);
+                // the bounds move linearly between, so inverted at every
+                // step: the old code fed the static momentum throughout.
                 momentumEnabled = false
                 notes.append("momentum following was inactive (bounds inverted at every step); converted as momentum cycling disabled")
             } else if followValuesInRange {
@@ -255,6 +259,50 @@ enum LegacyLRScheduleKeys {
         momentumFollowStartLow: .double(0.85), momentumFollowStartHigh: .double(0.95),
         momentumFollowEndLow: .double(0.90), momentumFollowEndHigh: .double(0.95),
     ]
+
+    /// The previous declarations' ranges (integer ranges as doubles), used
+    /// to read the GUI's stored entries the way the previous build did.
+    static let previousRanges: [String: ClosedRange<Double>] = [
+        lrCycleMin: 1.0e-7...1.0, lrCycleMax: 1.0e-7...10.0, lrCyclePeakEnd: 1.0e-7...1.0,
+        lrCycleTroughEnd: 1.0e-7...1.0, lrCycleDecayHorizonSteps: 0...1_000_000_000,
+        momentumFollowStartLow: 0.0...0.99, momentumFollowStartHigh: 0.0...0.99,
+        momentumFollowEndLow: 0.0...0.99, momentumFollowEndHigh: 0.0...0.99,
+    ]
+
+    /// A stored entry of a removed key as the previous build read it: an
+    /// entry of the declared type inside the declared range is its value;
+    /// any other was replaced by the previous default (the previous
+    /// `read`), so it converts as that default, with the reason.
+    static func previousStoredValue(_ id: String, object: Any) throws -> (value: ParameterValue, replacedBecause: String?) {
+        guard let previousDefault = previousDefaults[id], let range = previousRanges[id] else {
+            throw TrainingConfigError.invalidValue(id: id, reason: "not one of the previous LR schedule keys")
+        }
+        let parsed: ParameterValue
+        do {
+            parsed = try ParameterValue(jsonValue: object, id: id)
+        } catch {
+            return (previousDefault, "\(id) held \(object) (\(error)), so the previous build read its default")
+        }
+        let number: Double?
+        switch (previousDefault, parsed) {
+        case (.double, .double(let value)): number = value
+        case (.double, .int(let value)): number = Double(value)   // a whole number for a real key, as the previous read took it
+        case (.int, .int(let value)): number = Double(value)
+        default: number = nil
+        }
+        guard let number, number.isFinite, range.contains(number) else {
+            return (previousDefault, "\(id) held \(object), not a value in the previous range \(range), so the previous build read its default")
+        }
+        return (parsed, nil)
+    }
+
+    /// Writes a conversion note to the session log and to stderr: the
+    /// conversions can run before a CLI path starts its session log (which
+    /// drops earlier lines), and the stored-settings one runs only once.
+    static func logNote(_ line: String) {
+        SessionLogger.shared.log(line)
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+    }
 
     /// The current persisted value of a kept parameter, as a `ParameterValue`:
     /// what a partial `parameters.json` leaves a key at. Only the kept keys

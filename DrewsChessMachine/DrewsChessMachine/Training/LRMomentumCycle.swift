@@ -241,7 +241,17 @@ struct LRMomentumCycle: Sendable, Equatable {
             form.lrPeriodSteps = lrPeriodSteps
             form.lrCount = lrCount
             form.lrInvert = lrInvert
-            form.lrKeyframes = lrKeyframes
+            if momentumEnabled && momentumFollowsLRCycle {
+                form.lrKeyframes = lrKeyframes
+            } else {
+                // The keyframes' momentum pairs are read only by following
+                // momentum; otherwise they are inert and must not count.
+                let inert = LRMomentumCycle.disabled.lrKeyframes.keyframes[0]
+                form.lrKeyframes = LRKeyframeSchedule(keyframes: lrKeyframes.keyframes.map {
+                    LRKeyframe(step: $0.step, peak: $0.peak, trough: $0.trough,
+                               momentumAtPeak: inert.momentumAtPeak, momentumAtTrough: inert.momentumAtTrough)
+                })
+            }
         }
         if momentumEnabled {
             if momentumFollowsLRCycle {

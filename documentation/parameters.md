@@ -410,7 +410,7 @@ Measure KL(policy before the SGD step || policy after) on the training minibatch
 
 ### lr_cycle_enabled
 
-Enable the repeating learning-rate cycle. When on, the base LR each step is set by the cycle (geometric interpolation between LR Cycle Min and Max over LR Cycle Period Steps) instead of the static Learning Rate, then composed with the √batch multiplier. The cycle begins when LR warmup ends; during warmup the LR ramps linearly up to the cycle's starting value. Overrides the static base-LR schedule while enabled.
+Enable the repeating learning-rate cycle. When on, the base LR each step is set by the cycle (geometric interpolation between the trough and peak that LR Cycle Keyframes set, over LR Cycle Period Steps) instead of the static Learning Rate, then composed with the √batch multiplier. The cycle begins when LR warmup ends; during warmup the LR ramps linearly up to the cycle's starting value. Overrides the static base-LR schedule while enabled.
 
 **Type:** Bool · **Range:** — · **Default:** true · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
@@ -422,21 +422,15 @@ Full up-then-down period of the LR cycle, in optimizer steps. A sensible default
 
 ### lr_cycle_count
 
-Number of LR cycles (counted from the end of warmup) to run before freezing at the cycle boundary (LR Cycle Min, or Max when inverted). 0 = unbounded (repeat forever), the default for open-ended self-play.
+Number of LR cycles (counted from the end of warmup) to run before freezing at the cycle boundary (the trough, or the peak when inverted). 0 = unbounded (repeat forever), the default for open-ended self-play.
 
 **Type:** Int · **Range:** 0..1000000 · **Default:** 0 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
-### lr_cycle_min
+### lr_cycle_keyframes
 
-Absolute learning rate at the LR cycle's trough (the period boundaries when not inverted) at the start of the decay horizon — the trough's start value. The trough decays geometrically from here to LR Cycle Trough End over LR Cycle Decay Horizon. Must be > 0 — geometric interpolation is undefined at zero, and LR Cycle Max must be ≥ this value or the cycle is ignored.
+The LR cycle's peak and trough over the run, as keyframes: each sets, at a trainer step, the peak and trough LR the cycle swings between and — when momentum follows the LR cycle — the momentum at the LR peak and at the LR trough. Between keyframes the LR bounds move geometrically and the momentum bounds linearly; after the last keyframe they hold. The first keyframe is at step 0; steps strictly increase, none past 2,000,000,000; at most 64. Each trough > 0, peak ≥ trough, peak ≤ 10; momentum 0…0.99 with momentum at the peak ≤ momentum at the trough. A trough below 1e-4 barely moves the bf16 working weights (documentation/plans-active/LR_KEYFRAMES_PLAN.md).
 
-**Type:** Double · **Range:** 1e-07..1.0 · **Default:** 0.001 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
-
-### lr_cycle_max
-
-Absolute learning rate at the LR cycle's peak (the period midpoint when not inverted) at the start of the decay horizon — the peak's start value. The peak decays geometrically from here to LR Cycle Peak End over LR Cycle Decay Horizon. Must be ≥ LR Cycle Min.
-
-**Type:** Double · **Range:** 1e-07..10.0 · **Default:** 0.1 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Keyframe list (array of {step, peak, trough, momentum_at_peak, momentum_at_trough}) · **Range:** first step 0, steps increasing, ≤ 64 keyframes; 0 < trough ≤ peak ≤ 10.0; momentum 0…0.99, at peak ≤ at trough · **Default:** [0:0.1/0.001 m0.85/0.95, 1000:0.1/0.001 m0.85/0.95, 1001000:0.0001/1e-06 m0.9/0.95] · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### lr_cycle_invert
 
@@ -480,53 +474,11 @@ Flip the momentum waveform so it starts at Momentum Cycle Max and dips to Min at
 
 **Type:** Bool · **Range:** — · **Default:** false · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
-### lr_cycle_peak_end
-
-LR cycle peak at the end of the decay horizon, and held there afterwards. The peak decays geometrically from LR Cycle Max to this value across LR Cycle Decay Horizon. Must be > 0 and ≥ LR Cycle Trough End. Ignored when the horizon is 0.
-
-**Type:** Double · **Range:** 1e-07..1.0 · **Default:** 0.0001 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
-
-### lr_cycle_trough_end
-
-LR cycle trough at the end of the decay horizon, and held there afterwards. The trough decays geometrically from LR Cycle Min to this value across LR Cycle Decay Horizon. Must be > 0 and ≤ LR Cycle Peak End. Ignored when the horizon is 0.
-
-**Type:** Double · **Range:** 1e-07..1.0 · **Default:** 1e-06 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
-
-### lr_cycle_decay_horizon_steps
-
-Number of cycle steps (counted from the end of LR warmup) over which the LR cycle's peak and trough decay from their start values (LR Cycle Max / Min) to their end values, and over which follow-mode momentum bounds drift from start to end. After the horizon the envelope holds at the end values and cycling continues. 0 = no decay (the envelope stays at its start values).
-
-**Type:** Int · **Range:** 0..1000000000 · **Default:** 1000000 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
-
 ### momentum_follows_lr_cycle
 
-When on (and momentum cycling is enabled), momentum uses the LR cycle's period and phase, inverted: lowest at the LR peak, highest at the LR trough. Its low and high bounds move linearly from the Follow Start values to the Follow End values over LR Cycle Decay Horizon. The separate momentum cycle's period, count, min, max and invert settings are then ignored. Requires the LR cycle to be enabled; otherwise the static momentum coefficient applies.
+When on (and momentum cycling is enabled), momentum uses the LR cycle's period and phase, inverted: lowest at the LR peak, highest at the LR trough. Its low and high bounds are the keyframes' momentum at the LR peak and at the LR trough. The separate momentum cycle's period, count, min, max and invert settings are then ignored. Requires the LR cycle to be enabled; otherwise the static momentum coefficient applies.
 
 **Type:** Bool · **Range:** — · **Default:** true · **Live-tunable** (mid-session UI changes propagate to the running trainer)
-
-### momentum_follow_start_low
-
-Follow-mode momentum at the LR peak, at the start of the decay horizon. Must be ≤ Momentum Follow Start High.
-
-**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.85 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
-
-### momentum_follow_start_high
-
-Follow-mode momentum at the LR trough, at the start of the decay horizon.
-
-**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.95 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
-
-### momentum_follow_end_low
-
-Follow-mode momentum at the LR peak, at and after the end of the decay horizon. Must be ≤ Momentum Follow End High.
-
-**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.9 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
-
-### momentum_follow_end_high
-
-Follow-mode momentum at the LR trough, at and after the end of the decay horizon.
-
-**Type:** Double · **Range:** 0.0..0.99 · **Default:** 0.95 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ## Sessions
 

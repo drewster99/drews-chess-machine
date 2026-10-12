@@ -129,9 +129,15 @@ APP_PID=$!
     done
 ) &
 
+# The watchdog leaves this marker when it fires: a SIGTERM'd run now
+# flushes a valid result.json (termination_reason "SIGTERM-received") and
+# exits 0, so the exit status alone no longer shows the run was cut short.
+WATCHDOG_MARKER="$(mktemp -t dcm-watchdog)" || { echo "$PROG: cannot create the watchdog marker" >&2; exit 6; }
+rm -f "$WATCHDOG_MARKER"
 (
     sleep "$WATCHDOG"
     if kill -0 "$APP_PID" 2>/dev/null; then
+        : >"$WATCHDOG_MARKER"
         echo "$PROG: watchdog firing after ${WATCHDOG}s, sending SIGTERM" >>"$LOG_FILE"
         kill -TERM "$APP_PID" 2>/dev/null
         sleep 10
@@ -149,6 +155,12 @@ APP_EXIT=$?
 # Watchdog is no longer needed.
 kill "$WATCHDOG_PID" 2>/dev/null
 wait "$WATCHDOG_PID" 2>/dev/null
+
+if [ -e "$WATCHDOG_MARKER" ]; then
+    rm -f "$WATCHDOG_MARKER"
+    echo "$PROG: the watchdog stopped the run after ${WATCHDOG}s (app status $APP_EXIT)" >&2
+    exit 6
+fi
 
 # Exit code 11 = early-bail on legal-mass collapse. The app writes a
 # valid result.json with termination_reason="legal_mass_collapse" before

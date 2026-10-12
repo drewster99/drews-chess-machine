@@ -89,7 +89,7 @@ struct DrewsChessMachineApp: App {
     init() {
         let lichessBotProvider = LichessBotSessionModelProvider()
         _lichessBotProvider = State(initialValue: lichessBotProvider)
-        _lichessBot = State(initialValue: LichessBotController(modelProvider: lichessBotProvider))
+        _lichessBot = State(initialValue: LichessBotController(modelProvider: lichessBotProvider, services: .live))
 
         // Parse launch-time CLI flags before any logging so the
         // [APP] banner can record whether auto-train mode is on

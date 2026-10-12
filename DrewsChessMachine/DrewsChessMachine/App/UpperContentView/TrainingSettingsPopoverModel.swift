@@ -39,10 +39,10 @@ final class TrainingSettingsPopoverModel {
 
     // MARK: - Optimizer tab
 
-    var lrText = "" { didSet { lrError = false } }
+    var lrText = "" { didSet { lrError = false; refreshScheduleChartInput() } }
     var warmupText = "" { didSet { warmupError = false; refreshScheduleChartInput() } }
-    var momentumText = "" { didSet { momentumError = false } }
-    var sqrtBatchScalingValue = true
+    var momentumText = "" { didSet { momentumError = false; refreshScheduleChartInput() } }
+    var sqrtBatchScalingValue = true { didSet { refreshScheduleChartInput() } }
     var signedAdvantageComplementCEValue = true
     var entropyText = "" { didSet { entropyError = false } }
     var illegalMassWeightText = "" { didSet { illegalMassWeightError = false } }
@@ -71,7 +71,7 @@ final class TrainingSettingsPopoverModel {
     var policyLabelSmoothingPerMoveText = "" { didSet { policyLabelSmoothingPerMoveError = false } }
     var policyLabelSmoothingPerMoveCapText = "" { didSet { policyLabelSmoothingPerMoveCapError = false } }
     var drawPenaltyText = "" { didSet { drawPenaltyError = false } }
-    var trainingBatchSizeText = "" { didSet { trainingBatchSizeError = false } }
+    var trainingBatchSizeText = "" { didSet { trainingBatchSizeError = false; refreshScheduleChartInput() } }
 
     private(set) var lrError = false
     private(set) var warmupError = false
@@ -109,11 +109,11 @@ final class TrainingSettingsPopoverModel {
     var lrCycleCountText = "" { didSet { lrCycleCountError = false; refreshScheduleChartInput() } }
     var lrCycleInvertValue = false { didSet { refreshScheduleChartInput() } }
     var momentumCycleEnabledValue = false { didSet { refreshScheduleChartInput() } }
-    var momentumCycleMinText = "" { didSet { momentumCycleMinError = false } }
-    var momentumCycleMaxText = "" { didSet { momentumCycleMaxError = false } }
-    var momentumCyclePeriodText = "" { didSet { momentumCyclePeriodError = false } }
-    var momentumCycleCountText = "" { didSet { momentumCycleCountError = false } }
-    var momentumCycleInvertValue = true
+    var momentumCycleMinText = "" { didSet { momentumCycleMinError = false; refreshScheduleChartInput() } }
+    var momentumCycleMaxText = "" { didSet { momentumCycleMaxError = false; refreshScheduleChartInput() } }
+    var momentumCyclePeriodText = "" { didSet { momentumCyclePeriodError = false; refreshScheduleChartInput() } }
+    var momentumCycleCountText = "" { didSet { momentumCycleCountError = false; refreshScheduleChartInput() } }
+    var momentumCycleInvertValue = true { didSet { refreshScheduleChartInput() } }
     var momentumFollowsLRCycleValue = true { didSet { refreshScheduleChartInput() } }
     /// The LR keyframes being edited, one text row per keyframe
     /// (`LRKeyframeTable`). Parsed and validated as one schedule on Save.
@@ -480,24 +480,30 @@ final class TrainingSettingsPopoverModel {
             scheduleChartInput = nil
             return
         }
-        func draftInt<K: TrainingParameterKey>(_ key: K.Type, _ text: String, saved: Int) -> Int where K.Value == Int {
-            K.parsedInDeclaredRange(text) ?? saved
-        }
+        // Each field's draft: the saved value while untouched or while its
+        // text doesn't parse into the declared range (`editedValue`).
         let cycle = LRMomentumCycle(
             lrEnabled: lrCycleEnabledValue,
-            lrPeriodSteps: draftInt(LRCyclePeriodSteps.self, lrCyclePeriodText, saved: p.lrCyclePeriodSteps),
-            lrCount: draftInt(LRCycleCount.self, lrCycleCountText, saved: p.lrCycleCount),
+            lrPeriodSteps: editedValue(LRCyclePeriodSteps.self, \.lrCyclePeriodText, current: p.lrCyclePeriodSteps) ?? p.lrCyclePeriodSteps,
+            lrCount: editedValue(LRCycleCount.self, \.lrCycleCountText, current: p.lrCycleCount) ?? p.lrCycleCount,
             lrInvert: lrCycleInvertValue,
             lrKeyframes: keyframes,
             momentumEnabled: momentumCycleEnabledValue,
-            momentumPeriodSteps: p.momentumCyclePeriodSteps, momentumCount: p.momentumCycleCount,
-            momentumMin: p.momentumCycleMin, momentumMax: p.momentumCycleMax, momentumInvert: p.momentumCycleInvert,
+            momentumPeriodSteps: editedValue(MomentumCyclePeriodSteps.self, \.momentumCyclePeriodText,
+                                             current: p.momentumCyclePeriodSteps) ?? p.momentumCyclePeriodSteps,
+            momentumCount: editedValue(MomentumCycleCount.self, \.momentumCycleCountText, current: p.momentumCycleCount) ?? p.momentumCycleCount,
+            momentumMin: editedValue(MomentumCycleMin.self, \.momentumCycleMinText, current: p.momentumCycleMin) ?? p.momentumCycleMin,
+            momentumMax: editedValue(MomentumCycleMax.self, \.momentumCycleMaxText, current: p.momentumCycleMax) ?? p.momentumCycleMax,
+            momentumInvert: momentumCycleInvertValue,
             momentumFollowsLRCycle: momentumFollowsLRCycleValue)
+        let learningRate = editedValue(LearningRate.self, \.lrText, current: p.learningRate) ?? p.learningRate
+        let momentum = editedValue(MomentumCoeff.self, \.momentumText, current: p.momentumCoeff) ?? p.momentumCoeff
         scheduleChartInput = LRScheduleChartInput(
             cycle: cycle,
-            lrWarmupSteps: draftInt(LRWarmupSteps.self, warmupText, saved: p.lrWarmupSteps),
-            staticLearningRate: Float(p.learningRate), staticMomentum: Float(p.momentumCoeff),
-            batchSize: p.trainingBatchSize, sqrtBatchScaling: p.sqrtBatchScalingLR)
+            lrWarmupSteps: editedValue(LRWarmupSteps.self, \.warmupText, current: p.lrWarmupSteps) ?? p.lrWarmupSteps,
+            staticLearningRate: Float(learningRate), staticMomentum: Float(momentum),
+            batchSize: editedValue(TrainingBatchSize.self, \.trainingBatchSizeText, current: p.trainingBatchSize) ?? p.trainingBatchSize,
+            sqrtBatchScaling: sqrtBatchScalingValue)
     }
 
     func seedFromParams() {
@@ -608,6 +614,10 @@ final class TrainingSettingsPopoverModel {
         originalDrawWatchTerminateGames = p.drawWatchTerminateGames
         originalDrawWatchStreakLength = p.drawWatchStreakLength
         seededText = Dictionary(uniqueKeysWithValues: Self.seededTextFields.map { ($0, self[keyPath: $0]) })
+        // The fields' didSets above ran before the seeded texts were
+        // recorded, so the chart read the formatted text; now each field
+        // reads as untouched and the chart takes the exact saved values.
+        refreshScheduleChartInput()
         // Reset every error flag — a fresh open should never carry red overlays
         // from a previously-cancelled bad input.
         lrError = false

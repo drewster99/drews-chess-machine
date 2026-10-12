@@ -129,11 +129,17 @@ struct GPUSubmissionRecord: Sendable, Equatable, Encodable {
 final class GPUFlightRecorder: @unchecked Sendable {
     static let shared = GPUFlightRecorder()
 
-    /// Finished submissions older than this are dropped.
-    static let retentionSeconds: TimeInterval = 120
+    /// Finished submissions older than this are dropped. A fault only the
+    /// monitor's timer poll finds is recorded up to one poll interval plus
+    /// the query time (seconds to tens of seconds) after it happened, and a
+    /// crash dump reads the history after its trainer-state reads (up to
+    /// 60 s): the history must still hold the fault's summary window then.
+    static let retentionSeconds: TimeInterval = TimeInterval(GPUFaultMonitor.pollIntervalSeconds) + summaryWindowSeconds + 180
     /// Hard bound on the history; the oldest records go first, running or
     /// not (a submission that never finishes must not grow it forever).
-    static let capacity = 20_000
+    /// Self-play and training together submit about 50 a second, so this
+    /// covers `retentionSeconds` with room to spare (≈ 100–150 B a record).
+    static let capacity = 60_000
     /// Submissions running in this span before a fault are listed one by one.
     static let accountWindowSeconds: TimeInterval = 2
     /// Most submissions listed one by one per fault; the rest are counted.

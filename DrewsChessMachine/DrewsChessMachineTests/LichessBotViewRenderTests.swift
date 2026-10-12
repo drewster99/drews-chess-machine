@@ -117,7 +117,9 @@ final class LichessBotViewRenderTests: XCTestCase {
 
     /// A finished game against a long-named opponent, with `winner` the
     /// side Lichess reports (nil for a draw).
-    private func makeFinishedGame(opponent: String, winner: String?) throws -> LichessBotLiveGame {
+    /// `leftUnfinished`: the session ends mid-game (`markSessionEnded`), as
+    /// when the bot goes offline, instead of a final game state.
+    private func makeFinishedGame(opponent: String, winner: String?, leftUnfinished: Bool = false) throws -> LichessBotLiveGame {
         let game = LichessBotLiveGame(id: "fin12345", startedAt: Date(), ourAccountID: "drewschessmachine")
         let status = winner == nil ? "draw" : "mate"
         let winnerField = winner.map { #","winner":"\#($0)""# } ?? ""
@@ -129,6 +131,10 @@ final class LichessBotViewRenderTests: XCTestCase {
         game.apply(.streamOpened(attempt: 0))
         game.apply(.streamLine(full, receivedAt: Date()))
         game.apply(.gameInfo(decoded, ourColor: .white))
+        if leftUnfinished {
+            game.markSessionEnded("test: went offline")
+            return game
+        }
         let end = #"{"type":"gameState","moves":"e2e4 e7e5","wtime":290000,"btime":280000,"winc":3000,"binc":3000,"status":"\#(status)"\#(winnerField)}"#
         game.apply(.streamLine(Data(end.utf8), receivedAt: Date()))
         return game
@@ -136,19 +142,32 @@ final class LichessBotViewRenderTests: XCTestCase {
 
     /// Owner report 2026-10-12: tiles of lost games were a line taller than
     /// the rest, because "DCM lost" wrapped beside a long name. Every
-    /// result's tile has the same height at the grid's width.
+    /// result's tile has the same height at the grid's widths, including
+    /// the narrowest column (240) and a game left unfinished, whose label
+    /// was once the raw status.
     func testFinishedTilesAreTheSameHeightWhateverTheResult() throws {
         let controller = try makeController()
         let name = "Vietnamese_Chess_Engine_Bot"
-        var heights: [String: CGFloat] = [:]
-        for (label, winner) in [("won", Optional("white")), ("lost", Optional("black")), ("draw", nil)] {
-            let game = try makeFinishedGame(opponent: name, winner: winner)
-            XCTAssertTrue(game.isFinished, label)
-            let hosting = NSHostingView(rootView: LichessBotGameTileView(controller: controller, game: game, onOpen: {}, onDismiss: {})
-                .frame(width: 260))
-            heights[label] = hosting.fittingSize.height
+        for width in [CGFloat(240), 260, 340] {
+            var heights: [String: CGFloat] = [:]
+            let cases: [(String, String?, Bool)] = [("won", "white", false), ("lost", "black", false), ("draw", nil, false), ("unfinished", nil, true)]
+            for (label, winner, leftUnfinished) in cases {
+                let game = try makeFinishedGame(opponent: name, winner: winner, leftUnfinished: leftUnfinished)
+                XCTAssertTrue(game.isFinished, label)
+                let hosting = NSHostingView(rootView: LichessBotGameTileView(controller: controller, game: game, onOpen: {}, onDismiss: {})
+                    .frame(width: width))
+                heights[label] = hosting.fittingSize.height
+            }
+            for label in ["lost", "draw", "unfinished"] {
+                XCTAssertEqual(heights[label], heights["won"], "width \(width) \(label): \(heights)")
+            }
         }
-        XCTAssertEqual(heights["lost"], heights["won"], "\(heights)")
-        XCTAssertEqual(heights["draw"], heights["won"], "\(heights)")
+    }
+
+    func testNoResultLabelsAreShort() {
+        XCTAssertEqual(LichessBotGameTileContent.noResultLabel(status: "aborted"), "Aborted")
+        XCTAssertEqual(LichessBotGameTileContent.noResultLabel(status: "noStart"), "Aborted")
+        XCTAssertEqual(LichessBotGameTileContent.noResultLabel(status: LichessBotLiveGame.leftUnfinishedStatus), "Unfinished")
+        XCTAssertEqual(LichessBotGameTileContent.noResultLabel(status: "unknownFinish"), "No result")
     }
 }
