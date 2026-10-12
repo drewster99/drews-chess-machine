@@ -1,6 +1,6 @@
 # LR keyframes plan: peak and trough set by a list of keyframes, and a chart of the schedule
 
-Status (2026-10-12): sketch, owner-requested. Not approved for implementation. Open decisions are listed at the end.
+Status (2026-10-12): sketch, owner-requested. Not approved for implementation. O-2 … O-6 decided by the owner 2026-10-12 (below); O-1 open.
 
 Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachine/`, `DrewsChessMachineTests/`, `documentation/` or `scripts/`.
 
@@ -20,6 +20,11 @@ The schedule is also invisible: the only way to see where the LR will be at step
 - **K2 — one interpolation between keyframes: geometric.** No per-segment function choice (LR acts on ratios; weight motion measured proportional to LR). A hold is two keyframes with equal values; a step change is two keyframes one step apart.
 - **K3 — no separate momentum list.** Momentum keeps following the LR cycle's phase (`momentum_follows_lr_cycle`); see open decision O-1 for its low/high bounds.
 - **K4 — visualize both** the keyframe envelope over time and where the actual oscillating LR lands.
+- **O-2 — trainer steps.** Keyframe steps are trainer steps; warmup ramps to keyframe 0's value.
+- **O-3 — the first keyframe is at step 0**, required by validation.
+- **O-4 — on an exact resume, the configured schedule wins.** The resume is NOT EXACT with a `schedule` gap that `--accept-inexact schedule` must name; velocity, clock and corpus position are still restored.
+- **O-5 — a trough below 1e-4 logs a one-line `[PARAM]` warning** citing the weight-motion measurement; never a refusal.
+- **O-6 — GUI editing is a keyframe table** (step / peak / trough rows, add / delete) beside the chart; dragging points on the chart may come later.
 
 ## Design
 
