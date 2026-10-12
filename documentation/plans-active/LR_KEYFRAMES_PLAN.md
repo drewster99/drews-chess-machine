@@ -1,6 +1,6 @@
 # LR keyframes plan: peak and trough set by a list of keyframes, and a chart of the schedule
 
-Status (2026-10-12): plan written from a code survey; owner decisions K1–K4, O-1 … O-6 and Q-1 … Q-4 recorded below (O-1 revised by Q-4). Revised the same day after an independent review (17 findings, all addressed below). Q-5 and Q-6 decided by the owner the same day. Not approved for implementation.
+Status (2026-10-12): plan written from a code survey; owner decisions K1–K4, O-1 … O-6 and Q-1 … Q-4 recorded below (O-1 revised by Q-4). Revised the same day after an independent review (17 findings, all addressed below). Q-5 and Q-6 decided by the owner the same day. **Approved for implementation by the owner, 2026-10-12.**
 
 Paths are relative to `DrewsChessMachine/DrewsChessMachine/` unless they start with `DrewsChessMachine/`, `DrewsChessMachineTests/`, `documentation/`, `scripts/` or `experiments/`.
 
