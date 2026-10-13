@@ -1290,6 +1290,18 @@ final class LichessBotController {
         }
     }
 
+    /// Abort one game in progress (the game tile's and game view's
+    /// **Abort**, offered only while a side has yet to make its first
+    /// move).
+    func abortGame(id gameID: String) async {
+        guard let runtime else {
+            protocolLog.record(.lifecycle, "abort of game \(gameID) skipped: the bot is not running")
+            return
+        }
+        protocolLog.record(.lifecycle, "aborting game \(gameID) (operator)")
+        await runtime.manager.abort(gameID: gameID)
+    }
+
     /// Resign every game in progress (the sheet's **Abort**, and Resign all).
     func resignAll() async {
         guard let runtime else { return }

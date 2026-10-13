@@ -88,6 +88,11 @@ struct LichessBotPlaySettings: Sendable, Equatable, Codable {
     var acceptDrawExpectedScore: Float = 0.45
 
     var claimWhenOpponentGone = true
+    /// The stuck-game watchdog acts once the opponent has stayed on move
+    /// this long past their whole remaining clock: Lichess has then failed
+    /// to end the game itself (game 0qgNk2Ex), and only a client action can
+    /// (`LichessBotGameSession.StuckOpponentTurn`).
+    var stuckGameGraceSeconds = 300
     var maxTakebacksAcceptedPerGame = 0
 
     /// The sampling schedule these settings describe. No Dirichlet noise,
@@ -346,6 +351,8 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(p.resignConsecutiveMoves >= 1 && p.offerDrawConsecutiveMoves >= 1, "Consecutive-move counts must be at least one")
         require(p.resignMinimumPly >= 0 && p.offerDrawMinimumPly >= 0, "Minimum plies cannot be negative")
         require(p.maxTakebacksAcceptedPerGame >= 0, "Takeback limit cannot be negative")
+        require(LichessBotLimits.stuckGameGraceSecondsRange.contains(p.stuckGameGraceSeconds),
+                "The stuck-game grace must be between \(LichessBotLimits.stuckGameGraceSecondsRange.lowerBound) and \(LichessBotLimits.stuckGameGraceSecondsRange.upperBound) seconds")
 
         for (enabled, template, name) in [(chat.greetingEnabled, chat.greetingTemplate, "Greeting"), (chat.goodbyeEnabled, chat.goodbyeTemplate, "Goodbye")] where enabled {
             if let problem = LichessBotChat.templateProblem(template) {
@@ -421,4 +428,9 @@ enum LichessBotLimits {
     /// day after the first one counted (lila `BotLimit`;
     /// `LichessBotBotGameWindow` models it).
     static let botGamesPerDay = 100
+    /// The stuck-game grace's allowed range. At least a minute, so lag or a
+    /// slow Lichess never makes the watchdog act on a game that is merely
+    /// late; at most an hour, so a stuck game is still freed the same
+    /// session.
+    static let stuckGameGraceSecondsRange = 60...3600
 }

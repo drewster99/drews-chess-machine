@@ -228,6 +228,13 @@ final class LichessBotLiveGame: Identifiable {
         finishedAt != nil
     }
 
+    /// The operator may abort this game: it is in progress and a side has
+    /// yet to make its first move. Once both have moved Lichess refuses an
+    /// abort, so the game views never offer one.
+    var isAbortable: Bool {
+        !isFinished && LichessBotPlayPolicy.allowsAbort(pliesPlayed: plies.count)
+    }
+
     /// DCM's score (1, ½ or 0) by the same rule as the game record's; nil
     /// while playing, for a game without a result (aborted, never started,
     /// left unfinished), or before our color is known.

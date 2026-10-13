@@ -140,6 +140,14 @@ actor LichessBotFakeGameServer: LichessBotGameAPI {
     private var moveOutcomes: [MoveOutcome] = []
     private var afterOurMoves: [AfterOurMove] = []
     private var victoryClaimSucceeds = true
+    /// The clocks every streamed state reports, in milliseconds.
+    private var whiteClockMilliseconds = 180000
+    private var blackClockMilliseconds = 180000
+    /// While set, a victory claim waits in `heldVictoryClaims` until
+    /// `releaseHeldVictoryClaims()`, the way the request gate can hold one
+    /// through a rate-limit cooldown.
+    private var holdsVictoryClaims = false
+    private var heldVictoryClaims: [CheckedContinuation<Void, Never>] = []
 
     init(botIsWhite: Bool = true, variantKey: String = "standard", initialTokens: [String] = [], initialStatus: String = "started", initialWinner: String? = nil) throws {
         self.botIsWhite = botIsWhite
@@ -159,6 +167,13 @@ actor LichessBotFakeGameServer: LichessBotGameAPI {
 
     func setVictoryClaimSucceeds(_ value: Bool) {
         victoryClaimSucceeds = value
+    }
+
+    /// Set the clocks the following states (and a reopened stream's
+    /// `gameFull`) report.
+    func setClockMilliseconds(white: Int, black: Int) {
+        whiteClockMilliseconds = white
+        blackClockMilliseconds = black
     }
 
     func record() -> Record {
@@ -274,6 +289,9 @@ actor LichessBotFakeGameServer: LichessBotGameAPI {
 
     func claimVictory(gameID: String) async throws {
         calls.append("claimVictory")
+        if holdsVictoryClaims {
+            await withCheckedContinuation { heldVictoryClaims.append($0) }
+        }
         guard victoryClaimSucceeds else {
             throw LichessBotAPIError.http(status: 400, message: "cannot claim victory")
         }
@@ -327,6 +345,46 @@ actor LichessBotFakeGameServer: LichessBotGameAPI {
         send(#"{"type":"chatLine","room":"spectator","username":"Watcher","text":"\#(marker)"}"#)
     }
 
+    /// Stream a keep-alive (an empty line), as Lichess does on a silent
+    /// game stream.
+    func sendKeepAlive() {
+        continuation?.yield(Data("\n".utf8))
+    }
+
+    /// Hold victory claims until `releaseHeldVictoryClaims()`.
+    func holdVictoryClaims() {
+        holdsVictoryClaims = true
+    }
+
+    /// Let held victory claims (and later ones) through; each is answered
+    /// by `victoryClaimSucceeds` as it stands now.
+    func releaseHeldVictoryClaims() {
+        holdsVictoryClaims = false
+        let held = heldVictoryClaims
+        heldVictoryClaims = []
+        for claim in held {
+            claim.resume()
+        }
+    }
+
+    var heldVictoryClaimCount: Int {
+        heldVictoryClaims.count
+    }
+
+    /// The opponent, on move, offers a draw without moving: a new state at
+    /// the same ply and position.
+    func opponentOffersDrawWithoutMoving() {
+        drawOfferByOpponent = true
+        sendState()
+    }
+
+    /// End the game and stream the finished state (a flag, a resignation).
+    func finishGame(status newStatus: String, winner newWinner: String?) {
+        status = newStatus
+        winner = newWinner
+        sendState()
+    }
+
     /// Reject every move POST from now on.
     func rejectAllMoves() {
         moveOutcomes = Array(repeating: .rejected(status: 400), count: 100)
@@ -361,7 +419,7 @@ actor LichessBotFakeGameServer: LichessBotGameAPI {
         var fields = [
             #""type":"gameState""#,
             #""moves":"\#(tokens.joined(separator: " "))""#,
-            #""wtime":180000,"btime":180000,"winc":2000,"binc":2000"#,
+            #""wtime":\#(whiteClockMilliseconds),"btime":\#(blackClockMilliseconds),"winc":2000,"binc":2000"#,
             #""status":"\#(status)""#,
         ]
         if let winner {

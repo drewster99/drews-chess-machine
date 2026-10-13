@@ -51,6 +51,8 @@ struct LichessBotGameTileContent: View {
                     .fixedSize()
                 Spacer(minLength: 0)
                 LichessBotGameAnomalyBadge(anomalies: game.anomalies)
+                LichessBotAbortGameButton(controller: controller, game: game)
+                    .controlSize(.small)
                 // One line, laid out first: when the header is short of room
                 // the opponent's name truncates instead. A wrapped "DCM
                 // lost" made those tiles a line taller than the rest (owner

@@ -63,7 +63,7 @@ struct LichessBotGameDetailContent: View {
         let clocksRun = !game.isFinished
         let material = MaterialCount(game.state(afterPlies: displayed))
         VStack(alignment: .leading, spacing: 8) {
-            LichessBotGameHeaderView(game: game, onPopOut: onPopOut)
+            LichessBotGameHeaderView(controller: controller, game: game, onPopOut: onPopOut)
             LichessBotGameOriginDetailLine(display: game.originDisplay)
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -152,6 +152,7 @@ struct LichessBotGameDetailContent: View {
 /// The game's title line: speed, time control, rated/casual, status, and
 /// the actions for the game.
 struct LichessBotGameHeaderView: View {
+    let controller: LichessBotController
     let game: LichessBotLiveGame
     let onPopOut: (() -> Void)?
 
@@ -179,6 +180,7 @@ struct LichessBotGameHeaderView: View {
                 .shown(!game.anomalies.isEmpty)
                 .help(game.anomalies.map(\.text).joined(separator: "\n"))
             Spacer()
+            LichessBotAbortGameButton(controller: controller, game: game)
             Button(
                 action: { LichessBotLinks.openGame(game.id) },
                 label: { Label("lichess.org", systemImage: "safari") }

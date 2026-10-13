@@ -21,6 +21,15 @@ struct LichessBotValueReading: Sendable, Equatable, Codable {
 /// for turning them on.
 enum LichessBotPlayPolicy {
 
+    /// Whether Lichess still lets a player abort a game with `pliesPlayed`
+    /// moves on the board: until both sides have made their first move. An
+    /// abort is rating-neutral, the right way out of a game that never
+    /// really started. The one rule the session (unplayable and stuck
+    /// games) and the game views' Abort button share.
+    static func allowsAbort(pliesPlayed: Int) -> Bool {
+        pliesPlayed < 2
+    }
+
     /// Resign when `p_loss` has been at or above the threshold for the last
     /// `resignConsecutiveMoves` of our moves, and the game is past
     /// `resignMinimumPly`.

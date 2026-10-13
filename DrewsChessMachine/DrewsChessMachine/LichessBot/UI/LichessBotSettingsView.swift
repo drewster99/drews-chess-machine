@@ -370,6 +370,8 @@ struct LichessBotPlaySettingsSection: View {
             Toggle("Accept draw offers", isOn: $settings.acceptDrawEnabled)
             LichessBotDecimalField(label: "  … when expected score is at most", value: $settings.acceptDrawExpectedScore)
             Toggle("Claim when the opponent leaves", isOn: $settings.claimWhenOpponentGone)
+            LichessBotIntegerField(label: "End a stuck game this long past the opponent's clock", value: $settings.stuckGameGraceSeconds, unit: "s")
+                .help("When the opponent stays on move past their whole clock plus this, Lichess has failed to end the game: the bot aborts it if a side has yet to make its first move, otherwise claims victory. Never resigns or claims a draw. \(LichessBotLimits.stuckGameGraceSecondsRange.lowerBound)–\(LichessBotLimits.stuckGameGraceSecondsRange.upperBound) s.")
             LichessBotIntegerField(label: "Takebacks accepted per game", value: $settings.maxTakebacksAcceptedPerGame)
         }
     }

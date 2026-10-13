@@ -69,6 +69,12 @@ actor LichessBotGameSession {
     /// `gameFull` (after the stream reopens) tries again.
     private var unplayableResolved = false
     private var pendingClaim: Task<Void, Never>?
+    /// The opponent's turn the stuck-game watchdog is timing, or nil while
+    /// it is not the opponent's turn (see `StuckOpponentTurn`).
+    private var stuckOpponentTurn: StuckOpponentTurn?
+    /// The watchdog's abort or victory claim in flight, if any. Off the
+    /// stream loop (see `startStuckGameAction`); at most one at a time.
+    private var stuckGameAction: Task<Void, Never>?
     /// A chat-command reply waiting to be sent.
     private struct PendingCommandReply: Sendable {
         let command: LichessBotChatCommand
@@ -306,6 +312,8 @@ actor LichessBotGameSession {
         }
         pendingClaim?.cancel()
         pacedMove?.cancel()
+        stuckGameAction?.cancel()
+        stuckGameAction = nil
         await stopCommandReplies(reason: "the game session stopped")
         await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: false, ourClock: nil))
     }
@@ -342,6 +350,15 @@ actor LichessBotGameSession {
         await observer.gameEvent(gameID: gameID, .action("resigned (operator)"))
     }
 
+    /// Abort now (the operator's per-game Abort). Lichess allows it only
+    /// while a side has yet to make its first move; a refusal propagates to
+    /// the caller, which reports it.
+    func abortNow() async throws {
+        guard !finished else { return }
+        try await api.abort(gameID: gameID)
+        await observer.gameEvent(gameID: gameID, .action("aborted (operator)"))
+    }
+
     // MARK: - Stream items
 
     private func handle(_ item: LichessBotStreamItem, settings: LichessBotSettings) async throws {
@@ -360,6 +377,10 @@ actor LichessBotGameSession {
         case .truncatedAtEnd(let byteCount):
             await observer.gameEvent(gameID: gameID, .anomaly("stream ended mid-line with \(byteCount) bytes pending"))
         }
+        // Every item, keep-alives included: a game whose opponent never
+        // moves gets nothing but keep-alives, and they are what drives the
+        // watchdog there.
+        await actOnStuckOpponentTurnIfDue(settings: settings)
     }
 
     /// Stall limit for this game's stream: the event-stream limit once
@@ -448,7 +469,7 @@ actor LichessBotGameSession {
         isUnplayable = true
         guard full.state.status.isLive == true else { return }
         await observer.gameEvent(gameID: gameID, .anomaly("unplayable game (\(reason))"))
-        if full.state.moveTokens.count < 2 {
+        if LichessBotPlayPolicy.allowsAbort(pliesPlayed: full.state.moveTokens.count) {
             do {
                 try await api.abort(gameID: gameID)
                 unplayableResolved = true
@@ -586,6 +607,12 @@ actor LichessBotGameSession {
 
         let ourPieceColor: PieceColor = ourColor == .white ? .white : .black
         let ourTurn = tracker.sideToMove == ourPieceColor && tracker.engine.result == nil
+        trackStuckOpponentTurn(
+            opponentToMove: tracker.sideToMove != ourPieceColor && tracker.engine.result == nil,
+            ply: tracker.ply,
+            position: FENParser.fen(from: tracker.engine.state),
+            opponentClock: state.remaining(for: opponentColor)
+        )
         ourClockMilliseconds = state.remaining(for: ourColor).value
         ourClockReceivedAt = time.now()
         if let heldPly = pacedMovePly, !pacedMoveReleased,
@@ -1088,6 +1115,179 @@ actor LichessBotGameSession {
         }
     }
 
+    // MARK: - Stuck opponent turn
+
+    /// The opponent's turn the stuck-game watchdog is timing.
+    ///
+    /// **Why it exists.** Lichess normally ends a game whose player stops
+    /// moving: a side that never makes its first move gets the game aborted
+    /// (`noStart`), and a running clock that reaches zero flags. Game
+    /// 0qgNk2Ex (2026-10-12, 0+30 s bullet) showed both can fail: the
+    /// opponent never answered 1. e4, Lichess's export still said `started`
+    /// five hours later, and the game stream carried only keep-alives. The
+    /// bot faithfully mirrored a game that would never end, holding a game
+    /// slot and blocking a quit that waits for running games. Only a client
+    /// action can close such a game.
+    ///
+    /// **The deadline.** The turn begins at the local time (`time`, the
+    /// session's injected clock) the state that made it the opponent's turn
+    /// arrived, and the opponent's remaining clock in that state is the
+    /// longest the turn can legitimately last. The watchdog acts once
+    /// `startedAt + opponentClock + grace` has passed, the grace
+    /// (`play.stuckGameGraceSeconds`) covering lag and Lichess's own slower
+    /// paths. A later state for the same turn — the same ply in the same
+    /// position: a reopened stream's `gameFull`, a draw offer, a takeback
+    /// proposal — keeps the original start and clock, so a stream that
+    /// keeps reconnecting can't postpone the deadline forever; a new
+    /// opponent move, or a takeback to a different position, starts a new
+    /// turn.
+    ///
+    /// **What it does.** Abort while that is allowed (a side has yet to make
+    /// its first move; rating-neutral, and what Lichess itself would have
+    /// done), otherwise claim victory. Never a resignation or a draw claim:
+    /// the opponent is the one not moving, and either would give away a
+    /// game DCM is entitled to. Any attempt that does not end the game —
+    /// refused, failed, or accepted while the stream still says `started` —
+    /// is tried again no sooner than one grace period after it.
+    private struct StuckOpponentTurn {
+        let ply: Int
+        /// The position at that ply (its FEN): a takeback and a different
+        /// reply can return to the same ply in a new position, which is a
+        /// new turn.
+        let position: String
+        let startedAt: Duration
+        let opponentClock: LichessBotMilliseconds
+        /// When the watchdog last acted on this turn; nil before its first
+        /// action.
+        var lastAttemptAt: Duration?
+        var attempts = 0
+
+        /// When the watchdog may act next, under the current grace (read
+        /// fresh, so a Settings change reaches a turn already being timed).
+        func nextActionAt(grace: Duration) -> Duration {
+            if let lastAttemptAt {
+                return lastAttemptAt + grace
+            }
+            return startedAt + .milliseconds(max(0, opponentClock.value)) + grace
+        }
+    }
+
+    /// Start, keep or clear the timed opponent turn for the state just
+    /// handled. A turn that ends or changes also cancels a watchdog action
+    /// still in flight for it: once the opponent has moved, an abort or a
+    /// victory claim decided for their old turn is wrong (and an abort
+    /// after their first move would be refused anyway).
+    private func trackStuckOpponentTurn(opponentToMove: Bool, ply: Int, position: String, opponentClock: LichessBotMilliseconds) {
+        if opponentToMove, let current = stuckOpponentTurn, current.ply == ply, current.position == position {
+            return
+        }
+        stuckGameAction?.cancel()
+        stuckGameAction = nil
+        stuckOpponentTurn = opponentToMove
+            ? StuckOpponentTurn(ply: ply, position: position, startedAt: time.now(), opponentClock: opponentClock)
+            : nil
+    }
+
+    /// Start the watchdog's abort or victory claim for a game whose opponent
+    /// has stayed on move past their whole clock plus the grace (see
+    /// `StuckOpponentTurn`), unless one is already in flight.
+    ///
+    /// **Why off the stream loop.** The request goes through the
+    /// account-wide gate, which can hold it for a whole rate-limit cooldown.
+    /// Awaited here, it would stop the game stream being read for that long:
+    /// an opponent who finally moves would go unanswered while DCM's own
+    /// clock ran. So it posts from its own task (like `pendingClaim` and
+    /// `commandReplySender`), which re-checks the turn before posting; a
+    /// new turn, the game ending and the session stopping each cancel it.
+    /// The attempt counts from when it is started: the next one is due one
+    /// grace period later, however long this one takes.
+    private func actOnStuckOpponentTurnIfDue(settings: LichessBotSettings) async {
+        guard !finished, !movingStopped, stuckGameAction == nil, var turn = stuckOpponentTurn else { return }
+        let now = time.now()
+        let graceSeconds = settings.play.stuckGameGraceSeconds
+        guard now >= turn.nextActionAt(grace: .seconds(graceSeconds)) else { return }
+        turn.lastAttemptAt = now
+        turn.attempts += 1
+        stuckOpponentTurn = turn
+        let aborting = LichessBotPlayPolicy.allowsAbort(pliesPlayed: turn.ply)
+        let ply = turn.ply
+        let position = turn.position
+        let waitedSeconds = Int(LichessBotBackoff.seconds(now - turn.startedAt))
+        let attemptText = turn.attempts == 1 ? "" : " (attempt \(turn.attempts))"
+        // Logged before the task starts, so the decision always precedes
+        // its outcome in the log. Only the stream loop (suspended here)
+        // changes the turn, and the task re-checks it anyway.
+        await observer.gameEvent(gameID: gameID, .action(
+            "opponent still to move at ply \(ply) after \(waitedSeconds) s, past their clock of \(turn.opponentClock.value / 1000) s plus the \(graceSeconds) s grace; \(aborting ? "aborting" : "claiming victory")\(attemptText)"))
+        guard !finished, stuckGameAction == nil else { return }
+        stuckGameAction = Task { [weak self] in
+            await self?.runStuckGameAction(ply: ply, position: position, aborting: aborting, graceSeconds: graceSeconds)
+        }
+    }
+
+    /// The watchdog's request, from its own task. Posts only if the game is
+    /// still live at the same opponent turn (ply and position) it was
+    /// decided for; there is no suspension between that check and the
+    /// request.
+    private func runStuckGameAction(ply: Int, position: String, aborting: Bool, graceSeconds: Int) async {
+        let what = aborting ? "abort" : "victory claim"
+        guard !finished, !Task.isCancelled, let turn = stuckOpponentTurn, turn.ply == ply, turn.position == position else {
+            clearStuckGameActionUnlessCancelled()
+            return
+        }
+        // An opponent-gone claim (`pendingClaim`) and this one could both
+        // be in play. Left alone, whichever claim lost the race would be
+        // refused while the game still looked live here, and the
+        // opponent-gone path would then claim a draw — giving a won game
+        // away, the one thing the watchdog must never do. Cancelling it,
+        // rather than standing aside while it exists, can't lose a claim:
+        // `pendingClaim` is never cleared after it runs, so standing aside
+        // could block the watchdog for the rest of the game, while this
+        // claim is retried every grace period until the game ends. Its draw
+        // fallback is all that is given up, and a stuck game must not use
+        // it. An abort cancels it too: one client action at a time ends the
+        // game.
+        let cancelledOpponentGoneClaim = pendingClaim != nil
+        pendingClaim?.cancel()
+        pendingClaim = nil
+        do {
+            if aborting {
+                try await api.abort(gameID: gameID)
+            } else {
+                try await api.claimVictory(gameID: gameID)
+            }
+            if cancelledOpponentGoneClaim {
+                await observer.gameEvent(gameID: gameID, .action("opponent-gone claim cancelled: the stuck-game \(what) replaced it"))
+            }
+            await observer.gameEvent(gameID: gameID, .action(aborting ? "aborted (stuck game)" : "claimed victory (stuck game)"))
+        } catch {
+            if cancelledOpponentGoneClaim {
+                await observer.gameEvent(gameID: gameID, .action("opponent-gone claim cancelled: the stuck-game \(what) replaced it"))
+            }
+            if Task.isCancelled {
+                // The opponent moved, the game ended or the session stopped
+                // while the request was queued or in flight.
+                await observer.gameEvent(gameID: gameID, .action("stuck game: \(what) at ply \(ply) cancelled: \(error.localizedDescription)"))
+            } else {
+                if let apiError = error as? LichessBotAPIError, Self.isTokenRejection(apiError) {
+                    await observer.gameEvent(gameID: gameID, .tokenRejected(apiError.localizedDescription))
+                }
+                await observer.gameEvent(gameID: gameID, .anomaly(
+                    "stuck game: \(what) failed: \(error.localizedDescription); trying again in \(graceSeconds) s if the opponent is still to move"))
+            }
+        }
+        clearStuckGameActionUnlessCancelled()
+    }
+
+    /// A cancelled action was cleared by whoever cancelled it, and a newer
+    /// one may already be in its place; only one that ran to its end clears
+    /// itself.
+    private func clearStuckGameActionUnlessCancelled() {
+        if !Task.isCancelled {
+            stuckGameAction = nil
+        }
+    }
+
     // MARK: - Finishing and chat
 
     private func finish(status: LichessBotOpenValue<LichessBotGameStatusName>, winner: LichessBotOpenValue<LichessBotColorName>?, settings: LichessBotSettings) async {
@@ -1101,6 +1301,9 @@ actor LichessBotGameSession {
         pacedMoveReleased = false
         pendingClaim?.cancel()
         pendingClaim = nil
+        stuckOpponentTurn = nil
+        stuckGameAction?.cancel()
+        stuckGameAction = nil
         await stopCommandReplies(reason: "the game ended")
         await observer.gameEvent(gameID: gameID, .finished(status: status, winner: winner, localDrawCondition: tracker?.engine.drawCondition))
         await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: false, ourClock: nil))

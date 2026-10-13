@@ -28,6 +28,8 @@ final class LichessBotFollowLineageSettingsTests: XCTestCase {
             "matchmaking.noBotDeclineBlockDays", "matchmaking.preferNotRecentlyContacted",
             "matchmaking.ratedCasualDeclineBlockDays", "matchmaking.recentContactHours",
             "matchmaking.specificDeclineBlockDays", "model.lineageCheckIntervalSeconds",
+            // Added 2026-10-12 by the stuck-game watchdog (LICHESS_BOT_STUCK_GAME_PLAN.md).
+            "play.stuckGameGraceSeconds",
         ])
         XCTAssertEqual(result.ignoredSavedKeys, [])
         XCTAssertEqual(result.settings.model.source, .file)

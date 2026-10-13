@@ -450,6 +450,21 @@ actor LichessBotSessionManager {
         }
     }
 
+    /// Abort one game in progress (the operator's per-game Abort). A game
+    /// whose session has already ended, and an abort Lichess refuses (both
+    /// sides have moved meanwhile), are reported as anomalies.
+    func abort(gameID: String) async {
+        guard let session = sessions[gameID] else {
+            onEvent(.anomaly("abort skipped for \(gameID): its session has already ended"))
+            return
+        }
+        do {
+            try await session.abortNow()
+        } catch {
+            onEvent(.anomaly("abort failed for \(gameID): \(error.localizedDescription)"))
+        }
+    }
+
     // MARK: - Running
 
     /// Hold the event stream until cancelled, the gate closes, or a
