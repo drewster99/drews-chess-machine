@@ -33,6 +33,10 @@ struct LichessBotPlayerLineView: View {
             Text(player?.name ?? "—")
                 .font(.body.weight(.medium))
                 .lineLimit(1)
+            // The same marker as the grid's tiles, so the single view also
+            // says when DCM is playing a person.
+            LichessBotHumanOpponentGlyph(isHuman: !isOurs && player?.kind == .human)
+                .font(.callout)
             Text(player?.rating.map { String(format: "%4d", $0) } ?? "")
                 .font(.system(.callout, design: .monospaced))
                 .foregroundStyle(.secondary)

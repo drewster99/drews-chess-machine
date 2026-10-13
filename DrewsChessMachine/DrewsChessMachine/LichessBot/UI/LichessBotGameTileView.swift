@@ -4,7 +4,11 @@ import SwiftUI
 /// players with clocks, W/D/L, an anomaly count when there are any, and a
 /// result badge once finished. Clicking it
 /// opens the game in its own window; the grid keeps no selection. A
-/// finished game's tile is grayed as a whole, so live games stand out.
+/// finished game's tile is grayed as a whole, so live games stand out. A
+/// game against a human carries a person glyph beside the name, and while
+/// live a purple border and tint in place of the green border
+/// (`LichessBotLiveGameStyle`), so the operator spots the games people are
+/// playing; a finished tile keeps its result colors either way.
 struct LichessBotGameTileView: View {
     let controller: LichessBotController
     let game: LichessBotLiveGame
@@ -43,6 +47,10 @@ struct LichessBotGameTileContent: View {
                 Text(game.opponent?.name ?? game.id)
                     .font(.callout.weight(.semibold))
                     .lineLimit(1)
+                // A glyph, not a word: the name truncates to make room, so
+                // the header never wraps and every tile keeps one height.
+                LichessBotHumanOpponentGlyph(isHuman: game.opponentIsHuman)
+                    .font(.caption)
                 LichessBotGameOriginGlyph(display: game.originDisplay)
                     .font(.caption)
                 Text(game.opponent?.rating.map { String(format: "%4d", $0) } ?? "")
@@ -178,7 +186,7 @@ struct LichessBotGameTileContent: View {
 
     private var backgroundColor: Color {
         switch phase {
-        case .live: return .clear
+        case .live: return game.opponentIsHuman ? LichessBotLiveGameStyle.liveHumanBackground : .clear
         case .justFinished: return resultHighlightColor.opacity(0.22)
         case .finished: return Color.gray.opacity(0.18)
         }
@@ -186,7 +194,7 @@ struct LichessBotGameTileContent: View {
 
     private var borderColor: Color {
         switch phase {
-        case .live: return Color.green.opacity(0.6)
+        case .live: return game.opponentIsHuman ? LichessBotLiveGameStyle.liveHumanBorder : LichessBotLiveGameStyle.liveBorder
         case .justFinished: return resultHighlightColor.opacity(0.8)
         case .finished: return Color.gray.opacity(0.3)
         }

@@ -46,6 +46,8 @@ enum LichessBotRecordStatisticsReason: String, Sendable {
     case origins
     /// The Model filter changed (`rememberedModel`).
     case model
+    /// The Opponents filter changed (`rememberedOpponents`).
+    case opponents
 }
 
 /// Computes the Record card's statistics off the main actor and keeps the
@@ -76,7 +78,7 @@ enum LichessBotRecordStatisticsReason: String, Sendable {
 /// failed state is retried by the next index or time change, not by every
 /// tick (which would log the same failure every minute).
 ///
-/// It also remembers the panel's tab, period and filter in the controller's
+/// It also remembers the panel's tab, period and filters in the controller's
 /// defaults (like the Settings tab): a value that no longer exists is
 /// logged and ignored. Not `@AppStorage`, which would read the test host's
 /// real defaults in render tests.
@@ -112,6 +114,20 @@ final class LichessBotRecordStatisticsPipeline {
             schedule(reason: .model, now: Date())
         }
     }
+    /// The Opponents filter (bots / humans). Applied with the Model filter,
+    /// to the rows before the statistics are computed, rather than
+    /// precomputed per value like the Games filter: it must reach every
+    /// number on the card, the rating trend included, which the
+    /// precomputed filters leave out by design (the trend is from every
+    /// rated game). One more pass over the rows per change; changing it
+    /// recomputes.
+    var rememberedOpponents: LichessBotOpponentKindFilter = .all {
+        didSet {
+            guard rememberedOpponents != oldValue else { return }
+            defaults.set(rememberedOpponents.rawValue, forKey: Self.opponentsKey)
+            schedule(reason: .opponents, now: Date())
+        }
+    }
     /// The Model filter's menu, per Games filter and period (the models
     /// whose games the panes show), from all games whatever the model
     /// selection. Empty until the first result.
@@ -121,6 +137,7 @@ final class LichessBotRecordStatisticsPipeline {
     static let periodKey = "lichessBot.overview.record.period"
     static let filterKey = "lichessBot.overview.record.filter"
     static let modelKey = "lichessBot.overview.record.model"
+    static let opponentsKey = "lichessBot.overview.record.opponents"
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let queue: LichessBotFileQueue
@@ -177,6 +194,13 @@ final class LichessBotRecordStatisticsPipeline {
                 rememberedFilter = filter
             } else {
                 SessionLogger.shared.log("[LICHESS-BOT] record card: ignoring the remembered filter \"\(saved)\", which no longer exists")
+            }
+        }
+        if let saved = defaults.string(forKey: Self.opponentsKey) {
+            if let opponents = LichessBotOpponentKindFilter(rawValue: saved) {
+                rememberedOpponents = opponents
+            } else {
+                SessionLogger.shared.log("[LICHESS-BOT] record card: ignoring the remembered opponents filter \"\(saved)\", which no longer exists")
             }
         }
         if let saved = defaults.data(forKey: Self.modelKey) {
@@ -280,13 +304,14 @@ final class LichessBotRecordStatisticsPipeline {
         let compute = self.compute
         let queue = self.queue
         let model = rememberedModel
+        let opponents = rememberedOpponents
         latestComputation = Task { @MainActor [weak self] in
             let outcome: Result<(LichessBotRecordStatistics, Double, LichessBotStatsModelMenu), Error>
             do {
                 let computed = try await queue.run {
                     let started = DispatchTime.now().uptimeNanoseconds
-                    let statistics = try compute(rows.filter { model.includes($0) }, origins, now, calendar)
-                    let menu = try LichessBotStatsModelMenu.make(rows: rows, now: now, calendar: calendar)
+                    let statistics = try compute(rows.filter { model.includes($0) && opponents.includes($0) }, origins, now, calendar)
+                    let menu = try LichessBotStatsModelMenu.make(rows: rows, opponents: opponents, now: now, calendar: calendar)
                     let milliseconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
                     return (statistics, milliseconds, menu)
                 }
@@ -294,11 +319,11 @@ final class LichessBotRecordStatisticsPipeline {
             } catch {
                 outcome = .failure(error)
             }
-            self?.apply(outcome, request: request, reason: reason, model: model)
+            self?.apply(outcome, request: request, reason: reason, model: model, opponents: opponents)
         }
     }
 
-    private func apply(_ outcome: Result<(LichessBotRecordStatistics, Double, LichessBotStatsModelMenu), Error>, request: Int, reason: LichessBotRecordStatisticsReason, model: LichessBotStatsModelSelection) {
+    private func apply(_ outcome: Result<(LichessBotRecordStatistics, Double, LichessBotStatsModelMenu), Error>, request: Int, reason: LichessBotRecordStatisticsReason, model: LichessBotStatsModelSelection, opponents: LichessBotOpponentKindFilter) {
         guard request == requestCount else { return }
         appliedOutcomeCount += 1
         switch outcome {
@@ -319,10 +344,10 @@ final class LichessBotRecordStatisticsPipeline {
             // index change must still get its line.
             if indexLogPending {
                 indexLogPending = false
-                // The numbers are the selected model's when a model is
-                // selected; the line says which.
+                // The numbers are the selected model's and opponents' when
+                // either is narrowed; the line says which.
                 SessionLogger.shared.log(LichessBotRecordStatsLogLine.text(statistics, reason: LichessBotRecordStatisticsReason.index.rawValue, milliseconds: milliseconds)
-                    + model.logSuffix)
+                    + model.logSuffix + opponents.logSuffix)
             }
         case .failure(let error):
             if isShutDown, error is LichessBotFileQueueError {

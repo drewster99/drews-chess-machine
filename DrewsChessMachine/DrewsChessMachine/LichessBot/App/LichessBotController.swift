@@ -401,7 +401,8 @@ final class LichessBotController {
     /// none. Not tied to a runtime: the list outlives going offline, and the
     /// sheet fetches while offline too.
     private var onlineBotsRefresh: Task<Void, Never>?
-    /// The Live tab's single-game choice; nil means "First in progress".
+    /// The Live tab's single-game choice; nil means "Auto": follow a game
+    /// (`autoFollowedGameID`).
     /// Remembered across launches (a specific game shows again only while it
     /// is listed).
     var focusedGameID: String? {
@@ -412,15 +413,17 @@ final class LichessBotController {
                 // move a view nobody is following.
                 cancelAutoFollowHold()
             } else if oldValue != nil {
-                // Back to "First in progress": follow the first live game
-                // now, not whatever was followed before the pick.
+                // Back to "Auto": follow the preferred live game now, not
+                // whatever was followed before the pick.
                 cancelAutoFollowHold()
-                autoFollowedGameID = firstLiveGame?.id
+                autoFollowedGameID = preferredLiveGameID
             }
         }
     }
     /// The game the single view follows while the operator hasn't picked
-    /// one: the first-started game in progress, kept on screen for
+    /// one: a game in progress chosen by `LichessBotAutoFollowChoice` (a
+    /// human game before bot games, otherwise the first started), kept on
+    /// screen for
     /// `finishedGameHoldDuration` after it ends before moving to the next
     /// live game, so the view doesn't jump the instant a game finishes.
     private(set) var autoFollowedGameID: String?
@@ -484,6 +487,11 @@ final class LichessBotController {
     let challengeLogRecorder: LichessBotChallengeLogRecorder
     /// Decides each game's origin while the bot follows it (§3.5).
     @ObservationIgnored private var gameOriginResolver = LichessBotGameOriginResolver()
+    /// Decides, once per game, whether a new human game from an accepted
+    /// challenge sounds its alert (`LichessBotGameStartAlertTracker`).
+    @ObservationIgnored private var gameStartAlertTracker = LichessBotGameStartAlertTracker()
+    /// Plays the game-start alerts, repeats one after another.
+    @ObservationIgnored private let gameStartAlertPlayer = LichessBotRepeatingSoundPlayer()
     /// Past challenges rebuilt from the protocol log (§3.7); nil until built
     /// or read back.
     private(set) var challengeHistory: LichessBotChallengeReconstruction?
@@ -679,8 +687,8 @@ final class LichessBotController {
     }
 
     /// The game the single-game view shows: the operator's pick if it still
-    /// exists, otherwise the followed game (the first-started game in
-    /// progress, held on screen for a while after it ends), otherwise the
+    /// exists, otherwise the followed game (a game in progress, a human game
+    /// first, held on screen for a while after it ends), otherwise the
     /// first game in progress, otherwise the most recent game (plan §14.3a).
     var displayedGame: LichessBotLiveGame? {
         if let focusedGameID, let game = listedGame(focusedGameID) {
@@ -692,31 +700,57 @@ final class LichessBotController {
         return gamesInProgress.first ?? games.last
     }
 
-    /// The first-started game still being played. A game whose final state
-    /// has arrived is finished even while its session winds down.
-    private var firstLiveGame: LichessBotLiveGame? {
-        gamesInProgress.first { !$0.isFinished }
+    /// The games still being played, in start order, as the follow rule
+    /// sees them. A game whose final state has arrived is finished even
+    /// while its session winds down, so it is left out. A game whose
+    /// opponent isn't known yet counts as not human
+    /// (`LichessBotLiveGame.opponentIsHuman`); once its `gameFull` arrives,
+    /// the next update sees its real kind.
+    private var autoFollowCandidates: [LichessBotAutoFollowChoice.Candidate] {
+        gamesInProgress.filter { !$0.isFinished }.map { LichessBotAutoFollowChoice.Candidate(id: $0.id, isHuman: $0.opponentIsHuman) }
+    }
+
+    /// The live game to follow when none is followed: a human game first.
+    private var preferredLiveGameID: String? {
+        LichessBotAutoFollowChoice.initial(among: autoFollowCandidates)
     }
 
     /// Keep the followed game current. With none (or one no longer listed),
-    /// follow the first live game. When the followed game has finished,
-    /// start one hold; when it ends, the view moves on to the next live
-    /// game. Called after every change to the games list or a game's state.
+    /// follow the preferred live game. While the followed game is live, a
+    /// human game may take the view from a bot game
+    /// (`LichessBotAutoFollowChoice.next`). When the followed game has
+    /// finished, start one hold; when it ends, the view moves on to the
+    /// preferred live game. Called after every change to the games list or
+    /// a game's state (including the `gameFull` that names the opponent).
     private func updateAutoFollow() {
         refreshGridClock()
         guard let followedID = autoFollowedGameID, let followed = listedGame(followedID) else {
             cancelAutoFollowHold()
-            let next = firstLiveGame?.id
+            let next = preferredLiveGameID
             if autoFollowedGameID != next {
                 autoFollowedGameID = next
             }
             return
         }
-        guard followed.isFinished, autoFollowHold?.gameID != followedID else { return }
+        if !followed.isFinished {
+            // A live game is never held, so there is no hold to cancel.
+            let next = LichessBotAutoFollowChoice.next(
+                following: LichessBotAutoFollowChoice.Candidate(id: followedID, isHuman: followed.opponentIsHuman),
+                among: autoFollowCandidates
+            )
+            if next != followedID {
+                autoFollowedGameID = next
+            }
+            return
+        }
+        // A finished game being held stays until its hold ends, even if a
+        // human game starts meanwhile: the hold is short, and it exists so
+        // the operator sees how the game ended.
+        guard autoFollowHold?.gameID != followedID else { return }
         cancelAutoFollowHold()
         if let focusedGameID, listedGame(focusedGameID) != nil {
             // The operator's pick is on screen: nothing to hold.
-            autoFollowedGameID = firstLiveGame?.id
+            autoFollowedGameID = preferredLiveGameID
             return
         }
         let token = UUID()
@@ -732,13 +766,13 @@ final class LichessBotController {
         autoFollowHold = (followedID, token, task)
     }
 
-    /// The hold with this token is over: follow the next live game, unless
-    /// the hold was replaced or canceled meanwhile.
+    /// The hold with this token is over: follow the preferred live game,
+    /// unless the hold was replaced or canceled meanwhile.
     private func endAutoFollowHold(token: UUID) {
         guard let hold = autoFollowHold, hold.token == token else { return }
         autoFollowHold = nil
         guard autoFollowedGameID == hold.gameID else { return }
-        autoFollowedGameID = firstLiveGame?.id
+        autoFollowedGameID = preferredLiveGameID
         // The finished game may have been kept only for the hold.
         pruneFinishedGames()
     }
@@ -1720,6 +1754,46 @@ final class LichessBotController {
         challengeLogRecorder.record(event)
     }
 
+    // MARK: - Game-start alerts (owner request 2026-10-13)
+
+    /// Hand a game's origin to the alert tracker; play the alert if this
+    /// decides one.
+    private func noteGameStartAlertOrigin(_ origin: LichessBotGameOrigin, gameID: String) {
+        if let alert = gameStartAlertTracker.originKnown(origin, gameID: gameID) {
+            playGameStartAlert(alert, gameID: gameID)
+        }
+    }
+
+    /// Hand a game's opponent kind to the alert tracker once the listed game
+    /// knows it (from `gameFull`), by the live game's own rule
+    /// (`LichessBotOpponentKind.of`); play the alert if this decides one.
+    /// Cheap when the game isn't waiting, so it runs after every game event.
+    private func noteGameStartAlertOpponent(gameID: String) {
+        guard gameStartAlertTracker.isWaiting(gameID), let kind = listedGame(gameID)?.opponent?.kind else { return }
+        if let alert = gameStartAlertTracker.opponentKnown(kind, gameID: gameID) {
+            playGameStartAlert(alert, gameID: gameID)
+        }
+    }
+
+    /// Play a game-start alert with the sound and repeat count in force now,
+    /// so a changed setting applies to the next game. None chosen plays
+    /// nothing.
+    private func playGameStartAlert(_ alert: LichessBotGameStartAlert, gameID: String) {
+        let setting = alert.sound(in: settings.alerts)
+        guard let soundName = setting.soundName else { return }
+        let times = setting.repeatCount
+        SessionLogger.shared.log("[LICHESS-BOT] game \(gameID): \(alert.logDescription); playing sound \(soundName) ×\(times)")
+        do {
+            try gameStartAlertPlayer.enqueue(soundName: soundName, times: times) { [weak self] error in
+                self?.protocolLog.record(.anomaly, "game-start alert sound failed: \(error.localizedDescription)", gameID: gameID)
+                SessionLogger.shared.log("[LICHESS-BOT] game \(gameID): game-start alert sound \(soundName) failed: \(error.localizedDescription)")
+            }
+        } catch {
+            protocolLog.record(.anomaly, "game-start alert sound failed: \(error.localizedDescription)", gameID: gameID)
+            SessionLogger.shared.log("[LICHESS-BOT] game \(gameID): game-start alert sound \(soundName) failed: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Game origin (challenge-log plan §3.5)
 
     /// A challenge fact was recorded: a game waiting for its origin may now
@@ -1745,6 +1819,7 @@ final class LichessBotController {
     /// log instead.
     private func writeGameOrigin(_ origin: LichessBotGameOrigin, gameID: String) {
         listedGame(gameID)?.setOrigin(origin)
+        noteGameStartAlertOrigin(origin, gameID: gameID)
         var fields = ["origin": origin.token]
         if let challengeID = origin.challengeID {
             fields["challenge"] = challengeID
@@ -3483,6 +3558,11 @@ final class LichessBotController {
         for game in games where activeGameIDs.contains(game.id) {
             game.markSessionEnded(reason)
         }
+        // Sessions ended by the teardown never send `gameSessionEnded`;
+        // settle their start alerts so no fact left waiting completes later.
+        for gameID in activeGameIDs {
+            gameStartAlertTracker.sessionEnded(gameID: gameID)
+        }
         activeGameIDs.removeAll()
         updateAutoFollow()
         gateSnapshot = nil
@@ -3689,6 +3769,8 @@ final class LichessBotController {
             // was dismissed or pruned must not bring it back (the journal
             // records every event regardless).
             listedGame(gameID)?.apply(gameEvent)
+            // A `gameFull` may have just named the opponent.
+            noteGameStartAlertOpponent(gameID: gameID)
             // A final state may have just finished the followed game.
             updateAutoFollow()
             switch gameEvent {
@@ -3813,6 +3895,15 @@ final class LichessBotController {
             // Counted from here as a game in progress, not as starting.
             acceptedAwaitingStartIDs.remove(gameID)
             listStartedGame(gameID, origin: origin)
+            // Before the origin is decided below, so a decision made now
+            // reaches the alert tracker.
+            let isNewGame: Bool
+            if case .new = origin {
+                isNewGame = true
+            } else {
+                isNewGame = false
+            }
+            gameStartAlertTracker.sessionStarted(gameID: gameID, isNewGame: isNewGame)
             let recordedOrigin: LichessBotGameOrigin?
             if case .resumed(let journal) = origin {
                 recordedOrigin = journal.recordedOrigin
@@ -3822,11 +3913,14 @@ final class LichessBotController {
             switch gameOriginResolver.sessionStarted(gameID: gameID, recordedOrigin: recordedOrigin, ledger: challengeLedger) {
             case .alreadyRecorded(let recorded):
                 listedGame(gameID)?.setOrigin(recorded)
+                noteGameStartAlertOrigin(recorded, gameID: gameID)
             case .decided(let decided):
                 writeGameOrigin(decided, gameID: gameID)
             case .waiting:
                 break
             }
+            // A game this launch already followed may know its players.
+            noteGameStartAlertOpponent(gameID: gameID)
             updateAutoFollow()
             self.generation = generation
             let modelFields = ["model": generation.modelID, "generation": "\(generation.generationID)"]
@@ -3849,6 +3943,7 @@ final class LichessBotController {
             if let undetermined = gameOriginResolver.sessionEnded(gameID: gameID, ledger: challengeLedger) {
                 writeGameOrigin(undetermined, gameID: gameID)
             }
+            gameStartAlertTracker.sessionEnded(gameID: gameID)
             activeGameIDs.remove(gameID)
             if let game = games.first(where: { $0.id == gameID }) {
                 game.markSessionEnded("the game session ended")

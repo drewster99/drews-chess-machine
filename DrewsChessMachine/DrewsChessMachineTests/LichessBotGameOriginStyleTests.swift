@@ -168,17 +168,17 @@ final class LichessBotGameOriginStyleTests: XCTestCase {
             "g2": LichessBotGameOriginDisplay(category: .incoming, detail: "d", basis: .reconstructed(.certain)),
             "g3": LichessBotGameOriginDisplay(category: .matchmaking, detail: "d", basis: .challengeLog),
         ]
-        let all = LichessBotAllGamesRow.rows(summaries, origins: origins, filter: .all)
+        let all = LichessBotAllGamesRow.rows(summaries, origins: origins, filter: .all, opponents: .all)
         XCTAssertEqual(all.map(\.id), ["g1", "g2", "g3", "g4"])
-        XCTAssertEqual(LichessBotAllGamesRow.summary(filedCount: 4, shown: all, filter: .all),
+        XCTAssertEqual(LichessBotAllGamesRow.summary(filedCount: 4, shown: all, filter: .all, opponents: .all),
                        "4 filed games: Incoming 1 · Matchmaking 2 · Not yet known 1")
 
-        let matchmaking = LichessBotAllGamesRow.rows(summaries, origins: origins, filter: .only(.matchmaking))
+        let matchmaking = LichessBotAllGamesRow.rows(summaries, origins: origins, filter: .only(.matchmaking), opponents: .all)
         XCTAssertEqual(matchmaking.map(\.id), ["g1", "g3"])
-        XCTAssertEqual(LichessBotAllGamesRow.summary(filedCount: 4, shown: matchmaking, filter: .only(.matchmaking)),
+        XCTAssertEqual(LichessBotAllGamesRow.summary(filedCount: 4, shown: matchmaking, filter: .only(.matchmaking), opponents: .all),
                        "2 of 4 filed games: Matchmaking 2")
-        XCTAssertEqual(LichessBotAllGamesRow.rows(summaries, origins: origins, filter: .only(.tournament)).count, 0)
-        XCTAssertEqual(LichessBotAllGamesRow.summary(filedCount: 4, shown: [], filter: .only(.tournament)), "0 of 4 filed games")
+        XCTAssertEqual(LichessBotAllGamesRow.rows(summaries, origins: origins, filter: .only(.tournament), opponents: .all).count, 0)
+        XCTAssertEqual(LichessBotAllGamesRow.summary(filedCount: 4, shown: [], filter: .only(.tournament), opponents: .all), "0 of 4 filed games")
 
         // Sorted by category order; not yet known last.
         let sorted = all.sorted(using: KeyPathComparator(\LichessBotAllGamesRow.originSortKey))

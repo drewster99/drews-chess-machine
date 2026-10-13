@@ -89,33 +89,39 @@ struct LichessBotStatsModelChoice: Sendable, Equatable, Identifiable {
     }
 }
 
-/// The Model filter's menu for each Games filter and period: the models
-/// that played games the panes show, with those games' counts, so the menu
-/// matches the Models pane (the selected period and Rated / Casual / All).
-/// Built with the statistics, so changing the period or the Games filter is
-/// a lookup.
+/// The Model filter's menu for each Games filter and period, under the
+/// selected Opponents filter: the models that played games the panes show,
+/// with those games' counts, so the menu matches the Models pane (the
+/// selected period, Rated / Casual / All and opponents). Built with the
+/// statistics, so changing the period or the Games filter is a lookup.
 struct LichessBotStatsModelMenu: Sendable {
     private let byFilter: LichessBotFilterValues<LichessBotPeriodValues<[LichessBotStatsModelChoice]>>
+    /// Every model any game is attributed to (all games, all time, any
+    /// opponent).
+    let everyModel: [LichessBotStatsModelChoice]
 
     /// Before the first result: no models.
-    static let empty = LichessBotStatsModelMenu(byFilter: LichessBotFilterValues { _ in LichessBotPeriodValues { _ in [] } })
+    static let empty = LichessBotStatsModelMenu(byFilter: LichessBotFilterValues { _ in LichessBotPeriodValues { _ in [] } }, everyModel: [])
 
-    static func make(rows: [LichessBotGameSummary], now: Date, calendar: Calendar) throws -> LichessBotStatsModelMenu {
+    /// - Parameter opponents: the Opponents filter the panes show. It narrows
+    ///   the per-filter lists but not `everyModel`, which the pipeline uses to
+    ///   tell a model whose games were cleared from one that merely never
+    ///   played this kind of opponent — the latter must keep its selection.
+    static func make(rows: [LichessBotGameSummary], opponents: LichessBotOpponentKindFilter, now: Date, calendar: Calendar) throws -> LichessBotStatsModelMenu {
         let starts = try LichessBotStatsPeriods.starts(now: now, calendar: calendar)
-        return LichessBotStatsModelMenu(byFilter: LichessBotFilterValues { filter in
-            let inFilter = rows.filter { filter.includes($0) }
-            return LichessBotPeriodValues { period in
-                LichessBotStatsModelChoice.choices(from: inFilter.filter { starts.contains($0.createdAt, in: period) })
-            }
-        })
+        let shown = rows.filter { opponents.includes($0) }
+        return LichessBotStatsModelMenu(
+            byFilter: LichessBotFilterValues { filter in
+                let inFilter = shown.filter { filter.includes($0) }
+                return LichessBotPeriodValues { period in
+                    LichessBotStatsModelChoice.choices(from: inFilter.filter { starts.contains($0.createdAt, in: period) })
+                }
+            },
+            everyModel: LichessBotStatsModelChoice.choices(from: rows)
+        )
     }
 
     func choices(filter: LichessBotStatsFilter, period: LichessBotStatsPeriod) -> [LichessBotStatsModelChoice] {
         byFilter[filter][period]
-    }
-
-    /// Every model any game is attributed to (all games, all time).
-    var everyModel: [LichessBotStatsModelChoice] {
-        byFilter[.all][.allTime]
     }
 }

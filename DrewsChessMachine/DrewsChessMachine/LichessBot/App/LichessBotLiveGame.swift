@@ -47,6 +47,9 @@ final class LichessBotLiveGame: Identifiable {
         let name: String
         let rating: Int?
         let title: String?
+        /// By the record's rule (`LichessBotOpponentKind.of`), so a live
+        /// game and its filed record name the same kind.
+        let kind: LichessBotOpponentKind
     }
 
     struct ChatMessage: Identifiable, Equatable {
@@ -249,6 +252,15 @@ final class LichessBotLiveGame: Identifiable {
         case .black: return white
         case .none: return nil
         }
+    }
+
+    /// DCM is playing a human. False while the opponent is not known yet
+    /// (before `gameFull` names the players and our color): an unknown
+    /// opponent is not treated as human, so the Live view's human-first
+    /// following and the tiles' human marker wait for the players rather
+    /// than guess. Lichess's AI is not a human.
+    var opponentIsHuman: Bool {
+        opponent?.kind == .human
     }
 
     /// The side to move in the current position.
@@ -618,6 +630,7 @@ final class LichessBotLiveGame: Identifiable {
             recordAnomaly("a player in gameFull has no name, id or AI level")
             name = "unidentified player"
         }
-        return Player(id: player.id, name: name, rating: player.rating, title: player.title)
+        return Player(id: player.id, name: name, rating: player.rating, title: player.title,
+                      kind: LichessBotOpponentKind.of(title: player.title, aiLevel: player.aiLevel))
     }
 }

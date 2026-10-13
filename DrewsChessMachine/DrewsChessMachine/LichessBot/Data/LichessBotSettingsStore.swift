@@ -161,15 +161,19 @@ enum LichessBotSettingsStore {
                 }
                 continue
             }
-            // Merge nested objects key by key, but only when they share a key.
-            // A struct and its older save always do; an enum with associated
-            // values encodes as a one-key object named after its case, so a
-            // saved case different from the default case shares none and must
-            // be taken whole — merging would hand the decoder two cases. An
-            // empty saved object is a struct whose fields were all nil
-            // optionals (an enum case object is never empty), so it merges.
+            // Merge nested objects key by key, except a saved enum case. An
+            // enum with associated values encodes as a one-key object named
+            // after its case, so a saved case different from the default case
+            // is a one-key object whose key the one-key default lacks; it must
+            // be taken whole — merging would hand the decoder two cases. Only
+            // that shape is taken whole: a struct can share no key with its
+            // older save too (the old save held only optionals whose defaults
+            // are nil, so absent from the default object, while every field
+            // the default object has is new), and must still merge so the new
+            // fields are filled. An empty saved object (a struct whose fields
+            // were all nil) merges as well.
             if let savedObject = savedValue as? [String: Any], let defaultObject = defaultValue as? [String: Any],
-               savedObject.isEmpty || !Set(savedObject.keys).isDisjoint(with: defaultObject.keys) {
+               !Self.isDifferentEnumCase(saved: savedObject, default: defaultObject) {
                 result[key] = try overlay(
                     saved: savedObject, onto: defaultObject, path: keyPath, defaultRoot: defaultRoot,
                     filled: &filled, ignored: &ignored)
@@ -186,6 +190,15 @@ enum LichessBotSettingsStore {
             filled.append(keyPath.joined(separator: "."))
         }
         return result
+    }
+
+    /// Whether `saved` is an enum case other than the default's: both are
+    /// one-key objects (how an enum with associated values encodes) with
+    /// different keys.
+    static func isDifferentEnumCase(saved: [String: Any], default defaultObject: [String: Any]) -> Bool {
+        guard saved.count == 1, defaultObject.count == 1, let savedKey = saved.keys.first,
+              let defaultKey = defaultObject.keys.first else { return false }
+        return savedKey != defaultKey
     }
 
     /// Whether the field at `keyPath` (present in the default object) is

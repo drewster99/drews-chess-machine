@@ -45,13 +45,15 @@ final class LichessBotAllGamesWindowController: NSWindowController, NSWindowDele
 }
 
 /// Every filed game in a sortable table, with how each began (challenge-log
-/// plan §3.9) and a filter by origin. The shown rows are filtered and sorted
-/// into `shownRows` when the index, the origins, the filter or the sort
-/// change, never in `body`.
+/// plan §3.9), a filter by origin and one by opponent kind (bots / humans).
+/// The shown rows are filtered and sorted into `shownRows` when the index,
+/// the origins, a filter or the sort change, never in `body`. Both filters
+/// are window state, not remembered: the window opens on every game.
 struct LichessBotAllGamesView: View {
     let controller: LichessBotController
     @State private var sortOrder = [KeyPathComparator(\LichessBotAllGamesRow.createdAt, order: .reverse)]
     @State private var originFilter: LichessBotAllGamesOriginFilter = .all
+    @State private var opponentsFilter: LichessBotOpponentKindFilter = .all
     @State private var shownRows: [LichessBotAllGamesRow] = []
     @State private var summary = ""
 
@@ -63,6 +65,7 @@ struct LichessBotAllGamesView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 Spacer()
+                LichessBotOpponentKindFilterPicker(filter: $opponentsFilter)
                 LichessBotAllGamesOriginFilterPicker(filter: $originFilter)
             }
             LichessBotAllGamesTable(controller: controller, rows: shownRows, sortOrder: $sortOrder)
@@ -83,6 +86,11 @@ struct LichessBotAllGamesView: View {
                 refreshShownRows()
             }
         }
+        .onChange(of: opponentsFilter) {
+            Task { @MainActor in
+                refreshShownRows()
+            }
+        }
         .onChange(of: sortOrder) {
             Task { @MainActor in
                 refreshShownRows()
@@ -96,9 +104,9 @@ struct LichessBotAllGamesView: View {
             summary = "Loading the games index…"
             return
         }
-        let filtered = LichessBotAllGamesRow.rows(index.rows, origins: controller.originsByGameID, filter: originFilter)
+        let filtered = LichessBotAllGamesRow.rows(index.rows, origins: controller.originsByGameID, filter: originFilter, opponents: opponentsFilter)
         shownRows = filtered.sorted(using: sortOrder)
-        summary = LichessBotAllGamesRow.summary(filedCount: index.rows.count, shown: filtered, filter: originFilter)
+        summary = LichessBotAllGamesRow.summary(filedCount: index.rows.count, shown: filtered, filter: originFilter, opponents: opponentsFilter)
     }
 }
 
@@ -192,11 +200,13 @@ struct LichessBotAllGamesRow: Identifiable {
     var status: String { summary.status }
     var plies: Int { summary.plies }
 
-    /// The index rows `filter` shows, in index order. An origin not yet
-    /// known matches only "All".
+    /// The index rows both filters show, in index order. An origin not yet
+    /// known matches only "All"; a game against Lichess' AI matches only
+    /// "All opponents" (`LichessBotOpponentKindFilter`).
     static func rows(_ summaries: [LichessBotGameSummary], origins: [String: LichessBotGameOriginDisplay],
-                     filter: LichessBotAllGamesOriginFilter) -> [LichessBotAllGamesRow] {
+                     filter: LichessBotAllGamesOriginFilter, opponents: LichessBotOpponentKindFilter) -> [LichessBotAllGamesRow] {
         summaries.compactMap { summary in
+            guard opponents.includes(summary) else { return nil }
             let row = LichessBotAllGamesRow(summary: summary, origin: origins[summary.gameID])
             switch filter {
             case .all:
@@ -210,7 +220,7 @@ struct LichessBotAllGamesRow: Identifiable {
     /// The summary line: how many games are filed, how many are shown, and
     /// the shown games per origin category in category order (categories
     /// with none left out).
-    static func summary(filedCount: Int, shown: [LichessBotAllGamesRow], filter: LichessBotAllGamesOriginFilter) -> String {
+    static func summary(filedCount: Int, shown: [LichessBotAllGamesRow], filter: LichessBotAllGamesOriginFilter, opponents: LichessBotOpponentKindFilter) -> String {
         var counts: [LichessBotGameOriginCategory: Int] = [:]
         var notYetKnown = 0
         for row in shown {
@@ -227,11 +237,14 @@ struct LichessBotAllGamesRow: Identifiable {
         if notYetKnown > 0 {
             parts.append("\(LichessBotGameOriginStyle.notYetKnownLabel) \(notYetKnown)")
         }
-        let head: String
-        switch filter {
-        case .all: head = "\(filedCount) filed games"
-        case .only: head = "\(shown.count) of \(filedCount) filed games"
+        // "n of m" whenever either filter hides games, so the count of
+        // filed games is always in view.
+        let narrowed: Bool
+        switch (filter, opponents) {
+        case (.all, .all): narrowed = false
+        case (.only, _), (_, .bots), (_, .humans): narrowed = true
         }
+        let head = narrowed ? "\(shown.count) of \(filedCount) filed games" : "\(filedCount) filed games"
         return parts.isEmpty ? head : "\(head): \(parts.joined(separator: " · "))"
     }
 }

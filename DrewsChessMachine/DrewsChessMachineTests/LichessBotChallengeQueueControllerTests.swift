@@ -15,6 +15,9 @@ final class LichessBotFakeLichess: LichessBotTransport, @unchecked Sendable {
     let canceledIDs = SyncBox<[String]>([])
     /// NDJSON body of `GET /api/bot/online`.
     let onlineBotsNDJSON = SyncBox<String>("")
+    /// Lowercase ids of the players who are humans: no "BOT" title in their
+    /// status or their game's `gameFull`. Everyone else is a bot.
+    let humanOpponents = SyncBox<Set<String>>([])
     /// The `perfs` object of `GET /api/account`.
     let accountPerfsJSON: String
     private let eventContinuation = SyncBox<LichessBotChunkStream.Continuation?>(nil)
@@ -72,7 +75,7 @@ final class LichessBotFakeLichess: LichessBotTransport, @unchecked Sendable {
         if path.hasPrefix(gamePrefix) {
             let gameID = String(path.dropFirst(gamePrefix.count))
             gameContinuations.modify { $0[gameID] = continuation }
-            continuation.yield(Data((Self.gameFullJSON(gameID: gameID) + "\n").utf8))
+            continuation.yield(Data((gameFullJSON(gameID: gameID) + "\n").utf8))
             return (chunks, try lichessBotTestResponse(status: 200))
         }
         continuation.yield(Data(#"{"error":"Not found"}"#.utf8))
@@ -80,12 +83,17 @@ final class LichessBotFakeLichess: LichessBotTransport, @unchecked Sendable {
         return (chunks, try lichessBotTestResponse(status: 404))
     }
 
+    /// The `"title":"BOT",` field for a bot, nothing for a human.
+    private func titleField(forPlayerID id: String) -> String {
+        humanOpponents.value.contains(id.lowercased()) ? "" : #""title":"BOT","#
+    }
+
     /// DCM plays black, so it waits for the opponent's first move and the
     /// test decides when the game ends.
-    private static func gameFullJSON(gameID: String) -> String {
+    private func gameFullJSON(gameID: String) -> String {
         let opponent = gameID.hasPrefix("c") ? String(gameID.dropFirst()) : gameID
-        let white = #"{"id":"\#(opponent)","name":"\#(opponent)","title":"BOT","rating":1500}"#
-        let black = #"{"id":"\#(botID)","name":"DrewsChessMachine","title":"BOT","rating":1500}"#
+        let white = #"{"id":"\#(opponent)","name":"\#(opponent)",\#(titleField(forPlayerID: opponent))"rating":1500}"#
+        let black = #"{"id":"\#(Self.botID)","name":"DrewsChessMachine","title":"BOT","rating":1500}"#
         let state = #"{"type":"gameState","moves":"","wtime":180000,"btime":180000,"winc":2000,"binc":2000,"status":"started"}"#
         return #"{"type":"gameFull","id":"\#(gameID)","variant":{"key":"standard","name":"Standard","short":"Std"},"clock":{"initial":180000,"increment":2000},"speed":"blitz","perf":{"name":"Blitz"},"rated":false,"createdAt":1700000000000,"white":\#(white),"black":\#(black),"initialFen":"startpos","state":\#(state)}"#
     }
@@ -102,7 +110,7 @@ final class LichessBotFakeLichess: LichessBotTransport, @unchecked Sendable {
             return (200, #"{"id":"\#(Self.botID)","username":"DrewsChessMachine","title":"BOT","perfs":\#(accountPerfsJSON)}"#)
         case ("GET", "/api/users/status"):
             let ids = components?.queryItems?.first { $0.name == "ids" }?.value?.split(separator: ",").map(String.init) ?? []
-            let entries = ids.map { #"{"id":"\#($0.lowercased())","name":"\#($0)","title":"BOT","online":true}"# }
+            let entries = ids.map { #"{"id":"\#($0.lowercased())","name":"\#($0)",\#(titleField(forPlayerID: $0))"online":true}"# }
             return (200, "[" + entries.joined(separator: ",") + "]")
         case ("GET", "/api/bot/online"):
             return (200, onlineBotsNDJSON.value)
@@ -348,5 +356,52 @@ final class LichessBotChallengeQueueControllerTests: XCTestCase {
         try await waitUntil("the view moves on") { controller.displayedGame?.id == carolGame }
         XCTAssertGreaterThanOrEqual(ContinuousClock.now - finishedAt, hold - .milliseconds(100), "not before the hold ends")
         XCTAssertTrue(controller.games.contains { $0.id == bobGame }, "the finished game is still listed")
+    }
+
+    /// Owner request 2026-10-13: the single view prefers games against
+    /// humans. A human game starting while a bot game is followed takes the
+    /// view; a bot game starting while the human game is followed doesn't;
+    /// the operator's pick outranks following; when the human game ends,
+    /// the view holds it, then moves to the remaining game.
+    func testTheSingleViewPrefersAGameAgainstAHuman() async throws {
+        let hold = Duration.milliseconds(300)
+        let lichess = LichessBotFakeLichess()
+        lichess.humanOpponents.value = ["carol"]
+        let controller = try await makeOnlineController(lichess: lichess, modelProvider: try await LichessBotFakeModelProvider.randomChampion(), finishedGameHold: hold) { settings in
+            settings.challenge.maxConcurrentGames = 3
+        }
+        try controller.enqueueChallenges(to: players("bob", "carol", "dave"), request: request)
+        try await waitUntil("all three challenges are pending") { controller.pendingChallenges.count == 3 }
+        let bobGame = LichessBotFakeLichess.challengeID(for: "bob")
+        let carolGame = LichessBotFakeLichess.challengeID(for: "carol")
+        let daveGame = LichessBotFakeLichess.challengeID(for: "dave")
+        func listed(_ gameID: String) -> LichessBotLiveGame? {
+            controller.games.first { $0.id == gameID }
+        }
+
+        lichess.startGame(against: "bob")
+        try await waitUntil("bob's game has its players") { listed(bobGame)?.opponent != nil }
+        XCTAssertEqual(listed(bobGame)?.opponentIsHuman, false)
+        XCTAssertEqual(controller.displayedGame?.id, bobGame, "the only game is followed")
+
+        lichess.startGame(against: "carol")
+        try await waitUntil("carol's game has its players") { listed(carolGame)?.opponent != nil }
+        XCTAssertEqual(listed(carolGame)?.opponentIsHuman, true)
+        XCTAssertEqual(controller.autoFollowedGameID, carolGame, "the human game takes the view from the bot game")
+        XCTAssertEqual(controller.displayedGame?.id, carolGame)
+
+        lichess.startGame(against: "dave")
+        try await waitUntil("dave's game has its players") { listed(daveGame)?.opponent != nil }
+        XCTAssertEqual(controller.displayedGame?.id, carolGame, "a bot game never takes the view from a human game")
+
+        controller.focusedGameID = daveGame
+        XCTAssertEqual(controller.displayedGame?.id, daveGame, "the operator's pick outranks following")
+        controller.focusedGameID = nil
+        XCTAssertEqual(controller.displayedGame?.id, carolGame, "back to Auto: the human game first")
+
+        lichess.endGame(against: "carol")
+        try await waitUntil("carol's game is finished") { listed(carolGame)?.isFinished == true }
+        XCTAssertEqual(controller.displayedGame?.id, carolGame, "the finished human game is held on screen")
+        try await waitUntil("the view moves on after the hold") { controller.displayedGame?.id == bobGame }
     }
 }

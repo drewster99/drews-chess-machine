@@ -24,6 +24,8 @@ final class LichessBotFollowLineageSettingsTests: XCTestCase {
         XCTAssertNil(result.settings.model.followedLineage)
         XCTAssertEqual(result.settings.model.lineageCheckIntervalSeconds, LichessBotModelSettings().lineageCheckIntervalSeconds)
         XCTAssertEqual(result.filledFromDefaults, [
+            // Added 2026-10-13 by the game-start alerts (LichessBotGameStartAlert).
+            "alerts.humanAcceptedOurChallengeSound", "alerts.weAcceptedHumanChallengeSound",
             "challenge.botGamesReservedForChallengeQueue", "challenge.botGamesReservedForIncoming",
             "matchmaking.noBotDeclineBlockDays", "matchmaking.preferNotRecentlyContacted",
             "matchmaking.ratedCasualDeclineBlockDays", "matchmaking.recentContactHours",

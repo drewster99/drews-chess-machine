@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The live games section (plan §14.3a): one game large — by default the
-/// first-started game still in progress — or every game in a grid, with
+/// The live games section (plan §14.3a): one game large — by default a
+/// game in progress, one against a human first
+/// (`LichessBotAutoFollowChoice`) — or every game in a grid, with
 /// finished games kept for a while. Any game can pop out into its own
 /// window.
 struct LichessBotLiveView: View {
@@ -29,7 +30,10 @@ struct LichessBotLiveView: View {
         let opponent = game.opponent?.name ?? "?"
         let origin = game.originDisplay.map { LichessBotGameOriginStyle.presentation(of: $0).markedShortLabel }
             ?? LichessBotGameOriginStyle.notYetKnownPickerSuffix
-        return "\(game.isFinished ? "✓" : "●") \(opponent) · \(game.id) · \(origin)"
+        // A menu item can't carry the tiles' glyph in color, so a human
+        // opponent is said in words.
+        let human = game.opponentIsHuman ? " (human)" : ""
+        return "\(game.isFinished ? "✓" : "●") \(opponent)\(human) · \(game.id) · \(origin)"
     }
 }
 
@@ -64,13 +68,14 @@ struct LichessBotLiveToolbar: View {
     }
 }
 
-/// Which game the single view shows: the first in progress, or one chosen.
+/// Which game the single view shows: followed automatically (a game in
+/// progress, one against a human first), or one chosen.
 struct LichessBotLiveGamePicker: View {
     @Bindable var controller: LichessBotController
 
     var body: some View {
         Picker("Game", selection: $controller.focusedGameID) {
-            Text("First in progress").tag(String?.none)
+            Text("Auto: humans first").tag(String?.none)
             ForEach(controller.games) { game in
                 Text(LichessBotLiveView.menuTitle(for: game)).tag(String?.some(game.id))
             }

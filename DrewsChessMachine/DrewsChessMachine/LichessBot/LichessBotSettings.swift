@@ -290,13 +290,32 @@ struct LichessBotDisplaySettings: Sendable, Equatable, Codable {
     var finishedGameRetentionMinutes = 10
 }
 
-/// Tones played when a challenge arrives, so the owner notices activity
-/// without watching the window. Read live on each arrival.
+/// A system sound played a number of times in a row, each play starting
+/// when the previous one ends (`LichessBotRepeatingSoundPlayer`). Repeats
+/// exist because a single short tone is easy to miss when the operator is
+/// away from the desk, and a human game is the one worth walking back for.
+struct LichessBotRepeatingAlertSound: Sendable, Equatable, Codable {
+    /// System sound name; nil plays nothing.
+    var soundName: String?
+    /// How many times the sound plays, within
+    /// `LichessBotLimits.alertSoundRepeatCountRange`.
+    var repeatCount = 1
+}
+
+/// Tones played when a challenge arrives or a human game starts, so the
+/// owner notices activity without watching the window. Read live on each
+/// arrival and at each game-start alert.
 struct LichessBotAlertSettings: Sendable, Equatable, Codable {
     /// System sound name for challenges from BOT accounts; nil plays nothing.
     var botChallengeSoundName: String?
     /// System sound name for challenges from humans; nil plays nothing.
     var humanChallengeSoundName: String?
+    /// A human accepted one of DCM's challenges and the game started
+    /// (`LichessBotGameStartAlert.humanAcceptedOurChallenge`).
+    var humanAcceptedOurChallengeSound = LichessBotRepeatingAlertSound()
+    /// DCM accepted a human's challenge and the game started
+    /// (`LichessBotGameStartAlert.weAcceptedHumanChallenge`).
+    var weAcceptedHumanChallengeSound = LichessBotRepeatingAlertSound()
 }
 
 /// All Lichess bot settings, persisted as one JSON blob (plan §12.1). Not
@@ -389,6 +408,11 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(n.movePostFailureBreakerCount >= 1 && n.reconnectStormBreakerCount >= 1 && n.breakerWindowMinutes >= 1, "Breaker thresholds must be at least one")
         require(display.finishedGameRetentionMinutes >= 0, "Finished-game retention cannot be negative")
 
+        let repeats = LichessBotLimits.alertSoundRepeatCountRange
+        for (sound, name) in [(alerts.humanAcceptedOurChallengeSound, "Human accepted our challenge"), (alerts.weAcceptedHumanChallengeSound, "We accepted a human's challenge")] {
+            require(repeats.contains(sound.repeatCount), "\(name): the sound must play between \(repeats.lowerBound) and \(repeats.upperBound) times")
+        }
+
         let m = matchmaking
         require(!m.timeControls.isEmpty, "Matchmaking: choose at least one time control")
         require(m.minimumRatingOffset <= m.maximumRatingOffset, "Matchmaking: the rating window's lower offset must not exceed its upper offset")
@@ -433,4 +457,9 @@ enum LichessBotLimits {
     /// late; at most an hour, so a stuck game is still freed the same
     /// session.
     static let stuckGameGraceSecondsRange = 60...3600
+    /// How many times a game-start alert sound may play in a row. At least
+    /// once (a sound is turned off by choosing None, not by zero repeats);
+    /// at most ten, so a long system sound can't tie up the alerts for
+    /// minutes.
+    static let alertSoundRepeatCountRange = 1...10
 }

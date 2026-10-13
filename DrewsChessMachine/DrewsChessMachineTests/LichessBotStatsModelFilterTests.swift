@@ -61,7 +61,7 @@ final class LichessBotStatsModelFilterTests: XCTestCase {
             try Fixtures.row(id: "b-now", at: now.addingTimeInterval(-60), score: 0, facts: Fixtures.facts(generations: [b])),
             try Fixtures.row(id: "b-old", at: now.addingTimeInterval(-40 * 86_400), score: 0, facts: Fixtures.facts(generations: [b])),
         ]
-        let menu = try LichessBotStatsModelMenu.make(rows: rows, now: now, calendar: Fixtures.utcCalendar)
+        let menu = try LichessBotStatsModelMenu.make(rows: rows, opponents: .all, now: now, calendar: Fixtures.utcCalendar)
         XCTAssertEqual(menu.choices(filter: .all, period: .lastHour).map(\.key), [Self.key("B", step: 2000)])
         XCTAssertEqual(menu.choices(filter: .all, period: .lastHour).map(\.games), [1])
         XCTAssertEqual(Set(menu.choices(filter: .all, period: .allTime).map(\.key)), [Self.key("A", step: 1000), Self.key("B", step: 2000)])

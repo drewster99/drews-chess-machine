@@ -10,6 +10,17 @@ enum LichessBotOpponentKind: String, Sendable, Codable, Equatable, CaseIterable 
     case bot
     /// Lichess's own engine (`aiLevel` set, no account, no rating).
     case lichessAI
+
+    /// The one rule for a Lichess player's kind, shared by the filed record
+    /// and the live game so the two never disagree: an AI level means
+    /// Lichess's own engine (which has no account and so no title), then
+    /// the title "BOT", else a human.
+    static func of(title: String?, aiLevel: Int?) -> LichessBotOpponentKind {
+        if aiLevel != nil {
+            return .lichessAI
+        }
+        return title == "BOT" ? .bot : .human
+    }
 }
 
 /// A finished game: the single source of truth for everything the bot
@@ -452,19 +463,11 @@ enum LichessBotRecordBuilder {
 
         func player(_ color: LichessBotColorName, export: LichessBotGameExport?) -> LichessBotGameRecord.Player {
             let p = color == .white ? white : black
-            let kind: LichessBotOpponentKind
-            if p.aiLevel != nil {
-                kind = .lichessAI
-            } else if p.title == "BOT" {
-                kind = .bot
-            } else {
-                kind = .human
-            }
             return LichessBotGameRecord.Player(
                 id: p.id,
                 name: p.name,
                 title: p.title,
-                kind: kind,
+                kind: LichessBotOpponentKind.of(title: p.title, aiLevel: p.aiLevel),
                 aiLevel: p.aiLevel,
                 ratingBefore: p.rating,
                 ratingDiff: export?.player(color).ratingDiff,

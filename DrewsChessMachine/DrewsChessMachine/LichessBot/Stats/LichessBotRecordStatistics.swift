@@ -26,7 +26,9 @@ struct LichessBotRecordStatistics: Sendable, Equatable {
     let byFilter: LichessBotFilterValues<FilterStatistics>
     /// Per speed, the starting ratings of its last
     /// `ratingTrendLimit` rated games, oldest first. From rated games, so
-    /// independent of the period and the filter.
+    /// independent of the period and the Games filter; the Model and
+    /// Opponents filters narrow the rows before this is computed
+    /// (`LichessBotRecordStatisticsPipeline`), so it follows those.
     let ratingTrends: [String: [LichessBotRatingPoint]]
     /// Every speed any game was played at, for the Time controls rows.
     let recordSpeeds: Set<String>

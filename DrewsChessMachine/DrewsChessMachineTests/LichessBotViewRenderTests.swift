@@ -119,11 +119,13 @@ final class LichessBotViewRenderTests: XCTestCase {
     /// side Lichess reports (nil for a draw).
     /// `leftUnfinished`: the session ends mid-game (`markSessionEnded`), as
     /// when the bot goes offline, instead of a final game state.
-    private func makeFinishedGame(opponent: String, winner: String?, leftUnfinished: Bool = false) throws -> LichessBotLiveGame {
+    /// `opponentIsHuman`: the opponent has no "BOT" title.
+    private func makeFinishedGame(opponent: String, winner: String?, leftUnfinished: Bool = false, opponentIsHuman: Bool = false) throws -> LichessBotLiveGame {
         let game = LichessBotLiveGame(id: "fin12345", startedAt: Date(), ourAccountID: "drewschessmachine")
         let status = winner == nil ? "draw" : "mate"
         let winnerField = winner.map { #","winner":"\#($0)""# } ?? ""
-        let fullJSON = #"{"type":"gameFull","id":"fin12345","variant":{"key":"standard"},"clock":{"initial":300000,"increment":3000},"speed":"blitz","rated":false,"createdAt":1700000000000,"white":{"id":"drewschessmachine","name":"DrewsChessMachine","title":"BOT","rating":1500},"black":{"id":"\#(opponent.lowercased())","name":"\#(opponent)","title":"BOT","rating":1743},"initialFen":"startpos","state":{"type":"gameState","moves":"e2e4 e7e5","wtime":290000,"btime":280000,"winc":3000,"binc":3000,"status":"started"}}"#
+        let titleField = opponentIsHuman ? "" : #""title":"BOT","#
+        let fullJSON = #"{"type":"gameFull","id":"fin12345","variant":{"key":"standard"},"clock":{"initial":300000,"increment":3000},"speed":"blitz","rated":false,"createdAt":1700000000000,"white":{"id":"drewschessmachine","name":"DrewsChessMachine","title":"BOT","rating":1500},"black":{"id":"\#(opponent.lowercased())","name":"\#(opponent)",\#(titleField)"rating":1743},"initialFen":"startpos","state":{"type":"gameState","moves":"e2e4 e7e5","wtime":290000,"btime":280000,"winc":3000,"binc":3000,"status":"started"}}"#
         let full = Data(fullJSON.utf8)
         guard case .gameFull(let decoded) = try LichessBotGameStreamLine.decode(full) else {
             throw CocoaError(.coderReadCorrupt)
@@ -162,6 +164,43 @@ final class LichessBotViewRenderTests: XCTestCase {
                 XCTAssertEqual(heights[label], heights["won"], "width \(width) \(label): \(heights)")
             }
         }
+    }
+
+    /// Owner request 2026-10-13: a game against a human is marked. The
+    /// human tile draws its person glyph (so its image differs from the
+    /// same game against a bot) without changing the tile's height, at every
+    /// grid width including the narrowest column (240). Finished games, so
+    /// no clock ticks between the two renders.
+    func testAHumanOpponentsTileShowsTheMarkerWithoutChangingItsHeight() throws {
+        let controller = try makeController()
+        let name = "Vietnamese_Chess_Engine_Bot"
+        let human = try makeFinishedGame(opponent: name, winner: "white", opponentIsHuman: true)
+        let bot = try makeFinishedGame(opponent: name, winner: "white")
+        XCTAssertTrue(human.opponentIsHuman)
+        XCTAssertEqual(human.opponent?.kind, .human)
+        XCTAssertFalse(bot.opponentIsHuman)
+        XCTAssertEqual(bot.opponent?.kind, .bot)
+        for width in [CGFloat(240), 260, 340] {
+            let humanHeight = NSHostingView(rootView: LichessBotGameTileView(controller: controller, game: human, onOpen: {}, onDismiss: {})
+                .frame(width: width)).fittingSize.height
+            let botHeight = NSHostingView(rootView: LichessBotGameTileView(controller: controller, game: bot, onOpen: {}, onDismiss: {})
+                .frame(width: width)).fittingSize.height
+            XCTAssertEqual(humanHeight, botHeight, "width \(width)")
+        }
+        for scheme in [ColorScheme.light, .dark] {
+            let humanURL = try render(LichessBotGameTileView(controller: controller, game: human, onOpen: {}, onDismiss: {}),
+                                      size: CGSize(width: 240, height: 420), name: "tile-human", scheme: scheme)
+            let botURL = try render(LichessBotGameTileView(controller: controller, game: bot, onOpen: {}, onDismiss: {}),
+                                    size: CGSize(width: 240, height: 420), name: "tile-bot", scheme: scheme)
+            XCTAssertNotEqual(try Data(contentsOf: humanURL), try Data(contentsOf: botURL), "the human tile draws its marker")
+        }
+    }
+
+    /// A game whose players aren't known yet is not marked human.
+    func testAGameWithoutItsPlayersIsNotHuman() {
+        let game = LichessBotLiveGame(id: "wait1234", startedAt: Date(), ourAccountID: "drewschessmachine")
+        XCTAssertNil(game.opponent)
+        XCTAssertFalse(game.opponentIsHuman)
     }
 
     func testNoResultLabelsAreShort() {
