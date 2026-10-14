@@ -54,7 +54,7 @@ final class EarlyStopCoordinatorTerminationTests: XCTestCase {
         })
         coordinator?.handleTerminationSignal()
         XCTAssertEqual(pendingWhileAsked, [false])
-        XCTAssertEqual(coordinator?.isQuitInProgress, true, "a quit that returned is waiting")
+        XCTAssertEqual(coordinator?.isQuitInProgress, false, "only the delegate marks a deferred quit pending (quitDeferred)")
     }
 
     /// A quit AppKit deferred, whatever started it (⌘Q), makes a SIGTERM
@@ -65,5 +65,18 @@ final class EarlyStopCoordinatorTerminationTests: XCTestCase {
         coordinator.quitDeferred()
         coordinator.handleTerminationSignal()
         XCTAssertEqual(quits, 0)
+    }
+
+    /// The quit SIGTERM asks for runs later, from the run loop, never inside
+    /// the handler's main-actor task: AppKit's quit loop run inside that task
+    /// kept the main actor busy, so the bot's reply to `.terminateLater`
+    /// never ran and the process hung half-quit (2026-10-13).
+    func testTheSigtermQuitRunsFromTheRunLoopNotInsideTheHandler() {
+        var ran = false
+        let deferred = EarlyStopCoordinator.deferredToTheRunLoop { ran = true }
+        deferred()
+        XCTAssertFalse(ran, "not run inside the caller")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertTrue(ran, "run from the main run loop")
     }
 }

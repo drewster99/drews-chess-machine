@@ -24,7 +24,22 @@ import Foundation
 /// macOS logout.
 @MainActor
 final class EarlyStopCoordinator {
-    static let shared = EarlyStopCoordinator(terminateApp: { NSApp.terminate(nil) })
+    static let shared = EarlyStopCoordinator(terminateApp: deferredToTheRunLoop { NSApp.terminate(nil) })
+
+    /// `action` run later from the main run loop instead of now. SIGTERM's
+    /// handler runs inside a main-actor task; `NSApp.terminate` called there
+    /// spins AppKit's quit loop inside that task, so the main actor stays
+    /// occupied and the bot's reply to `.terminateLater` (another main-actor
+    /// task) can never run: the process hangs half-quit with Quit disabled
+    /// (seen 2026-10-13). Run from a run-loop block, the quit loop holds no
+    /// task, and the reply runs.
+    static func deferredToTheRunLoop(_ action: @escaping @MainActor () -> Void) -> @MainActor () -> Void {
+        {
+            RunLoop.main.perform {
+                MainActor.assumeIsolated { action() }
+            }
+        }
+    }
 
     /// Set by `SessionController` when a CLI training run starts. Captures
     /// the run's `AutoTrainTermination` and start time as a closure that,
@@ -49,11 +64,16 @@ final class EarlyStopCoordinator {
     private var sigusr2Source: DispatchSourceSignal?
     private var sigtermSource: DispatchSourceSignal?
     private var stopRequested: Bool = false
-    /// A quit is under way and waiting (AppKit was told `.terminateLater`,
-    /// or a SIGTERM asked AppKit to quit): a SIGTERM then only logs. Set by
-    /// SIGTERM and by `quitDeferred` (whatever started the quit: ⌘Q, the
-    /// menu, a signal); cleared only by `quitWasCancelled`.
+    /// AppKit was told `.terminateLater` and is waiting for the reply
+    /// (`quitDeferred`, whatever started the quit): `applicationShouldTerminate`
+    /// then doesn't start a second quit. Cleared only by `quitWasCancelled`.
     private var quitInProgress = false
+    /// A SIGTERM has asked AppKit to quit (the request runs later, from the
+    /// run loop): a repeat only logs. Cleared with `quitInProgress` when the
+    /// quit is cancelled. Kept apart from `quitInProgress` because AppKit's
+    /// `applicationShouldTerminate` for this very request must still reach
+    /// the bot.
+    private var terminationRequested = false
     /// What SIGTERM does: ask AppKit to quit, exactly as ⌘Q does.
     private let terminateApp: @MainActor () -> Void
 
@@ -145,8 +165,9 @@ final class EarlyStopCoordinator {
     /// A quit was cancelled (the operator cancelled "Finishing games"):
     /// the next SIGTERM or ⌘Q asks to quit again.
     func quitWasCancelled() {
-        guard quitInProgress else { return }
+        guard quitInProgress || terminationRequested else { return }
         quitInProgress = false
+        terminationRequested = false
         SessionLogger.shared.log("[APP] quit cancelled; a new SIGTERM or ⌘Q will quit again")
     }
 
@@ -155,7 +176,7 @@ final class EarlyStopCoordinator {
     /// watchdog sends it); otherwise the first asks AppKit to quit, and a
     /// repeat while a quit is pending only says so.
     func handleTerminationSignal() {
-        if quitInProgress {
+        if quitInProgress || terminationRequested {
             SessionLogger.shared.log("[APP] SIGTERM again: already quitting (running Lichess games finish first; kill -9 ends the process now)")
             return
         }
@@ -164,14 +185,14 @@ final class EarlyStopCoordinator {
             requestEarlyStop(reason: .sigtermReceived)
             return
         }
-        // Marked in progress only after `terminateApp` returns: it runs
-        // AppKit's `applicationShouldTerminate` synchronously, which must
-        // reach the bot (a pending quit there returns `.terminateLater`
-        // without asking it, and nothing would ever answer). A quit AppKit
-        // finishes at once never returns here; one that returns is waiting.
+        // Only `terminationRequested`, never `quitInProgress`: AppKit's
+        // `applicationShouldTerminate` for this request must reach the bot
+        // (a pending quit there returns `.terminateLater` without asking it,
+        // and nothing would ever answer); the delegate marks the quit pending
+        // when the bot defers it.
         SessionLogger.shared.log("[APP] SIGTERM: quitting as ⌘Q does")
+        terminationRequested = true
         terminateApp()
-        quitInProgress = true
     }
 
     /// Idempotent early-stop entry point. Multiple signals + AppDelegate
