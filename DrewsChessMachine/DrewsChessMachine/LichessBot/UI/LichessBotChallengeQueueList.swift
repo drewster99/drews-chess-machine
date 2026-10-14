@@ -78,14 +78,24 @@ struct LichessBotMatchmakingStatusLine: View {
         // The hourly count falls as sends age out, with no state change to
         // redraw it, so it is re-read on a timer.
         TimelineView(.periodic(from: .now, by: 30)) { context in
+            // Lichess's own daily bot-game limit pauses every bot game, not
+            // only matchmaking's, so it gets its own line rather than
+            // waiting for the next pass's status. The timeline clears it
+            // once the limit ends.
+            let ownLimitText = controller.ownBotGameLimitText(now: context.date) ?? ""
             HStack(spacing: 8) {
+                Text(ownLimitText)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .help("Lichess refused DCM for having played its daily allowance of games against other bots. Bot challenges are neither sent nor accepted until then; human games are unaffected.")
+                    .shown(!ownLimitText.isEmpty)
                 Text(controller.settings.matchmaking.enabled ? "Matchmaking on" : "Matchmaking off")
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(controller.settings.matchmaking.enabled ? Color.primary : Color.secondary)
                 Text(hourText(now: context.date))
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .help("Matchmaking challenges that reached Lichess in the last hour, against the per-hour cap in Settings ▸ Matchmaking")
+                    .help("Matchmaking challenges that reached Lichess in the last hour, against the cap now in force: Settings ▸ Matchmaking's per-hour cap inside the peak window, scaled by the off-peak rate outside it")
                 Text(controller.isFillingOpenSlots ? "filling open slots…" : (controller.matchmakingStatus ?? ""))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -97,6 +107,7 @@ struct LichessBotMatchmakingStatusLine: View {
 
     private func hourText(now: Date) -> String {
         let sent = controller.matchmakingRateLimiter.challengesInLastHour(now: now)
-        return "\(sent)/\(controller.settings.matchmaking.maxChallengesPerHour) this hour"
+        let rate = controller.matchmakingRate(now: now)
+        return "\(sent)/\(rate.hourlyCap) this hour (\(rate.text))"
     }
 }

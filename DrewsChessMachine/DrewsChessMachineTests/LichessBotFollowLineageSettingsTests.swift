@@ -27,7 +27,10 @@ final class LichessBotFollowLineageSettingsTests: XCTestCase {
             // Added 2026-10-13 by the game-start alerts (LichessBotGameStartAlert).
             "alerts.humanAcceptedOurChallengeSound", "alerts.weAcceptedHumanChallengeSound",
             "challenge.botGamesReservedForChallengeQueue", "challenge.botGamesReservedForIncoming",
-            "matchmaking.noBotDeclineBlockDays", "matchmaking.preferNotRecentlyContacted",
+            "matchmaking.noBotDeclineBlockDays",
+            // Added 2026-10-14 by matchmaking's peak window (LichessBotMatchmakingSchedule).
+            "matchmaking.offPeakRatePercent", "matchmaking.peakEndHour", "matchmaking.peakStartHour",
+            "matchmaking.preferNotRecentlyContacted",
             "matchmaking.ratedCasualDeclineBlockDays", "matchmaking.recentContactHours",
             "matchmaking.specificDeclineBlockDays", "model.lineageCheckIntervalSeconds",
             // Added 2026-10-12 by the stuck-game watchdog (LICHESS_BOT_STUCK_GAME_PLAN.md).

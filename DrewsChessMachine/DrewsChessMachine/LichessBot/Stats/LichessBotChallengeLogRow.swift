@@ -24,6 +24,9 @@ struct LichessBotChallengeLogRow: Identifiable, Sendable, Equatable {
         case reconstructedAttempt(LichessBotProtocolLineReference)
     }
 
+    /// Lichess's title for a bot account, shown as the badge.
+    static let botTitle = "BOT"
+
     /// The other player.
     struct Player: Sendable, Equatable {
         /// As recorded: a Lichess id (lowercase) where the source had one.
@@ -218,7 +221,7 @@ struct LichessBotChallengeLogRow: Identifiable, Sendable, Equatable {
 
         let opponent: Opponent
         if let notCreated {
-            opponent = .player(Player(id: notCreated.opponentID, name: notCreated.opponentID, title: nil, rating: nil))
+            opponent = .player(Player(notCreated: notCreated))
         } else {
             opponent = Self.opponent(of: snapshot, direction: direction)
         }
@@ -332,6 +335,18 @@ struct LichessBotChallengeLogRow: Identifiable, Sendable, Equatable {
 extension LichessBotChallengeLogRow.Player {
     init(_ party: LichessBotChallengeParty) {
         self.init(id: party.id, name: party.name, title: party.title, rating: party.rating)
+    }
+
+    /// The player a send that created no challenge was meant for: as
+    /// recorded at the send, or, on a line from before that was recorded,
+    /// the lowercase id with the BOT badge when the send knew it was a bot.
+    init(notCreated: LichessBotChallengeLedgerRow.NotCreated) {
+        if let party = notCreated.opponent {
+            self.init(party)
+        } else {
+            self.init(id: notCreated.opponentID, name: notCreated.opponentID,
+                      title: notCreated.opponentKind == .bot ? LichessBotChallengeLogRow.botTitle : nil, rating: nil)
+        }
     }
 }
 

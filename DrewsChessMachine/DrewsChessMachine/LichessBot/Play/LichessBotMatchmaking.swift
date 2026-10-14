@@ -369,6 +369,10 @@ struct LichessBotMatchmakingRateLimiter: Sendable, Equatable {
         /// `count` challenges in the last hour reach the cap: not before
         /// `until`, when the oldest of them leaves the hour.
         case hourlyCap(until: Date, count: Int)
+        /// Off-peak with an off-peak rate of zero: nothing is sent until the
+        /// peak window opens at `peakStartsAt` (nil if the calendar could
+        /// not find that hour; the pass is simply retried).
+        case offPeakPaused(peakStartsAt: Date?)
     }
 
     static let window: TimeInterval = 3600
@@ -382,6 +386,15 @@ struct LichessBotMatchmakingRateLimiter: Sendable, Equatable {
 
     func challengesInLastHour(now: Date) -> Int {
         challengeTimes.filter { now.timeIntervalSince($0) < Self.window }.count
+    }
+
+    /// The decision under the time-of-day cap
+    /// (`LichessBotMatchmakingSchedule`): the one cap matchmaking sends
+    /// under, so every pass, Fill Open Slots and the casual resend scale
+    /// together.
+    func decision(now: Date, rate: LichessBotMatchmakingSchedule.Rate, minimumSpacing: TimeInterval) -> Decision {
+        guard rate.hourlyCap > 0 else { return .offPeakPaused(peakStartsAt: rate.changesAt) }
+        return decision(now: now, perHourCap: rate.hourlyCap, minimumSpacing: minimumSpacing)
     }
 
     func decision(now: Date, perHourCap: Int, minimumSpacing: TimeInterval) -> Decision {

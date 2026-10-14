@@ -164,6 +164,10 @@ actor LichessBotSessionManager {
     /// Reads and prepares a game's journal from `InProgress/` (on the
     /// journal queue), to resume a game an earlier runtime left.
     private let journalReader: @Sendable (String) async throws -> LichessBotResumedJournal
+    /// When DCM's own daily bot-game limit ends, while Lichess has reported
+    /// it in force; nil otherwise. Read for each incoming challenge from the
+    /// controller, which keeps the one record of it.
+    private let ownBotGameLimitProvider: @Sendable () async -> Date?
 
     /// Online (true) or Draining (false) — the operator's choice, or "one
     /// game" once its game started.
@@ -228,7 +232,10 @@ actor LichessBotSessionManager {
         gameObserver: any LichessBotGameObserver,
         onEvent: @escaping @Sendable (LichessBotManagerEvent) -> Void,
         pacingProvider: @escaping @Sendable (String) async -> LichessBotMovePacingSnapshot = { _ in LichessBotMovePacingSnapshot() },
-        journalReader: @escaping @Sendable (String) async throws -> LichessBotResumedJournal
+        journalReader: @escaping @Sendable (String) async throws -> LichessBotResumedJournal,
+        // No limit reported: what every manager built before the limit was
+        // tracked saw, and what tests that don't exercise it need.
+        ownBotGameLimitProvider: @escaping @Sendable () async -> Date? = { nil }
     ) {
         self.accountAPI = accountAPI
         self.gameAPI = gameAPI
@@ -241,6 +248,7 @@ actor LichessBotSessionManager {
         self.onEvent = onEvent
         self.pacingProvider = pacingProvider
         self.journalReader = journalReader
+        self.ownBotGameLimitProvider = ownBotGameLimitProvider
     }
 
     // MARK: - Controls
@@ -651,6 +659,7 @@ actor LichessBotSessionManager {
             return
         }
         let settings = await settingsProvider()
+        let ownBotGameLimitUntil = await ownBotGameLimitProvider()
         rollDayIfNeeded()
         let now = time.now()
         challengeResponseTimes.removeAll { now - $0 > .seconds(60) }
@@ -666,7 +675,8 @@ actor LichessBotSessionManager {
             activeGamesByOpponent: commitmentsByOpponent(),
             gamesToday: gamesToday,
             gamesTodayByOpponent: gamesTodayByOpponent,
-            challengeResponsesInLastMinute: challengeResponseTimes.count
+            challengeResponsesInLastMinute: challengeResponseTimes.count,
+            ownBotGameLimitUntil: ownBotGameLimitUntil
         )
         var challengeSettings = settings.challenge
         if oneGameMode {

@@ -28,6 +28,17 @@ import Foundation
 /// `createdAt` is Lichess' creation time, a moment before lila counts the
 /// start; and lila compares millisecond clocks (the cache's expiry a
 /// different, monotonic one), so instants at a boundary may fall either side.
+///
+/// Above all, the cache lives in lila's memory: a lila restart (a deploy,
+/// seen from DCM as the event stream dropping and HTTP 502s for a minute)
+/// empties it, and the next bot game starts a fresh count. DCM cannot see
+/// that, so after a restart this replay can be wrong either way: it counted
+/// DCM limited on 2026-10-07 while Lichess let bot games start, and on
+/// 2026-10-14 it counted 67 when Lichess refused DCM at 100 — replaying with
+/// the cache emptied at the 2026-10-12 outages reproduces Lichess exactly
+/// (plan `LICHESS_BOT_OWN_BOT_LIMIT_PLAN.md`). So when Lichess says DCM is
+/// at its limit (`LichessBotOwnBotGameLimitRefusal`), that answer replaces
+/// the replayed entry: `lichessReportedLimitUntil`.
 struct LichessBotBotGameWindow: Sendable, Equatable {
     static let length: TimeInterval = 24 * 3600
 
@@ -57,18 +68,60 @@ struct LichessBotBotGameWindow: Sendable, Equatable {
         let clearsAt: Date
     }
 
-    /// Nil when DCM's records hold no bot game.
+    /// Nil when DCM's records hold no bot game (and Lichess reported no
+    /// limit).
     let entry: Entry?
 
-    /// Replays every bot-vs-bot game start, in any order. The result does
-    /// not depend on the clock; `count(asOf:)` reads it at an instant no
-    /// earlier than the last start.
+    /// When DCM's own limit ends by Lichess's latest refusal, if one was
+    /// recorded.
+    let lichessReportedLimitUntil: Date?
+
+    /// Replays every bot-vs-bot game start, in any order, with no report
+    /// from Lichess. The result does not depend on the clock; `count(asOf:)`
+    /// reads it at an instant no earlier than the last start.
     init(botGameStarts: [Date]) {
+        self.init(botGameStarts: botGameStarts, lichessReportedLimitUntil: nil)
+    }
+
+    /// Replays every bot-vs-bot game start, with Lichess's word that DCM is
+    /// at its limit until `lichessReportedLimitUntil` taking the place of
+    /// whatever the replay holds then: lila's entry was at the limit,
+    /// clearing at that time. Games at or before it change nothing (lila
+    /// counts none while limited, and the reported count already holds the
+    /// earlier ones); the first game after it starts a new count, as lila's
+    /// does.
+    init(botGameStarts: [Date], lichessReportedLimitUntil: Date?) {
         var entry: Entry?
+        var reportApplied = lichessReportedLimitUntil == nil
         for start in botGameStarts.sorted() {
+            if !reportApplied, let until = lichessReportedLimitUntil, start > until {
+                entry = Self.reportedEntry(until: until, replayed: entry)
+                reportApplied = true
+            }
             entry = Self.entry(afterGameAt: start, from: entry)
         }
+        if !reportApplied, let until = lichessReportedLimitUntil {
+            entry = Self.reportedEntry(until: until, replayed: entry)
+        }
         self.entry = entry
+        self.lichessReportedLimitUntil = lichessReportedLimitUntil
+    }
+
+    /// lila's entry as Lichess reported it. The game that brought it to the
+    /// limit was written after the entry was created a day before `until`,
+    /// so the entry is present until `until` at least; the replay's own
+    /// last write stands when it is later.
+    private static func reportedEntry(until: Date, replayed: Entry?) -> Entry {
+        let earliestWrite = until.addingTimeInterval(-length)
+        let lastWrite = replayed.map { max($0.lastWrittenAt, earliestWrite) } ?? earliestWrite
+        return Entry(count: LichessBotLimits.botGamesPerDay, clearAt: until, lastWrittenAt: lastWrite)
+    }
+
+    /// When DCM's own limit ends, if Lichess reported one still in force at
+    /// `instant`. Lichess's answer, so it wins over every estimate.
+    func lichessReportedLimit(asOf instant: Date) -> Date? {
+        guard let until = lichessReportedLimitUntil, instant < until else { return nil }
+        return until
     }
 
     /// lila's `RateLimit.apply` for one game.
@@ -114,13 +167,24 @@ enum LichessBotBotGameBudget {
         /// Only with games that may still start counted: it lifts as they
         /// are answered or start.
         case awaitingGamesThatMayStart(reason: String)
+        /// Lichess refused DCM for being at its limit: no bot game may start
+        /// until `until`, whoever sends, and whatever DCM's estimate says.
+        case lichessReportedLimit(until: Date, reason: String)
 
         var reason: String {
             switch self {
             case .recordsNotLoaded: return LichessBotBotGameBudget.recordsNotLoadedReason
-            case .allowanceUsed(let reason), .awaitingGamesThatMayStart(let reason): return reason
+            case .allowanceUsed(let reason), .awaitingGamesThatMayStart(let reason), .lichessReportedLimit(_, let reason): return reason
             }
         }
+    }
+
+    /// Lichess's own word that DCM is at its limit at `now`, for every
+    /// sender (the operator's own challenges included: Lichess would refuse
+    /// them). Nil when Lichess reported no limit in force.
+    static func lichessReportedBlock(window: LichessBotBotGameWindow?, now: Date, calendar: Calendar = .current) -> Block? {
+        guard let until = window?.lichessReportedLimit(asOf: now) else { return nil }
+        return .lichessReportedLimit(until: until, reason: LichessBotOwnBotGameLimit.pausedText(until: until, now: now, calendar: calendar))
     }
 
     static let recordsNotLoadedReason = "DCM's game records have not loaded"
@@ -144,6 +208,9 @@ enum LichessBotBotGameBudget {
     /// starting): the reserves must hold if they all start.
     static func block(window: LichessBotBotGameWindow?, prospectiveBotGames: Int, sender: Sender, settings: LichessBotChallengeSettings, now: Date, calendar: Calendar = .current) -> Block? {
         guard let window else { return .recordsNotLoaded }
+        if let reported = lichessReportedBlock(window: window, now: now, calendar: calendar) {
+            return reported
+        }
         let allowance = allowance(for: sender, settings: settings)
         let count = window.count(asOf: now)
         let counted = count?.games ?? 0 // nil means no game can limit DCM: none count
@@ -185,6 +252,9 @@ enum LichessBotBotGameBudget {
     /// The Challenge sheet's one-line status.
     static func statusText(window: LichessBotBotGameWindow?, now: Date, calendar: Calendar = .current) -> String {
         guard let window else { return "DCM bot games: loading" }
+        if let until = window.lichessReportedLimit(asOf: now) {
+            return "DCM: \(LichessBotLimits.botGamesPerDay)/\(LichessBotLimits.botGamesPerDay) bot games (Lichess) · clears \(clearTimeText(until, now: now, calendar: calendar))"
+        }
         guard let count = window.count(asOf: now) else { return "DCM: 0/\(LichessBotLimits.botGamesPerDay) bot games" }
         return "DCM: \(count.games)/\(LichessBotLimits.botGamesPerDay) bot games · clears \(clearTimeText(count.clearsAt, now: now, calendar: calendar))"
     }

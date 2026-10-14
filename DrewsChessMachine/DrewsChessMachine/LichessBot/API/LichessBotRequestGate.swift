@@ -40,6 +40,10 @@ enum LichessBotGateEvent: Sendable {
     /// priority started within the gate's recent window before it — the
     /// diagnosis of what spent the budget.
     case rateLimited(cooldown: Duration, triggerLabel: String, triggerPriority: LichessBotRequestPriority, recentRequestCounts: [LichessBotRequestPriority: Int])
+    /// A 429 that is DCM at its own daily bot-game limit, not a request
+    /// rate (`LichessBotOwnBotGameLimitRefusal`): no cooldown, not counted
+    /// toward the breaker. The controller records the limit from this.
+    case ownBotGameLimitRefused(LichessBotOwnBotGameLimitRefusal, label: String, priority: LichessBotRequestPriority)
     case cooldownEnded
     /// A second 429 inside the breaker window: the gate is closed until
     /// `reopen()` — an explicit operator action.
@@ -81,13 +85,16 @@ enum LichessBotGateError: LocalizedError, Equatable {
 /// while any game awaits our move, and when a game's clock is low only
 /// moves, game-critical actions and stream opens are eligible (plan E18).
 ///
-/// **429 is a full stop.** Any 429 closes the gate for
+/// **429 is a full stop.** Any request-rate 429 closes the gate for
 /// `max(Retry-After, LichessBotRateLimit.minimumCooldown)`. Nothing is sent
 /// during the cooldown — moves included, since Lichess would refuse them
 /// anyway. The failed request is not retried; the caller re-derives what is
 /// still needed from fresh state once the gate reopens. A second 429 inside
 /// `breakerWindow` trips the breaker: the gate stays closed until `reopen()`,
 /// because repeated 429s risk longer lockouts or action on the account.
+/// A 429 that `causeOf429` identifies as DCM at its own daily bot-game
+/// limit is not a request rate: it is returned like any other refusal,
+/// with no cooldown and no breaker count (`LichessBotOwnBotGameLimitRefusal`).
 ///
 /// **Reentrancy.** The gate is an actor, and while a request's body is
 /// awaited other callers run: they join the queue, since `busy` stays set
@@ -150,12 +157,19 @@ actor LichessBotRequestGate {
     // MARK: - Performing requests
 
     /// Wait for the gate, run `body`, and release the gate. Throws
-    /// `LichessBotGateError.rateLimited` if the response is a 429 (after
-    /// starting the cooldown), and `.closed` if the gate is or becomes
-    /// closed while waiting. Any error `body` throws is rethrown.
+    /// `LichessBotGateError.rateLimited` if the response is a request-rate
+    /// 429 (after starting the cooldown), and `.closed` if the gate is or
+    /// becomes closed while waiting. Any error `body` throws is rethrown.
+    ///
+    /// `causeOf429` reads a 429's answer, with the wall-clock time it
+    /// arrived, to tell DCM's own bot-game limit from a request rate. Only a
+    /// caller that has the body can; the default, for callers without one
+    /// (a stream's opening, where the body is not read), is the request
+    /// rate, the cautious reading.
     func perform<Value: Sendable>(
         priority: LichessBotRequestPriority,
         label: String,
+        causeOf429: @Sendable (Value, Date) -> LichessBotTooManyRequestsCause = { _, _ in .requestRate },
         _ body: @Sendable () async throws -> (value: Value, response: HTTPURLResponse)
     ) async throws -> (value: Value, response: HTTPURLResponse) {
         try await acquire(priority: priority)
@@ -180,6 +194,10 @@ actor LichessBotRequestGate {
         onEvent(.requestFinished(id: id, priority: priority, label: label, status: status, latency: time.now() - start, retryAfterHeader: retryAfterHeader))
 
         if status == 429 {
+            if case .ownBotGameLimit(let refusal) = causeOf429(result.value, wallClock()) {
+                onEvent(.ownBotGameLimitRefused(refusal, label: label, priority: priority))
+                return result
+            }
             let cooldown = beginCooldown(retryAfterHeader: retryAfterHeader, triggerLabel: label, triggerPriority: priority)
             throw LichessBotGateError.rateLimited(cooldown: cooldown)
         }

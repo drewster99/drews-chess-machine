@@ -223,7 +223,7 @@ final class LichessBotChallengeLogRecorder {
             writeGameStartedIfSeen(challenge.id)
         case .outgoingSeenWithoutCreatedLine(let challenge, _), .incomingReceived(let challenge):
             writeGameStartedIfSeen(challenge.id)
-        case .outgoingNotCreated(let attemptID, let opponentID, let sender, _, _, let reason, _):
+        case .outgoingNotCreated(let attemptID, let opponentID, let sender, _, _, let reason, _, _):
             if case .noAnswer = reason {
                 unansweredSends.append(UnansweredSend(attemptID: attemptID, opponentID: opponentID.lowercased(), sender: sender, at: clock()))
             }

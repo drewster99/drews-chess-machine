@@ -257,8 +257,32 @@ struct LichessBotMatchmakingSettings: Sendable, Equatable, Codable {
     var maximumRatingWithoutOwnRating = 2200
     /// Pick among fitting favorites before any other bot.
     var preferFavorites = false
-    /// Challenges matchmaking sends in any rolling hour.
+    /// Challenges matchmaking sends in any rolling hour, during the peak
+    /// window (`LichessBotMatchmakingSchedule`).
     var maxChallengesPerHour = 10
+    /// The peak window, in whole local hours: from `peakStartHour` up to,
+    /// not including, `peakEndHour`; it may wrap past midnight (22 to 6),
+    /// and equal hours make every hour peak. Outside it matchmaking sends
+    /// at `offPeakRatePercent` of `maxChallengesPerHour`.
+    ///
+    /// Defaults (owner request 2026-10-14) from DCM's own refusals,
+    /// 2026-10-07 to 10-14 (CDT): challenges to bots were refused for the
+    /// opponent's 100-games-a-day cap 0–12% of the time between 02:00 and
+    /// 10:00, but 37–50% between 16:00 and 02:00, and opponents' caps
+    /// mostly cleared between 01:20 and 03:00. So the peak starts at 02:00,
+    /// once most caps have cleared, and runs to 12:00, two hours past the
+    /// measured low-refusal span into the unmeasured midday. Off-peak sends
+    /// still go out, at 40%: a refused challenge costs Lichess challenge
+    /// credits and a matchmaking slot of the hour, but some bots are free
+    /// all day, so stopping entirely would idle DCM for 14 hours.
+    ///
+    /// Settings saved before these fields existed load today's defaults
+    /// (the store fills an absent non-optional field from the defaults).
+    var peakStartHour = 2
+    var peakEndHour = 12
+    /// Off-peak hourly cap as a percentage of `maxChallengesPerHour`,
+    /// rounded to the nearest challenge and at least one. Zero sends nothing off-peak.
+    var offPeakRatePercent = 40
     /// After a bot declines one of DCM's challenges, matchmaking leaves it
     /// alone this long. Zero records no cool-down.
     var declineCooldownHours = 2
@@ -418,6 +442,8 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(m.minimumRatingOffset <= m.maximumRatingOffset, "Matchmaking: the rating window's lower offset must not exceed its upper offset")
         require(m.minimumRatingWithoutOwnRating >= 0 && m.minimumRatingWithoutOwnRating <= m.maximumRatingWithoutOwnRating, "Matchmaking: the rating bounds used without DCM's own rating must run from zero or more up to the maximum")
         require(m.maxChallengesPerHour >= 1, "Matchmaking: allow at least one challenge per hour")
+        require((0...23).contains(m.peakStartHour) && (0...23).contains(m.peakEndHour), "Matchmaking: the peak window's hours must lie between 0 and 23")
+        require((0...100).contains(m.offPeakRatePercent), "Matchmaking: the off-peak rate must lie between 0% and 100%")
         require(m.declineCooldownHours >= 0, "Matchmaking: the decline cool-down cannot be negative")
         return problems
     }

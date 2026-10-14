@@ -8,6 +8,10 @@ enum LichessBotAPIError: LocalizedError, Equatable {
     /// the body is its JSON error shape, otherwise a truncated excerpt of the
     /// body (a proxy may return HTML; plan E27).
     case http(status: Int, message: String?)
+    /// HTTP 429 because DCM itself has played its daily allowance of games
+    /// against other bots. Not a request-rate limit: the gate neither cools
+    /// down nor counts it (`LichessBotOwnBotGameLimitRefusal`).
+    case ownBotGameLimit(LichessBotOwnBotGameLimitRefusal)
     /// A 2xx response whose body could not be decoded as expected.
     case undecodableResponse(endpoint: String, detail: String)
     case invalidURL(String)
@@ -20,6 +24,8 @@ enum LichessBotAPIError: LocalizedError, Equatable {
             return "Lichess rejected the token (HTTP \(status))\(message.map { ": \($0)" } ?? "")"
         case .http(let status, let message):
             return "Lichess returned HTTP \(status)\(message.map { ": \($0)" } ?? "")"
+        case .ownBotGameLimit(let refusal):
+            return "Lichess returned HTTP 429 (DCM's daily bot-game limit)\(refusal.message.map { ": \($0)" } ?? "")"
         case .undecodableResponse(let endpoint, let detail):
             return "Unexpected response from \(endpoint): \(detail)"
         case .invalidURL(let text):
@@ -429,10 +435,20 @@ final class LichessBotAPIClient: Sendable {
         // Set when a response arrives, so a response the gate then turns into
         // an error (a 429) is recorded with what Lichess sent.
         let received = SyncBox<LichessBotTransportResponse?>(nil)
+        // The gate reads a 429's body through this, once, at the response;
+        // the same reading becomes the thrown error, so the gate's event and
+        // the caller see one refusal with one response time.
+        let ownLimit = SyncBox<LichessBotOwnBotGameLimitRefusal?>(nil)
         let response: LichessBotTransportResponse
         let http: HTTPURLResponse
         do {
-            (response, http) = try await gate.perform(priority: priority, label: label) {
+            (response, http) = try await gate.perform(priority: priority, label: label, causeOf429: { answer, respondedAt in
+                guard let refusal = LichessBotOwnBotGameLimitRefusal.parse(status: answer.response.statusCode, body: answer.body, respondedAt: respondedAt) else {
+                    return .requestRate
+                }
+                ownLimit.value = refusal
+                return .ownBotGameLimit(refusal)
+            }) {
                 timing.markSent()
                 let result = try await transport.data(for: request)
                 timing.markResponded()
@@ -453,6 +469,9 @@ final class LichessBotAPIClient: Sendable {
         }
         let ok = (200..<300).contains(http.statusCode)
         record(request, target: target, label: label, gameID: gameID, recordBody: recordBody, timing: timing, status: http.statusCode, networkProtocol: response.networkProtocolName, errorMessage: ok ? nil : Self.errorMessage(from: response.body), failure: nil)
+        if http.statusCode == 429, let refusal = ownLimit.value {
+            throw LichessBotAPIError.ownBotGameLimit(refusal)
+        }
         return try Self.checkStatus(http.statusCode, body: response.body)
     }
 

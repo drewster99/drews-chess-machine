@@ -50,9 +50,18 @@ enum LichessBotChallengeLogEvent: Sendable, Codable, Equatable {
                          request: LichessBotOutgoingChallenge, opponentKind: LichessBotChallengeOpponentKind, creditCost: Int)
     /// A send that created no challenge. `attemptID` names the attempt
     /// (there is no challenge id); `opponentID` is lowercased.
+    ///
+    /// `opponent` is the challenged player as DCM knew them when it sent
+    /// (name, title, the rating at the challenge's speed), since a refused
+    /// send has no challenge snapshot to name them. Added 2026-10-14; lines
+    /// written before have no such key and decode as nil (an optional
+    /// associated value is decoded only if present), so their rows fall
+    /// back to the id and the recorded kind. The schema version is not
+    /// bumped: an older build decodes the new lines, ignoring the key.
     case outgoingNotCreated(attemptID: UUID, opponentID: String, sender: LichessBotChallengeSender,
                             request: LichessBotOutgoingChallenge, opponentKind: LichessBotChallengeOpponentKind?,
-                            reason: LichessBotChallengeNotCreatedReason, creditCost: Int)
+                            reason: LichessBotChallengeNotCreatedReason, creditCost: Int,
+                            opponent: LichessBotChallengeParty? = nil)
     /// DCM's own challenge, echoed on the event stream, with no created
     /// line for it in the run that saw it (an unmatched echo, §3.4).
     case outgoingSeenWithoutCreatedLine(challenge: LichessBotChallengeSnapshot, attribution: LichessBotEchoAttribution)
@@ -91,6 +100,15 @@ struct LichessBotChallengeParty: Sendable, Codable, Equatable, Hashable {
 
     init(_ user: LichessBotChallengeUser) {
         self.init(id: user.id, name: user.name, title: user.title, rating: user.rating, provisional: user.provisional)
+    }
+
+    /// The challenged player of a send, as DCM knew them at the send: the
+    /// name and title from the online check every send makes, and the
+    /// rating at the challenge's speed from the player's summary when DCM
+    /// had one (matchmaking's pick, the online-bots list, a loaded profile).
+    init(sentTo status: LichessBotUserStatus, summary: LichessBotUserSummary?, speed: LichessBotSpeed) {
+        let perf = summary?.rating(speed.rawValue)
+        self.init(id: status.id.lowercased(), name: status.name, title: status.title, rating: perf?.rating, provisional: perf?.prov)
     }
 }
 

@@ -102,7 +102,7 @@ enum LichessBotChallengeLedgerRowKey: Sendable, Hashable {
              .outgoingSeenWithoutCreatedLine(let challenge, _),
              .incomingReceived(let challenge):
             self = .challenge(id: challenge.id)
-        case .outgoingNotCreated(let attemptID, _, _, _, _, _, _):
+        case .outgoingNotCreated(let attemptID, _, _, _, _, _, _, _):
             self = .attempt(id: attemptID)
         case .withdrawalRequested(let challengeID, _),
              .withdrawalResult(let challengeID, _),
@@ -236,6 +236,9 @@ struct LichessBotChallengeLedgerRow: Sendable, Equatable {
         let opponentKind: LichessBotChallengeOpponentKind?
         let reason: LichessBotChallengeNotCreatedReason
         let creditCost: Int
+        /// The challenged player as known at the send; nil on lines
+        /// written before it was recorded.
+        let opponent: LichessBotChallengeParty?
     }
 
     let key: LichessBotChallengeLedgerRowKey
@@ -271,9 +274,9 @@ struct LichessBotChallengeLedgerRow: Sendable, Equatable {
 
     var notCreatedFacts: [NotCreated] {
         facts.compactMap { fact in
-            guard case .outgoingNotCreated(_, let opponentID, let sender, let request, let opponentKind, let reason, let creditCost) = fact.event else { return nil }
+            guard case .outgoingNotCreated(_, let opponentID, let sender, let request, let opponentKind, let reason, let creditCost, let opponent) = fact.event else { return nil }
             return NotCreated(at: fact.at, opponentID: opponentID, sender: sender, request: request,
-                              opponentKind: opponentKind, reason: reason, creditCost: creditCost)
+                              opponentKind: opponentKind, reason: reason, creditCost: creditCost, opponent: opponent)
         }
     }
 

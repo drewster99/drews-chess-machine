@@ -279,6 +279,8 @@ final class LichessBotController {
     /// What `botGameWindow` was last built from among the listed games, so
     /// a rebuild happens only when one of them changed.
     @ObservationIgnored private var botGameWindowLiveInputs: [BotGameWindowLiveInput]?
+    /// The Lichess-reported own limit `botGameWindow` was last built with.
+    @ObservationIgnored private var botGameWindowReportedLimitUntil: Date?
     private struct BotGameWindowLiveInput: Equatable {
         let gameID: String
         let opponent: LichessBotLiveGame.Player?
@@ -1935,6 +1937,73 @@ final class LichessBotController {
         return notes
     }
 
+    /// When DCM's own daily bot-game limit ends, if Lichess reported one
+    /// still in force at `now`. Kept in `botLimitUntil` under DCM's own id —
+    /// DCM is a bot like the others there — so the player notes persist it
+    /// across a relaunch and there is one record of it. Every bot-game
+    /// decision reads it through `botGameWindow`
+    /// (`LichessBotBotGameWindow.lichessReportedLimitUntil`), and the
+    /// session manager through its provider for incoming challenges.
+    func ownBotGameLimitEnds(now: Date) -> Date? {
+        botLimitEnds(accountID, now: now)
+    }
+
+    /// The Overview's line while bot games are paused by Lichess; nil when
+    /// they aren't.
+    func ownBotGameLimitText(now: Date) -> String? {
+        ownBotGameLimitEnds(now: now).map { LichessBotOwnBotGameLimit.pausedText(until: $0, now: now) }
+    }
+
+    /// Lichess refused a request because DCM is at its own daily bot-game
+    /// limit (the gate's `.ownBotGameLimitRefused`, the one path that
+    /// records it). Lichess's time replaces whatever was recorded before,
+    /// earlier or later: it is the authority, and DCM's estimate is
+    /// corrected through `botGameWindow`. Logged once per new end time, so
+    /// a later refusal (an incoming challenge accepted in a race) repeating
+    /// the same end adds nothing.
+    private func recordOwnBotGameLimit(_ refusal: LichessBotOwnBotGameLimitRefusal, label: String) {
+        let limit = LichessBotOwnBotGameLimit(refusal)
+        let ownID = accountID
+        let previous = botLimitUntil[ownID]
+        // Lichess reports whole seconds, so the same limit read twice can
+        // differ by a second; only a different end is news.
+        let unchanged = previous.map { abs($0.timeIntervalSince(limit.until)) <= LichessBotOwnBotGameLimit.roundingMargin } ?? false
+        botLimitUntil[ownID] = limit.until
+        refreshBotGameWindow(indexChanged: false)
+        if !unchanged {
+            let estimate = botGameWindowEstimateText(at: refusal.respondedAt)
+            let endText = limit.until.formatted(date: .abbreviated, time: .standard)
+            let source: String
+            switch limit.endSource {
+            case .lichess:
+                source = "Lichess's time"
+            case .recheck:
+                source = "Lichess gave no time; asking again then"
+            }
+            let line = "DCM is at Lichess' daily bot-game limit (on \(label)): bot games paused until \(endText) (\(source)); human games unaffected; DCM's estimate was \(estimate)"
+            protocolLog.record(.challenge, line, fields: ["until": ISO8601DateFormatter().string(from: limit.until), "source": "\(limit.endSource)"])
+            SessionLogger.shared.log("[LICHESS-BOT] \(line)")
+        }
+        guard var notes = playerNotes else {
+            protocolLog.record(.anomaly, "player notes aren't loaded: DCM's own bot-game limit is kept in memory, and saved with the notes if they load later this launch")
+            return
+        }
+        notes.botLimitUntil[ownID] = limit.until
+        playerNotes = notes
+        savePlayerNotes(notes)
+    }
+
+    /// DCM's replayed estimate at `instant`, without Lichess's report, for
+    /// the log line that records the report.
+    private func botGameWindowEstimateText(at instant: Date) -> String {
+        guard let rows = index?.rows else { return "not loaded" }
+        let starts = gameStarts(filedRows: rows).compactMap { $0.opponentIsBot == true ? $0.startedAt : nil }
+        guard let count = LichessBotBotGameWindow(botGameStarts: starts).count(asOf: instant) else {
+            return "0/\(LichessBotLimits.botGamesPerDay)"
+        }
+        return "\(count.games)/\(LichessBotLimits.botGamesPerDay), clearing \(count.clearsAt.formatted(date: .abbreviated, time: .standard))"
+    }
+
     private func recordBotLimit(_ refusal: LichessBotBotLimitRefusal.Parsed) {
         protocolLog.record(.challenge, "\(refusal.userID) is at its bot-game limit (\(refusal.gamesPlayed)) until \(refusal.until.formatted(date: .abbreviated, time: .standard))")
         botLimitUntil[refusal.userID] = refusal.until
@@ -2044,8 +2113,10 @@ final class LichessBotController {
         // `botGameWindow` stays nil.
         guard let rows = index?.rows else { return }
         let liveInputs = games.map { BotGameWindowLiveInput(gameID: $0.id, opponent: $0.opponent) }
-        guard indexChanged || liveInputs != botGameWindowLiveInputs else { return }
+        let reportedLimitUntil = botLimitUntil[accountID]
+        guard indexChanged || liveInputs != botGameWindowLiveInputs || reportedLimitUntil != botGameWindowReportedLimitUntil else { return }
         botGameWindowLiveInputs = liveInputs
+        botGameWindowReportedLimitUntil = reportedLimitUntil
         var botGameStarts: [Date] = []
         var unknownOpponents = 0
         for start in gameStarts(filedRows: rows) {
@@ -2056,7 +2127,7 @@ final class LichessBotController {
             }
         }
         liveGamesWithUnknownOpponent = unknownOpponents
-        let window = LichessBotBotGameWindow(botGameStarts: botGameStarts)
+        let window = LichessBotBotGameWindow(botGameStarts: botGameStarts, lichessReportedLimitUntil: reportedLimitUntil)
         if window != botGameWindow {
             botGameWindow = window
         }
@@ -2216,11 +2287,14 @@ final class LichessBotController {
             guard let status = statuses.first(where: { $0.id.lowercased() == opponentID }) else {
                 throw LichessBotControllerError.noSuchPlayer(username)
             }
+            // Who was challenged, as known now: a refused send has no
+            // challenge snapshot to name them in the Challenge Log.
+            let sentTo = LichessBotChallengeParty(sentTo: status, summary: knownSummary(of: opponentID, origin: origin), speed: LichessBotSpeed.forClock(limitSeconds: request.clockLimitSeconds, incrementSeconds: request.clockIncrementSeconds))
             guard status.online == true else {
                 let offlineKind = Self.challengeOpponentKind(title: status.title)
                 recordChallengeEvent(.outgoingNotCreated(
                     attemptID: UUID(), opponentID: opponentID, sender: origin.sender, request: request,
-                    opponentKind: offlineKind, reason: .opponentOffline, creditCost: 0))
+                    opponentKind: offlineKind, reason: .opponentOffline, creditCost: 0, opponent: sentTo))
                 logChallengeOutcome("\(opponentID) offline")
                 throw LichessBotControllerError.opponentOffline(status.name)
             }
@@ -2235,11 +2309,15 @@ final class LichessBotController {
                 // own challenge may use the whole limit, which Lichess enforces
                 // itself; matchmaking and the queue stop short of the reserves,
                 // counting every bot game that may still start.
+                // Once Lichess has said DCM is at its limit, nobody's
+                // challenge to a bot goes out: Lichess would refuse it.
+                refreshBotGameWindow(indexChanged: false)
                 if origin.botGameBudgetSender != .operatorChallenge {
-                    refreshBotGameWindow(indexChanged: false)
                     if let block = LichessBotBotGameBudget.block(window: botGameWindow, prospectiveBotGames: prospectiveBotGames, sender: origin.botGameBudgetSender, settings: settings.challenge, now: Date()) {
                         throw LichessBotControllerError.botGameBudget(block)
                     }
+                } else if let block = LichessBotBotGameBudget.lichessReportedBlock(window: botGameWindow, now: Date()) {
+                    throw LichessBotControllerError.botGameBudget(block)
                 }
                 // No suspension since the check, so a send deciding while
                 // this one is posted counts it.
@@ -2259,7 +2337,7 @@ final class LichessBotController {
                     let charged = LichessBotChallengeOutcomeLog.creditCost(notCreated: outcome, kind: opponentKind)
                     recordChallengeEvent(.outgoingNotCreated(
                         attemptID: UUID(), opponentID: opponentID, sender: origin.sender, request: request,
-                        opponentKind: opponentKind, reason: .refused(refusal), creditCost: charged))
+                        opponentKind: opponentKind, reason: .refused(refusal), creditCost: charged, opponent: sentTo))
                     logChallengeOutcome("\(opponentID) \(Self.describe(outcome)); counted \(charged) credits (worst case)")
                 } else if Self.challengePostMayHaveReachedLichess(error) {
                     protocolLog.record(.anomaly, "challenge to \(opponentID) failed without an answer from Lichess; outcome not recorded: \(Self.safeDescription(error))")
@@ -2269,7 +2347,7 @@ final class LichessBotController {
                     recordChallengeEvent(.outgoingNotCreated(
                         attemptID: UUID(), opponentID: opponentID, sender: origin.sender, request: request,
                         opponentKind: opponentKind, reason: .noAnswer(error: Self.safeDescription(error)),
-                        creditCost: LichessBotChallengeCredits.cost(for: opponentKind)))
+                        creditCost: LichessBotChallengeCredits.cost(for: opponentKind), opponent: sentTo))
                 } else {
                     protocolLog.record(.anomaly, "challenge to \(opponentID) failed without an answer from Lichess; outcome not recorded: \(Self.safeDescription(error))")
                 }
@@ -2305,6 +2383,23 @@ final class LichessBotController {
         // once, if the answer already arrived.
         await manager.noteSentChallenge(id: created.id, opponentID: opponentID)
         protocolLog.record(.challenge, "challenge sent to \(username)", fields: ["id": created.id, "rated": "\(request.rated)", "clock": "\(request.clockLimitSeconds)+\(request.clockIncrementSeconds)", "color": request.color.rawValue])
+    }
+
+    /// The player's public summary as DCM holds it now, for the rating
+    /// recorded with a send: matchmaking's pick, else the online-bots list,
+    /// else a loaded profile; nil when DCM has none (a human the operator
+    /// typed in, before their profile loads).
+    private func knownSummary(of opponentID: String, origin: ChallengeOrigin) -> LichessBotUserSummary? {
+        if case .matchmaking(_, _, let picked) = origin, picked.id.lowercased() == opponentID {
+            return picked
+        }
+        if let listed = onlineBots.first(where: { $0.id.lowercased() == opponentID }) {
+            return listed
+        }
+        if case .loaded(let profile, _, _)? = opponentProfiles[opponentID] {
+            return profile
+        }
+        return nil
     }
 
     /// A failed withdrawal's result for the challenge log: Lichess answering
@@ -2472,7 +2567,7 @@ final class LichessBotController {
         switch block {
         case .recordsNotLoaded?, .awaitingGamesThatMayStart?:
             return block?.reason
-        case .allowanceUsed?, nil:
+        case .allowanceUsed?, .lichessReportedLimit?, nil:
             return nil
         }
     }
@@ -2624,7 +2719,7 @@ final class LichessBotController {
                 return .stopped(reason: text)
             case .botGameBudget(let block):
                 switch block {
-                case .allowanceUsed(let reason):
+                case .allowanceUsed(let reason), .lichessReportedLimit(_, let reason):
                     // Tied to this player being a bot: a human further down
                     // the queue can still be challenged.
                     return .skipped(reason: reason)
@@ -2642,6 +2737,11 @@ final class LichessBotController {
         }
         if case LichessBotAPIError.http(_, let message?) = error, let refusal = LichessBotBotLimitRefusal.parse(message) {
             return .skipped(reason: "at its bot-game limit until \(refusal.until.formatted(date: .omitted, time: .shortened))")
+        }
+        if case LichessBotAPIError.ownBotGameLimit(let refusal) = error {
+            // DCM's limit, not this player's: only bots are refused, so a
+            // human further down still goes out; the gate event recorded it.
+            return .skipped(reason: LichessBotOwnBotGameLimit.pausedText(until: LichessBotOwnBotGameLimit(refusal).until, now: Date()))
         }
         return .dropped(reason: text)
     }
@@ -2675,6 +2775,8 @@ final class LichessBotController {
                 return "\(count) challenges in the last hour, the cap; next at \(until.formatted(date: .omitted, time: .shortened))"
             case .rateLimited(.allowed):
                 return "allowed"
+            case .rateLimited(.offPeakPaused(let peakStartsAt)):
+                return "off-peak rate is 0%; sending again at the peak window\(peakStartsAt.map { ", \($0.formatted(date: .omitted, time: .shortened))" } ?? "")"
             case .noCandidate(let detail):
                 return detail
             case .failed(let detail):
@@ -2788,6 +2890,10 @@ final class LichessBotController {
             return until
         case .rateLimited(.allowed):
             return now
+        case .rateLimited(.offPeakPaused):
+            // Checked again shortly, without a request: the window or the
+            // settings may change before its start.
+            return now.addingTimeInterval(LichessBotMatchmaking.retryAfterUnproductivePass)
         case .blocked, .noCandidate, .failed, .stopped:
             return now.addingTimeInterval(LichessBotMatchmaking.retryAfterUnproductivePass)
         }
@@ -2880,6 +2986,10 @@ final class LichessBotController {
             } else if case LichessBotAPIError.http(_, let message?) = error, let refusal = LichessBotBotLimitRefusal.parse(message) {
                 // `sendChallenge` recorded the limit; say plainly what it is.
                 outcome = .failed("\(username) is at Lichess' bot-vs-bot daily limit until \(refusal.until.formatted(date: .omitted, time: .shortened))")
+            } else if case LichessBotAPIError.ownBotGameLimit(let refusal) = error {
+                // The gate event recorded it; later passes stop at the
+                // budget's `.lichessReportedLimit` until it ends.
+                outcome = .blocked(reason: LichessBotOwnBotGameLimit.pausedText(until: LichessBotOwnBotGameLimit(refusal).until, now: Date()))
             } else {
                 outcome = .failed("\(username): \(text)")
             }
@@ -2888,13 +2998,20 @@ final class LichessBotController {
         return outcome
     }
 
+    /// Matchmaking's hourly cap at `now` by the peak window: the one value
+    /// every send decision and the status line read.
+    func matchmakingRate(now: Date) -> LichessBotMatchmakingSchedule.Rate {
+        LichessBotMatchmakingSchedule.rate(settings: settings.matchmaking, now: now)
+    }
+
     /// Whether a matchmaking send may happen now, and why not; nil when it
     /// may. Reads the gate's live phase.
     private func matchmakingPrecheck(fillMode: LichessBotMatchmakingSettings.FillMode) async -> MatchmakingPassOutcome? {
         if let outcome = await matchmakingSendConditionsBlock(fillMode: fillMode) {
             return outcome
         }
-        let decision = matchmakingRateLimiter.decision(now: Date(), perHourCap: settings.matchmaking.maxChallengesPerHour, minimumSpacing: LichessBotMatchmaking.minimumSendSpacing)
+        let now = Date()
+        let decision = matchmakingRateLimiter.decision(now: now, rate: matchmakingRate(now: now), minimumSpacing: LichessBotMatchmaking.minimumSendSpacing)
         guard decision == .allowed else { return .rateLimited(decision) }
         return nil
     }
@@ -3130,9 +3247,9 @@ final class LichessBotController {
             return outcome.text
         }
         let now = Date()
-        let decision = matchmakingRateLimiter.decision(now: now, perHourCap: settings.matchmaking.maxChallengesPerHour, minimumSpacing: LichessBotMatchmaking.minimumSendSpacing)
+        let decision = matchmakingRateLimiter.decision(now: now, rate: matchmakingRate(now: now), minimumSpacing: LichessBotMatchmaking.minimumSendSpacing)
         switch decision {
-        case .hourlyCap:
+        case .hourlyCap, .offPeakPaused:
             return MatchmakingPassOutcome.rateLimited(decision).text
         case .spacing, .allowed:
             break
@@ -3329,6 +3446,13 @@ final class LichessBotController {
             },
             journalReader: { gameID in
                 try await recordStore.resumedJournal(gameID: gameID)
+            },
+            // `self` is held strongly, as `hasLiveFilingOwner` below holds
+            // it: a weak reference would need a made-up answer for a missing
+            // controller. Teardown drops the runtime and ends the manager's
+            // run, which releases this closure.
+            ownBotGameLimitProvider: { [self] in
+                await self.ownBotGameLimitEnds(now: Date())
             }
         )
         let reconciler = LichessBotReconciler(
@@ -4044,6 +4168,8 @@ final class LichessBotController {
             Task {
                 await startRateLimitHold(minutes: minutes)
             }
+        case .ownBotGameLimitRefused(let refusal, let label, _):
+            recordOwnBotGameLimit(refusal, label: label)
         case .breakerTripped:
             failRuntime("a second 429 within the breaker window closed the request gate")
         case .closed(let reason):
@@ -4328,6 +4454,8 @@ final class LichessBotController {
         case .rateLimited(let cooldown, let label, let priority, let counts):
             let breakdown = counts.sorted { $0.key.label < $1.key.label }.map { "\($0.key.label)=\($0.value)" }.joined(separator: ",")
             return "gate: 429 on \(priority.label) \(label); cooldown \(cooldown); last minute \(breakdown)"
+        case .ownBotGameLimitRefused(let refusal, let label, let priority):
+            return "gate: 429 on \(priority.label) \(label) is DCM's daily bot-game limit, not a request rate: no cooldown, not counted toward the breaker (ratelimit.seconds \(refusal.secondsUntilClear.map(String.init) ?? "absent"))"
         case .cooldownEnded:
             return "gate: cooldown ended"
         case .breakerTripped(let count, let window):
@@ -4342,6 +4470,7 @@ final class LichessBotController {
     nonisolated static func kind(of event: LichessBotGateEvent) -> LichessBotProtocolEventKind {
         switch event {
         case .rateLimited, .cooldownEnded: return .rateLimit
+        case .ownBotGameLimitRefused: return .challenge
         case .breakerTripped: return .breaker
         case .closed, .reopened: return .lifecycle
         case .requestStarted, .requestFinished, .requestFailed: return .request

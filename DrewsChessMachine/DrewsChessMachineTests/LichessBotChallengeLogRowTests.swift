@@ -62,7 +62,9 @@ final class LichessBotChallengeLogRowTests: XCTestCase {
     func testNotCreatedAttemptNamesTheOpponentByIDAndTheTermsFromTheRequest() throws {
         let attempt = try row(liveRows(), .liveAttempt(F.attemptID(1)))
         XCTAssertEqual(attempt.direction, .outgoing)
-        XCTAssertEqual(attempt.opponent, .player(.init(id: "offlinebot", name: "offlinebot", title: nil, rating: nil)))
+        // A line from before the opponent was recorded at the send: the id,
+        // with the BOT badge from the recorded kind (owner request 2026-10-14).
+        XCTAssertEqual(attempt.opponent, .player(.init(id: "offlinebot", name: "offlinebot", title: "BOT", rating: nil)))
         XCTAssertEqual(attempt.terms, .init(F.request))
         XCTAssertEqual(attempt.initiative, .sentBy(.challengeQueue))
         XCTAssertEqual(attempt.state, .challenge(.notCreated(.opponentOffline), isPending: false))

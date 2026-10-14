@@ -111,9 +111,13 @@ struct LichessBotChallengeRefusal: Sendable, Hashable, Codable {
     enum Kind: String, Sendable, Hashable, Codable, CaseIterable {
         /// HTTP 429.
         case rateLimited
-        /// HTTP 400 because a bot-vs-bot daily game limit is reached (the
-        /// challenged bot's, or DCM's own).
+        /// HTTP 400 because the challenged bot reached its bot-vs-bot daily
+        /// game limit.
         case botDailyGameLimit
+        /// HTTP 429 because DCM itself reached its bot-vs-bot daily game
+        /// limit (`LichessBotOwnBotGameLimitRefusal`): Lichess's answer, not
+        /// a request rate.
+        case ownBotDailyGameLimit
         /// HTTP 400 for any other reason.
         case badRequest
         /// Any other non-2xx status.
@@ -123,6 +127,7 @@ struct LichessBotChallengeRefusal: Sendable, Hashable, Codable {
             switch self {
             case .rateLimited: return "rate limit (429)"
             case .botDailyGameLimit: return "bot daily game limit (400)"
+            case .ownBotDailyGameLimit: return "DCM's bot daily game limit (429)"
             case .badRequest: return "other 400"
             case .otherHTTPStatus: return "other HTTP status"
             }
@@ -139,7 +144,9 @@ struct LichessBotChallengeRefusal: Sendable, Hashable, Codable {
     /// Lichess charges when the request passes its per-user challenge rate
     /// limit, before it checks the bot-vs-bot daily game limit and the
     /// challenged player's preferences, so those refusals cost the same as
-    /// a created challenge. A 429 is that rate limit refusing, and an
+    /// a created challenge. DCM's own bot-vs-bot limit is checked inside the
+    /// same charged block (lila's `apiCreate`), so its 429 costs as much.
+    /// Any other 429 is that rate limit refusing, and an
     /// authorization failure never reaches it, so neither costs anything.
     /// A few other 400s (no such user, challenging oneself) are raised
     /// before the charge; they are indistinguishable here from the charged
@@ -147,7 +154,7 @@ struct LichessBotChallengeRefusal: Sendable, Hashable, Codable {
     /// case, so the budget shown is never understated.
     var spendsCredits: Bool {
         switch kind {
-        case .botDailyGameLimit, .badRequest:
+        case .botDailyGameLimit, .ownBotDailyGameLimit, .badRequest:
             return true
         case .rateLimited, .otherHTTPStatus:
             return false
@@ -185,6 +192,8 @@ struct LichessBotChallengeRefusal: Sendable, Hashable, Codable {
                 return LichessBotChallengeRefusal(kind: .badRequest, httpStatus: status, text: message)
             }
             return LichessBotChallengeRefusal(kind: .otherHTTPStatus, httpStatus: status, text: message)
+        case .ownBotGameLimit(let refusal):
+            return LichessBotChallengeRefusal(kind: .ownBotDailyGameLimit, httpStatus: 429, text: refusal.message)
         case .unauthorized(let status, let message):
             return LichessBotChallengeRefusal(kind: .otherHTTPStatus, httpStatus: status, text: message)
         case .undecodableResponse, .invalidURL, .tooManyIDs:

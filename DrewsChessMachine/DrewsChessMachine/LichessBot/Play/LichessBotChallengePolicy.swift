@@ -23,6 +23,13 @@ struct LichessBotChallengeContext: Sendable, Equatable {
     var gamesTodayByOpponent: [String: Int]
     /// Challenge responses (accept or decline) sent in the last minute.
     var challengeResponsesInLastMinute: Int
+    /// When DCM's own daily bot-game limit ends, while Lichess has reported
+    /// it in force (`LichessBotOwnBotGameLimit`); nil when it hasn't.
+    /// Lichess refuses DCM's acceptance of a bot's challenge until then
+    /// (lila `BotLimit.acceptLimitError`, with the same 429), so such
+    /// challenges are declined instead. Defaults to nil, "no limit reported",
+    /// for contexts built before the limit existed.
+    var ownBotGameLimitUntil: Date? = nil
 }
 
 /// The challenge policy (plan §7): a pure function of the challenge, the
@@ -133,8 +140,11 @@ enum LichessBotChallengePolicy {
             return .decline(.later, rule: isBot ? "daily limit against this bot reached" : "daily limit against this player reached")
         }
         // Lichess itself limits each bot to a fixed number of games against
-        // other bots per rolling day, and refuses challenges beyond it
-        // (observed live); DCM keeps no copy of that rule.
+        // other bots per day. DCM declines a bot only once Lichess has said
+        // DCM is at that limit: accepting would get the same refusal.
+        if isBot, let until = context.ownBotGameLimitUntil {
+            return .decline(.later, rule: "DCM is at Lichess' daily bot-game limit until \(until.formatted(date: .omitted, time: .shortened))")
+        }
 
         return .accept
     }

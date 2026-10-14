@@ -162,9 +162,9 @@ extension LichessBotChallengeOutcomeLog {
                 kind = .human
             case .refused(let refusal):
                 outcome = .refused(refusal)
-                // A bot-vs-bot limit refusal is about a bot; any other
-                // refusal is costed at the worst case.
-                kind = refusal.kind == .botDailyGameLimit ? .bot : .human
+                // A bot-vs-bot limit refusal (either side's) is about a
+                // bot; any other refusal is costed at the worst case.
+                kind = refusal.kind == .botDailyGameLimit || refusal.kind == .ownBotDailyGameLimit ? .bot : .human
             case .botGameLimit:
                 // Logged only from a refused POST answered 400 for the
                 // bot-vs-bot daily limit, before outcome lines existed.
