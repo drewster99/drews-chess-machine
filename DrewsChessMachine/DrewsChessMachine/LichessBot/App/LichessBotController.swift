@@ -387,6 +387,14 @@ final class LichessBotController {
     /// When the next automatic pass may run: after a send, the spacing;
     /// after a pass that found nobody, a longer wait.
     private var nextAutomaticMatchmakingPassAt = Date.distantPast
+    /// Counts saves that changed what matchmaking decides by (its own
+    /// settings or the challenge settings' slots and reserves). A pass's
+    /// schedule was worked out under the settings it ran with: after the
+    /// hourly cap that can be most of an hour away, so a raised cap would
+    /// otherwise wait it out with the old pass's status still showing
+    /// (owner report 2026-10-14). A pass that finishes after such a save
+    /// lets the next poll decide again at once.
+    @ObservationIgnored private var matchmakingDecisionSettingsGeneration = 0
     /// The last pass outcome written to the protocol log by an automatic
     /// pass, so an unchanged "nobody fits" isn't logged every retry.
     private var lastLoggedAutomaticMatchmakingOutcome: String?
@@ -849,6 +857,15 @@ final class LichessBotController {
     /// bot's copy, and the request gate's breaker window.
     private func apply(_ newSettings: LichessBotSettings) {
         let accountChanged = newSettings.connection.expectedAccountID.lowercased() != accountID
+        if newSettings.matchmaking != settings.matchmaking || newSettings.challenge != settings.challenge {
+            matchmakingDecisionSettingsGeneration += 1
+            // A pass under way holds the schedule (`.distantFuture`) and
+            // reschedules itself when it reports; otherwise the next poll
+            // decides under the new settings.
+            if nextAutomaticMatchmakingPassAt != .distantFuture {
+                nextAutomaticMatchmakingPassAt = .distantPast
+            }
+        }
         settings = newSettings
         settingsError = nil
         settingsBox?.value = newSettings
@@ -2864,11 +2881,14 @@ final class LichessBotController {
         // Held until the pass reports, so the next poll can't start another.
         nextAutomaticMatchmakingPassAt = .distantFuture
         let generation = runtimeGeneration
+        let settingsGeneration = matchmakingDecisionSettingsGeneration
         Task {
             let outcome = await runMatchmakingPass(trigger: .automaticPass, fillMode: matchmaking.fillMode)
             // Teardown reset the schedule for the next runtime.
             guard runtimeGeneration == generation else { return }
-            nextAutomaticMatchmakingPassAt = Self.nextAutomaticPass(after: outcome, now: Date())
+            nextAutomaticMatchmakingPassAt = matchmakingDecisionSettingsGeneration == settingsGeneration
+                ? Self.nextAutomaticPass(after: outcome, now: Date())
+                : Date()
             let text = outcome.text
             matchmakingStatus = "\(Date().formatted(date: .omitted, time: .standard)) \(text)"
             if case .sent = outcome {
