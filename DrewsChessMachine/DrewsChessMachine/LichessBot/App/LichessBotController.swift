@@ -356,6 +356,11 @@ final class LichessBotController {
     /// rebuilt history changes; nil until the challenge log loads.
     /// `challenge-outcomes.json` is no longer read or written.
     private(set) var challengeOutcomeLog: LichessBotChallengeOutcomeLog?
+    /// Every challenge another player sent DCM in the rolling day and how
+    /// it ended: the incoming counts on the Overview. Folded from the same
+    /// challenge log and rebuilt history, at the same moments, as
+    /// `challengeOutcomeLog`; nil until the challenge log loads.
+    private(set) var incomingChallengeOutcomeLog: LichessBotIncomingChallengeOutcomeLog?
     /// Online and playing flags by lowercased user id, from
     /// `/api/users/status`: the single store every Challenge-sheet tab reads.
     /// An id Lichess didn't answer for (unknown or closed) has no entry.
@@ -1876,8 +1881,8 @@ final class LichessBotController {
         refreshChallengeOutcomeLog()
     }
 
-    /// Refold the outcome log from the challenge log and the rebuilt
-    /// history. Assigned only on a change: every assignment redraws the
+    /// Refold the outgoing and incoming outcome logs from the challenge log
+    /// and the rebuilt history. Assigned only on a change: every assignment redraws the
     /// Overview.
     private func refreshChallengeOutcomeLog() {
         guard let ledger = challengeLedger else { return }
@@ -1886,6 +1891,12 @@ final class LichessBotController {
             liveLogFirstEntryAt: challengeLogRecorder.liveLogFirstEntryAt, now: Date())
         if folded != challengeOutcomeLog {
             challengeOutcomeLog = folded
+        }
+        let incoming = LichessBotIncomingChallengeOutcomeLog.fold(
+            ledger: ledger, history: challengeHistory,
+            liveLogFirstEntryAt: challengeLogRecorder.liveLogFirstEntryAt, now: Date())
+        if incoming != incomingChallengeOutcomeLog {
+            incomingChallengeOutcomeLog = incoming
         }
     }
 
