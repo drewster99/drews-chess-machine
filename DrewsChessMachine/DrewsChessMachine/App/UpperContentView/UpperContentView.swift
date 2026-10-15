@@ -36,6 +36,14 @@ struct UpperContentView: View {
     /// path) instead of presenting the resume-from-autosave sheet.
     let autoPlayChessOnLaunch: Bool
 
+    /// Forwarded from `DrewsChessMachineApp`'s `--lichess-bot` flag. When
+    /// set, `handleWindowAttached` opens the Lichess Bot window and goes
+    /// online — attachment doesn't wait for the window to be visible, so it
+    /// works on a locked screen — and the resume-from-autosave sheet is
+    /// never presented: its countdown would resume a training session on
+    /// an unattended machine.
+    let autoLichessBotOnLaunch: Bool
+
     /// Forwarded `--model <path>` value for `--playchess` (opponent
     /// weights). Nil ⇒ the most recently saved session's trainer, resolved
     /// the same way `--uci` resolves it (`UCIModelLoader.resolveModelURL`).
@@ -81,6 +89,7 @@ struct UpperContentView: View {
         lichessBotProvider: LichessBotSessionModelProvider,
         autoTrainOnLaunch: Bool,
         autoPlayChessOnLaunch: Bool,
+        autoLichessBotOnLaunch: Bool,
         playChessModelPath: String?,
         trainStartModelPath: String?,
         trainCommandLineSeed: UInt64?,
@@ -93,6 +102,7 @@ struct UpperContentView: View {
         self.lichessBotProvider = lichessBotProvider
         self.autoTrainOnLaunch = autoTrainOnLaunch
         self.autoPlayChessOnLaunch = autoPlayChessOnLaunch
+        self.autoLichessBotOnLaunch = autoLichessBotOnLaunch
         self.playChessModelPath = playChessModelPath
         self.trainStartModelPath = trainStartModelPath
         self.trainCommandLineSeed = trainCommandLineSeed
@@ -114,6 +124,10 @@ struct UpperContentView: View {
     /// can fire more than once; the human-game start is a one-shot launch
     /// behavior, so this flips `true` on the first fire and never clears.
     @State private var autoPlayChessFired: Bool = false
+
+    /// Idempotency guard for the `--lichess-bot` launch sequence: the
+    /// window can attach more than once; opening the bot is one-shot.
+    @State private var autoLichessBotFired: Bool = false
 
     /// Live recorder for `--output` runs. Moved to SessionController in
     /// Stage 4h — forwarding proxy. (Allocated at the start of startRealTraining
@@ -1729,6 +1743,11 @@ struct UpperContentView: View {
             autoTrainFired = true
             runAutoTrainLaunchSequence()
         }
+        if autoLichessBotOnLaunch && !autoLichessBotFired {
+            autoLichessBotFired = true
+            commandHub.openLichessBot()
+            Task { await lichessBot.goOnline() }
+        }
     }
 
     /// Initial setup that fires once on body's `.onAppear` (so it
@@ -1843,7 +1862,7 @@ struct UpperContentView: View {
                 autoPlayChessFired = true
                 runAutoPlayChessLaunchSequence()
             }
-        } else if !autoTrainOnLaunch {
+        } else if !autoTrainOnLaunch && !autoLichessBotOnLaunch {
             // One sheet at a time: with the invalid-settings sheet up, the
             // prompt is held until it closes, so neither sheet hides the
             // other and the user settles the stored values before choosing

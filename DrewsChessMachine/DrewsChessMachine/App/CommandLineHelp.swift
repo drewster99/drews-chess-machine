@@ -68,6 +68,8 @@ enum CommandLineHelp {
                                       switch to the Candidate Test view.
       --playchess                     Open the GUI and immediately start a human-vs-network game.
                                       Opponent weights resolved like --uci (see --model below).
+      --lichess-bot                   Open the GUI without the resume-from-autosave sheet, open the
+                                      Lichess Bot window and go online (unattended restarts).
 
     Training options (with --train):
       --parameters <file>             JSON file of hyperparameter overrides (partial files allowed;

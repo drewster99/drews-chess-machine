@@ -71,6 +71,15 @@ struct DrewsChessMachineApp: App {
     /// resolution `--uci` uses). Mutually exclusive with `--train`.
     private let autoPlayChessOnLaunch: Bool
 
+    /// True iff the process was launched with `--lichess-bot`. A GUI-launch
+    /// flag for an unattended (or locked-screen) restart of the bot: the
+    /// resume-from-autosave sheet is not shown (its 30 s countdown would
+    /// otherwise resume a training session nobody asked for), and the
+    /// Lichess Bot window opens and goes online as soon as the main window
+    /// attaches — before it is visible. Mutually exclusive with `--train`
+    /// and `--playchess`.
+    private let autoLichessBotOnLaunch: Bool
+
     /// Value of `--model <path>` when `--playchess` is present. Nil ⇒ the
     /// most recently saved session's trainer file is used. Resolved via
     /// `UCIModelLoader.resolveModelURL` so it matches `--uci`'s behavior.
@@ -222,7 +231,7 @@ struct DrewsChessMachineApp: App {
         Self.handleValidateCorpusIfPresent(rawArgs: rawArgs)
 
         // Known flags.
-        let booleanFlags: Set<String> = ["--train", "--playchess", "--overwrite-output"]
+        let booleanFlags: Set<String> = ["--train", "--playchess", "--lichess-bot", "--overwrite-output"]
         let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit", "--training-step-limit", "--start-model", "--model", "--seed"]
 
         // Indices of rawArgs that were consumed by a known flag.
@@ -282,6 +291,18 @@ struct DrewsChessMachineApp: App {
         }
         if !trainIndices.isEmpty && !playChessIndices.isEmpty {
             errors.append("--train and --playchess are mutually exclusive")
+        }
+
+        // `--lichess-bot` — boolean GUI-launch flag: skip the resume sheet,
+        // open the Lichess Bot window and go online. One launch mode at a time.
+        let lichessBotIndices = rawArgs.indices.filter { rawArgs[$0] == "--lichess-bot" }
+        self.autoLichessBotOnLaunch = !lichessBotIndices.isEmpty
+        for idx in lichessBotIndices { consumedIndices.insert(idx) }
+        if lichessBotIndices.count > 1 {
+            errors.append("--lichess-bot specified \(lichessBotIndices.count) times; only one allowed")
+        }
+        if !lichessBotIndices.isEmpty && (!trainIndices.isEmpty || !playChessIndices.isEmpty) {
+            errors.append("--lichess-bot cannot be combined with --train or --playchess")
         }
 
         // `--crosscheck-movegen` — diagnostic soak: every `MoveGenerator.legalMoves`
@@ -459,8 +480,9 @@ struct DrewsChessMachineApp: App {
         let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
         let autoTrainMarker = autoTrainOnLaunch ? " autoTrain=on" : ""
         let playChessMarker = autoPlayChessOnLaunch ? " playChess=on" : ""
+        let lichessBotMarker = autoLichessBotOnLaunch ? " lichessBot=on" : ""
         SessionLogger.shared.log(
-            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp)\(autoTrainMarker)\(playChessMarker)"
+            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp)\(autoTrainMarker)\(playChessMarker)\(lichessBotMarker)"
         )
         // The head-numerics fix changes outputs for identical weights (tie
         // breaking, W/D/L thresholds), so probe trends step once at the first
@@ -488,6 +510,9 @@ struct DrewsChessMachineApp: App {
         }
         if autoTrainOnLaunch {
             SessionLogger.shared.log("[APP] --train flag detected; will build fresh network and start Play-and-Train on first appear")
+        }
+        if autoLichessBotOnLaunch {
+            SessionLogger.shared.log("[APP] --lichess-bot flag detected; no resume sheet; the Lichess Bot opens and goes online when the main window attaches")
         }
         if autoPlayChessOnLaunch {
             let modelDesc = playChessModelPath ?? "latest saved session trainer"
@@ -542,6 +567,7 @@ struct DrewsChessMachineApp: App {
                 lichessBotProvider: lichessBotProvider,
                 autoTrainOnLaunch: autoTrainOnLaunch,
                 autoPlayChessOnLaunch: autoPlayChessOnLaunch,
+                autoLichessBotOnLaunch: autoLichessBotOnLaunch,
                 playChessModelPath: playChessModelPath,
                 trainStartModelPath: trainStartModelPath,
                 trainCommandLineSeed: trainCommandLineSeed,

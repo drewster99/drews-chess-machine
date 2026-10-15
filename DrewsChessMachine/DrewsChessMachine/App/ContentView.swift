@@ -28,6 +28,10 @@ struct ContentView: View {
     /// Forwarded from `DrewsChessMachineApp`'s `--playchess` flag. When
     /// set, `UpperContentView` starts a human-vs-network game on launch.
     let autoPlayChessOnLaunch: Bool
+    /// Forwarded from `DrewsChessMachineApp`'s `--lichess-bot` flag. When
+    /// set, `UpperContentView` opens the bot and goes online at launch,
+    /// with no resume sheet.
+    let autoLichessBotOnLaunch: Bool
     /// Forwarded `--model <path>` value (opponent weights for
     /// `--playchess`). Nil ⇒ latest saved session's trainer.
     let playChessModelPath: String?
@@ -109,6 +113,7 @@ struct ContentView: View {
             lichessBotProvider: lichessBotProvider,
             autoTrainOnLaunch: autoTrainOnLaunch,
             autoPlayChessOnLaunch: autoPlayChessOnLaunch,
+            autoLichessBotOnLaunch: autoLichessBotOnLaunch,
             playChessModelPath: playChessModelPath,
             trainStartModelPath: trainStartModelPath,
             trainCommandLineSeed: trainCommandLineSeed,
@@ -162,6 +167,7 @@ struct ContentView: View {
         lichessBotProvider: provider,
         autoTrainOnLaunch: false,
         autoPlayChessOnLaunch: false,
+        autoLichessBotOnLaunch: false,
         playChessModelPath: nil,
         trainStartModelPath: nil,
         trainCommandLineSeed: nil,
