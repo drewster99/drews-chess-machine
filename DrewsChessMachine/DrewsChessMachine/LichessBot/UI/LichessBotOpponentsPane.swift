@@ -1,12 +1,12 @@
 import SwiftUI
 
 /// L5 (§11): the opponents — how many, the current and longest streaks, the
-/// highest-rated win, and the most played opponents with DCM's record
-/// against each.
+/// highest-rated win, and the most played opponents with DCM's record and
+/// net rating change against each.
 struct LichessBotOpponentsPane: View {
     let opponents: LichessBotOpponentsStatistics
 
-    static let titles = ["Opponent", "Kind", "Games", "W–D–L", "Score", "Last played"]
+    static let titles = ["Opponent", "Kind", "Games", "W–D–L", "Score", "Rating Δ", "Last played"]
 
     var body: some View {
         let countWidth = LichessBotStatsFormat.countWidth(opponents.mostPlayed.map(\.tally))

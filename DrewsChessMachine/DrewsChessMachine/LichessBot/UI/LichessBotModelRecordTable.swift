@@ -12,7 +12,7 @@ struct LichessBotModelRecordTable: View {
     /// recomputes and tab switches (the panel keeps every pane mounted).
     @State private var expanded: Set<String> = []
 
-    static let titles = ["", "Model", "Games", "W–D–L", "Score (95%)", "Perf", "Opp avg", "Mixed", "First", "Last"]
+    static let titles = ["", "Model", "Games", "W–D–L", "Score (95%)", "Perf", "Opp avg", "Rating Δ", "Mixed", "First", "Last"]
 
     var body: some View {
         let rows = LichessBotModelTableRow.rows(models, expanded: expanded)

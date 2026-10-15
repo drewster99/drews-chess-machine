@@ -105,7 +105,7 @@ final class LichessBotViewRenderTests: XCTestCase {
         let controller = try makeController()
         for scheme in [ColorScheme.light, .dark] {
             _ = try render(
-                LichessBotGameDetailView(controller: controller, game: game, headToHead: (2, 1, 3), onPopOut: {}, claimsKeyboardShortcuts: false),
+                LichessBotGameDetailView(controller: controller, game: game, headToHead: LichessBotHeadToHead(record: LichessBotResultTally(wins: 2, draws: 1, losses: 3)), onPopOut: {}, claimsKeyboardShortcuts: false),
                 size: CGSize(width: 1000, height: 720), name: "detail", scheme: scheme
             )
             _ = try render(

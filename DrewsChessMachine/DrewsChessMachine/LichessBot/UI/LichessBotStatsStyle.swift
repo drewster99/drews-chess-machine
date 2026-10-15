@@ -29,6 +29,15 @@ enum LichessBotStatsStyle {
     /// The line between the statistics and the recent games.
     static let separator = Color(nsColor: .separatorColor)
 
+    /// A rating change's color: `win` for a gain, `loss` for a drop,
+    /// `neutral` for no change or none recorded (nil).
+    static func ratingChangeColor(points: Int?) -> Color {
+        guard let points else { return neutral }
+        if points > 0 { return win }
+        if points < 0 { return loss }
+        return neutral
+    }
+
     // MARK: Fonts
 
     /// Column headers.

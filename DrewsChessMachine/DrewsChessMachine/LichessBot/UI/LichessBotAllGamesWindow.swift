@@ -123,11 +123,21 @@ struct LichessBotAllGamesTable: View {
                 LichessBotResultChip(ourScore: row.summary.ourScore)
             }
             .width(26)
-            TableColumn("When", value: \.createdAt) { row in
-                Text(row.createdAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(.system(.callout, design: .monospaced))
+            // Grouped: a column builder block takes at most ten columns. The
+            // key paths name their root, which a group can't infer.
+            Group {
+                TableColumn("Rating Δ", value: \LichessBotAllGamesRow.ratingChangeSortKey) { row in
+                    LichessBotGameRatingChangeText(change: row.ratingChange)
+                        .font(LichessBotStatsStyle.numberFont)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                .width(min: 55, ideal: 65)
+                TableColumn("When", value: \LichessBotAllGamesRow.createdAt) { row in
+                    Text(row.createdAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.system(.callout, design: .monospaced))
+                }
+                .width(min: 130, ideal: 150)
             }
-            .width(min: 130, ideal: 150)
             TableColumn("Color") { row in
                 PieceColorDisc(color: row.summary.ourColor == .white ? .white : .black, diameter: 10)
             }
@@ -199,6 +209,9 @@ struct LichessBotAllGamesRow: Identifiable {
     var speed: String { summary.speed }
     var status: String { summary.status }
     var plies: Int { summary.plies }
+    var ratingChange: LichessBotGameRatingChange { LichessBotGameRatingChange(summary) }
+    /// The change; a game without one sorts below every game with one.
+    var ratingChangeSortKey: Int { ratingChange.points ?? Int.min }
 
     /// The index rows both filters show, in index order. An origin not yet
     /// known matches only "All"; a game against Lichess' AI matches only

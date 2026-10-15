@@ -16,13 +16,60 @@ struct LichessBotRatingChange: Sendable, Equatable {
 
     var gamesWithoutChange: Int { ratedGames - gamesWithChange }
 
+    /// For sorting a table by net change: the total when any game has a
+    /// change, else below every total (nothing to rank).
+    var sortKey: Int { gamesWithChange > 0 ? total : Int.min }
+
+    /// Classified by `LichessBotGameRatingChange`, the one definition of a
+    /// game's change, so a sum and the per-game cells over the same rows
+    /// never disagree.
     mutating func add(_ row: LichessBotGameSummary) {
-        guard row.rated, row.ourScore != nil else { return }
-        ratedGames += 1
-        if let diff = row.ourRatingDiff {
+        switch LichessBotGameRatingChange(row) {
+        case .change(let diff):
+            ratedGames += 1
             gamesWithChange += 1
             total += diff
+        case .ratedWithoutChange:
+            ratedGames += 1
+        case .casual, .noResult:
+            break
         }
+    }
+}
+
+/// One filed game's rating change, as the games lists show it and as
+/// `LichessBotRatingChange` sums it: an unscored game changes no rating, a
+/// casual one is not rated, and a rated game without Lichess's diff is a
+/// missing change, never 0.
+enum LichessBotGameRatingChange: Sendable, Equatable {
+    /// Lichess's `ratingDiff` for DCM, which may be 0.
+    case change(Int)
+    /// Rated and scored, but Lichess left no diff.
+    case ratedWithoutChange
+    case casual
+    /// Aborted or never started: no rating moves, rated or not.
+    case noResult
+
+    init(_ row: LichessBotGameSummary) {
+        guard row.ourScore != nil else {
+            self = .noResult
+            return
+        }
+        guard row.rated else {
+            self = .casual
+            return
+        }
+        if let diff = row.ourRatingDiff {
+            self = .change(diff)
+        } else {
+            self = .ratedWithoutChange
+        }
+    }
+
+    /// The signed change, when there is one; drives the cell's color.
+    var points: Int? {
+        if case .change(let points) = self { return points }
+        return nil
     }
 }
 
@@ -105,6 +152,7 @@ struct LichessBotRatingSparklineSeries: Sendable, Equatable {
         }
         let games = ratings.count - (endsWithCurrentRating ? 1 : 0)
         var text = "\(low)–\(high) over \(games) rated game\(games == 1 ? "" : "s")"
+        text += " (the last up to \(LichessBotRecordStatistics.ratingTrendLimit) at this speed, whatever the Period and Games filters)"
         if let firstDate, let lastDate {
             text += ", \(firstDate.formatted(date: .abbreviated, time: .omitted)) to \(lastDate.formatted(date: .abbreviated, time: .omitted))"
         }
@@ -138,6 +186,8 @@ struct LichessBotModelRecordLine: Sendable, Equatable {
     let performance: LichessBotRatingEstimate
     let ratedOpponentGames: Int
     let opponentAverage: Double?
+    /// Lichess's net rating change over the line's rated games.
+    let ratingChange: LichessBotRatingChange
     /// Games played by more than one model (a mid-game switch), attributed
     /// here by majority.
     let mixedGames: Int
@@ -222,6 +272,7 @@ struct LichessBotModelTableRow: Sendable, Equatable, Identifiable {
     let performance: LichessBotRatingEstimate
     let ratedOpponentGames: Int
     let opponentAverage: Double?
+    let ratingChange: LichessBotRatingChange
     /// Nil for the "No model recorded" row, which has no model to mix with.
     let mixedGames: Int?
     let firstGame: Date?
@@ -252,6 +303,7 @@ struct LichessBotModelTableRow: Sendable, Equatable, Identifiable {
                 performance: .none,
                 ratedOpponentGames: 0,
                 opponentAverage: nil,
+                ratingChange: models.noModelRecordedRatingChange,
                 mixedGames: nil,
                 firstGame: nil,
                 lastGame: nil
@@ -265,11 +317,11 @@ struct LichessBotModelTableRow: Sendable, Equatable, Identifiable {
             id: id, kind: kind, groupModelID: groupModelID, label: label,
             tally: line.tally, interval: line.interval, performance: line.performance,
             ratedOpponentGames: line.ratedOpponentGames, opponentAverage: line.opponentAverage,
-            mixedGames: line.mixedGames, firstGame: line.firstGame, lastGame: line.lastGame
+            ratingChange: line.ratingChange, mixedGames: line.mixedGames, firstGame: line.firstGame, lastGame: line.lastGame
         )
     }
 
-    private init(id: String, kind: Kind, groupModelID: String?, label: String, tally: LichessBotResultTally, interval: LichessBotScoreInterval?, performance: LichessBotRatingEstimate, ratedOpponentGames: Int, opponentAverage: Double?, mixedGames: Int?, firstGame: Date?, lastGame: Date?) {
+    private init(id: String, kind: Kind, groupModelID: String?, label: String, tally: LichessBotResultTally, interval: LichessBotScoreInterval?, performance: LichessBotRatingEstimate, ratedOpponentGames: Int, opponentAverage: Double?, ratingChange: LichessBotRatingChange, mixedGames: Int?, firstGame: Date?, lastGame: Date?) {
         self.id = id
         self.kind = kind
         self.groupModelID = groupModelID
@@ -279,6 +331,7 @@ struct LichessBotModelTableRow: Sendable, Equatable, Identifiable {
         self.performance = performance
         self.ratedOpponentGames = ratedOpponentGames
         self.opponentAverage = opponentAverage
+        self.ratingChange = ratingChange
         self.mixedGames = mixedGames
         self.firstGame = firstGame
         self.lastGame = lastGame
@@ -375,6 +428,8 @@ struct LichessBotModelStatistics: Sendable, Equatable {
     /// moved, or only export-known moves): their own row, never dropped and
     /// never given to a neighbor.
     let noModelRecorded: LichessBotResultTally
+    /// Lichess's net rating change over `noModelRecorded`'s rated games.
+    let noModelRecordedRatingChange: LichessBotRatingChange
     /// DCM decisions whose generation reference names no listed generation.
     let decisionsWithoutGeneration: Int
     /// Runs with at least two points; the chart is left out with none.

@@ -14,6 +14,8 @@ struct LichessBotOpponentRecordRowView: View {
             Text("\(row.tally.games)")
             LichessBotTallyText(tally: row.tally, countWidth: countWidth)
             Text(LichessBotStatsFormat.score(row.tally.score))
+            Text(LichessBotStatsFormat.ratingChange(row.ratingChange))
+                .help(LichessBotStatsFormat.ratingChangeHelp(row.ratingChange))
             Text(row.lastPlayedAt.formatted(date: .numeric, time: .omitted))
         }
         .font(LichessBotStatsStyle.numberFont)

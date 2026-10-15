@@ -45,6 +45,39 @@ enum LichessBotStatsFormat {
         return "\(change.gamesWithChange) of \(change.ratedGames) rated games have a rating change (Lichess' change at the time of the game)"
     }
 
+    /// DCM's record against one opponent and the net rating change over
+    /// the rated games among them: "3–1–2 · Δ +15*" (the change written
+    /// by `ratingChange`).
+    static func headToHead(_ headToHead: LichessBotHeadToHead) -> String {
+        let record = headToHead.record
+        return "\(record.wins)–\(record.draws)–\(record.losses) · Δ \(ratingChange(headToHead.ratingChange))"
+    }
+
+    /// The tooltip that goes with `headToHead`.
+    static func headToHeadHelp(_ headToHead: LichessBotHeadToHead) -> String {
+        "DCM's wins–draws–losses against this opponent, and its net rating change against them (Δ): \(ratingChangeHelp(headToHead.ratingChange))"
+    }
+
+    /// One game's change: "+7", "−12", "0"; "–" for a game whose rating
+    /// did not move or whose change Lichess didn't report (the tooltip,
+    /// `gameRatingChangeHelp`, says which).
+    static func gameRatingChange(_ change: LichessBotGameRatingChange) -> String {
+        switch change {
+        case .change(let points): return signed(points)
+        case .ratedWithoutChange, .casual, .noResult: return missing
+        }
+    }
+
+    /// The tooltip that goes with `gameRatingChange`.
+    static func gameRatingChangeHelp(_ change: LichessBotGameRatingChange) -> String {
+        switch change {
+        case .change: return "DCM's rating change in this game, as Lichess reported it"
+        case .ratedWithoutChange: return "Lichess reported no rating change for this rated game"
+        case .casual: return "Casual: no rating change"
+        case .noResult: return "No result: no rating change"
+        }
+    }
+
     /// "1734", "≥1890", "≤1100", "–".
     static func estimate(_ estimate: LichessBotRatingEstimate) -> String {
         switch estimate {

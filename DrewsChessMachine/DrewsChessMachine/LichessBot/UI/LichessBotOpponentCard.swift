@@ -54,7 +54,7 @@ struct LichessBotOpponentCardContent: View {
     let controller: LichessBotController
     let user: LichessBotUserSummary
     let lichessHeadToHead: String
-    let ourRecord: (wins: Int, draws: Int, losses: Int)
+    let ourRecord: LichessBotHeadToHead
     let compact: Bool
 
     private static let speeds = ["ultraBullet", "bullet", "blitz", "rapid", "classical", "correspondence"]
@@ -127,7 +127,8 @@ struct LichessBotOpponentCardContent: View {
                     }
                     Text(totalsText)
                     Text(lichessHeadToHead)
-                    Text("DCM's records vs them: \(ourRecord.wins)–\(ourRecord.draws)–\(ourRecord.losses)")
+                    Text("DCM's records vs them: \(LichessBotStatsFormat.headToHead(ourRecord))")
+                        .help(LichessBotStatsFormat.headToHeadHelp(ourRecord))
                     Text(overTheBoardText)
                         .foregroundStyle(.secondary)
                         .shown(!overTheBoardText.isEmpty)

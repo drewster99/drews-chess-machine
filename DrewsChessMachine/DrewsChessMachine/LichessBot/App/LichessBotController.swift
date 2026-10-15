@@ -307,6 +307,13 @@ final class LichessBotController {
     private(set) var index: LichessBotIndex.File? {
         didSet {
             recordsByOpponent = LichessBotRecordSummary.byOpponent(rows: index?.rows ?? [])
+            // The index holds one row per game (it is rebuilt when it
+            // doesn't cover the records exactly), so no key repeats; the
+            // closure only spares a trap if one ever did.
+            ratingChangesByFiledGameID = Dictionary(
+                (index?.rows ?? []).map { ($0.gameID, LichessBotGameRatingChange($0)) },
+                uniquingKeysWith: { first, _ in first }
+            )
             pastOpponents = LichessBotRecordSummary.pastOpponents(rows: index?.rows ?? [])
             indexedGameIDs = Set(index?.rows.map(\.gameID) ?? [])
             refreshBotGameWindow(indexChanged: true)
@@ -328,9 +335,15 @@ final class LichessBotController {
     /// Everyone DCM has played, most recent first (the Challenge sheet's
     /// History tab), rebuilt with the games index.
     private(set) var pastOpponents: [LichessBotPastOpponent] = []
-    /// DCM's results against each opponent (lowercased id), rebuilt when the
-    /// games index loads, so tables can show them without scanning records.
-    private(set) var recordsByOpponent: [String: LichessBotResultTally] = [:]
+    /// DCM's results and rating change against each opponent (lowercased
+    /// id), rebuilt when the games index loads, so tables can show them
+    /// without scanning records.
+    private(set) var recordsByOpponent: [String: LichessBotHeadToHead] = [:]
+    /// Each filed game's rating change, by game id, rebuilt with the games
+    /// index: what the live tiles and the game view show once a finished
+    /// game is filed (its record carries Lichess's change). A game not in
+    /// it is not filed yet.
+    private(set) var ratingChangesByFiledGameID: [String: LichessBotGameRatingChange] = [:]
     private(set) var onlineBots: [LichessBotUserSummary] = []
     /// When `onlineBots` was last fetched successfully.
     private(set) var onlineBotsFetchedAt: Date?
@@ -834,9 +847,8 @@ final class LichessBotController {
 
     /// Our record against a player with a Lichess account, from the
     /// finished-games index; a player DCM hasn't played has an empty record.
-    func headToHead(against opponentID: String) -> (wins: Int, draws: Int, losses: Int) {
-        guard let tally = recordsByOpponent[opponentID.lowercased()] else { return (0, 0, 0) }
-        return (tally.wins, tally.draws, tally.losses)
+    func headToHead(against opponentID: String) -> LichessBotHeadToHead {
+        recordsByOpponent[opponentID.lowercased()] ?? LichessBotHeadToHead()
     }
 
     // MARK: - Settings

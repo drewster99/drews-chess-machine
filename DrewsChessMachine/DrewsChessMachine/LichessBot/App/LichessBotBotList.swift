@@ -18,6 +18,9 @@ struct LichessBotBotRow: Identifiable, Sendable, Equatable {
     /// DCM's results against this player from its own records; nil when
     /// they have never played.
     var record: LichessBotResultTally? = nil
+    /// Lichess's net rating change over DCM's rated games against them;
+    /// nil when they have never played.
+    var ratingChange: LichessBotRatingChange? = nil
     /// Lichess title ("BOT", "GM", …), when known.
     var title: String? = nil
     /// Playing a game right now, from a status fetch; nil when unknown.
@@ -36,6 +39,8 @@ struct LichessBotBotRow: Identifiable, Sendable, Equatable {
         guard let record, record.games > 0 else { return -1 }
         return Double(record.games) + (record.score ?? 0) / 2
     }
+    /// The net change; no recorded change sorts below every one.
+    var ratingChangeSortKey: Int { ratingChange?.sortKey ?? Int.min }
 }
 
 /// The Challenge sheet's search and rating filter (plan §7.2).
@@ -81,7 +86,7 @@ enum LichessBotBotList {
     /// Rows for the Online Bots and Online Players tabs: every listed
     /// player, marked with favorites, limit times, and whether they are
     /// playing (from `statuses`; the online lists don't say).
-    static func onlineRows(bots: [LichessBotUserSummary], notes: LichessBotPlayerNotes?, now: Date, records: [String: LichessBotResultTally] = [:], statuses: [String: LichessBotUserStatus] = [:]) -> [LichessBotBotRow] {
+    static func onlineRows(bots: [LichessBotUserSummary], notes: LichessBotPlayerNotes?, now: Date, records: [String: LichessBotHeadToHead] = [:], statuses: [String: LichessBotUserStatus] = [:]) -> [LichessBotBotRow] {
         bots.map { bot in
             let id = bot.id.lowercased()
             return LichessBotBotRow(
@@ -92,7 +97,8 @@ enum LichessBotBotList {
                 isOnline: statuses[id].map { $0.online == true } ?? true,
                 summary: bot,
                 limitUntil: notes?.limitUntil(bot.id, now: now),
-                record: records[id],
+                record: records[id]?.record,
+                ratingChange: records[id]?.ratingChange,
                 title: bot.title,
                 isPlaying: statuses[id].map { $0.playing == true }
             )
@@ -101,14 +107,14 @@ enum LichessBotBotList {
 
     /// Rows for the Favorites tab, in starring order: online favorites from
     /// the online list, the rest from their status (nil when unknown).
-    static func favoriteRows(notes: LichessBotPlayerNotes?, bots: [LichessBotUserSummary], statuses: [String: LichessBotUserStatus], now: Date, records: [String: LichessBotResultTally] = [:]) -> [LichessBotBotRow] {
+    static func favoriteRows(notes: LichessBotPlayerNotes?, bots: [LichessBotUserSummary], statuses: [String: LichessBotUserStatus], now: Date, records: [String: LichessBotHeadToHead] = [:]) -> [LichessBotBotRow] {
         guard let notes else { return [] }
         let online = Dictionary(bots.map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
         return notes.favoriteIDs.map { id in
             let status = statuses[id]
             let isPlaying = status.map { $0.playing == true }
             if let bot = online[id] {
-                return LichessBotBotRow(id: id, username: bot.username, isFavorite: true, isOnline: status.map { $0.online == true } ?? true, summary: bot, limitUntil: notes.limitUntil(id, now: now), record: records[id], title: bot.title, isPlaying: isPlaying)
+                return LichessBotBotRow(id: id, username: bot.username, isFavorite: true, isOnline: status.map { $0.online == true } ?? true, summary: bot, limitUntil: notes.limitUntil(id, now: now), record: records[id]?.record, ratingChange: records[id]?.ratingChange, title: bot.title, isPlaying: isPlaying)
             }
             // Not in the online list: its status, if fetched, is all we know.
             // Without one the name falls back to the stored lowercased id.
@@ -119,7 +125,8 @@ enum LichessBotBotList {
                 isOnline: status.map { $0.online == true },
                 summary: nil,
                 limitUntil: notes.limitUntil(id, now: now),
-                record: records[id],
+                record: records[id]?.record,
+                ratingChange: records[id]?.ratingChange,
                 title: status?.title,
                 isPlaying: isPlaying
             )

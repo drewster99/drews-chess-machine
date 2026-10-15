@@ -35,9 +35,27 @@ struct LichessBotPastOpponent: Sendable, Equatable, Identifiable {
     let kind: LichessBotOpponentKind
     let lastPlayedAt: Date
     let record: LichessBotResultTally
+    /// Lichess's rating changes over the rated games against them.
+    let ratingChange: LichessBotRatingChange
 
     var gamesSortKey: Int { record.games }
     var nameSortKey: String { name.lowercased() }
+    /// The net change; an opponent without a recorded change sorts below
+    /// every one with one.
+    var ratingChangeSortKey: Int { ratingChange.sortKey }
+}
+
+/// DCM's results and Lichess's net rating change against one opponent:
+/// the per-opponent fold every opponent view shares, so the W–D–L and the
+/// change always cover the same games.
+struct LichessBotHeadToHead: Sendable, Equatable {
+    var record = LichessBotResultTally()
+    var ratingChange = LichessBotRatingChange()
+
+    mutating func add(_ row: LichessBotGameSummary) {
+        record.add(ourScore: row.ourScore)
+        ratingChange.add(row)
+    }
 }
 
 /// DCM's record over one period, broken down by opponent kind and color
@@ -107,12 +125,12 @@ enum LichessBotRecordSummary {
 
     /// Everyone DCM has played, most recent game first.
     static func pastOpponents(rows: [LichessBotGameSummary]) -> [LichessBotPastOpponent] {
-        var byID: [String: (name: String, title: String?, kind: LichessBotOpponentKind, last: Date, record: LichessBotResultTally)] = [:]
+        var byID: [String: (name: String, title: String?, kind: LichessBotOpponentKind, last: Date, headToHead: LichessBotHeadToHead)] = [:]
         for row in rows {
             guard let opponentID = row.opponentID else { continue }
             let id = opponentID.lowercased()
-            var entry = byID[id] ?? (row.opponentName ?? opponentID, row.opponentTitle, row.opponentKind, row.createdAt, LichessBotResultTally())
-            entry.record.add(ourScore: row.ourScore)
+            var entry = byID[id] ?? (row.opponentName ?? opponentID, row.opponentTitle, row.opponentKind, row.createdAt, LichessBotHeadToHead())
+            entry.headToHead.add(row)
             if row.createdAt >= entry.last {
                 entry.last = row.createdAt
                 entry.name = row.opponentName ?? entry.name
@@ -121,19 +139,21 @@ enum LichessBotRecordSummary {
             byID[id] = entry
         }
         return byID.map { id, entry in
-            LichessBotPastOpponent(id: id, name: entry.name, title: entry.title, kind: entry.kind, lastPlayedAt: entry.last, record: entry.record)
+            LichessBotPastOpponent(id: id, name: entry.name, title: entry.title, kind: entry.kind, lastPlayedAt: entry.last,
+                                   record: entry.headToHead.record, ratingChange: entry.headToHead.ratingChange)
         }
         .sorted { $0.lastPlayedAt > $1.lastPlayedAt }
     }
 
-    /// DCM's results against each opponent, by lowercased user id.
-    static func byOpponent(rows: [LichessBotGameSummary]) -> [String: LichessBotResultTally] {
-        var tallies: [String: LichessBotResultTally] = [:]
+    /// DCM's results and rating change against each opponent, by
+    /// lowercased user id.
+    static func byOpponent(rows: [LichessBotGameSummary]) -> [String: LichessBotHeadToHead] {
+        var headToHeads: [String: LichessBotHeadToHead] = [:]
         for row in rows {
             guard let opponentID = row.opponentID else { continue }
-            tallies[opponentID.lowercased(), default: LichessBotResultTally()].add(ourScore: row.ourScore)
+            headToHeads[opponentID.lowercased(), default: LichessBotHeadToHead()].add(row)
         }
-        return tallies
+        return headToHeads
     }
 
     /// Each period's record. The boundaries come from

@@ -8,6 +8,9 @@ struct LichessBotRecentGameRow: View {
     var body: some View {
         GridRow {
             LichessBotResultChip(ourScore: row.ourScore)
+            LichessBotGameRatingChangeText(change: LichessBotGameRatingChange(row))
+                .font(LichessBotStatsStyle.numberFont)
+                .gridColumnAlignment(.trailing)
             PieceColorDisc(color: row.ourColor == .white ? .white : .black, diameter: 10)
                 .help(row.ourColor == .white ? "DCM played White" : "DCM played Black")
             LichessBotGameOriginGlyph(display: controller.originsByGameID[row.gameID])

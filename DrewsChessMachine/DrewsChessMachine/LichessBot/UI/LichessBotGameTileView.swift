@@ -2,7 +2,7 @@ import SwiftUI
 
 /// A compact card for one game in the live grid (plan §14.3a): small board,
 /// players with clocks, W/D/L, an anomaly count when there are any, and a
-/// result badge once finished. Clicking it
+/// result badge once finished, with Lichess's rating change once filed. Clicking it
 /// opens the game in its own window; the grid keeps no selection. A
 /// finished game's tile is grayed as a whole, so live games stand out. A
 /// game against a human carries a person glyph beside the name, and while
@@ -69,6 +69,13 @@ struct LichessBotGameTileContent: View {
                 Text(resultText)
                     .font(.system(.callout, design: .monospaced).weight(.bold))
                     .foregroundStyle(resultColor)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                    .shown(game.isFinished)
+                // Lichess's change arrives with the game's record, so a
+                // finished game shows it once filed and nothing before.
+                LichessBotGameRatingChangeText(change: controller.ratingChangesByFiledGameID[game.id])
+                    .font(.system(.callout, design: .monospaced).weight(.bold))
                     .lineLimit(1)
                     .layoutPriority(1)
                     .shown(game.isFinished)

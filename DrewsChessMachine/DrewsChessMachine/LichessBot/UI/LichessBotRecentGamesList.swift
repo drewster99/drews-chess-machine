@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// DCM's most recent filed games, newest first: result chip, color, how the
+/// DCM's most recent filed games, newest first: result chip, Lichess's
+/// rating change, color, how the
 /// game began, the opponent and their kind and rating, the game's speed, and
 /// when. It scrolls within the card's height; "More…" opens every game in a
 /// sortable window.

@@ -7,7 +7,7 @@ import SwiftUI
 struct LichessBotGameDetailView: View {
     let controller: LichessBotController
     let game: LichessBotLiveGame
-    let headToHead: (wins: Int, draws: Int, losses: Int)?
+    let headToHead: LichessBotHeadToHead?
     /// Opens the game in its own window; nil inside that window.
     let onPopOut: (() -> Void)?
     let claimsKeyboardShortcuts: Bool
@@ -51,7 +51,7 @@ struct LichessBotGameDetailContent: View {
     let controller: LichessBotController
     let game: LichessBotLiveGame
     let ourColor: PieceColor
-    let headToHead: (wins: Int, draws: Int, losses: Int)?
+    let headToHead: LichessBotHeadToHead?
     let onPopOut: (() -> Void)?
     let claimsKeyboardShortcuts: Bool
     @Binding var cursor: GameBrowseCursor
@@ -170,6 +170,11 @@ struct LichessBotGameHeaderView: View {
             Text(statusText)
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(game.isFinished ? Color.primary : Color.green)
+            // Shown once the finished game is filed: Lichess's change comes
+            // with its record.
+            LichessBotGameRatingChangeText(change: controller.ratingChangesByFiledGameID[game.id])
+                .font(.system(.callout, design: .monospaced).weight(.semibold))
+                .shown(game.isFinished)
             Text(game.opponentOffersDraw ? "draw offered" : (game.opponentProposesTakeback ? "takeback proposed" : ""))
                 .font(.callout)
                 .foregroundStyle(.orange)

@@ -244,6 +244,7 @@ private struct ModelLineAccumulator {
     var tally = LichessBotResultTally()
     var score = 0.0
     var performance = PerformanceAccumulator()
+    var ratingChange = LichessBotRatingChange()
     var mixed = 0
     var first: Date
     var last: Date
@@ -257,6 +258,7 @@ private struct ModelLineAccumulator {
         tally.add(ourScore: ourScore)
         score += ourScore
         performance.add(row)
+        ratingChange.add(row)
         if isMixed { mixed += 1 }
         first = min(first, row.createdAt)
         last = max(last, row.createdAt)
@@ -269,6 +271,7 @@ private struct ModelLineAccumulator {
             performance: performance.estimate,
             ratedOpponentGames: performance.opponents.count,
             opponentAverage: performance.opponentAverage,
+            ratingChange: ratingChange,
             mixedGames: mixed,
             firstGame: first,
             lastGame: last
@@ -418,6 +421,7 @@ private struct PeriodAccumulator {
     var groups: [String: ModelLineAccumulator] = [:]
     var checkpoints: [LichessBotModelKey: (facts: LichessBotGenerationFacts, line: ModelLineAccumulator)] = [:]
     var noModelRecorded = LichessBotResultTally()
+    var noModelRecordedRatingChange = LichessBotRatingChange()
     var decisionsWithoutGeneration = 0
 
     var calibration: [Int: CalibrationAccumulator] = [:]
@@ -469,6 +473,7 @@ private struct PeriodAccumulator {
         decisionsWithoutGeneration += derived.attribution.decisionsWithoutGeneration
         guard let model = derived.attribution.model else {
             noModelRecorded.add(ourScore: ourScore)
+            noModelRecordedRatingChange.add(row)
             return
         }
         let mixed = derived.attribution.mixed
@@ -585,6 +590,7 @@ private struct PeriodAccumulator {
         return LichessBotModelStatistics(
             groups: groupList,
             noModelRecorded: noModelRecorded,
+            noModelRecordedRatingChange: noModelRecordedRatingChange,
             decisionsWithoutGeneration: decisionsWithoutGeneration,
             progression: Self.progression(checkpoints.map { ($0.key, $0.value.facts, $0.value.line) })
         )
@@ -761,7 +767,7 @@ private struct LaterAccumulator {
     var shortLosses: [LichessBotShortGame] = []
     var openings: [String: (lowest: String, highest: String, white: LichessBotResultTally, black: LichessBotResultTally)] = [:]
     var gamesWithoutOpening = 0
-    var opponents: [String: (name: String, kind: LichessBotOpponentKind, tally: LichessBotResultTally, last: Date)] = [:]
+    var opponents: [String: (name: String, kind: LichessBotOpponentKind, headToHead: LichessBotHeadToHead, last: Date)] = [:]
     var highestRatedWin: LichessBotNotableWin?
     /// Scored games in time order, for the streaks.
     var results: [(createdAt: Date, gameID: String, ourScore: Double)] = []
@@ -853,8 +859,8 @@ private struct LaterAccumulator {
     private mutating func addOpponent(_ row: LichessBotGameSummary) {
         guard let opponentID = row.opponentID else { return }
         let id = opponentID.lowercased()
-        var entry = opponents[id] ?? (row.opponentName ?? opponentID, row.opponentKind, LichessBotResultTally(), row.createdAt)
-        entry.tally.add(ourScore: row.ourScore)
+        var entry = opponents[id] ?? (row.opponentName ?? opponentID, row.opponentKind, LichessBotHeadToHead(), row.createdAt)
+        entry.headToHead.add(row)
         if row.createdAt >= entry.last {
             entry.last = row.createdAt
             entry.name = row.opponentName ?? entry.name
@@ -957,7 +963,8 @@ private struct LaterAccumulator {
             if let run, run.ourScore == 0 { longestLoss = max(longestLoss, run.length) }
         }
         let mostPlayed = opponents
-            .map { LichessBotOpponentRecordRow(id: $0.key, name: $0.value.name, kind: $0.value.kind, tally: $0.value.tally, lastPlayedAt: $0.value.last) }
+            .map { LichessBotOpponentRecordRow(id: $0.key, name: $0.value.name, kind: $0.value.kind, tally: $0.value.headToHead.record,
+                                               ratingChange: $0.value.headToHead.ratingChange, lastPlayedAt: $0.value.last) }
             .sorted { lhs, rhs in
                 if lhs.tally.games != rhs.tally.games { return lhs.tally.games > rhs.tally.games }
                 if lhs.lastPlayedAt != rhs.lastPlayedAt { return lhs.lastPlayedAt > rhs.lastPlayedAt }

@@ -14,7 +14,10 @@ struct LichessBotTimeControlTable: View {
     /// fetch).
     let account: LichessBotAccount?
 
-    static let titles = ["", "Rating", "Today Δ", "Week Δ", "Games", "W–D–L", "Score", "Perf", "Period Δ", "Trend"]
+    /// The Trend column covers the last rated games at each speed, not the
+    /// selected period (a short period rarely has enough rated games for a
+    /// line), so its title says which games it shows.
+    static let titles = ["", "Rating", "Today Δ", "Week Δ", "Games", "W–D–L", "Score", "Perf", "Period Δ", "Trend (last \(LichessBotRecordStatistics.ratingTrendLimit) rated)"]
 
     var body: some View {
         let filtered = statistics[filter]

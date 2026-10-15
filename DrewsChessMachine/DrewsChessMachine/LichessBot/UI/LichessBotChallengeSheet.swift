@@ -296,7 +296,7 @@ struct LichessBotChallengeSheet: View {
         guard let first = chosen.first else { return "Choose an opponent" }
         guard chosen.count == 1 else { return "\(chosen.count) players · queued and sent one at a time as slots free" }
         let record = controller.headToHead(against: first.id)
-        return "\(first.username) · DCM's record vs them: \(record.wins)–\(record.draws)–\(record.losses)"
+        return "\(first.username) · DCM's record vs them: \(LichessBotStatsFormat.headToHead(record))"
     }
 
     /// Chosen opponents DCM has already played today up to the daily
@@ -499,6 +499,13 @@ struct LichessBotBotTable: View {
                     .help("DCM's wins–draws–losses against them, from its own records")
             }
             .width(min: 70, ideal: 80)
+            .alignment(.trailing)
+            TableColumn("Δ vs DCM", value: \.ratingChangeSortKey) { row in
+                Text(row.ratingChange.map(LichessBotStatsFormat.ratingChange) ?? "")
+                    .font(.system(.body, design: .monospaced))
+                    .help(row.ratingChange.map(LichessBotStatsFormat.ratingChangeHelp) ?? "")
+            }
+            .width(min: 60, ideal: 70)
             .alignment(.trailing)
             TableColumn("Games", value: \.gamesSortKey) { row in
                 Text(row.summary.map { "\($0.ratedSpeedGames)" } ?? "")
@@ -939,6 +946,13 @@ struct LichessBotHistoryList: View {
                         .font(.system(.body, design: .monospaced))
                 }
                 .width(min: 80, ideal: 100)
+                .alignment(.trailing)
+                TableColumn("Rating Δ", value: \.ratingChangeSortKey) { opponent in
+                    Text(LichessBotStatsFormat.ratingChange(opponent.ratingChange))
+                        .font(.system(.body, design: .monospaced))
+                        .help(LichessBotStatsFormat.ratingChangeHelp(opponent.ratingChange))
+                }
+                .width(min: 60, ideal: 70)
                 .alignment(.trailing)
                 TableColumn("Last played", value: \.lastPlayedAt) { opponent in
                     Text(opponent.lastPlayedAt.formatted(.relative(presentation: .named)))

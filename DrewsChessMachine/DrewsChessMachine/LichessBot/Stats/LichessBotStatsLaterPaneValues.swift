@@ -159,6 +159,8 @@ struct LichessBotOpponentRecordRow: Sendable, Equatable, Identifiable {
     let name: String
     let kind: LichessBotOpponentKind
     let tally: LichessBotResultTally
+    /// Lichess's net rating change over the rated games among `tally`'s.
+    let ratingChange: LichessBotRatingChange
     let lastPlayedAt: Date
 }
 

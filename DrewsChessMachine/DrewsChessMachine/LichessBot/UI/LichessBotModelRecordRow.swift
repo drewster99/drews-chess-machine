@@ -18,6 +18,8 @@ struct LichessBotModelRecordRow: View {
             Text(LichessBotStatsFormat.estimate(row.performance))
                 .help("Performance rating over \(row.ratedOpponentGames) game(s) with a rated opponent")
             Text(LichessBotStatsFormat.average(row.opponentAverage))
+            Text(LichessBotStatsFormat.ratingChange(row.ratingChange))
+                .help(LichessBotStatsFormat.ratingChangeHelp(row.ratingChange))
             Text(row.mixedGames.map(String.init) ?? LichessBotStatsFormat.missing)
                 .help("Games in which another model also chose DCM's moves; each game counts for the model that chose most of them")
             Text(row.firstGame.map { $0.formatted(date: .numeric, time: .omitted) } ?? LichessBotStatsFormat.missing)

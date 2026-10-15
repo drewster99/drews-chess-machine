@@ -8,7 +8,7 @@ struct LichessBotPlayerLineView: View {
     /// The side this player has.
     let pieceColor: PieceColor
     let isOurs: Bool
-    let headToHead: (wins: Int, draws: Int, losses: Int)?
+    let headToHead: LichessBotHeadToHead?
     let clockMilliseconds: Int?
     let clockReceivedAt: Date?
     let clockRunning: Bool
@@ -43,7 +43,7 @@ struct LichessBotPlayerLineView: View {
             Text(headToHeadText)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .help("DCM's record against this opponent: wins–draws–losses")
+                .help(headToHead.map(LichessBotStatsFormat.headToHeadHelp) ?? "")
                 .shown(headToHead != nil)
             Spacer(minLength: 8)
             LichessBotMaterialText(points: material.points(for: pieceColor), lead: material.lead(for: pieceColor))
@@ -53,7 +53,7 @@ struct LichessBotPlayerLineView: View {
 
     private var headToHeadText: String {
         guard let headToHead else { return "" }
-        return "vs: \(headToHead.wins)–\(headToHead.draws)–\(headToHead.losses)"
+        return "vs: \(LichessBotStatsFormat.headToHead(headToHead))"
     }
 }
 
