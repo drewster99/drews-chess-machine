@@ -1,6 +1,6 @@
 # 2026-10-05 — LR schedule A/B: constant 0.01 vs a 1.0 ↔ 0.001 cycle (R7 shape, basic24)
 
-**Status:** A/B/C complete; arm B-leaky complete (2026-10-05 20:41 → 2026-10-06 16:24, E-0019); arms B-leakyall and B-silu (since 23:44) running; C-leaky stopped 23:43. A/B/C ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
+**Status:** A/B/C complete; arm B-siluall complete at 100,000 steps (E-0027); arm B-leaky complete (2026-10-05 20:41 → 2026-10-06 16:24, E-0019); arms B-leakyall and B-silu (since 23:44) running; C-leaky stopped 23:43. A/B/C ran 2026-10-05 01:32–18:51 CDT: both arms to their 36,000-step limit (~17:14), then, at the
 owner's request, to trainer step 40,000 by an exact resume (see "Continuation to 40,000"). Arm C was stopped earlier.
 Summary: [E-0017](../summaries/E-0017_2026-10-05_lr-schedule-ab.html).
 
@@ -839,3 +839,124 @@ the tail it ran.
   `dcm_log_20261008-125718.txt`; lineage run `66006003-5799-4FA0-B7AE-F3C19E6FD3A5`; pid 72151. Every model file carries
   its own wide / 200 puzzle results (`dcm_test_set_results`), so no probe loop. Shares the GPU with the two
   `20261008-zlra-selfplay-lr` runs.
+
+### Arm B-siluall: result (finished at trainer step 100,000, 2026-10-15 13:08 CDT; E-0027)
+
+- **Normal end:** step limit reached (`termination_reason` `step_limit_reached` in `results-Bsiluall-seg5.json`: the segment's limit of 23,826 steps
+  is trainer step 100,000). Still epoch 0 of the corpus (`nextGame=12865680`). Lineage run `66006003-5799-4FA0-B7AE-F3C19E6FD3A5`, 7 segments
+  (lineage indices 0-6), every join `[RESUME] EXACT`. Sum of measured trainer-step time 245,880 s (68.3 h, `cum_train_step_sec` in `results-Bsiluall-seg5.json`);
+  wall clock 2026-10-08 12:57 to 2026-10-15 13:08, with the stops below.
+- **Data source:** this arm's numbers come from each file's own `dcm_test_set_results` (no probe loop), read by `bsiluall_table.py` into
+  `probes-Bsiluall.csv` (102 rows: every 1,000 steps plus the abort saves 64,071 and 76,174). The other arms' numbers are their probe-loop
+  `probes-*.jsonl` (same fold, per the model-file notes). Wide set = 4,435 puzzles; pElo = puzzle Elo (maximum-likelihood rating), NLL = negative log-likelihood.
+
+#### Segments
+
+Launcher numbering follows `launch/Bsiluall_resume*_launch.sh`; "lineage idx" is the file's `lineage_segment_index` (the NaN halt of segment 1 used an index).
+
+| launcher seg | lineage idx | start step | end step | build (git) | log (`~/Library/Logs/DrewsChessMachine/`) | wall clock | how it ended |
+|---|---:|---:|---:|---|---|---|---|
+| 0 | 0 | 0 (branch from `20261008-8-y57y`) | 40,000 | 2440 (`9c6a463c`) | `dcm_log_20261008-125718.txt` | 10-08 12:57 to 10-09 16:34 | `step_limit_reached` (limit 40,000) |
+| 1 | 1 | 40,000 | halted after step line 45,950 (launcher note: ~45,975); last save 45,000 | 2440 | `dcm_log_20261009-163612.txt` | 10-09 16:36 to 21:37 | `[REPLAY] failed: Non-finite loss detected` — gradient NaN, finite losses (total 3.5468, gradNorm nan); no save after it; no results file |
+| 1b | 2 | 45,000 | 60,000 | 2440 | `dcm_log_20261009-213842.txt` | 10-09 21:38 to 10-10 08:20 | `step_limit_reached` (15,000). Passed the step that halted segment 1 |
+| 2 | 3 | 60,000 | 64,071 | 2440 | `dcm_log_20261010-082147.txt` | 10-10 08:21 to 11:13 | SIGINT (`manual_stop`), abort save 64,071: owner moved every trainer to build 2491 |
+| 3 | 4 | 64,071 | 74,378 reached; last save 74,000 | 2491 (`6fe1dcd5`) | `dcm_log_20261010-111314.txt` | 10-10 11:13 to 21:15 | `gpu_fault`, exit 36: system log 21:15:26 "Discarded (victim of GPU error/recovery)"; no save after it |
+| 4 | 5 | 74,000 | 76,174 | 2491 | `dcm_log_20261010-211711.txt` | 10-10 21:17 to 22:36 | SIGINT (`manual_stop`), abort save 76,174: owner stopped B-siluall for other runs |
+| 5 | 6 | 76,174 | 100,000 | 2491 | `dcm_log_20261014-214445.txt` | 10-14 21:44 to 10-15 13:08 | `step_limit_reached`; `[RESUME] OS changed (26B5091g → 26B5112a), behavior fingerprint matches`, still EXACT |
+
+- Also in the logs under this lineage run: `dcm_log_20261010-070215.txt`, a build-2487 start from the 58,000 save whose output went to a scratch folder, not `Models/`; it
+  contributed no checkpoint and is not a segment. `train-Bsiluall-seg1-refused.stdout` is segment 1's first launch, refused: `--resume-exact cannot continue this checkpoint exactly: it lacks params` (launched without `--parameters`, so the app's saved settings were used).
+- Steps run twice: ~45,001-45,975 (segment 1 up to its halt, then segment 1b from the 45,000 save) and 74,001-74,378 (segment 3 up to its GPU fault, then segment 4 from the 74,000 save).
+  Checkpoints 41,000-45,000 are segment 1's, 46,000-60,000 segment 1b's, 61,000-64,071 segment 2's, 65,000-74,000 segment 3's, 75,000-76,174 segment 4's, 77,000 on segment 5's.
+
+#### Wide-set pElo and NLL
+
+LR at each listed step is from the logs. Every 10,000th step falls on the rising side of the LR cycle (LR ~0.5, peak at each 10,000n + 1,000), so the value at the
+step is a mid-cycle number; the best-of-window table below is the like-for-like comparison. A blank cell is a step (or window) the run never reached.
+
+| step | LR | A | B | B-leaky | B-leakyall | B-silu (cap 15) | B-silu clip 1.0 (from 18k) | B-siluall |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10,000 | 0.513 | 1148.8 | 1384.0 | 1349.5 | 1363.4 | 1337.7 | | 1353.6 |
+| 20,000 | 0.508 | 1295.4 | 1471.3 | 1471.8 | 1451.8 | 1390.2 | 1442.5 | 1473.3 |
+| 30,000 | 0.504 | 1347.0 | 1504.6 | 1376.3 | 1479.5 | 773.9 | 1499.0 | 1492.8 |
+| 40,000 | 0.5 | 1396.8 | 1507.7 | 1469.2 | 1446.1 | | 1475.4 | 1504.1 |
+| 50,000 | 0.495 | | | | | | | 1530.3 |
+| 60,000 | 0.491 | | | | | | | 1581.1 |
+| 70,000 | 0.487 | | | | | | | 1508.2 |
+| 80,000 | 0.482 | | | | | | | 1577.0 |
+| 90,000 | 0.478 | | | | | | | 1551.9 |
+| 100,000 | 0.474 | | | | | | | 1416.4 |
+
+| step | A | B | B-leaky | B-leakyall | B-silu (cap 15) | B-silu clip 1.0 (from 18k) | B-siluall |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10,000 | 2.6373 | 2.3439 | 2.4340 | 2.3702 | 2.4043 | | 2.3543 |
+| 20,000 | 2.4451 | 2.2335 | 2.2656 | 2.2243 | 2.3648 | 2.2475 | 2.2600 |
+| 30,000 | 2.3633 | 2.2333 | 2.3738 | 2.2527 | 4.1576 | 2.2147 | 2.2328 |
+| 40,000 | 2.3094 | 2.2211 | 2.2123 | 2.2372 | | 2.2313 | 2.1645 |
+| 50,000 | | | | | | | 2.1664 |
+| 60,000 | | | | | | | 2.1049 |
+| 70,000 | | | | | | | 2.2493 |
+| 80,000 | | | | | | | 2.1553 |
+| 90,000 | | | | | | | 2.1718 |
+| 100,000 | | | | | | | 2.5259 |
+
+Best wide pElo within each 10,000-step window, with the step it came at (the trough end of each LR cycle):
+
+| window (steps) | A | B | B-leaky | B-leakyall | B-silu (cap 15) | B-silu clip 1.0 | B-siluall |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1-10,000 | 1154.0 (9,000) | 1409.2 (8,000) | 1395.8 (8,000) | 1402.5 (7,000) | 1424.1 (8,000) | | 1450.2 (8,000) |
+| 10,001-20,000 | 1314.0 (16,000) | 1581.6 (17,000) | 1574.4 (17,000) | 1553.9 (17,000) | 1571.9 (19,000) | | 1566.2 (18,000) |
+| 20,001-30,000 | 1402.0 (24,000) | 1609.4 (26,000) | 1618.1 (28,000) | 1610.4 (27,000) | 977.9 (29,000) | 1600.6 (28,000) | 1603.2 (25,000) |
+| 30,001-40,000 | 1453.8 (36,000) | 1632.0 (38,000) | 1641.7 (38,000) | 1629.4 (38,000) | | 1639.2 (38,000) | 1629.9 (38,000) |
+| 40,001-50,000 | | | | | | | 1624.3 (47,000) |
+| 50,001-60,000 | | | | | | | 1647.4 (58,000) |
+| 60,001-70,000 | | | | | | | 1639.7 (68,000) |
+| 70,001-80,000 | | | | | | | 1628.9 (76,000) |
+| 80,001-90,000 | | | | | | | 1635.6 (86,000) |
+| 90,001-100,000 | | | | | | | 1620.7 (97,000) |
+
+(B-silu's 30,001-40,000 cell is blank because it was stopped at 36,066; B-silu clip 1.0 starts at 19,000, so its first two windows are blank. Per-1,000-step values:
+`probes-Bsiluall.csv`.)
+
+- **Peak: 1647.4 wide pElo at step 58,000** (NLL 2.0840, top-1 2,245 / 4,435, top-5 3,688); lowest NLL 2.0712 at 59,000 (pElo 1640.7).
+- **Final save (step 100,000): 1416.4, NLL 2.5259**, because 100,000 is on the rising side of the cycle (LR 0.474). The last trough-end checkpoint is 97,000: 1620.7 (NLL 2.0777);
+  the six probes 94,000-99,000 span 1608.8-1620.7.
+- **Mid-cycle cost:** pElo at the nine LR-peak steps (11,000, 21,000, ... 91,000) ranges 1325.8-1476.9; each is 96.1-309.7 below the preceding window's best (mean 201.8).
+- **Trough-end plateau:** window bests 1624.3, 1647.4, 1639.7, 1628.9, 1635.6, 1620.7 from 40,001 on; no trend above ~1,647.
+
+#### Health (from the segment logs and results files)
+
+- **Alarms:** the only `[ALARM]` lines are the rules named below plus segment 1's non-finite-loss halt; no `non_finite`, `dead_channels`, `value_fc1_zero_velocity`, `illegal_mass`, `loss_spike`, `divergence` or value-saturation health alarm in any segment.
+  Parked (dead) channels 0 and non-finite values 0 at every `[LAYER-HEALTH]` live line (1,402 lines over the seven logs).
+- **`policy_offset_drift`** (warning, log only) raised at step 1,150 (medianAbs 3.23) and stayed active; medianAbs 4.87 at 2,000, 7.97 at 21,000, 8.94 at 40,000, 10.71 at
+  100,000 (`pLogitMean` -10.71 on the last step line). It is re-raised at the first check after a resume because the evaluator restarts (e.g. 40,100 at 8.95; 45,100 at 9.80; 60,100 at 9.95; 76,250 at 10.65).
+- **Gradient clips (`[GRAD-CLIP] ... applied=true`): 26 in total, all `mode=clip`.**
+  - 3 in segment 0 at steps 1-3 (`binding=hard`, cap 15, pre-clip norm 19.6-21.7; the relative cap needs 100 steps of history).
+  - 1 in segment 1b at step 46,697: pre-clip norm 7,425,386 against cap 0.6805 (median 0.2268, ratio 3.3e7, `gradient_spike` raised and cleared within 50 steps; LR 0.00135). Training continued, pElo 1619.1 at 46,000 and 1624.3 at 47,000.
+  - 21 consecutive in segment 3 at steps 71,022-71,042 (pre-clip 1.18-7.10, ratios 3.0-18.3, LR 0.937, near the cycle's peak) and 1 at step 74,377 (pre-clip 1,749.7, ratio 7,851; the GPU reset in the system log was 21:15:26, the clip line 21:15:32, run stopped at step 74,378).
+  - 0 in segments 1, 2, 4 and 5.
+  - Largest `gNormMax` on a step line in the segments with no clip: 0.481 (segment 1), 0.507 (2), 0.289 (4), 0.600 (5, step 90,800).
+- **Running-variance outliers (`bn_running_variance_jump` / `_runaway`):** at the step-71,050 LR peak, right after the clipped steps, the stem BN's running variance jumped (channel 52: 0.98 -> 512.7 by step 71,150; 15 channels jumped), `bn_running_variance_jump` escalated to critical and
+  cleared at 72,150; `rvMaxOverMedian` stayed ~1,360-1,420 at `stem.bn[52]` (`bn_running_variance_runaway`, threshold 1,000, raised 71,400 and again at 74,050 / 76,200 after each resume) until it fell to 288.0 (`blocks.2.bn1`) at step 90,450, when the alarm cleared.
+  Before step 71,000 the maximum was 324.0 (`blocks.2.bn1[127]`, step 64,070). pElo at 73,000-76,000: 1604.7-1628.9; the event shows no lasting policy damage.
+- **GPU faults:** `[GPU-ERR]` 0 in every log; segments 4 and 5 `gpu_faults` empty. One fault ended segment 3 (above). Segment 1's NaN occurred on build 2440, which had no GPU fault monitor, so its cause is not established; the same step ran clean after the exact resume.
+  Segment 3's fault coincides with R-fixedlr's arena hang (`launch/Bsiluall_resume4_launch.sh` comment).
+
+#### Interpretation
+
+- SiLU in the heads as well as the tower, with the relative gradient cap, trains stably for 100,000 steps: zero parked channels, zero non-finite values, no blow-up at any of the ten LR peaks (peak LR 1.0, decaying to 0.91), unlike B-silu at cap 15 (blew up at 20,600; E-0021).
+- Against the other 1.0-peak arms it is indistinguishable at the common troughs (window bests, B-siluall minus B: +41.0, -15.4, -6.2, -2.1; minus B-leaky: +54.4, -8.2, -14.9, -11.8; minus B-leakyall: +47.7, +12.3, -7.2, +0.5; minus B-silu clip 1.0: -2.6 / -9.3 at 30k / 40k). Single seed per arm, and within-arm probe noise is
+  tens of pElo (A's was +-50-100), so none of these differences is established.
+- Past 40,000 more steps on the same cycle bought about +17 at best (1647.4 at 58,000 against 1629.9 at 38,000) and then slid back to 1620.7 (97,000): the trough-end plateau is ~1,620-1,647 wide pElo. The cycle's peaks cost ~200 pElo each, so a run should stop at a trough end, not on a fixed step count (this one stopped mid-rise at 100,000).
+- Not shown: whether a different seed or a gentler cycle (E-0026) lifts the plateau; the 1.0 peak's benefit over a smaller one on this net.
+
+#### Reproduce
+
+- Binary: segments 0, 1, 1b, 2 `FrozenBuilds/DCM-2440-9c6a463c.app` (build 2440, git `9c6a463c`); segments 3, 4, 5 `FrozenBuilds/DCM-2491-6fe1dcd5.app` (build 2491, git `6fe1dcd5`). Release, clean.
+- Corpus `20260624-192615-w3aA5b`, `--seed 20261005`, `--epochs 12` (the run stayed in epoch 0), parameters `parameters-B-relcap-v3.json` (parameter-snapshot hash `43089775bd53`), architecture `r7_basic24_silu_all.json`
+  (5,132,687 parameters), start net `Models/20261008-r7b24-silu-all-fresh.safetensors` (ModelID `20261008-8-y57y`, minted with `--init-seed 20261005`, `mint-silu-all.txt`).
+- Launchers, in order (each exact-resumes the previous segment's save; every join logged `[RESUME] EXACT`): `launch/Bsiluall_launch.sh` (0 to 40,000), `Bsiluall_resume1_launch.sh` (40,000, halted),
+  `Bsiluall_resume1b_launch.sh` (from the 45,000 save to 60,000), `Bsiluall_resume2_launch.sh` (to 64,071), `Bsiluall_resume3_launch.sh` (64,071, to 74,378), `Bsiluall_resume4_launch.sh` (from the 74,000 save to 76,174), `Bsiluall_resume5_launch.sh` (to 100,000).
+  Each takes `--resume-exact --parameters ... --enumerate-checkpoints`; seed and random streams come from the checkpoint's lineage record.
+- Results: `results-Bsiluall.json`, `results-Bsiluall-seg1b.json`, `-seg2.json` ... `-seg5.json`; stdout `train-Bsiluall*.stdout`. Checkpoints `Models/20261008-lrBsiluall-relcap-replay-step<N>.safetensors` (identify by header `training_step` and `lineage_run_id`).
+- Tables: `python3 -I experiments/20261005-lr-schedule-ab/bsiluall_table.py` rewrites `probes-Bsiluall.csv` from the model-file headers; the other arms' columns are `probes-*.jsonl` (offsets as in `launch/pelo_table.py`).

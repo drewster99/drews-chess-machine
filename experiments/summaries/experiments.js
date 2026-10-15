@@ -497,5 +497,28 @@ window.DCM_EXPERIMENTS = [
    "E-0021"
   ],
   "supersededBy": null
+ },
+ {
+  "id": "E-0027",
+  "date": "2026-10-08",
+  "file": "E-0027_2026-10-08_silu-everywhere-relative-cap.html",
+  "title": "SiLU everywhere with the relative gradient cap (B-siluall)",
+  "status": "complete",
+  "tags": [
+   "lr-schedule",
+   "silu",
+   "gradient-cap",
+   "exact-resume"
+  ],
+  "takeaway": "SiLU in the heads as well as the tower, with the relative gradient cap, ran 100,000 steps on the 0.001–1.0 LR cycle with no parked channel or non-finite value and peaked at 1,647 wide pElo (step 58,000), level with ReLU B and the leaky arms; stop such runs at a cycle's trough end, since each LR peak costs ~200 pElo and the trough-end plateau after 40,000 steps is 1,620–1,647.",
+  "related": [
+   "E-0017",
+   "E-0020",
+   "E-0021",
+   "E-0022",
+   "E-0024",
+   "E-0026"
+  ],
+  "supersededBy": null
  }
 ];

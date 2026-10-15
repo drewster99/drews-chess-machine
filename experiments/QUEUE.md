@@ -9,8 +9,7 @@ conversation.
 | started | experiment | ends (est.) |
 |---|---|---|
 | 2026-10-12 15:31 | R-elitefresh: R-replay's start, parameters and seed on the elite corpus (`20261008-zlra-selfplay-lr/`); segment 1 (exact resume from 80,518) since 2026-10-14 20:11 | end of epoch 1 |
-| next, ~2026-10-14 21:44 | B-siluall segment 5 (`20261005-lr-schedule-ab/`, `launch/Bsiluall_resume5_launch.sh`; segment 4 stopped at 76,174); auto-launches from a queue script | — |
-| after B-siluall stops | R-fixedlr: GUI self-play, LR 0.01 / momentum 0.90 fixed, champion `20261008-7-peGM` (`20261008-zlra-selfplay-lr/`); resumes once B-siluall stops (owner 2026-10-14) | until stopped |
+| B-siluall finished 2026-10-15 13:08 | R-fixedlr: GUI self-play, LR 0.01 / momentum 0.90 fixed, champion `20261008-7-peGM` (`20261008-zlra-selfplay-lr/`); resumes now that B-siluall has stopped (owner 2026-10-14) | until stopped |
 
 R-replay stopped at trainer step 86,398 (2026-10-11, SIGINT save; branched to R-elite / R-elitecyc).
 
@@ -36,6 +35,11 @@ R-replay stopped at trainer step 86,398 (2026-10-11, SIGINT save; branched to R-
 
 ## Finished
 
+- 2026-10-08 12:57 → 2026-10-15 13:08 — B-siluall: B-silu's net with SiLU in the heads too, relative gradient cap (clip, k = 3), B's
+  0.001–1.0 LR cycle, corpus `w3aA5b`, to trainer step 100,000 (`20261005-lr-schedule-ab/` "Arm B-siluall: result", E-0027);
+  seven segments, all joins exact (segment 1 halted on a NaN gradient at ~45,975, segment 3 on a GPU fault at 74,378; each resumed from its last save).
+  Wide pElo peak 1,647.4 at 58,000 (NLL 2.0840); final save at 100,000 is 1,416.4 (rising side of the cycle), last trough-end 97,000 is 1,620.7.
+  Trough-end plateau 1,620–1,647 from 40k on; level with B (1,632.0 at 38k) and the leaky arms. 0 parked channels, 0 non-finite values, 26 clips.
 - 2026-10-11 21:39 → 2026-10-14 21:24 — R-elitecyc: R-elite's step-21,006 save (R-replay's network, 107,404 steps)
   branched onto a gentle 0.002–0.02 LR cycle on the elite corpus `20260704-215145-op24Gp`, to the end of epoch 1 at
   trainer step 127,931 (`20261008-zlra-selfplay-lr/` section 3, E-0026); three segments, both resumes exact. Wide pElo
