@@ -1,0 +1,538 @@
+[PARAM] legacy LR schedule keys converted: kf=[0:2.00e-02/2.00e-03 m0.850/0.950]
+[REPLAY] starting offline corpus replay over 1 corpus path(s)
+[REPLAY] start-model: 20261011-zlra-elitecyc-latest-step127931.safetensors modelID=20261015-1-KXNZ encoding=basic24 policy_tail=fp32_from_pre_bn
+[REPLAY-ARCH] (start-model) in basic24(24) -> stem 128 (5x5) . 3x[9x9+9x9 @128, no-SE, silu/pre, clean_add, no-ReZero, out:layer_norm, drop*1] . act silu . policy intermediate_conv(4864) . value WDL(24->FC128) . bfloat16 policy-tail fp32_from_pre_bn . 8,271,279 params
+[REPLAY-HPARAMS] lr=0.002 batch=4096 wd=0.0003 momentum=0.9 gradClip=15 entropyBonus=0 drawPenalty=0 policyW=1 valueW=1 illegalW=1 pLabelSmooth=0.1 pLabelSmoothMode=fixed_total pLabelSmoothPerMove=0.0033 pLabelSmoothPerMoveCap=0.5 vLabelSmooth=0.013 dropout=0 lrWarmup=1000 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=off batchStats=10 klProbe=100 relClip=clip/k3/N1000/W100/floor0.75 stepLineSec=180 sampling=(maxPerGame=10 maxDrawPct=100 targetLen=999 stratify=off applied=on)
+[GRAD-CLIP] config mode=clip k=3 N=1000 W=100 floor=0.75 hardMax=15
+[REPLAY] trainer-model output: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261011-zlra-elitecyc-latest.safetensors (replacing the existing file, which holds model 20261015-1-KXNZ at step 127931 — the model line this run continues)
+[REPLAY] enumerated checkpoints: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261011-zlra-elitecyc-latest-step128000.safetensors and siblings (never overwritten)
+[REPLAY] corpus 20260704-215145-op24Gp: 42 sealed shard(s)
+[RESUME] EXACT
+[PARAM] random_seed_mode and random_seed=0 not used: an exact resume keeps the run's seed
+[REPLAY] building network + trainer (encoding=basic24)
+[NUMERICS] policy_tail_precision=fp32_from_pre_bn source=architecture
+[RESUME] rng: sampler=restored
+[RESUME] rng: dropout stream=restored
+[REPLAY] start-model trainer state restored exactly (fp32 masters, velocity, trainerStep=127931) + feeder net (base tensors=61)
+[REPLAY-CYCLE] lr=^10000st cnt=0 inv=false mom=off momFollow=off kf=[0:2.00e-02/2.00e-03 m0.850/0.950] origin=trainerStep 127931 cycleStep 126931 cycleLR=9.4624e-03 cycleMom=static (exact resume of 20261015-1-KXNZ)
+[REPLAY] step lines: every 50 trainer steps through 1000, every 1000, and the first diagnostics step ≥ 180 s after the previous line; saves at trainer-step multiples of 1000 (next: 128000)
+[RUN] path=replay run=E709F4EB-1D95-4166-90FA-F0D31002BB89 seg=3 (exact resume of 20261015-1-KXNZ sha=83e84efd298b) build=2523 git=a242b7ad dirty=false git_diff=none device="Apple M5 Max" vm=false os="Version 27.2 (Build 26B5112a)" seed=16308727193092630423 mode=resumed(drawn) derivation=v1 params_sha=a4f47aae61f8 policy_tail=fp32_from_pre_bn cum_step=127931 cum_games=12456410 cum_train_sec=246501.97793114185 argv="/Users/andrew/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2523-a242b7ad.app/Contents/MacOS/DrewsChessMachine --replay-corpus 20260704-215145-op24Gp --start-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261011-zlra-elitecyc-latest-step127931.safetensors --resume-exact --parameters /Users/andrew/cursor/drews-chess-machine/experiments/20261008-zlra-selfplay-lr/parameters-zlra-elite-gentlecycle.json --out-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261011-zlra-elitecyc-latest.safetensors --epochs 3 --enumerate-checkpoints --output /Users/andrew/cursor/drews-chess-machine/experiments/20261008-zlra-selfplay-lr/results-elitecyc-seg3.json"
+[HEALTH] config enabled=true interval=1000 grace=1000 warmup=1000 momentum=0.9 legalMassStall=0.99x8 path=replay actions=non_finite:log,dead_channels:log,value_fc1_zero_velocity:log,illegal_mass:log,gradient_collapse:log,loss_spike:log,policy_offset_drift:log,bn_running_variance_runaway:log,gradient_spike:log,divergence:log,value_saturation:log,value_draw_saturation:log,legal_mass_stall:log,bn_running_variance_jump:log value_fc1_zero_velocity=not_applicable(activation=silu)
+[REPLAY] batchSize=4096 reuse=0.48 K=8533 minPrefill=500000 stepLimit=none epochLimit=[ALARM] health raise rule=policy_offset_drift severity=warning trainerStep=128000 value=medianAbs=9.3541 threshold=medianAbs>=3 action=log lr=0.00903 mom=0.9
+3
+[REPLAY] pre-filled: bufCount=1000000 positionsFed=1526276 gamesFed=17242 rejected=0 skipped=0
+[REPLAY] step=1 loss=3.3246 pLoss=2.4804 vLoss=0.8438 pEnt=-- pIllM=0.0005 playedP=-- pW=-- pD=-- pL=-- vAbs=-- pLogitMean=-- vLogitMean=-- gNorm=0.539 lr=0.00946 ms=3039.5 buf=1000000 plies=1534617 games=17340 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5390 clips=0 gCap=1.7013 trainerStep=127932
+[LAYER-HEALTH] live trainerStep=127932 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=415.3@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[HEALTH] rule value_fc1_zero_velocity does not apply: value FC1 activation is silu, not relu
+[BATCH-HASH] trainerStep=128000 batchHash=2ec65ecd552772f5 batchChain=partial
+[REPLAY] step=69 loss=3.4571 pLoss=2.5957 vLoss=0.8609 pEnt=2.811 pIllM=0.0005 playedP=0.201 pW=0.45 pD=0.12 pL=0.44 vAbs=0.266 pLogitMean=-9.3541 vLogitMean=0.6045 gNorm=0.535 lr=0.00903 ms=2336.2 buf=1000000 plies=2114843 games=24343 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.6124 clips=0 gCap=1.6998 trainerStep=128000
+[LAYER-HEALTH] live trainerStep=128000 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=417.2@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[ALARM] health raise rule=policy_offset_drift severity=warning trainerStep=128000 value=medianAbs=9.3541 threshold=medianAbs>=3 action=log lr=0.00903 mom=0.9
+[HEALTH] check trainerStep=128000 generation=0 evaluations=2 live=2 checkpoint=0 stale=0 truncated=0 cost_ms=0.3 train_ms=151750.7 liveReadFailed=0 lossMaxRatio=-- lossMedianRatio=-- gradMaxRatio=-- rvRiseMax=-- rvOutliers=40/-- nodata=loss_spike:2,gradient_spike:2 active=policy_offset_drift:warning
+[REPLAY] saved trainer model (autosave) step=69 trainerStep=128000 nextGame=7101 shard=0 epoch=1 -> 20261011-zlra-elitecyc-latest.safetensors
+[LAYER-HEALTH] checkpoint replay-autosave step=69 trainerStep=128000 scope=all_tensors reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=417.2@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=37.16@blocks.1.bn1.running_var
+[LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+[LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]  rv≥10x
+[LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.29 [59]         +1.27 [96]            4.6 [23]           0
+[LAYER-HEALTH]     blocks.0.bn1    silu          128    n/a    n/a    n/a      0      0     -2.21 [16]         +0.09 [41]           12.4 [13]           2
+[LAYER-HEALTH]     blocks.0.bn2    silu          128    n/a    n/a    n/a      0      0     -1.31 [103]       +15.42 [116]           7.1 [81]           0
+[LAYER-HEALTH]     blocks.1.bn1    silu          128    n/a    n/a    n/a      0      0     -2.15 [46]         -0.34 [23]          209.1 [13]          17
+[LAYER-HEALTH]     blocks.1.bn2    silu          128    n/a    n/a    n/a      0      0     -1.68 [49]         -0.55 [58]            8.8 [37]           0
+[LAYER-HEALTH]     blocks.2.bn1    silu          128    n/a    n/a    n/a      0      0     -2.24 [83]         +0.73 [8]           417.2 [13]          19
+[LAYER-HEALTH]     blocks.2.bn2    silu          128    n/a    n/a    n/a      0      0     -1.92 [20]         +0.06 [97]            2.6 [44]           0
+[LAYER-HEALTH]     tower_final_bn  silu          128    n/a    n/a    n/a      0      0     -0.80 [73]         +1.48 [88]           30.7 [13]           2
+[LAYER-HEALTH]     policy.pre_bn   silu          128    n/a    n/a    n/a      0      0     -1.18 [32]         +1.97 [65]            7.0 [40]           0
+[LAYER-HEALTH]     value.bn        silu           24    n/a    n/a    n/a      0      0     -1.55 [23]         +0.74 [2]             1.8 [16]           0
+[LAYER-HEALTH]   parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < 0.00135 of the range (Φ(-3)), mostly off < 0.02275 (Φ(-2)); equals dead / off for relu/leaky_relu
+[LAYER-HEALTH]     site            act            ch parked    off       min P   median P
+[LAYER-HEALTH]     blocks.0.bn1    silu          128      0      0    0.135910   0.345244
+[LAYER-HEALTH]     blocks.0.bn2    silu          128      0      0    0.152196   0.309690
+[LAYER-HEALTH]     blocks.1.bn1    silu          128      0      0    0.098032   0.222970
+[LAYER-HEALTH]     blocks.1.bn2    silu          128      0      0    0.091353   0.239414
+[LAYER-HEALTH]     blocks.2.bn1    silu          128      0      0    0.062205   0.209294
+[LAYER-HEALTH]     blocks.2.bn2    silu          128      0      0    0.077300   0.282447
+[LAYER-HEALTH]     tower_final_bn  silu          128      0      0    0.257574   0.522124
+[LAYER-HEALTH]     policy.pre_bn   silu          128      0      0    0.190378   0.585385
+[LAYER-HEALTH]     value.bn        silu           24      0      0    0.124709   0.154710
+[LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+[LAYER-HEALTH]     value.fc1.weight  silu  units 128  zero 0  low 3  median unit norm 0.007931
+[LAYER-HEALTH]     (no SE blocks)
+[LAYER-HEALTH]   ReZero: none
+[LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (16540206 values examined)
+[LAYER-HEALTH]   largest |value|: blocks.1.bn1.running_var 37.16, blocks.2.bn1.running_var 30.74, blocks.0.bn1.running_var 10.56, tower_final_bn.running_var 8.829, blocks.0.bn2.running_var 8.373
+[REPLAY] enumerated checkpoint -> 20261011-zlra-elitecyc-latest-step128000.safetensors
+[REPLAY] step=139 loss=3.4190 pLoss=2.5831 vLoss=0.8353 pEnt=2.808 pIllM=0.0005 playedP=0.204 pW=0.45 pD=0.10 pL=0.45 vAbs=0.258 pLogitMean=-9.3540 vLogitMean=0.6061 gNorm=0.505 lr=0.0086 ms=3000.9 buf=1000000 plies=2712160 games=31609 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5492 clips=0 gCap=1.6949 trainerStep=128070
+[LAYER-HEALTH] live trainerStep=128070 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=419.2@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=128100 batchHash=d0d12a64c4b38b13 batchChain=594d620261d6b9a8
+[REPLAY] step=219 loss=3.4190 pLoss=2.5866 vLoss=0.8320 pEnt=2.814 pIllM=0.0005 playedP=0.205 pW=0.46 pD=0.09 pL=0.45 vAbs=0.267 pLogitMean=-9.3547 vLogitMean=0.6035 gNorm=0.504 lr=0.00813 ms=2998.0 buf=1000000 plies=3394913 games=39950 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5438 clips=0 gCap=1.6844 trainerStep=128150
+[LAYER-HEALTH] live trainerStep=128150 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=419.7@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=128200 batchHash=65991632cc62b92e batchChain=c952f4b0806c669c
+[REPLAY] step=289 loss=3.4211 pLoss=2.5836 vLoss=0.8370 pEnt=2.799 pIllM=0.0005 playedP=0.201 pW=0.46 pD=0.10 pL=0.44 vAbs=0.271 pLogitMean=-9.3523 vLogitMean=0.6049 gNorm=0.514 lr=0.00774 ms=2393.4 buf=1000000 plies=3992192 games=47098 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5385 clips=0 gCap=1.6774 trainerStep=128220
+[LAYER-HEALTH] live trainerStep=128220 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=418.8@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=128300 batchHash=1d1b541c0555e080 batchChain=acfd0d43edbcb407
+[REPLAY] step=369 loss=3.4508 pLoss=2.6000 vLoss=0.8503 pEnt=2.810 pIllM=0.0004 playedP=0.200 pW=0.45 pD=0.10 pL=0.45 vAbs=0.258 pLogitMean=-9.3533 vLogitMean=0.6047 gNorm=0.518 lr=0.00731 ms=2194.4 buf=1000000 plies=4674745 games=55422 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5446 clips=0 gCap=1.6672 trainerStep=128300
+[LAYER-HEALTH] live trainerStep=128300 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=418.3@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=449 loss=3.3958 pLoss=2.5553 vLoss=0.8400 pEnt=2.817 pIllM=0.0006 playedP=0.202 pW=0.44 pD=0.10 pL=0.45 vAbs=0.263 pLogitMean=-9.3555 vLogitMean=0.6046 gNorm=0.516 lr=0.0069 ms=2252.3 buf=1000000 plies=5357439 games=63691 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5707 clips=0 gCap=1.6475 trainerStep=128380
+[LAYER-HEALTH] live trainerStep=128380 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=421.9@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=128400 batchHash=6aa096efedbdb556 batchChain=b47dfa0de70f5331
+[REPLAY] step=529 loss=3.3960 pLoss=2.5668 vLoss=0.8285 pEnt=2.810 pIllM=0.0006 playedP=0.199 pW=0.45 pD=0.10 pL=0.45 vAbs=0.264 pLogitMean=-9.3554 vLogitMean=0.6035 gNorm=0.501 lr=0.00651 ms=4348.6 buf=1000000 plies=6040101 games=71850 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5440 clips=0 gCap=1.6154 trainerStep=128460
+[LAYER-HEALTH] live trainerStep=128460 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=424.9@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=128500 batchHash=0f81bd5955e6d125 batchChain=549be8ffd68589f2
+[REPLAY] step=589 loss=3.4390 pLoss=2.5994 vLoss=0.8390 pEnt=2.793 pIllM=0.0005 playedP=0.205 pW=0.45 pD=0.10 pL=0.45 vAbs=0.262 pLogitMean=-9.3542 vLogitMean=0.6036 gNorm=0.503 lr=0.00623 ms=3398.8 buf=1000000 plies=6552016 games=77876 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5333 clips=0 gCap=1.5854 trainerStep=128520
+[LAYER-HEALTH] live trainerStep=128520 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=425.8@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=659 loss=3.4254 pLoss=2.5914 vLoss=0.8335 pEnt=2.804 pIllM=0.0005 playedP=0.205 pW=0.46 pD=0.09 pL=0.45 vAbs=0.256 pLogitMean=-9.3543 vLogitMean=0.6048 gNorm=0.494 lr=0.00593 ms=2909.4 buf=1000000 plies=7149356 games=85145 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5322 clips=0 gCap=1.5562 trainerStep=128590
+[LAYER-HEALTH] live trainerStep=128590 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.2@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=128600 batchHash=abf468bdd197e2d6 batchChain=ffab78fc0c0980b8
+[REPLAY] step=729 loss=3.4120 pLoss=2.5783 vLoss=0.8330 pEnt=2.804 pIllM=0.0007 playedP=0.205 pW=0.45 pD=0.10 pL=0.44 vAbs=0.266 pLogitMean=-9.3551 vLogitMean=0.6047 gNorm=0.503 lr=0.00563 ms=2535.4 buf=1000000 plies=7746742 games=92287 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5404 clips=0 gCap=1.5417 trainerStep=128660
+[LAYER-HEALTH] live trainerStep=128660 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=431.6@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=128700 batchHash=3eaa43fee6d469c1 batchChain=cb992938b8b9ff59
+[REPLAY] step=809 loss=3.4022 pLoss=2.5756 vLoss=0.8261 pEnt=2.808 pIllM=0.0005 playedP=0.201 pW=0.45 pD=0.10 pL=0.45 vAbs=0.269 pLogitMean=-9.3547 vLogitMean=0.6061 gNorm=0.499 lr=0.00532 ms=2804.7 buf=1000000 plies=8429345 games=100625 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5786 clips=0 gCap=1.5322 trainerStep=128740
+[LAYER-HEALTH] live trainerStep=128740 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=433.5@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=128800 batchHash=d37fb0abc0c289ce batchChain=f2cd55920c288d5c
+[REPLAY] step=879 loss=3.4342 pLoss=2.5953 vLoss=0.8384 pEnt=2.808 pIllM=0.0005 playedP=0.205 pW=0.46 pD=0.10 pL=0.45 vAbs=0.255 pLogitMean=-9.3547 vLogitMean=0.6048 gNorm=0.501 lr=0.00506 ms=2958.8 buf=1000000 plies=9026619 games=107813 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5389 clips=0 gCap=1.5258 trainerStep=128810
+[LAYER-HEALTH] live trainerStep=128810 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=431.9@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=949 loss=3.4258 pLoss=2.5933 vLoss=0.8319 pEnt=2.808 pIllM=0.0005 playedP=0.203 pW=0.45 pD=0.10 pL=0.45 vAbs=0.257 pLogitMean=-9.3525 vLogitMean=0.6062 gNorm=0.508 lr=0.00482 ms=2346.4 buf=1000000 plies=9623895 games=115074 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5508 clips=0 gCap=1.5194 trainerStep=128880
+[LAYER-HEALTH] live trainerStep=128880 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=430.0@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=128900 batchHash=6bf5de2562668b5a batchChain=c6f9435fd4c1159c
+[REPLAY] step=1029 loss=3.4360 pLoss=2.6062 vLoss=0.8293 pEnt=2.821 pIllM=0.0005 playedP=0.202 pW=0.46 pD=0.09 pL=0.45 vAbs=0.266 pLogitMean=-9.3542 vLogitMean=0.6061 gNorm=0.484 lr=0.00456 ms=3586.4 buf=1000000 plies=10306550 games=123345 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5457 clips=0 gCap=1.5139 trainerStep=128960
+[LAYER-HEALTH] live trainerStep=128960 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=430.9@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=129000 batchHash=5dac7496fab302d5 batchChain=906d3b8d7048a8ab
+[REPLAY] step=1069 loss=3.3845 pLoss=2.5593 vLoss=0.8248 pEnt=2.782 pIllM=0.0005 playedP=0.211 pW=0.46 pD=0.09 pL=0.45 vAbs=0.263 pLogitMean=-9.3507 vLogitMean=0.6047 gNorm=0.493 lr=0.00443 ms=2527.5 buf=1000000 plies=10647912 games=127476 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5393 clips=0 gCap=1.5119 trainerStep=129000
+[LAYER-HEALTH] live trainerStep=129000 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=430.9@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[ALARM] health active rule=policy_offset_drift severity=warning since=128000 trainerStep=129000 value=medianAbs=9.3530
+[HEALTH] check trainerStep=129000 generation=0 evaluations=21 live=20 checkpoint=1 stale=0 truncated=0 cost_ms=4.5 train_ms=2497927.8 liveReadFailed=0 lossMaxRatio=1.02 lossMedianRatio=1.01 gradMaxRatio=1.14 rvRiseMax=1.07 rvOutliers=39/39 nodata=loss_spike:3,gradient_spike:3 active=policy_offset_drift:warning
+[REPLAY] saved trainer model (autosave) step=1069 trainerStep=129000 nextGame=110234 shard=0 epoch=1 -> 20261011-zlra-elitecyc-latest.safetensors
+[LAYER-HEALTH] checkpoint replay-autosave step=1069 trainerStep=129000 scope=all_tensors reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=430.9@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=38.48@blocks.1.bn1.running_var
+[LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+[LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]  rv≥10x
+[LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.30 [59]         +1.27 [96]            4.7 [23]           0
+[LAYER-HEALTH]     blocks.0.bn1    silu          128    n/a    n/a    n/a      0      0     -2.21 [16]         +0.09 [41]           12.6 [13]           2
+[LAYER-HEALTH]     blocks.0.bn2    silu          128    n/a    n/a    n/a      0      0     -1.31 [103]       +14.45 [116]           7.5 [81]           0
+[LAYER-HEALTH]     blocks.1.bn1    silu          128    n/a    n/a    n/a      0      0     -2.14 [46]         -0.34 [23]          214.1 [13]          16
+[LAYER-HEALTH]     blocks.1.bn2    silu          128    n/a    n/a    n/a      0      0     -1.68 [49]         -0.55 [58]            8.8 [37]           0
+[LAYER-HEALTH]     blocks.2.bn1    silu          128    n/a    n/a    n/a      0      0     -2.24 [83]         +0.73 [8]           430.9 [13]          19
+[LAYER-HEALTH]     blocks.2.bn2    silu          128    n/a    n/a    n/a      0      0     -1.92 [20]         +0.06 [97]            2.5 [44]           0
+[LAYER-HEALTH]     tower_final_bn  silu          128    n/a    n/a    n/a      0      0     -0.80 [73]         +1.48 [88]           32.0 [13]           2
+[LAYER-HEALTH]     policy.pre_bn   silu          128    n/a    n/a    n/a      0      0     -1.18 [32]         +1.97 [65]            6.9 [40]           0
+[LAYER-HEALTH]     value.bn        silu           24    n/a    n/a    n/a      0      0     -1.55 [23]         +0.72 [2]             2.0 [16]           0
+[LAYER-HEALTH]   parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < 0.00135 of the range (Φ(-3)), mostly off < 0.02275 (Φ(-2)); equals dead / off for relu/leaky_relu
+[LAYER-HEALTH]     site            act            ch parked    off       min P   median P
+[LAYER-HEALTH]     blocks.0.bn1    silu          128      0      0    0.135870   0.345396
+[LAYER-HEALTH]     blocks.0.bn2    silu          128      0      0    0.152039   0.309354
+[LAYER-HEALTH]     blocks.1.bn1    silu          128      0      0    0.097969   0.223659
+[LAYER-HEALTH]     blocks.1.bn2    silu          128      0      0    0.091176   0.239261
+[LAYER-HEALTH]     blocks.2.bn1    silu          128      0      0    0.062174   0.209306
+[LAYER-HEALTH]     blocks.2.bn2    silu          128      0      0    0.077370   0.282380
+[LAYER-HEALTH]     tower_final_bn  silu          128      0      0    0.257510   0.522180
+[LAYER-HEALTH]     policy.pre_bn   silu          128      0      0    0.190635   0.585472
+[LAYER-HEALTH]     value.bn        silu           24      0      0    0.124556   0.154671
+[LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+[LAYER-HEALTH]     value.fc1.weight  silu  units 128  zero 0  low 2  median unit norm 0.006157
+[LAYER-HEALTH]     (no SE blocks)
+[LAYER-HEALTH]   ReZero: none
+[LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (16540206 values examined)
+[LAYER-HEALTH]   largest |value|: blocks.1.bn1.running_var 38.48, blocks.2.bn1.running_var 32.05, blocks.0.bn1.running_var 10.66, tower_final_bn.running_var 9.176, blocks.0.bn2.running_var 8.775
+[REPLAY] enumerated checkpoint -> 20261011-zlra-elitecyc-latest-step129000.safetensors
+[REPLAY] step=1139 loss=3.4386 pLoss=2.6032 vLoss=0.8349 pEnt=2.805 pIllM=0.0005 playedP=0.204 pW=0.46 pD=0.09 pL=0.45 vAbs=0.261 pLogitMean=-9.3527 vLogitMean=0.6048 gNorm=0.496 lr=0.00422 ms=2572.9 buf=1000000 plies=11245200 games=134674 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5304 clips=0 gCap=1.5098 trainerStep=129070
+[LAYER-HEALTH] live trainerStep=129070 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.7@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=129100 batchHash=9f99aa8c31a1c641 batchChain=8878ae7f9d084b00
+[REPLAY] step=1209 loss=3.4451 pLoss=2.6031 vLoss=0.8415 pEnt=2.808 pIllM=0.0005 playedP=0.201 pW=0.45 pD=0.10 pL=0.45 vAbs=0.264 pLogitMean=-9.3517 vLogitMean=0.6059 gNorm=0.496 lr=0.00403 ms=2325.8 buf=1000000 plies=11842524 games=141840 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5345 clips=0 gCap=1.5093 trainerStep=129140
+[LAYER-HEALTH] live trainerStep=129140 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.8@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=129200 batchHash=f1c408af30e978a7 batchChain=3d026ae270b869b6
+[REPLAY] step=1279 loss=3.3911 pLoss=2.5596 vLoss=0.8311 pEnt=2.803 pIllM=0.0005 playedP=0.204 pW=0.46 pD=0.10 pL=0.44 vAbs=0.270 pLogitMean=-9.3529 vLogitMean=0.6034 gNorm=0.506 lr=0.00385 ms=3892.4 buf=1000000 plies=12439833 games=149075 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5336 clips=0 gCap=1.5084 trainerStep=129210
+[LAYER-HEALTH] live trainerStep=129210 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.5@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=1349 loss=3.3878 pLoss=2.5523 vLoss=0.8351 pEnt=2.814 pIllM=0.0004 playedP=0.204 pW=0.45 pD=0.10 pL=0.45 vAbs=0.276 pLogitMean=-9.3545 vLogitMean=0.6020 gNorm=0.508 lr=0.00368 ms=4580.5 buf=1000000 plies=13037140 games=156323 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5510 clips=0 gCap=1.5078 trainerStep=129280
+[LAYER-HEALTH] live trainerStep=129280 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.8@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=129300 batchHash=52beafae7c231acc batchChain=910fb7720ff4305d
+[REPLAY] step=1419 loss=3.4019 pLoss=2.5736 vLoss=0.8278 pEnt=2.792 pIllM=0.0005 playedP=0.205 pW=0.45 pD=0.10 pL=0.45 vAbs=0.266 pLogitMean=-9.3526 vLogitMean=0.6059 gNorm=0.506 lr=0.00352 ms=2368.6 buf=1000000 plies=13634505 games=163496 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5366 clips=0 gCap=1.5080 trainerStep=129350
+[LAYER-HEALTH] live trainerStep=129350 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=431.5@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=129400 batchHash=0ba3e5c3686d16ae batchChain=d492d65104185b76
+[REPLAY] step=1489 loss=3.4436 pLoss=2.6082 vLoss=0.8349 pEnt=2.823 pIllM=0.0004 playedP=0.203 pW=0.46 pD=0.09 pL=0.45 vAbs=0.252 pLogitMean=-9.3541 vLogitMean=0.6036 gNorm=0.489 lr=0.00337 ms=3376.4 buf=1000000 plies=14231701 games=170685 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5322 clips=0 gCap=1.5069 trainerStep=129420
+[LAYER-HEALTH] live trainerStep=129420 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=432.3@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=1559 loss=3.4042 pLoss=2.5624 vLoss=0.8414 pEnt=2.808 pIllM=0.0005 playedP=0.203 pW=0.45 pD=0.10 pL=0.45 vAbs=0.262 pLogitMean=-9.3527 vLogitMean=0.6049 gNorm=0.503 lr=0.00323 ms=2648.0 buf=1000000 plies=14829137 games=177817 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5278 clips=0 gCap=1.5055 trainerStep=129490
+[LAYER-HEALTH] live trainerStep=129490 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=432.6@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=129500 batchHash=d32f59f4efb21a81 batchChain=c56e7c4a11fa7f60
+[REPLAY] step=1639 loss=3.4179 pLoss=2.5873 vLoss=0.8300 pEnt=2.795 pIllM=0.0006 playedP=0.204 pW=0.45 pD=0.10 pL=0.45 vAbs=0.261 pLogitMean=-9.3512 vLogitMean=0.6058 gNorm=0.495 lr=0.00309 ms=2720.5 buf=1000000 plies=15511738 games=186064 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5367 clips=0 gCap=1.5054 trainerStep=129570
+[LAYER-HEALTH] live trainerStep=129570 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=433.8@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=129600 batchHash=054577ddff6fa439 batchChain=3e2b926a8a7c1ed8
+[REPLAY] step=1709 loss=3.4406 pLoss=2.5846 vLoss=0.8555 pEnt=2.798 pIllM=0.0005 playedP=0.203 pW=0.45 pD=0.10 pL=0.45 vAbs=0.264 pLogitMean=-9.3507 vLogitMean=0.6057 gNorm=0.526 lr=0.00297 ms=14716.7 buf=1000000 plies=16108993 games=193198 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5368 clips=0 gCap=1.5054 trainerStep=129640
+[LAYER-HEALTH] live trainerStep=129640 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=435.2@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=1719 loss=3.3839 pLoss=2.5385 vLoss=0.8450 pEnt=2.790 pIllM=0.0004 playedP=0.209 pW=0.45 pD=0.10 pL=0.45 vAbs=0.264 pLogitMean=-9.3482 vLogitMean=0.6033 gNorm=0.508 lr=0.00295 ms=22105.6 buf=1000000 plies=16194364 games=194235 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5285 clips=0 gCap=1.5054 trainerStep=129650
+[LAYER-HEALTH] live trainerStep=129650 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=435.2@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=1729 loss=3.4685 pLoss=2.6148 vLoss=0.8532 pEnt=2.795 pIllM=0.0005 playedP=0.205 pW=0.45 pD=0.11 pL=0.44 vAbs=0.263 pLogitMean=-9.3488 vLogitMean=0.6020 gNorm=0.510 lr=0.00294 ms=3889.5 buf=1000000 plies=16279623 games=195283 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5209 clips=0 gCap=1.5064 trainerStep=129660
+[LAYER-HEALTH] live trainerStep=129660 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=435.4@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=129700 batchHash=bc77b56e749360dd batchChain=744f1ab4065b476d
+[REPLAY] step=1799 loss=3.3718 pLoss=2.5241 vLoss=0.8473 pEnt=2.809 pIllM=0.0004 playedP=0.206 pW=0.45 pD=0.10 pL=0.45 vAbs=0.280 pLogitMean=-9.3489 vLogitMean=0.6021 gNorm=0.515 lr=0.00283 ms=3494.0 buf=1000000 plies=16876943 games=202537 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5819 clips=0 gCap=1.5067 trainerStep=129730
+[LAYER-HEALTH] live trainerStep=129730 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=436.6@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=129800 batchHash=6f84dedd83edfbf5 batchChain=25e6e4ae0220d896
+[REPLAY] step=1869 loss=3.4476 pLoss=2.6181 vLoss=0.8291 pEnt=2.816 pIllM=0.0004 playedP=0.200 pW=0.46 pD=0.09 pL=0.45 vAbs=0.265 pLogitMean=-9.3506 vLogitMean=0.6048 gNorm=0.488 lr=0.00273 ms=3391.5 buf=1000000 plies=17474301 games=209720 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5381 clips=0 gCap=1.5071 trainerStep=129800
+[LAYER-HEALTH] live trainerStep=129800 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=437.1@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=1939 loss=3.4705 pLoss=2.6301 vLoss=0.8399 pEnt=2.823 pIllM=0.0005 playedP=0.204 pW=0.46 pD=0.10 pL=0.45 vAbs=0.253 pLogitMean=-9.3514 vLogitMean=0.6047 gNorm=0.497 lr=0.00264 ms=3653.7 buf=1000000 plies=18071678 games=216979 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5332 clips=0 gCap=1.5060 trainerStep=129870
+[LAYER-HEALTH] live trainerStep=129870 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=437.0@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=129900 batchHash=7b5f2f638a3b6efe batchChain=effce741a739823d
+[REPLAY] step=2009 loss=3.4045 pLoss=2.5701 vLoss=0.8340 pEnt=2.784 pIllM=0.0005 playedP=0.210 pW=0.45 pD=0.09 pL=0.45 vAbs=0.268 pLogitMean=-9.3486 vLogitMean=0.6046 gNorm=0.503 lr=0.00256 ms=2386.9 buf=1000000 plies=18668880 games=224122 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5382 clips=0 gCap=1.5054 trainerStep=129940
+[LAYER-HEALTH] live trainerStep=129940 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=436.6@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=130000 batchHash=77595dd90f791328 batchChain=4cb42ed6714654a6
+[REPLAY] step=2069 loss=3.4322 pLoss=2.5960 vLoss=0.8358 pEnt=2.815 pIllM=0.0004 playedP=0.200 pW=0.45 pD=0.10 pL=0.45 vAbs=0.266 pLogitMean=-9.3496 vLogitMean=0.6046 gNorm=0.490 lr=0.00249 ms=1982.4 buf=1000000 plies=19180905 games=230379 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5247 clips=0 gCap=1.5056 trainerStep=130000
+[LAYER-HEALTH] live trainerStep=130000 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=435.6@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[ALARM] health active rule=policy_offset_drift severity=warning since=128000 trainerStep=130000 value=medianAbs=9.3496
+[HEALTH] check trainerStep=130000 generation=0 evaluations=21 live=20 checkpoint=1 stale=0 truncated=0 cost_ms=15.4 train_ms=5024795.8 liveReadFailed=0 lossMaxRatio=1.02 lossMedianRatio=1.00 gradMaxRatio=1.16 rvRiseMax=1.06 rvOutliers=39/39 nodata=none active=policy_offset_drift:warning
+[REPLAY] saved trainer model (autosave) step=2069 trainerStep=130000 nextGame=213137 shard=0 epoch=1 -> 20261011-zlra-elitecyc-latest.safetensors
+[LAYER-HEALTH] checkpoint replay-autosave step=2069 trainerStep=130000 scope=all_tensors reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=435.6@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=38.47@blocks.1.bn1.running_var
+[LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+[LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]  rv≥10x
+[LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.30 [59]         +1.27 [96]            4.7 [23]           0
+[LAYER-HEALTH]     blocks.0.bn1    silu          128    n/a    n/a    n/a      0      0     -2.21 [16]         +0.09 [41]           12.5 [13]           2
+[LAYER-HEALTH]     blocks.0.bn2    silu          128    n/a    n/a    n/a      0      0     -1.31 [103]       +14.35 [116]           7.3 [81]           0
+[LAYER-HEALTH]     blocks.1.bn1    silu          128    n/a    n/a    n/a      0      0     -2.13 [46]         -0.34 [23]          212.6 [13]          16
+[LAYER-HEALTH]     blocks.1.bn2    silu          128    n/a    n/a    n/a      0      0     -1.68 [49]         -0.55 [58]            8.9 [37]           0
+[LAYER-HEALTH]     blocks.2.bn1    silu          128    n/a    n/a    n/a      0      0     -2.24 [83]         +0.73 [8]           435.6 [13]          19
+[LAYER-HEALTH]     blocks.2.bn2    silu          128    n/a    n/a    n/a      0      0     -1.92 [20]         +0.06 [97]            2.5 [44]           0
+[LAYER-HEALTH]     tower_final_bn  silu          128    n/a    n/a    n/a      0      0     -0.80 [73]         +1.48 [88]           32.5 [13]           2
+[LAYER-HEALTH]     policy.pre_bn   silu          128    n/a    n/a    n/a      0      0     -1.18 [32]         +1.97 [65]            6.9 [40]           0
+[LAYER-HEALTH]     value.bn        silu           24    n/a    n/a    n/a      0      0     -1.55 [23]         +0.73 [2]             2.0 [16]           0
+[LAYER-HEALTH]   parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < 0.00135 of the range (Φ(-3)), mostly off < 0.02275 (Φ(-2)); equals dead / off for relu/leaky_relu
+[LAYER-HEALTH]     site            act            ch parked    off       min P   median P
+[LAYER-HEALTH]     blocks.0.bn1    silu          128      0      0    0.135642   0.345398
+[LAYER-HEALTH]     blocks.0.bn2    silu          128      0      0    0.151962   0.309424
+[LAYER-HEALTH]     blocks.1.bn1    silu          128      0      0    0.097969   0.223389
+[LAYER-HEALTH]     blocks.1.bn2    silu          128      0      0    0.091186   0.239341
+[LAYER-HEALTH]     blocks.2.bn1    silu          128      0      0    0.062137   0.209345
+[LAYER-HEALTH]     blocks.2.bn2    silu          128      0      0    0.077338   0.282369
+[LAYER-HEALTH]     tower_final_bn  silu          128      0      0    0.257458   0.522138
+[LAYER-HEALTH]     policy.pre_bn   silu          128      0      0    0.190709   0.585519
+[LAYER-HEALTH]     value.bn        silu           24      0      0    0.124537   0.154656
+[LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+[LAYER-HEALTH]     value.fc1.weight  silu  units 128  zero 0  low 2  median unit norm 0.006392
+[LAYER-HEALTH]     (no SE blocks)
+[LAYER-HEALTH]   ReZero: none
+[LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (16540206 values examined)
+[LAYER-HEALTH]   largest |value|: blocks.1.bn1.running_var 38.47, blocks.2.bn1.running_var 32.39, blocks.0.bn1.running_var 10.66, tower_final_bn.running_var 9.232, blocks.0.bn2.running_var 8.427
+[REPLAY] enumerated checkpoint -> 20261011-zlra-elitecyc-latest-step130000.safetensors
+[REPLAY] step=2159 loss=3.4193 pLoss=2.5745 vLoss=0.8443 pEnt=2.810 pIllM=0.0004 playedP=0.205 pW=0.45 pD=0.10 pL=0.45 vAbs=0.261 pLogitMean=-9.3506 vLogitMean=0.6047 gNorm=0.486 lr=0.0024 ms=1900.3 buf=1000000 plies=19948897 games=239597 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5328 clips=0 gCap=1.5061 trainerStep=130090
+[LAYER-HEALTH] live trainerStep=130090 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=432.9@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=130100 batchHash=0b9829d6cf577be3 batchChain=5766837892ae7564
+[REPLAY] step=2249 loss=3.4080 pLoss=2.5719 vLoss=0.8356 pEnt=2.804 pIllM=0.0005 playedP=0.205 pW=0.45 pD=0.10 pL=0.45 vAbs=0.265 pLogitMean=-9.3487 vLogitMean=0.6048 gNorm=0.493 lr=0.00232 ms=2119.8 buf=1000000 plies=20716818 games=249023 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5287 clips=0 gCap=1.5049 trainerStep=130180
+[LAYER-HEALTH] live trainerStep=130180 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=431.5@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=130200 batchHash=3cce3ec5f4d163a8 batchChain=693612f3872657d2
+[REPLAY] step=2339 loss=3.4317 pLoss=2.5798 vLoss=0.8515 pEnt=2.805 pIllM=0.0004 playedP=0.206 pW=0.45 pD=0.10 pL=0.45 vAbs=0.265 pLogitMean=-9.3484 vLogitMean=0.6045 gNorm=0.513 lr=0.00225 ms=1958.5 buf=1000000 plies=21484843 games=258239 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5214 clips=0 gCap=1.5038 trainerStep=130270
+[LAYER-HEALTH] live trainerStep=130270 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.5@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=130300 batchHash=d5e81dbd07993920 batchChain=eeeed99b2a43a529
+[REPLAY] step=2429 loss=3.4657 pLoss=2.6276 vLoss=0.8377 pEnt=2.815 pIllM=0.0004 playedP=0.203 pW=0.46 pD=0.10 pL=0.45 vAbs=0.263 pLogitMean=-9.3490 vLogitMean=0.6048 gNorm=0.480 lr=0.00219 ms=1790.5 buf=1000000 plies=22252757 games=267596 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5382 clips=0 gCap=1.5011 trainerStep=130360
+[LAYER-HEALTH] live trainerStep=130360 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=427.7@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=130400 batchHash=15afc26928280d1f batchChain=11bd510fd537911d
+[REPLAY] step=2519 loss=3.3979 pLoss=2.5469 vLoss=0.8506 pEnt=2.825 pIllM=0.0004 playedP=0.202 pW=0.45 pD=0.10 pL=0.45 vAbs=0.264 pLogitMean=-9.3488 vLogitMean=0.6061 gNorm=0.533 lr=0.00214 ms=1853.6 buf=1000000 plies=23020734 games=276922 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5629 clips=0 gCap=1.5029 trainerStep=130450
+[LAYER-HEALTH] live trainerStep=130450 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.9@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=130500 batchHash=d933880eac043b42 batchChain=d17e00eec7aa2f9a
+[REPLAY] step=2609 loss=3.4123 pLoss=2.5755 vLoss=0.8363 pEnt=2.817 pIllM=0.0005 playedP=0.202 pW=0.45 pD=0.10 pL=0.45 vAbs=0.257 pLogitMean=-9.3500 vLogitMean=0.6059 gNorm=0.496 lr=0.0021 ms=1621.4 buf=1000000 plies=23788722 games=286201 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5411 clips=0 gCap=1.5034 trainerStep=130540
+[LAYER-HEALTH] live trainerStep=130540 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.2@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=130600 batchHash=3f7cbe93a0397451 batchChain=bcda597a10953b2f
+[REPLAY] step=2699 loss=3.4131 pLoss=2.5812 vLoss=0.8314 pEnt=2.809 pIllM=0.0004 playedP=0.204 pW=0.45 pD=0.10 pL=0.45 vAbs=0.264 pLogitMean=-9.3505 vLogitMean=0.6048 gNorm=0.486 lr=0.00206 ms=2194.3 buf=1000000 plies=24556645 games=295535 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5411 clips=0 gCap=1.5043 trainerStep=130630
+[LAYER-HEALTH] live trainerStep=130630 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=427.0@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=130700 batchHash=82a65c6452ed47f5 batchChain=68e0b66ecbb32e96
+[REPLAY] step=2789 loss=3.4501 pLoss=2.5944 vLoss=0.8553 pEnt=2.807 pIllM=0.0005 playedP=0.203 pW=0.45 pD=0.11 pL=0.44 vAbs=0.264 pLogitMean=-9.3481 vLogitMean=0.6022 gNorm=0.512 lr=0.00204 ms=1996.8 buf=1000000 plies=25324656 games=304871 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5509 clips=0 gCap=1.5036 trainerStep=130720
+[LAYER-HEALTH] live trainerStep=130720 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=427.4@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=130800 batchHash=e75281430dfbbfa6 batchChain=eaec6cecfa28a978
+[REPLAY] step=2879 loss=3.4240 pLoss=2.5954 vLoss=0.8282 pEnt=2.797 pIllM=0.0005 playedP=0.209 pW=0.46 pD=0.10 pL=0.45 vAbs=0.266 pLogitMean=-9.3490 vLogitMean=0.6062 gNorm=0.491 lr=0.00202 ms=2399.0 buf=1000000 plies=26092589 games=314288 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5367 clips=0 gCap=1.5041 trainerStep=130810
+[LAYER-HEALTH] live trainerStep=130810 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=430.0@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=130900 batchHash=19bdf669d17c8eb3 batchChain=202be2a87a8d72fd
+[REPLAY] step=2969 loss=3.4025 pLoss=2.5703 vLoss=0.8317 pEnt=2.795 pIllM=0.0005 playedP=0.207 pW=0.45 pD=0.10 pL=0.45 vAbs=0.266 pLogitMean=-9.3455 vLogitMean=0.6044 gNorm=0.505 lr=0.002 ms=1920.9 buf=1000000 plies=26860612 games=323586 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5650 clips=0 gCap=1.5056 trainerStep=130900
+[LAYER-HEALTH] live trainerStep=130900 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.5@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=3059 loss=3.4480 pLoss=2.6033 vLoss=0.8442 pEnt=2.825 pIllM=0.0005 playedP=0.198 pW=0.46 pD=0.09 pL=0.45 vAbs=0.256 pLogitMean=-9.3477 vLogitMean=0.6048 gNorm=0.529 lr=0.002 ms=2107.7 buf=1000000 plies=27628567 games=332991 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5365 clips=0 gCap=1.5050 trainerStep=130990
+[LAYER-HEALTH] live trainerStep=130990 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.3@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=131000 batchHash=4dfb018c68995fa2 batchChain=35990a644da7f612
+[REPLAY] step=3069 loss=3.4194 pLoss=2.5809 vLoss=0.8380 pEnt=2.806 pIllM=0.0005 playedP=0.206 pW=0.45 pD=0.09 pL=0.45 vAbs=0.258 pLogitMean=-9.3484 vLogitMean=0.6047 gNorm=0.495 lr=0.002 ms=2112.3 buf=1000000 plies=27713917 games=334020 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5324 clips=0 gCap=1.5056 trainerStep=131000
+[LAYER-HEALTH] live trainerStep=131000 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.5@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[ALARM] health active rule=policy_offset_drift severity=warning since=128000 trainerStep=131000 value=medianAbs=9.3487
+[HEALTH] check trainerStep=131000 generation=0 evaluations=21 live=20 checkpoint=1 stale=0 truncated=0 cost_ms=5.5 train_ms=2025821.8 liveReadFailed=0 lossMaxRatio=1.02 lossMedianRatio=1.01 gradMaxRatio=1.13 rvRiseMax=1.02 rvOutliers=40/39 nodata=none active=policy_offset_drift:warning
+[REPLAY] saved trainer model (autosave) step=3069 trainerStep=131000 nextGame=316778 shard=0 epoch=1 -> 20261011-zlra-elitecyc-latest.safetensors
+[LAYER-HEALTH] checkpoint replay-autosave step=3069 trainerStep=131000 scope=all_tensors reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.5@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=38.27@blocks.1.bn1.running_var
+[LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+[LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]  rv≥10x
+[LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.30 [59]         +1.27 [96]            4.7 [23]           0
+[LAYER-HEALTH]     blocks.0.bn1    silu          128    n/a    n/a    n/a      0      0     -2.21 [16]         +0.09 [41]           12.6 [13]           2
+[LAYER-HEALTH]     blocks.0.bn2    silu          128    n/a    n/a    n/a      0      0     -1.31 [103]       +14.51 [116]           7.2 [81]           0
+[LAYER-HEALTH]     blocks.1.bn1    silu          128    n/a    n/a    n/a      0      0     -2.14 [46]         -0.34 [23]          211.1 [13]          17
+[LAYER-HEALTH]     blocks.1.bn2    silu          128    n/a    n/a    n/a      0      0     -1.68 [49]         -0.55 [58]            8.9 [37]           0
+[LAYER-HEALTH]     blocks.2.bn1    silu          128    n/a    n/a    n/a      0      0     -2.24 [83]         +0.72 [8]           429.5 [13]          19
+[LAYER-HEALTH]     blocks.2.bn2    silu          128    n/a    n/a    n/a      0      0     -1.92 [20]         +0.06 [97]            2.5 [44]           0
+[LAYER-HEALTH]     tower_final_bn  silu          128    n/a    n/a    n/a      0      0     -0.81 [73]         +1.48 [88]           32.3 [13]           2
+[LAYER-HEALTH]     policy.pre_bn   silu          128    n/a    n/a    n/a      0      0     -1.18 [32]         +1.97 [65]            6.9 [40]           0
+[LAYER-HEALTH]     value.bn        silu           24    n/a    n/a    n/a      0      0     -1.55 [23]         +0.72 [2]             2.0 [16]           0
+[LAYER-HEALTH]   parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < 0.00135 of the range (Φ(-3)), mostly off < 0.02275 (Φ(-2)); equals dead / off for relu/leaky_relu
+[LAYER-HEALTH]     site            act            ch parked    off       min P   median P
+[LAYER-HEALTH]     blocks.0.bn1    silu          128      0      0    0.135513   0.345437
+[LAYER-HEALTH]     blocks.0.bn2    silu          128      0      0    0.151933   0.309379
+[LAYER-HEALTH]     blocks.1.bn1    silu          128      0      0    0.098040   0.223327
+[LAYER-HEALTH]     blocks.1.bn2    silu          128      0      0    0.091268   0.239259
+[LAYER-HEALTH]     blocks.2.bn1    silu          128      0      0    0.062155   0.209344
+[LAYER-HEALTH]     blocks.2.bn2    silu          128      0      0    0.077349   0.282381
+[LAYER-HEALTH]     tower_final_bn  silu          128      0      0    0.257429   0.522134
+[LAYER-HEALTH]     policy.pre_bn   silu          128      0      0    0.191046   0.585525
+[LAYER-HEALTH]     value.bn        silu           24      0      0    0.124533   0.154635
+[LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+[LAYER-HEALTH]     value.fc1.weight  silu  units 128  zero 0  low 2  median unit norm 0.007351
+[LAYER-HEALTH]     (no SE blocks)
+[LAYER-HEALTH]   ReZero: none
+[LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (16540206 values examined)
+[LAYER-HEALTH]   largest |value|: blocks.1.bn1.running_var 38.27, blocks.2.bn1.running_var 32.25, blocks.0.bn1.running_var 10.66, tower_final_bn.running_var 9.182, blocks.0.bn2.running_var 8.379
+[REPLAY] enumerated checkpoint -> 20261011-zlra-elitecyc-latest-step131000.safetensors
+[REPLAY] step=3159 loss=3.4016 pLoss=2.5834 vLoss=0.8178 pEnt=2.820 pIllM=0.0004 playedP=0.199 pW=0.46 pD=0.09 pL=0.45 vAbs=0.268 pLogitMean=-9.3475 vLogitMean=0.6035 gNorm=0.497 lr=0.002 ms=2077.8 buf=1000000 plies=28481847 games=343358 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5473 clips=0 gCap=1.5051 trainerStep=131090
+[LAYER-HEALTH] live trainerStep=131090 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=430.0@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=131100 batchHash=d98fe9b684fba9a6 batchChain=09d733106fd6bf46
+[REPLAY] step=3249 loss=3.4212 pLoss=2.5811 vLoss=0.8396 pEnt=2.797 pIllM=0.0005 playedP=0.206 pW=0.46 pD=0.09 pL=0.45 vAbs=0.260 pLogitMean=-9.3474 vLogitMean=0.6035 gNorm=0.507 lr=0.00201 ms=2036.8 buf=1000000 plies=29249875 games=352725 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5270 clips=0 gCap=1.5064 trainerStep=131180
+[LAYER-HEALTH] live trainerStep=131180 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=430.2@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=131200 batchHash=5ee024dcbc2f3674 batchChain=f228765bf697c292
+[REPLAY] step=3339 loss=3.3835 pLoss=2.5664 vLoss=0.8166 pEnt=2.802 pIllM=0.0004 playedP=0.205 pW=0.45 pD=0.09 pL=0.45 vAbs=0.267 pLogitMean=-9.3478 vLogitMean=0.6048 gNorm=0.502 lr=0.00203 ms=2442.4 buf=1000000 plies=30017780 games=362158 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5306 clips=0 gCap=1.5068 trainerStep=131270
+[LAYER-HEALTH] live trainerStep=131270 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.4@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=131300 batchHash=e5272f5415a355ae batchChain=5d2eebac0c28d36b
+[REPLAY] step=3429 loss=3.4029 pLoss=2.5537 vLoss=0.8488 pEnt=2.792 pIllM=0.0004 playedP=0.210 pW=0.45 pD=0.11 pL=0.44 vAbs=0.272 pLogitMean=-9.3465 vLogitMean=0.6035 gNorm=0.510 lr=0.00206 ms=3119.4 buf=1000000 plies=30785761 games=371374 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5379 clips=0 gCap=1.5089 trainerStep=131360
+[LAYER-HEALTH] live trainerStep=131360 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.3@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=131400 batchHash=c8b88f46253bd918 batchChain=4057784920a43417
+[REPLAY] step=3519 loss=3.3900 pLoss=2.5593 vLoss=0.8302 pEnt=2.789 pIllM=0.0004 playedP=0.209 pW=0.45 pD=0.10 pL=0.45 vAbs=0.264 pLogitMean=-9.3474 vLogitMean=0.6059 gNorm=0.506 lr=0.00209 ms=2205.4 buf=1000000 plies=31553716 games=380739 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5531 clips=0 gCap=1.5093 trainerStep=131450
+[LAYER-HEALTH] live trainerStep=131450 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.6@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=131500 batchHash=7a35d0f9d5e9b613 batchChain=9b64033639635eb4
+[REPLAY] step=3599 loss=3.4384 pLoss=2.6048 vLoss=0.8331 pEnt=2.804 pIllM=0.0005 playedP=0.202 pW=0.46 pD=0.09 pL=0.45 vAbs=0.265 pLogitMean=-9.3467 vLogitMean=0.6049 gNorm=0.484 lr=0.00213 ms=2912.5 buf=1000000 plies=32236354 games=388992 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5503 clips=0 gCap=1.5094 trainerStep=131530
+[LAYER-HEALTH] live trainerStep=131530 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.5@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=131600 batchHash=7dc051836dc8f1c1 batchChain=35f9af8aad804e4b
+[REPLAY] step=3669 loss=3.4283 pLoss=2.5730 vLoss=0.8548 pEnt=2.784 pIllM=0.0005 playedP=0.210 pW=0.45 pD=0.10 pL=0.45 vAbs=0.264 pLogitMean=-9.3474 vLogitMean=0.6047 gNorm=0.501 lr=0.00217 ms=2276.7 buf=1000000 plies=32833677 games=396195 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5304 clips=0 gCap=1.5100 trainerStep=131600
+[LAYER-HEALTH] live trainerStep=131600 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.7@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=3749 loss=3.4566 pLoss=2.6240 vLoss=0.8322 pEnt=2.808 pIllM=0.0004 playedP=0.200 pW=0.46 pD=0.10 pL=0.45 vAbs=0.261 pLogitMean=-9.3478 vLogitMean=0.6048 gNorm=0.489 lr=0.00222 ms=2749.2 buf=1000000 plies=33516284 games=404408 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5440 clips=0 gCap=1.5107 trainerStep=131680
+[LAYER-HEALTH] live trainerStep=131680 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.4@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=131700 batchHash=66810684e6df0d5b batchChain=7737a79e006b8359
+[REPLAY] step=3829 loss=3.4153 pLoss=2.5774 vLoss=0.8374 pEnt=2.812 pIllM=0.0005 playedP=0.198 pW=0.46 pD=0.09 pL=0.45 vAbs=0.271 pLogitMean=-9.3469 vLogitMean=0.6047 gNorm=0.502 lr=0.00227 ms=2192.5 buf=1000000 plies=34198948 games=412530 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5413 clips=0 gCap=1.5091 trainerStep=131760
+[LAYER-HEALTH] live trainerStep=131760 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.5@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=131800 batchHash=daa1fd136e48f775 batchChain=f1b4524d79fed30d
+[REPLAY] step=3919 loss=3.4144 pLoss=2.5879 vLoss=0.8261 pEnt=2.805 pIllM=0.0005 playedP=0.204 pW=0.46 pD=0.10 pL=0.45 vAbs=0.275 pLogitMean=-9.3454 vLogitMean=0.6047 gNorm=0.486 lr=0.00235 ms=2882.9 buf=1000000 plies=34967003 games=421803 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5493 clips=0 gCap=1.5096 trainerStep=131850
+[LAYER-HEALTH] live trainerStep=131850 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.5@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=131900 batchHash=0475e42c0e59320c batchChain=b42edd71e7967fd5
+[REPLAY] step=4009 loss=3.3932 pLoss=2.5800 vLoss=0.8128 pEnt=2.785 pIllM=0.0004 playedP=0.208 pW=0.45 pD=0.10 pL=0.45 vAbs=0.264 pLogitMean=-9.3429 vLogitMean=0.6048 gNorm=0.506 lr=0.00243 ms=2614.6 buf=1000000 plies=35734957 games=431017 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5294 clips=0 gCap=1.5102 trainerStep=131940
+[LAYER-HEALTH] live trainerStep=131940 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=430.6@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=132000 batchHash=c69addfeab2746f4 batchChain=34be1b9a6c19d26d
+[REPLAY] step=4069 loss=3.3860 pLoss=2.5662 vLoss=0.8193 pEnt=2.785 pIllM=0.0005 playedP=0.208 pW=0.46 pD=0.09 pL=0.45 vAbs=0.270 pLogitMean=-9.3444 vLogitMean=0.6034 gNorm=0.490 lr=0.00249 ms=2133.2 buf=1000000 plies=36246920 games=437089 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5486 clips=0 gCap=1.5105 trainerStep=132000
+[LAYER-HEALTH] live trainerStep=132000 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.7@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[ALARM] health active rule=policy_offset_drift severity=warning since=128000 trainerStep=132000 value=medianAbs=9.3445
+[HEALTH] check trainerStep=132000 generation=0 evaluations=21 live=20 checkpoint=1 stale=0 truncated=0 cost_ms=7.6 train_ms=2155913.2 liveReadFailed=0 lossMaxRatio=1.02 lossMedianRatio=1.00 gradMaxRatio=1.10 rvRiseMax=1.04 rvOutliers=40/39 nodata=none active=policy_offset_drift:warning
+[REPLAY] saved trainer model (autosave) step=4069 trainerStep=132000 nextGame=419847 shard=1 epoch=1 -> 20261011-zlra-elitecyc-latest.safetensors
+[LAYER-HEALTH] checkpoint replay-autosave step=4069 trainerStep=132000 scope=all_tensors reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.7@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=38.33@blocks.1.bn1.running_var
+[LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+[LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]  rv≥10x
+[LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.30 [59]         +1.27 [96]            4.7 [23]           0
+[LAYER-HEALTH]     blocks.0.bn1    silu          128    n/a    n/a    n/a      0      0     -2.21 [16]         +0.09 [41]           12.6 [13]           2
+[LAYER-HEALTH]     blocks.0.bn2    silu          128    n/a    n/a    n/a      0      0     -1.31 [103]       +14.58 [116]           7.0 [81]           0
+[LAYER-HEALTH]     blocks.1.bn1    silu          128    n/a    n/a    n/a      0      0     -2.14 [46]         -0.34 [23]          211.6 [13]          17
+[LAYER-HEALTH]     blocks.1.bn2    silu          128    n/a    n/a    n/a      0      0     -1.68 [49]         -0.55 [58]            8.8 [37]           0
+[LAYER-HEALTH]     blocks.2.bn1    silu          128    n/a    n/a    n/a      0      0     -2.24 [83]         +0.72 [8]           429.7 [13]          19
+[LAYER-HEALTH]     blocks.2.bn2    silu          128    n/a    n/a    n/a      0      0     -1.92 [20]         +0.06 [97]            2.5 [44]           0
+[LAYER-HEALTH]     tower_final_bn  silu          128    n/a    n/a    n/a      0      0     -0.81 [73]         +1.48 [88]           32.5 [13]           2
+[LAYER-HEALTH]     policy.pre_bn   silu          128    n/a    n/a    n/a      0      0     -1.18 [32]         +1.97 [65]            6.9 [40]           0
+[LAYER-HEALTH]     value.bn        silu           24    n/a    n/a    n/a      0      0     -1.55 [23]         +0.72 [2]             2.0 [16]           0
+[LAYER-HEALTH]   parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < 0.00135 of the range (Φ(-3)), mostly off < 0.02275 (Φ(-2)); equals dead / off for relu/leaky_relu
+[LAYER-HEALTH]     site            act            ch parked    off       min P   median P
+[LAYER-HEALTH]     blocks.0.bn1    silu          128      0      0    0.135493   0.345496
+[LAYER-HEALTH]     blocks.0.bn2    silu          128      0      0    0.152098   0.309310
+[LAYER-HEALTH]     blocks.1.bn1    silu          128      0      0    0.098003   0.223345
+[LAYER-HEALTH]     blocks.1.bn2    silu          128      0      0    0.091198   0.239137
+[LAYER-HEALTH]     blocks.2.bn1    silu          128      0      0    0.062147   0.209383
+[LAYER-HEALTH]     blocks.2.bn2    silu          128      0      0    0.077339   0.282439
+[LAYER-HEALTH]     tower_final_bn  silu          128      0      0    0.257384   0.522115
+[LAYER-HEALTH]     policy.pre_bn   silu          128      0      0    0.190859   0.585610
+[LAYER-HEALTH]     value.bn        silu           24      0      0    0.124518   0.154601
+[LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+[LAYER-HEALTH]     value.fc1.weight  silu  units 128  zero 0  low 2  median unit norm 0.006792
+[LAYER-HEALTH]     (no SE blocks)
+[LAYER-HEALTH]   ReZero: none
+[LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (16540206 values examined)
+[LAYER-HEALTH]   largest |value|: blocks.1.bn1.running_var 38.33, blocks.2.bn1.running_var 32.27, blocks.0.bn1.running_var 10.66, tower_final_bn.running_var 9.189, blocks.0.bn2.running_var 8.184
+[REPLAY] enumerated checkpoint -> 20261011-zlra-elitecyc-latest-step132000.safetensors
+[REPLAY] step=4149 loss=3.3801 pLoss=2.5650 vLoss=0.8146 pEnt=2.788 pIllM=0.0004 playedP=0.207 pW=0.46 pD=0.09 pL=0.45 vAbs=0.279 pLogitMean=-9.3450 vLogitMean=0.6033 gNorm=0.505 lr=0.00258 ms=2373.2 buf=1000000 plies=36929538 games=445234 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5451 clips=0 gCap=1.5105 trainerStep=132080
+[LAYER-HEALTH] live trainerStep=132080 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=427.2@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=132100 batchHash=3bf39d7edb939db8 batchChain=e14926ea98db1eb1
+[REPLAY] step=4239 loss=3.3444 pLoss=2.5079 vLoss=0.8361 pEnt=2.797 pIllM=0.0005 playedP=0.203 pW=0.45 pD=0.10 pL=0.45 vAbs=0.282 pLogitMean=-9.3439 vLogitMean=0.6049 gNorm=0.539 lr=0.00269 ms=2049.2 buf=1000000 plies=37697538 games=454322 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.6087 clips=0 gCap=1.5105 trainerStep=132170
+[LAYER-HEALTH] live trainerStep=132170 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=425.5@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=132200 batchHash=c360f46ded51f3fa batchChain=8fa7cc354bce2805
+[REPLAY] step=4329 loss=3.3959 pLoss=2.5556 vLoss=0.8398 pEnt=2.795 pIllM=0.0004 playedP=0.207 pW=0.45 pD=0.10 pL=0.45 vAbs=0.266 pLogitMean=-9.3462 vLogitMean=0.6049 gNorm=0.527 lr=0.00282 ms=2161.5 buf=1000000 plies=38465443 games=463667 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5553 clips=0 gCap=1.5121 trainerStep=132260
+[LAYER-HEALTH] live trainerStep=132260 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=426.2@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=132300 batchHash=f29c14a501d86020 batchChain=b88e553845d9c969
+[REPLAY] step=4419 loss=3.4104 pLoss=2.5764 vLoss=0.8335 pEnt=2.808 pIllM=0.0005 playedP=0.200 pW=0.46 pD=0.09 pL=0.45 vAbs=0.258 pLogitMean=-9.3438 vLogitMean=0.6033 gNorm=0.498 lr=0.00295 ms=2117.4 buf=1000000 plies=39233446 games=472887 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5428 clips=0 gCap=1.5111 trainerStep=132350
+[LAYER-HEALTH] live trainerStep=132350 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=427.3@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=132400 batchHash=f02e245edee7b6de batchChain=d7e89e86de28965a
+[REPLAY] step=4509 loss=3.3832 pLoss=2.5596 vLoss=0.8231 pEnt=2.795 pIllM=0.0004 playedP=0.205 pW=0.46 pD=0.09 pL=0.45 vAbs=0.274 pLogitMean=-9.3456 vLogitMean=0.6034 gNorm=0.487 lr=0.00311 ms=2159.3 buf=1000000 plies=40001392 games=482275 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5454 clips=0 gCap=1.5113 trainerStep=132440
+[LAYER-HEALTH] live trainerStep=132440 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.9@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=132500 batchHash=42231ef8a006e279 batchChain=037eafc14199cd3c
+[REPLAY] step=4599 loss=3.4330 pLoss=2.5787 vLoss=0.8538 pEnt=2.809 pIllM=0.0005 playedP=0.201 pW=0.45 pD=0.11 pL=0.45 vAbs=0.267 pLogitMean=-9.3444 vLogitMean=0.6021 gNorm=0.484 lr=0.00327 ms=2054.2 buf=1000000 plies=40769387 games=491451 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5401 clips=0 gCap=1.5123 trainerStep=132530
+[LAYER-HEALTH] live trainerStep=132530 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.2@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=132600 batchHash=61976448db988b6e batchChain=9121cfb58b49492a
+[REPLAY] step=4689 loss=3.4363 pLoss=2.5982 vLoss=0.8378 pEnt=2.813 pIllM=0.0004 playedP=0.205 pW=0.45 pD=0.10 pL=0.45 vAbs=0.259 pLogitMean=-9.3436 vLogitMean=0.6060 gNorm=0.502 lr=0.00345 ms=2052.0 buf=1000000 plies=41537318 games=500776 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5667 clips=0 gCap=1.5144 trainerStep=132620
+[LAYER-HEALTH] live trainerStep=132620 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=426.4@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=132700 batchHash=242830bd95bb7462 batchChain=1e6b4a1a52727be7
+[REPLAY] step=4779 loss=3.4093 pLoss=2.5980 vLoss=0.8108 pEnt=2.804 pIllM=0.0005 playedP=0.205 pW=0.44 pD=0.10 pL=0.45 vAbs=0.269 pLogitMean=-9.3439 vLogitMean=0.6047 gNorm=0.514 lr=0.00366 ms=1997.6 buf=1000000 plies=42305303 games=509990 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5429 clips=0 gCap=1.5154 trainerStep=132710
+[LAYER-HEALTH] live trainerStep=132710 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=427.2@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=132800 batchHash=a2e1e65fd185bb4e batchChain=41720c7431880bd4
+[REPLAY] step=4869 loss=3.3964 pLoss=2.5782 vLoss=0.8178 pEnt=2.812 pIllM=0.0005 playedP=0.205 pW=0.46 pD=0.09 pL=0.45 vAbs=0.257 pLogitMean=-9.3431 vLogitMean=0.6033 gNorm=0.516 lr=0.00387 ms=2102.3 buf=1000000 plies=43073288 games=519339 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5787 clips=0 gCap=1.5176 trainerStep=132800
+[LAYER-HEALTH] live trainerStep=132800 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.2@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=4959 loss=3.3948 pLoss=2.5715 vLoss=0.8228 pEnt=2.810 pIllM=0.0005 playedP=0.203 pW=0.45 pD=0.10 pL=0.45 vAbs=0.269 pLogitMean=-9.3429 vLogitMean=0.6049 gNorm=0.508 lr=0.00411 ms=2820.6 buf=1000000 plies=43841235 games=528476 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5630 clips=0 gCap=1.5191 trainerStep=132890
+[LAYER-HEALTH] live trainerStep=132890 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=431.0@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=132900 batchHash=5f2dfe2ef725160c batchChain=c5d5497c2b53e2b1
+[REPLAY] step=5039 loss=3.3962 pLoss=2.5571 vLoss=0.8386 pEnt=2.794 pIllM=0.0005 playedP=0.208 pW=0.45 pD=0.10 pL=0.45 vAbs=0.258 pLogitMean=-9.3458 vLogitMean=0.6050 gNorm=0.518 lr=0.00434 ms=2065.2 buf=1000000 plies=44523863 games=536723 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5543 clips=0 gCap=1.5212 trainerStep=132970
+[LAYER-HEALTH] live trainerStep=132970 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=431.6@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=133000 batchHash=5c5a344147dec865 batchChain=509b86698607453b
+[REPLAY] step=5069 loss=3.4551 pLoss=2.5974 vLoss=0.8573 pEnt=2.823 pIllM=0.0004 playedP=0.202 pW=0.45 pD=0.10 pL=0.44 vAbs=0.255 pLogitMean=-9.3440 vLogitMean=0.6059 gNorm=0.505 lr=0.00443 ms=2117.4 buf=1000000 plies=44779961 games=539826 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5727 clips=0 gCap=1.5220 trainerStep=133000
+[LAYER-HEALTH] live trainerStep=133000 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=431.5@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[ALARM] health active rule=policy_offset_drift severity=warning since=128000 trainerStep=133000 value=medianAbs=9.3440
+[HEALTH] check trainerStep=133000 generation=0 evaluations=21 live=20 checkpoint=1 stale=0 truncated=0 cost_ms=5.9 train_ms=2098532.5 liveReadFailed=0 lossMaxRatio=1.02 lossMedianRatio=1.01 gradMaxRatio=1.21 rvRiseMax=1.05 rvOutliers=39/39 nodata=none active=policy_offset_drift:warning
+[REPLAY] saved trainer model (autosave) step=5069 trainerStep=133000 nextGame=522584 shard=1 epoch=1 -> 20261011-zlra-elitecyc-latest.safetensors
+[LAYER-HEALTH] checkpoint replay-autosave step=5069 trainerStep=133000 scope=all_tensors reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=431.5@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=38.31@blocks.1.bn1.running_var
+[LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+[LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]  rv≥10x
+[LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.29 [59]         +1.27 [96]            4.7 [23]           0
+[LAYER-HEALTH]     blocks.0.bn1    silu          128    n/a    n/a    n/a      0      0     -2.22 [16]         +0.09 [41]           12.6 [13]           2
+[LAYER-HEALTH]     blocks.0.bn2    silu          128    n/a    n/a    n/a      0      0     -1.31 [103]       +14.58 [116]           7.2 [81]           0
+[LAYER-HEALTH]     blocks.1.bn1    silu          128    n/a    n/a    n/a      0      0     -2.14 [46]         -0.34 [23]          212.1 [13]          16
+[LAYER-HEALTH]     blocks.1.bn2    silu          128    n/a    n/a    n/a      0      0     -1.68 [49]         -0.55 [58]            8.8 [37]           0
+[LAYER-HEALTH]     blocks.2.bn1    silu          128    n/a    n/a    n/a      0      0     -2.24 [83]         +0.72 [8]           431.5 [13]          19
+[LAYER-HEALTH]     blocks.2.bn2    silu          128    n/a    n/a    n/a      0      0     -1.92 [20]         +0.06 [97]            2.5 [44]           0
+[LAYER-HEALTH]     tower_final_bn  silu          128    n/a    n/a    n/a      0      0     -0.81 [73]         +1.48 [88]           32.9 [13]           2
+[LAYER-HEALTH]     policy.pre_bn   silu          128    n/a    n/a    n/a      0      0     -1.18 [32]         +1.97 [65]            6.9 [40]           0
+[LAYER-HEALTH]     value.bn        silu           24    n/a    n/a    n/a      0      0     -1.55 [23]         +0.73 [2]             2.0 [16]           0
+[LAYER-HEALTH]   parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < 0.00135 of the range (Φ(-3)), mostly off < 0.02275 (Φ(-2)); equals dead / off for relu/leaky_relu
+[LAYER-HEALTH]     site            act            ch parked    off       min P   median P
+[LAYER-HEALTH]     blocks.0.bn1    silu          128      0      0    0.135347   0.345570
+[LAYER-HEALTH]     blocks.0.bn2    silu          128      0      0    0.151851   0.309300
+[LAYER-HEALTH]     blocks.1.bn1    silu          128      0      0    0.098028   0.223171
+[LAYER-HEALTH]     blocks.1.bn2    silu          128      0      0    0.091168   0.239519
+[LAYER-HEALTH]     blocks.2.bn1    silu          128      0      0    0.062134   0.209336
+[LAYER-HEALTH]     blocks.2.bn2    silu          128      0      0    0.077301   0.282390
+[LAYER-HEALTH]     tower_final_bn  silu          128      0      0    0.257348   0.522090
+[LAYER-HEALTH]     policy.pre_bn   silu          128      0      0    0.190848   0.585653
+[LAYER-HEALTH]     value.bn        silu           24      0      0    0.124518   0.154564
+[LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+[LAYER-HEALTH]     value.fc1.weight  silu  units 128  zero 0  low 3  median unit norm 0.009892
+[LAYER-HEALTH]     (no SE blocks)
+[LAYER-HEALTH]   ReZero: none
+[LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (16540206 values examined)
+[LAYER-HEALTH]   largest |value|: blocks.1.bn1.running_var 38.31, blocks.2.bn1.running_var 32.51, blocks.0.bn1.running_var 10.66, tower_final_bn.running_var 9.225, blocks.0.bn2.running_var 8.335
+[REPLAY] enumerated checkpoint -> 20261011-zlra-elitecyc-latest-step133000.safetensors
+[REPLAY] step=5149 loss=3.4746 pLoss=2.6232 vLoss=0.8510 pEnt=2.813 pIllM=0.0004 playedP=0.201 pW=0.45 pD=0.11 pL=0.45 vAbs=0.267 pLogitMean=-9.3428 vLogitMean=0.6023 gNorm=0.532 lr=0.00468 ms=2394.6 buf=1000000 plies=45462579 games=548031 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5518 clips=0 gCap=1.5250 trainerStep=133080
+[LAYER-HEALTH] live trainerStep=133080 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=430.4@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=133100 batchHash=b8e441c1fa889cc2 batchChain=1e8931b44d7b99ae
+[REPLAY] step=5239 loss=3.4024 pLoss=2.5617 vLoss=0.8403 pEnt=2.789 pIllM=0.0004 playedP=0.206 pW=0.46 pD=0.10 pL=0.44 vAbs=0.263 pLogitMean=-9.3415 vLogitMean=0.6036 gNorm=0.503 lr=0.00499 ms=2972.2 buf=1000000 plies=46230472 games=557323 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5573 clips=0 gCap=1.5273 trainerStep=133170
+[LAYER-HEALTH] live trainerStep=133170 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=430.2@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=133200 batchHash=859dc26cfd115dbf batchChain=19526cf21f5feb12
+[REPLAY] step=5319 loss=3.4272 pLoss=2.5948 vLoss=0.8318 pEnt=2.818 pIllM=0.0005 playedP=0.202 pW=0.46 pD=0.10 pL=0.45 vAbs=0.265 pLogitMean=-9.3436 vLogitMean=0.6048 gNorm=0.515 lr=0.00528 ms=3159.9 buf=1000000 plies=46913107 games=565456 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5569 clips=0 gCap=1.5285 trainerStep=133250
+[LAYER-HEALTH] live trainerStep=133250 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=429.6@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=133300 batchHash=907a264be414e5cc batchChain=e2b1d033d7cdcef6
+[REPLAY] step=5379 loss=3.4108 pLoss=2.5750 vLoss=0.8353 pEnt=2.819 pIllM=0.0005 playedP=0.200 pW=0.46 pD=0.09 pL=0.45 vAbs=0.272 pLogitMean=-9.3444 vLogitMean=0.6047 gNorm=0.529 lr=0.00551 ms=3998.8 buf=1000000 plies=47425071 games=571559 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5562 clips=0 gCap=1.5306 trainerStep=133310
+[LAYER-HEALTH] live trainerStep=133310 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=428.9@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=5429 loss=3.4062 pLoss=2.5822 vLoss=0.8237 pEnt=2.789 pIllM=0.0004 playedP=0.207 pW=0.45 pD=0.10 pL=0.45 vAbs=0.272 pLogitMean=-9.3416 vLogitMean=0.6048 gNorm=0.538 lr=0.00572 ms=3930.0 buf=1000000 plies=47851739 games=576535 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5575 clips=0 gCap=1.5322 trainerStep=133360
+[LAYER-HEALTH] live trainerStep=133360 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=427.9@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=133400 batchHash=62fd13188c5a0182 batchChain=fef595516b4f616a
+[REPLAY] step=5489 loss=3.4086 pLoss=2.5872 vLoss=0.8209 pEnt=2.826 pIllM=0.0005 playedP=0.200 pW=0.45 pD=0.10 pL=0.45 vAbs=0.272 pLogitMean=-9.3430 vLogitMean=0.6046 gNorm=0.521 lr=0.00597 ms=4387.1 buf=1000000 plies=48363713 games=582746 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5599 clips=0 gCap=1.5339 trainerStep=133420
+[LAYER-HEALTH] live trainerStep=133420 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=426.6@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=5549 loss=3.4141 pLoss=2.5723 vLoss=0.8415 pEnt=2.812 pIllM=0.0004 playedP=0.206 pW=0.45 pD=0.10 pL=0.45 vAbs=0.265 pLogitMean=-9.3442 vLogitMean=0.6045 gNorm=0.490 lr=0.00623 ms=4644.2 buf=1000000 plies=48875688 games=588917 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5572 clips=0 gCap=1.5345 trainerStep=133480
+[LAYER-HEALTH] live trainerStep=133480 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=425.5@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=133500 batchHash=befae8e87650e242 batchChain=a26f58747068b408
+[REPLAY] step=5599 loss=3.3987 pLoss=2.5751 vLoss=0.8232 pEnt=2.816 pIllM=0.0004 playedP=0.203 pW=0.45 pD=0.09 pL=0.45 vAbs=0.261 pLogitMean=-9.3444 vLogitMean=0.6045 gNorm=0.530 lr=0.00646 ms=3907.8 buf=1000000 plies=49302415 games=593996 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5485 clips=0 gCap=1.5345 trainerStep=133530
+[LAYER-HEALTH] live trainerStep=133530 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=424.5@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=5659 loss=3.4013 pLoss=2.5781 vLoss=0.8228 pEnt=2.807 pIllM=0.0004 playedP=0.204 pW=0.46 pD=0.10 pL=0.45 vAbs=0.272 pLogitMean=-9.3427 vLogitMean=0.6048 gNorm=0.501 lr=0.00675 ms=3107.9 buf=1000000 plies=49814312 games=600156 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5535 clips=0 gCap=1.5346 trainerStep=133590
+[LAYER-HEALTH] live trainerStep=133590 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=424.3@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=133600 batchHash=d5cee95ad65eded7 batchChain=4ba7302489153c90
+[REPLAY] step=5709 loss=3.4059 pLoss=2.5635 vLoss=0.8420 pEnt=2.793 pIllM=0.0004 playedP=0.205 pW=0.46 pD=0.10 pL=0.44 vAbs=0.267 pLogitMean=-9.3414 vLogitMean=0.6034 gNorm=0.512 lr=0.007 ms=3649.9 buf=1000000 plies=50241101 games=605120 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5847 clips=0 gCap=1.5364 trainerStep=133640
+[LAYER-HEALTH] live trainerStep=133640 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=424.6@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=5759 loss=3.3886 pLoss=2.5378 vLoss=0.8502 pEnt=2.806 pIllM=0.0005 playedP=0.203 pW=0.45 pD=0.11 pL=0.44 vAbs=0.268 pLogitMean=-9.3425 vLogitMean=0.6048 gNorm=0.485 lr=0.00725 ms=4394.5 buf=1000000 plies=50667658 games=610152 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5515 clips=0 gCap=1.5378 trainerStep=133690
+[LAYER-HEALTH] live trainerStep=133690 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=424.6@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=133700 batchHash=1241e252c7fd9acd batchChain=46f4ee5bccda7dfc
+[REPLAY] step=5799 loss=3.4144 pLoss=2.5670 vLoss=0.8470 pEnt=2.801 pIllM=0.0004 playedP=0.204 pW=0.45 pD=0.11 pL=0.44 vAbs=0.264 pLogitMean=-9.3407 vLogitMean=0.6049 gNorm=0.529 lr=0.00747 ms=7565.3 buf=1000000 plies=51008969 games=614306 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5473 clips=0 gCap=1.5378 trainerStep=133730
+[LAYER-HEALTH] live trainerStep=133730 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=423.2@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=5839 loss=3.4085 pLoss=2.5703 vLoss=0.8378 pEnt=2.812 pIllM=0.0005 playedP=0.203 pW=0.45 pD=0.10 pL=0.45 vAbs=0.266 pLogitMean=-9.3406 vLogitMean=0.6059 gNorm=0.532 lr=0.00768 ms=4831.4 buf=1000000 plies=51350272 games=618441 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5436 clips=0 gCap=1.5388 trainerStep=133770
+[LAYER-HEALTH] live trainerStep=133770 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=423.7@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=5859 loss=3.4225 pLoss=2.5890 vLoss=0.8329 pEnt=2.795 pIllM=0.0006 playedP=0.205 pW=0.45 pD=0.10 pL=0.45 vAbs=0.264 pLogitMean=-9.3407 vLogitMean=0.6060 gNorm=0.510 lr=0.00779 ms=2102.0 buf=1000000 plies=51520930 games=620525 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5329 clips=0 gCap=1.5396 trainerStep=133790
+[LAYER-HEALTH] live trainerStep=133790 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=424.1@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=133800 batchHash=6d65619a301d4965 batchChain=b8acfd038f1b8f91
+[REPLAY] step=5899 loss=3.3816 pLoss=2.5481 vLoss=0.8330 pEnt=2.802 pIllM=0.0005 playedP=0.205 pW=0.45 pD=0.10 pL=0.45 vAbs=0.270 pLogitMean=-9.3435 vLogitMean=0.6060 gNorm=0.514 lr=0.00802 ms=26427.0 buf=1000000 plies=51862280 games=624496 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5515 clips=0 gCap=1.5415 trainerStep=133830
+[LAYER-HEALTH] live trainerStep=133830 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=426.1@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[REPLAY] step=5919 loss=3.3779 pLoss=2.5482 vLoss=0.8291 pEnt=2.782 pIllM=0.0006 playedP=0.207 pW=0.45 pD=0.11 pL=0.44 vAbs=0.269 pLogitMean=-9.3405 vLogitMean=0.6049 gNorm=0.515 lr=0.00813 ms=15620.2 buf=1000000 plies=52032910 games=626509 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5498 clips=0 gCap=1.5424 trainerStep=133850
+[LAYER-HEALTH] live trainerStep=133850 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=427.5@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=133900 batchHash=4a65bd2448f7a57e batchChain=5bc7ad96217a4339
+[REPLAY] step=5999 loss=3.4184 pLoss=2.5544 vLoss=0.8636 pEnt=2.822 pIllM=0.0004 playedP=0.202 pW=0.44 pD=0.11 pL=0.45 vAbs=0.262 pLogitMean=-9.3419 vLogitMean=0.6033 gNorm=0.529 lr=0.0086 ms=2307.4 buf=1000000 plies=52715631 games=634765 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5520 clips=0 gCap=1.5435 trainerStep=133930
+[LAYER-HEALTH] live trainerStep=133930 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=432.4@blocks.2.bn1[13] rvOver10xMedian=40 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=134000 batchHash=d5fe3ee981c385e3 batchChain=36de6ade599c5b78
+[REPLAY] step=6069 loss=3.4130 pLoss=2.5761 vLoss=0.8364 pEnt=2.802 pIllM=0.0005 playedP=0.203 pW=0.45 pD=0.10 pL=0.45 vAbs=0.270 pLogitMean=-9.3393 vLogitMean=0.6060 gNorm=0.505 lr=0.00903 ms=2464.8 buf=1000000 plies=53312877 games=641723 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5670 clips=0 gCap=1.5441 trainerStep=134000
+[LAYER-HEALTH] live trainerStep=134000 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=434.7@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[ALARM] health active rule=policy_offset_drift severity=warning since=128000 trainerStep=134000 value=medianAbs=9.3420
+[HEALTH] check trainerStep=134000 generation=0 evaluations=21 live=20 checkpoint=1 stale=0 truncated=0 cost_ms=20.3 train_ms=3399813.8 liveReadFailed=0 lossMaxRatio=1.02 lossMedianRatio=1.00 gradMaxRatio=1.14 rvRiseMax=1.05 rvOutliers=39/39 nodata=none active=policy_offset_drift:warning
+[REPLAY] saved trainer model (autosave) step=6069 trainerStep=134000 nextGame=624481 shard=1 epoch=1 -> 20261011-zlra-elitecyc-latest.safetensors
+[LAYER-HEALTH] checkpoint replay-autosave step=6069 trainerStep=134000 scope=all_tensors reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=434.7@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=38.08@blocks.1.bn1.running_var
+[LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+[LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]  rv≥10x
+[LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.29 [59]         +1.27 [96]            4.7 [23]           0
+[LAYER-HEALTH]     blocks.0.bn1    silu          128    n/a    n/a    n/a      0      0     -2.22 [16]         +0.09 [41]           12.6 [13]           2
+[LAYER-HEALTH]     blocks.0.bn2    silu          128    n/a    n/a    n/a      0      0     -1.31 [103]       +14.64 [116]           7.3 [81]           0
+[LAYER-HEALTH]     blocks.1.bn1    silu          128    n/a    n/a    n/a      0      0     -2.14 [46]         -0.34 [23]          212.8 [13]          16
+[LAYER-HEALTH]     blocks.1.bn2    silu          128    n/a    n/a    n/a      0      0     -1.68 [49]         -0.55 [58]            8.8 [37]           0
+[LAYER-HEALTH]     blocks.2.bn1    silu          128    n/a    n/a    n/a      0      0     -2.24 [83]         +0.72 [8]           434.7 [13]          19
+[LAYER-HEALTH]     blocks.2.bn2    silu          128    n/a    n/a    n/a      0      0     -1.92 [20]         +0.06 [97]            2.5 [44]           0
+[LAYER-HEALTH]     tower_final_bn  silu          128    n/a    n/a    n/a      0      0     -0.81 [73]         +1.48 [88]           32.7 [13]           2
+[LAYER-HEALTH]     policy.pre_bn   silu          128    n/a    n/a    n/a      0      0     -1.18 [32]         +1.97 [65]            6.9 [40]           0
+[LAYER-HEALTH]     value.bn        silu           24    n/a    n/a    n/a      0      0     -1.55 [23]         +0.72 [2]             1.9 [16]           0
+[LAYER-HEALTH]   parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < 0.00135 of the range (Φ(-3)), mostly off < 0.02275 (Φ(-2)); equals dead / off for relu/leaky_relu
+[LAYER-HEALTH]     site            act            ch parked    off       min P   median P
+[LAYER-HEALTH]     blocks.0.bn1    silu          128      0      0    0.135334   0.345688
+[LAYER-HEALTH]     blocks.0.bn2    silu          128      0      0    0.151935   0.309411
+[LAYER-HEALTH]     blocks.1.bn1    silu          128      0      0    0.098023   0.223158
+[LAYER-HEALTH]     blocks.1.bn2    silu          128      0      0    0.091209   0.239292
+[LAYER-HEALTH]     blocks.2.bn1    silu          128      0      0    0.062099   0.209301
+[LAYER-HEALTH]     blocks.2.bn2    silu          128      0      0    0.077196   0.282608
+[LAYER-HEALTH]     tower_final_bn  silu          128      0      0    0.257286   0.522050
+[LAYER-HEALTH]     policy.pre_bn   silu          128      0      0    0.191188   0.585577
+[LAYER-HEALTH]     value.bn        silu           24      0      0    0.124472   0.154513
+[LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+[LAYER-HEALTH]     value.fc1.weight  silu  units 128  zero 0  low 3  median unit norm 0.0069
+[LAYER-HEALTH]     (no SE blocks)
+[LAYER-HEALTH]   ReZero: none
+[LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (16540206 values examined)
+[LAYER-HEALTH]   largest |value|: blocks.1.bn1.running_var 38.08, blocks.2.bn1.running_var 32.45, blocks.0.bn1.running_var 10.66, tower_final_bn.running_var 9.199, blocks.0.bn2.running_var 8.515
+[REPLAY] enumerated checkpoint -> 20261011-zlra-elitecyc-latest-step134000.safetensors
+[REPLAY] step=6159 loss=3.4371 pLoss=2.5982 vLoss=0.8384 pEnt=2.800 pIllM=0.0004 playedP=0.205 pW=0.45 pD=0.10 pL=0.45 vAbs=0.269 pLogitMean=-9.3399 vLogitMean=0.6049 gNorm=0.514 lr=0.0096 ms=2568.5 buf=1000000 plies=54080839 games=650970 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5733 clips=0 gCap=1.5446 trainerStep=134090
+[LAYER-HEALTH] live trainerStep=134090 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=434.6@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=134100 batchHash=31435cb82961868b batchChain=5f9a88e87800cdbb
+[REPLAY] step=6249 loss=3.3968 pLoss=2.5492 vLoss=0.8470 pEnt=2.800 pIllM=0.0006 playedP=0.203 pW=0.45 pD=0.11 pL=0.44 vAbs=0.278 pLogitMean=-9.3428 vLogitMean=0.6047 gNorm=0.547 lr=0.0102 ms=2067.2 buf=1000000 plies=54848935 games=660238 rejected=0 skipped=0 epoch=1 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.5650 clips=0 gCap=1.5474 trainerStep=134180
+[LAYER-HEALTH] live trainerStep=134180 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=433.8@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=134200 batchHash=94b33e1fedadcc21 batchChain=325838369908e88d
+[REPLAY] SIGINT received — finishing current step, saving, then exiting (Ctrl-C again to force-quit)
+[REPLAY] abort requested — stopping at step 6316
+[REPLAY] saved trainer model (abort) step=6316 trainerStep=134247 nextGame=649792 shard=1 epoch=1 -> 20261011-zlra-elitecyc-latest.safetensors
+[LAYER-HEALTH] checkpoint replay-abort step=6316 trainerStep=134247 scope=all_tensors reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=434.2@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=38.22@blocks.1.bn1.running_var
+[LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+[LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]  rv≥10x
+[LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.29 [59]         +1.27 [96]            4.7 [23]           0
+[LAYER-HEALTH]     blocks.0.bn1    silu          128    n/a    n/a    n/a      0      0     -2.22 [16]         +0.09 [41]           12.6 [13]           2
+[LAYER-HEALTH]     blocks.0.bn2    silu          128    n/a    n/a    n/a      0      0     -1.31 [103]       +14.58 [116]           7.2 [81]           0
+[LAYER-HEALTH]     blocks.1.bn1    silu          128    n/a    n/a    n/a      0      0     -2.15 [46]         -0.34 [23]          211.3 [13]          16
+[LAYER-HEALTH]     blocks.1.bn2    silu          128    n/a    n/a    n/a      0      0     -1.69 [49]         -0.55 [58]            8.9 [37]           0
+[LAYER-HEALTH]     blocks.2.bn1    silu          128    n/a    n/a    n/a      0      0     -2.24 [83]         +0.72 [8]           434.2 [13]          19
+[LAYER-HEALTH]     blocks.2.bn2    silu          128    n/a    n/a    n/a      0      0     -1.92 [20]         +0.06 [97]            2.5 [44]           0
+[LAYER-HEALTH]     tower_final_bn  silu          128    n/a    n/a    n/a      0      0     -0.81 [73]         +1.49 [88]           32.8 [13]           2
+[LAYER-HEALTH]     policy.pre_bn   silu          128    n/a    n/a    n/a      0      0     -1.18 [32]         +1.97 [65]            6.9 [40]           0
+[LAYER-HEALTH]     value.bn        silu           24    n/a    n/a    n/a      0      0     -1.55 [23]         +0.73 [2]             1.9 [16]           0
+[LAYER-HEALTH]   parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < 0.00135 of the range (Φ(-3)), mostly off < 0.02275 (Φ(-2)); equals dead / off for relu/leaky_relu
+[LAYER-HEALTH]     site            act            ch parked    off       min P   median P
+[LAYER-HEALTH]     blocks.0.bn1    silu          128      0      0    0.135185   0.345645
+[LAYER-HEALTH]     blocks.0.bn2    silu          128      0      0    0.151675   0.309403
+[LAYER-HEALTH]     blocks.1.bn1    silu          128      0      0    0.097811   0.223312
+[LAYER-HEALTH]     blocks.1.bn2    silu          128      0      0    0.091193   0.239032
+[LAYER-HEALTH]     blocks.2.bn1    silu          128      0      0    0.062081   0.209192
+[LAYER-HEALTH]     blocks.2.bn2    silu          128      0      0    0.077051   0.282586
+[LAYER-HEALTH]     tower_final_bn  silu          128      0      0    0.257327   0.522048
+[LAYER-HEALTH]     policy.pre_bn   silu          128      0      0    0.191325   0.585582
+[LAYER-HEALTH]     value.bn        silu           24      0      0    0.124507   0.154472
+[LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+[LAYER-HEALTH]     value.fc1.weight  silu  units 128  zero 0  low 4  median unit norm 0.006668
+[LAYER-HEALTH]     (no SE blocks)
+[LAYER-HEALTH]   ReZero: none
+[LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (16540206 values examined)
+[LAYER-HEALTH]   largest |value|: blocks.1.bn1.running_var 38.22, blocks.2.bn1.running_var 32.5, blocks.0.bn1.running_var 10.65, tower_final_bn.running_var 9.207, blocks.0.bn2.running_var 8.306
+[REPLAY] enumerated checkpoint -> 20261011-zlra-elitecyc-latest-step134247.safetensors
+[HEALTH] check trainerStep=134247 generation=0 evaluations=7 live=5 checkpoint=2 stale=0 truncated=0 cost_ms=2.8 train_ms=519299.4 liveReadFailed=0 lossMaxRatio=1.02 lossMedianRatio=1.00 gradMaxRatio=1.11 rvRiseMax=1.06 rvOutliers=39/39 nodata=none active=policy_offset_drift:warning final=true
+[REPLAY] wrote results: /Users/andrew/cursor/drews-chess-machine/experiments/20261008-zlra-selfplay-lr/results-elitecyc-seg3.json (stats=88)
+[REPLAY] done: steps=6316 positionsFed=55420535 gamesFed=667034 rejected=0 skipped=0 epochs=1
