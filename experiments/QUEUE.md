@@ -10,7 +10,7 @@ conversation.
 |---|---|---|
 | 2026-10-12 15:31 | R-elitefresh: R-replay's start, parameters and seed on the elite corpus (`20261008-zlra-selfplay-lr/`); segment 1 (exact resume from 80,518) since 2026-10-14 20:11 | end of epoch 1 |
 | 2026-10-15 13:16 | R-elitecyc segment 3: two more passes of the elite corpus (owner 2026-10-15), exact resume of the 127,931 final save, `--epochs 3` (counted from the lineage start; epoch 0 was the partial pass), build 2523, log `dcm_log_20261015-131635.txt` (`20261008-zlra-selfplay-lr/launch/elitecyc_resume3_launch.sh`) | end of epoch 2: ~250k steps, ~7 days at ~2.5 s/step (estimate) |
-| B-siluall finished 2026-10-15 13:08 | R-fixedlr: GUI self-play, LR 0.01 / momentum 0.90 fixed, champion `20261008-7-peGM` (`20261008-zlra-selfplay-lr/`); resumes now that B-siluall has stopped (owner 2026-10-14) | until stopped |
+| 2026-10-15 17:24 | R-fixedlr: GUI self-play, LR 0.01 / momentum 0.90 fixed, champion `20261008-7-peGM` (`20261008-zlra-selfplay-lr/`); resumed after B-siluall finished (owner 2026-10-14) from `20261012-212641-20261008-7-peGM-promote.dcmsession` at trainer step 87,218, segment 4, in the Lichess bot's app (build 2561, log `dcm_log_20261015-102200.txt`); NOT EXACT: buffer (the save holds none; refilled by self-play) | until stopped |
 
 R-replay stopped at trainer step 86,398 (2026-10-11, SIGINT save; branched to R-elite / R-elitecyc).
 
