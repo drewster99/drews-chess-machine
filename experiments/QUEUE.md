@@ -8,9 +8,11 @@ conversation.
 
 | started | experiment | ends (est.) |
 |---|---|---|
-| 2026-10-08 09:46 | R-replay: ZlrA's settings on corpus replay (`20261008-zlra-selfplay-lr/`) | 60,000 steps |
-| 2026-10-08 12:57 | B-siluall: B-silu with SiLU heads too, relative cap k = 3 (`20261005-lr-schedule-ab/`) | 40,000 steps |
-| 2026-10-08 09:46 | R-fixedlr: ZlrA's settings on self-play, LR 0.01 / momentum 0.90 fixed (`20261008-zlra-selfplay-lr/`) | until stopped |
+| 2026-10-12 15:31 | R-elitefresh: R-replay's start, parameters and seed on the elite corpus (`20261008-zlra-selfplay-lr/`); segment 1 (exact resume from 80,518) since 2026-10-14 20:11 | end of epoch 1 |
+| next, ~2026-10-14 21:44 | B-siluall segment 5 (`20261005-lr-schedule-ab/`, `launch/Bsiluall_resume5_launch.sh`; segment 4 stopped at 76,174); auto-launches from a queue script | — |
+| after B-siluall stops | R-fixedlr: GUI self-play, LR 0.01 / momentum 0.90 fixed, champion `20261008-7-peGM` (`20261008-zlra-selfplay-lr/`); resumes once B-siluall stops (owner 2026-10-14) | until stopped |
+
+R-replay stopped at trainer step 86,398 (2026-10-11, SIGINT save; branched to R-elite / R-elitecyc).
 
 
 ## Next (in order)
@@ -34,6 +36,12 @@ conversation.
 
 ## Finished
 
+- 2026-10-11 21:39 → 2026-10-14 21:24 — R-elitecyc: R-elite's step-21,006 save (R-replay's network, 107,404 steps)
+  branched onto a gentle 0.002–0.02 LR cycle on the elite corpus `20260704-215145-op24Gp`, to the end of epoch 1 at
+  trainer step 127,931 (`20261008-zlra-selfplay-lr/` section 3, E-0026); three segments, both resumes exact. Wide pElo
+  1,637.6 → peak 1,726.6 at 120,000 → final 1,716.3 (NLL 2.0654 → 1.9634); R-elite at a fixed 0.002 had stayed at
+  1,628–1,645. Cycle peaks cost ~18 pElo (R-replay's 1.0 peaks ~194). No GPU faults, clips, parked channels or
+  non-finite values; only alarm `policy_offset_drift` (warning, inherited).
 - 2026-10-07 16:47 → 2026-10-08 09:41 — ZlrA GUI self-play on the 0.001–1.0 LR cycle (`20261008-zlra-selfplay-lr/`, E-0025):
   stopped by the owner at 51,135 steps. Wide pElo flat at about 540 from 20k (every earlier fresh self-play run 630–680 by
   40–50k) while pLoss / vLoss sat far below every other run (0.72 / 0.16 at 50k); BN running-variance ratio ratcheted to

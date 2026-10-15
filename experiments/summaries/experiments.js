@@ -477,5 +477,25 @@ window.DCM_EXPERIMENTS = [
    "E-0024"
   ],
   "supersededBy": null
+ },
+ {
+  "id": "E-0026",
+  "date": "2026-10-11",
+  "file": "E-0026_2026-10-11_elite-corpus-gentle-lr-cycle.html",
+  "title": "Elite corpus with a gentle LR cycle (R-elitecyc)",
+  "status": "complete",
+  "tags": [
+   "lr-schedule",
+   "corpus",
+   "silu",
+   "exact-resume"
+  ],
+  "takeaway": "A gentle 0.002–0.02 LR cycle took R-replay’s network from 1,638 to 1,727 wide pElo on the elite corpus where a fixed 0.002 stayed flat; continue trained networks on the gentle cycle, whose peaks cost ~18 pElo against ~194 for the 0.001–1.0 cycle.",
+  "related": [
+   "E-0025",
+   "E-0017",
+   "E-0021"
+  ],
+  "supersededBy": null
  }
 ];

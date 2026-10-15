@@ -161,3 +161,132 @@ E=experiments/20261008-zlra-selfplay-lr
 $E/launch/replay_launch.sh &
 $E/launch/fixedlr_launch.sh &   # then `open -g <the .app>` if the window never appears (auto-train fires on first appear)
 ```
+
+## 3. R-elitecyc (2026-10-11 → 2026-10-14; finished its epoch)
+
+### What it is
+
+A corpus-replay continuation of R-replay on the Lichess Elite corpus with a gentle LR cycle. Two steps led to it:
+
+- **R-elite** (owner 2026-10-11: does the May corpus's ~1,640-mean teaching cap R-replay at ~1,610–1,650 pElo?):
+  a branch of R-replay's SIGINT save at trainer step 86,398 (`20261008-zlra-replay-step86398.safetensors`, model ID
+  `20261011-2-abM2`, wide pElo 1,639.7) onto the elite corpus at a fixed LR of 0.002, momentum 0.90
+  (`launch/replay_elite_fork_launch.sh`, build 2501, lineage run `ACC058E9-15A5-49EA-8F60-9D1F254EAA4C`). It stayed
+  flat: wide pElo 1,628–1,645 at every 1,000-step probe from 1k to 21k. Stopped by SIGINT at trainer step 21,006
+  (`20261011-zlra-elite-latest-step21006.safetensors`, model ID `20261011-4-btGW`, 1,637.6), corpus position
+  `nextGame=2162743`.
+- **R-elitecyc** (owner 2026-10-11: "create a less intense cycle"): a branch (not an exact resume, which would have
+  restored the checkpoint's fixed LR) of R-elite's step-21,006 save with `parameters-zlra-elite-gentlecycle.json`.
+  It differs from `parameters-zlra-elite-fixedlr.json` (R-elite's) in four keys: `lr_cycle_enabled` true,
+  `lr_cycle_invert` false, `lr_cycle_max` 0.02, `lr_cycle_decay_horizon_steps` 0. So: geometric cosine
+  0.002 ↔ 0.02, period 10,000, not inverted, no decay; momentum fixed 0.90; no √batch scaling; 1,000-step warmup to
+  the 0.002 trough; LR peaks at trainer steps 6,000, 16,000, … Everything else is R-replay's (ZlrA's) snapshot:
+  batch 4,096, weight decay 3e-4, gradient clip 15 plus the relative cap in clip mode (k = 3), policy ε 0.1, value
+  ε 0.013, buffer 1M (500k before training), replay ratio 0.48, at most 10 positions per game. The branch restarts
+  the trainer step at 0 with zero velocity and continues the corpus where R-elite stopped
+  (`--start-game-index 2162743`), so R-elite + R-elitecyc together fed the whole corpus once.
+
+Every R-elitecyc step number below is its own trainer step. At its step 0 the weights already carried 107,404 steps
+(86,398 R-replay + 21,006 R-elite).
+
+| segment | launch | build | trainer steps | wall (CDT) | ended | stdout / results |
+|---|---|---|---|---|---|---|
+| 0 | `launch/elite_gentlecycle_branch_launch.sh` (branch from `20261011-4-btGW`) | 2503, git `7d945ec7` | 0 → 45,467 | 10-11 21:39 → 10-12 15:25 | SIGINT abort save (rebuild for LR keyframes) | `train-elitecyc.stdout`, `results-elitecyc.json` |
+| 1 | `launch/elitecyc_resume1_launch.sh` (`--resume-exact`) | 2523, git `a242b7ad` | 45,467 → 126,222 | 10-12 15:30 → 10-14 19:57 | SIGINT abort save (macOS update) | `train-elitecyc-seg1.stdout`, `results-elitecyc-seg1.json` |
+| 2 | `launch/elitecyc_resume2_launch.sh` (`--resume-exact`) | 2523, git `a242b7ad` | 126,222 → 127,931 | 10-14 20:11 → 21:24 | end of epoch 1 (final save, `nextGame=0 epoch=1`) | `train-elitecyc-seg2.stdout`, `results-elitecyc-seg2.json` |
+
+- Lineage run `E709F4EB-1D95-4166-90FA-F0D31002BB89`; seed `16308727193092630423` (drawn at segment 0, continued by
+  both resumes). Both resumes logged `[RESUME] EXACT` (segment 1: build changed, behavior fingerprint matches;
+  segment 2: OS 26B5091g → 26B5112a, fingerprint matches; no `--accept-inexact` needed).
+- Final file `20261011-zlra-elitecyc-latest-step127931.safetensors` (also the rolling `…-latest`), model ID
+  `20261015-1-KXNZ`. 130 enumerated checkpoints (every 1,000 steps plus 45,467, 126,222, 127,931).
+- Trainer time 246,502 s (68.5 h), wall 257,091 s (71.4 h) summed over the segments (lineage `time`). Games fed
+  2,162,743 → 14,619,153 (end of corpus), 12,456,410 games.
+- `results-elitecyc-seg2.json` records `termination_reason: step_limit_reached` although no step limit was set
+  (`stepLimit=none epochLimit=1`); the log shows the run ended at the end of epoch 1 (`[REPLAY] done: … epochs=1`).
+
+### Results
+
+Wide set (4,435 Lichess puzzles, first move, maximum-likelihood rating), from each checkpoint's own
+`dcm_test_set_results`:
+
+- **Peak 1,726.6 at step 120,000** (NLL 1.9449, top-1 2,399 / 4,435). Lowest NLL 1.9361 at 126,222 (1,718.4).
+- **Final (127,931): 1,716.3, NLL 1.9634**, top-1 2,379, top-5 3,832; 200-set 1,414.9, NLL 1.7988.
+- Start file (R-elite 21,006): 1,637.6 / 2.0654. Final − start +78.7 pElo, NLL −0.102. Mean of the last 10 probes
+  (118k–127k) 1,712.6; of the first 10 (1k–10k) 1,647.8.
+- The LR peaks cost little: pElo at each peak step (6k, 16k, …, 126k) was on average 18 below the best probe of the
+  same cycle (range 1–40). R-replay's 1.0 peaks: 194 on average (119–284; peaks at 11k … 81k).
+
+Comparison at each run's own trainer step (value at the step, and the best probe in the 10,000 steps ending there).
+R-replay and R-elitefresh started from the untrained `20261008-zlra-ab-fresh` network with the 0.001–1.0 cycle
+(`parameters-zlra.json`): R-replay on `w3aA5b` (stopped at 86,398), R-elitefresh on the elite corpus (running;
+probes through 82,000 at this writing). This is not an equal-history comparison: R-elitecyc began from a network
+with 107,404 steps behind it. A blank cell: the run never reached that step.
+
+| step | R-elitecyc | best | R-replay | best | R-elitefresh | best |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10,000 | 1658.7 | 1658.7 | 1392.7 | 1460.5 | 1364.4 | 1396.8 |
+| 20,000 | 1660.2 | 1666.9 | 1424.6 | 1564.2 | 1396.3 | 1501.1 |
+| 30,000 | 1674.1 | 1682.3 | 1520.6 | 1615.0 | 1439.0 | 1547.8 |
+| 40,000 | 1678.2 | 1678.2 | 1504.6 | 1611.4 | 1461.5 | 1529.3 |
+| 50,000 | 1685.9 | 1685.9 | 1502.1 | 1649.9 | 1460.0 | 1550.3 |
+| 60,000 | 1699.8 | 1699.8 | 1589.8 | 1629.4 | 1499.0 | 1573.9 |
+| 70,000 | 1701.9 | 1701.9 | 1554.9 | 1638.1 | 1497.5 | 1574.4 |
+| 80,000 | 1691.1 | 1700.9 | 1568.8 | 1620.1 | 1465.1 | 1570.3 |
+| 90,000 | 1703.4 | 1707.0 | | | | |
+| 100,000 | 1707.0 | 1707.0 | | | | |
+| 110,000 | 1705.0 | 1708.1 | | | | |
+| 120,000 | 1726.6 | 1726.6 | | | | |
+
+Best per run: R-elitecyc 1,726.6 @120,000; R-replay 1,649.9 @48,000 (1,639.7 at its last save, 86,398); R-elitefresh
+1,574.4 @66,000 (so far).
+
+Training losses moved little (step 1,000 → 120,000): pLoss 2.624 → 2.506, vLoss 0.861 → 0.841, pEnt 2.868 → 2.804.
+
+### Health
+
+- Gradient: 0 clips in 1,438 step lines; largest `gNormMax` 0.742.
+- No GPU faults (`gpu_faults.faults` empty in all three results files), no non-finite values, 0 parked or mostly-off
+  channels and 0 of 128 value FC1 units at zero velocity at all 130 checkpoints; 0–7 value FC1 units at low velocity.
+- BN running-variance max/median: 278.2 at step 1,000 (inherited; `blocks.2.bn1[13]`, 37 channels ≥ 10× their site
+  median) → 415.3 at the final checkpoint (same channel, 40 channels); range over the checkpoints 271.9–424.4.
+  `bn_running_variance_runaway` was not raised.
+- Only alarm: `policy_offset_drift` (warning, action log), raised at the first check of each segment (trainer steps
+  100, 45,550, 126,300) and active throughout. Its median |policy logit mean| was 10.40 at step 100, so it came in
+  with the start weights; 9.36 at 127,000.
+
+### Interpretation
+
+- Feeding the elite corpus alone did not move R-replay's network (R-elite flat at ~1,635 for 21k steps at a fixed
+  0.002). The same corpus with a 0.002–0.02 cycle gained about 80 pElo over 128k steps and was still rising slowly at
+  the end of the epoch (cycle bests 1,659 → 1,682 → 1,700 → 1,707 → 1,727). One run, one seed: the LR cycle and the
+  extra 128k steps are not separated (R-elite at a fixed LR was stopped at 21k).
+- The 10× cycle cost ~18 pElo at its peaks; the 1,000× cycle (0.001–1.0) cost ~194.
+- From scratch, the elite corpus has so far trained slower than `w3aA5b` (R-elitefresh below R-replay at every
+  10k step through 80k) on the same 0.001–1.0 schedule, seed and start.
+
+### Reproduce
+
+Corpus `20260704-215145-op24Gp` (Lichess Elite Database Dec 2021–Nov 2025, 14,619,153 games, 42 shards; imported
+from the PGNs, not in the repo). Parameters `parameters-zlra-elite-gentlecycle.json`. Builds: frozen
+`FrozenBuilds/DCM-2503-7d945ec7.app` (segment 0) and `FrozenBuilds/DCM-2523-a242b7ad.app` (segments 1–2).
+
+The start file is R-elite's SIGINT save, `20261011-zlra-elite-latest-step21006.safetensors` (model ID
+`20261011-4-btGW`, content sha256 `63747de55e8316286ae883b966bc9a0d13f983c58baef9e421543e232965127e`), itself a
+branch of R-replay's SIGINT save at 86,398 (`20261011-2-abM2`, content sha256
+`5795606d94b05c2265e5aab6702dab3b8820ffa89eae0b9881909396627a6abd`). Both ends were set by SIGINT, not a step
+limit. Regenerating them: R-replay's `launch/replay_launch.sh` (0 → 60,000), `replay_resume1_launch.sh` (from
+60,000; its last save before the 2026-10-10 GPU reset was 67,000) and `replay_resume2_launch.sh` (from 67,000) with
+`--training-step-limit 19398` in place of 33000; then `launch/replay_elite_fork_launch.sh` with
+`--training-step-limit 21006`.
+
+```sh
+E=experiments/20261008-zlra-selfplay-lr
+$E/launch/elite_gentlecycle_branch_launch.sh     # segment 0 (stopped by SIGINT at 45,467)
+$E/launch/elitecyc_resume1_launch.sh             # segment 1, exact resume (stopped by SIGINT at 126,222)
+$E/launch/elitecyc_resume2_launch.sh             # segment 2, exact resume to the end of the epoch
+```
+
+Without the interruptions, segment 0 alone runs to the end of the epoch (`--epochs 1`); the exact resumes reproduce
+the uninterrupted run's feed and random streams (determinism plan D-1), weights bit for bit only where MPSGraph is
+deterministic.

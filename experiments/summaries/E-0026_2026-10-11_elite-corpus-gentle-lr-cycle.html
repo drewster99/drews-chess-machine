@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0026">
+<meta name="dcm-date" content="2026-10-11">
+<meta name="dcm-title" content="Elite corpus with a gentle LR cycle (R-elitecyc)">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="lr-schedule, corpus, silu, exact-resume">
+<meta name="dcm-takeaway" content="A gentle 0.002–0.02 LR cycle took R-replay’s network from 1,638 to 1,727 wide pElo on the elite corpus where a fixed 0.002 stayed flat; continue trained networks on the gentle cycle, whose peaks cost ~18 pElo against ~194 for the 0.001–1.0 cycle.">
+<meta name="dcm-related" content="E-0025, E-0017, E-0021">
+<meta name="dcm-superseded-by" content="">
+<title>E-0026 · Elite corpus with a gentle LR cycle (R-elitecyc)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0026</span><span>2026-10-11</span><span class="status complete">complete</span></div>
+<h1>Elite corpus with a gentle LR cycle (R-elitecyc)</h1>
+<div class="tags"><span class="tag">lr-schedule</span><span class="tag">corpus</span><span class="tag">silu</span><span class="tag">exact-resume</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>R-replay (ZlrA's settings on the <code>w3aA5b</code> corpus, mean rating ~1,640) levelled off at ~1,610–1,650 wide pElo. Does a stronger teacher, the Lichess Elite corpus (mean ~2,568), lift it? R-elite fed it at a fixed LR of 0.002 and stayed flat (1,628–1,645 for 21k steps), so the owner asked for "a less intense cycle": R-elitecyc branches R-elite's step-21,006 save onto a 0.002–0.02 cycle for the rest of the epoch.</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup">
+<dt>Runs / models</dt><dd>Start <code>20261011-4-btGW</code> (R-elite step 21,006, itself a branch of R-replay's <code>20261011-2-abM2</code> at 86,398; 107,404 steps behind it). Lineage run <code>E709F4EB-1D95-4166-90FA-F0D31002BB89</code>, three segments (SIGINT at 45,467 for a rebuild, SIGINT at 126,222 for a macOS update, both resumed <code>EXACT</code>); final <code>20261015-1-KXNZ</code> at trainer step 127,931, end of epoch 1.</dd>
+<dt>Build</dt><dd>2503 (git <code>7d945ec7</code>) for segment 0, 2523 (git <code>a242b7ad</code>) for segments 1–2; Release, clean.</dd>
+<dt>Data</dt><dd>Corpus <code>20260704-215145-op24Gp</code> (14,619,153 games), games 2,162,743 to the end (R-elite fed the rest). Wide puzzle set (4,435 Lichess puzzles, first move, maximum-likelihood rating) from each checkpoint's own <code>dcm_test_set_results</code>.</dd>
+<dt>Method</dt><dd>Corpus replay, <code>parameters-zlra-elite-gentlecycle.json</code>: geometric cosine 0.002 ↔ 0.02, period 10,000, not inverted, no decay, 1,000-step warmup; momentum fixed 0.90; otherwise ZlrA's snapshot (batch 4,096, 3-block 9×9 SiLU tower, 8.27M parameters). Compared at each run's own trainer step with R-replay and R-elitefresh (both fresh, 0.001–1.0 cycle).</dd>
+</dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<figure class="chart">
+<script type="application/json">{"x": {"label": "trainer step of each run"}, "y": {"label": "pElo (wide set)"}, "series": [{"name": "R-elitecyc (branch, elite, LR 0.002\u20130.02)", "points": [[1000, 1645.8], [2000, 1652.0], [3000, 1648.9], [4000, 1649.9], [5000, 1646.9], [6000, 1632.0], [7000, 1646.3], [8000, 1640.2], [9000, 1657.7], [10000, 1658.7], [11000, 1660.7], [12000, 1666.9], [13000, 1656.1], [14000, 1660.2], [15000, 1652.5], [16000, 1653.5], [17000, 1641.7], [18000, 1657.1], [19000, 1664.3], [20000, 1660.2], [21000, 1657.1], [22000, 1656.1], [23000, 1666.9], [24000, 1652.5], [25000, 1667.4], [26000, 1672.1], [27000, 1671.0], [28000, 1682.3], [29000, 1673.6], [30000, 1674.1], [31000, 1672.6], [32000, 1674.6], [33000, 1675.1], [34000, 1676.7], [35000, 1659.7], [36000, 1672.1], [37000, 1660.7], [38000, 1650.5], [39000, 1666.4], [40000, 1678.2], [41000, 1674.1], [42000, 1682.9], [43000, 1679.3], [44000, 1681.3], [45000, 1671.0], [46000, 1671.5], [47000, 1669.5], [48000, 1671.0], [49000, 1685.4], [50000, 1685.9], [51000, 1681.3], [52000, 1684.4], [53000, 1678.7], [54000, 1694.7], [55000, 1694.7], [56000, 1681.3], [57000, 1672.6], [58000, 1666.9], [59000, 1688.5], [60000, 1699.8], [61000, 1682.9], [62000, 1687.5], [63000, 1680.8], [64000, 1684.4], [65000, 1666.4], [66000, 1680.8], [67000, 1680.8], [68000, 1682.3], [69000, 1688.0], [70000, 1701.9], [71000, 1696.2], [72000, 1692.1], [73000, 1695.7], [74000, 1700.4], [75000, 1684.4], [76000, 1677.7], [77000, 1688.0], [78000, 1700.4], [79000, 1700.9], [80000, 1691.1], [81000, 1689.0], [82000, 1701.9], [83000, 1707.0], [84000, 1687.0], [85000, 1687.5], [86000, 1691.6], [87000, 1695.2], [88000, 1688.0], [89000, 1691.6], [90000, 1703.4], [91000, 1702.4], [92000, 1699.8], [93000, 1707.0], [94000, 1704.5], [95000, 1690.6], [96000, 1686.5], [97000, 1675.1], [98000, 1695.2], [99000, 1698.3], [100000, 1707.0], [101000, 1708.1], [102000, 1708.1], [103000, 1702.9], [104000, 1696.8], [105000, 1701.9], [106000, 1706.5], [107000, 1687.0], [108000, 1687.5], [109000, 1701.4], [110000, 1705.0], [111000, 1701.9], [112000, 1700.4], [113000, 1717.9], [114000, 1694.2], [115000, 1699.3], [116000, 1687.0], [117000, 1702.9], [118000, 1708.1], [119000, 1701.4], [120000, 1726.6], [121000, 1721.5], [122000, 1723.5], [123000, 1722.0], [124000, 1709.6], [125000, 1706.0], [126000, 1708.6], [127000, 1698.3], [127931, 1716.3]]}, {"name": "R-replay (fresh, w3aA5b, LR 0.001\u20131.0)", "points": [[1000, 1109.6], [2000, 1258.8], [3000, 1415.3], [4000, 1443.1], [5000, 1457.4], [6000, 1456.4], [7000, 1454.4], [8000, 1460.5], [9000, 1406.6], [10000, 1392.7], [11000, 1375.2], [12000, 1481.0], [13000, 1512.9], [14000, 1544.2], [15000, 1554.9], [16000, 1559.0], [17000, 1563.2], [18000, 1547.2], [19000, 1564.2], [20000, 1424.6], [21000, 1371.1], [22000, 1470.8], [23000, 1580.1], [24000, 1603.7], [25000, 1606.3], [26000, 1615.0], [27000, 1607.8], [28000, 1609.9], [29000, 1601.1], [30000, 1520.6], [31000, 1398.9], [32000, 1509.3], [33000, 1594.0], [34000, 1602.7], [35000, 1608.8], [36000, 1601.1], [37000, 1611.4], [38000, 1604.7], [39000, 1604.2], [40000, 1504.6], [41000, 1361.9], [42000, 1490.8], [43000, 1596.5], [44000, 1637.6], [45000, 1640.7], [46000, 1645.8], [47000, 1645.8], [48000, 1649.9], [49000, 1624.3], [50000, 1502.1], [51000, 1424.1], [52000, 1563.7], [53000, 1607.3], [54000, 1618.6], [55000, 1625.3], [56000, 1623.7], [57000, 1629.4], [58000, 1629.4], [59000, 1623.2], [60000, 1589.8], [61000, 1474.4], [62000, 1479.5], [63000, 1588.3], [64000, 1620.7], [65000, 1628.9], [66000, 1628.9], [67000, 1627.3], [68000, 1638.1], [69000, 1613.0], [70000, 1554.9], [71000, 1510.8], [72000, 1470.3], [73000, 1589.8], [74000, 1611.9], [75000, 1615.0], [76000, 1620.1], [77000, 1619.1], [78000, 1612.4], [79000, 1619.1], [80000, 1568.8], [81000, 1519.5], [82000, 1542.1], [83000, 1623.7], [84000, 1628.9], [85000, 1638.1], [86000, 1639.2], [86398, 1639.7]]}, {"name": "R-elitefresh (fresh, elite, LR 0.001\u20131.0)", "points": [[1000, 1069.7], [2000, 1216.9], [3000, 1343.9], [4000, 1388.6], [5000, 1392.2], [6000, 1396.8], [7000, 1396.8], [8000, 1390.7], [9000, 1371.6], [10000, 1364.4], [11000, 1284.1], [12000, 1304.7], [13000, 1429.7], [14000, 1491.8], [15000, 1491.3], [16000, 1494.4], [17000, 1492.8], [18000, 1487.2], [19000, 1501.1], [20000, 1396.3], [21000, 1316.1], [22000, 1415.3], [23000, 1511.8], [24000, 1530.8], [25000, 1533.4], [26000, 1540.6], [27000, 1538.5], [28000, 1547.8], [29000, 1512.9], [30000, 1439.0], [31000, 1343.9], [32000, 1414.3], [33000, 1481.0], [34000, 1512.9], [35000, 1529.3], [36000, 1526.7], [37000, 1520.0], [38000, 1528.3], [39000, 1481.6], [40000, 1461.5], [41000, 1358.3], [42000, 1403.0], [43000, 1508.2], [44000, 1536.5], [45000, 1534.9], [46000, 1542.1], [47000, 1550.3], [48000, 1539.5], [49000, 1524.7], [50000, 1460.0], [51000, 1363.9], [52000, 1451.8], [53000, 1551.3], [54000, 1558.0], [55000, 1563.2], [56000, 1560.1], [57000, 1573.9], [58000, 1569.3], [59000, 1550.3], [60000, 1499.0], [61000, 1360.3], [62000, 1391.2], [63000, 1534.9], [64000, 1557.0], [65000, 1570.3], [66000, 1574.4], [67000, 1564.7], [68000, 1560.1], [69000, 1561.1], [70000, 1497.5], [71000, 1425.6], [72000, 1453.8], [73000, 1537.0], [74000, 1562.6], [75000, 1564.7], [76000, 1570.3], [77000, 1565.7], [78000, 1565.2], [79000, 1539.0], [80000, 1465.1], [81000, 1345.4], [82000, 1443.6]]}]}</script>
+<figcaption>Wide-set pElo every 1,000 trainer steps of each run (R-elitecyc's last point is the 127,931 final save, R-replay's the 86,398 SIGINT save; R-elitefresh still running). R-elitecyc started from a trained network, so its x axis is not equal training history.</figcaption>
+</figure>
+<div class="tablebox"><table>
+<caption>Wide-set pElo at trainer step; "best" = best probe in the 10,000 steps ending there; a blank cell is a step the run never reached</caption>
+<thead><tr><th>step</th><th class="n">R-elitecyc</th><th class="n">best</th><th class="n">R-replay</th><th class="n">best</th><th class="n">R-elitefresh</th><th class="n">best</th></tr></thead>
+<tbody>
+<tr><td>10,000</td><td class="n">1658.7</td><td class="n">1658.7</td><td class="n">1392.7</td><td class="n">1460.5</td><td class="n">1364.4</td><td class="n">1396.8</td></tr>
+<tr><td>30,000</td><td class="n">1674.1</td><td class="n">1682.3</td><td class="n">1520.6</td><td class="n">1615.0</td><td class="n">1439.0</td><td class="n">1547.8</td></tr>
+<tr><td>50,000</td><td class="n">1685.9</td><td class="n">1685.9</td><td class="n">1502.1</td><td class="n">1649.9</td><td class="n">1460.0</td><td class="n">1550.3</td></tr>
+<tr><td>70,000</td><td class="n">1701.9</td><td class="n">1701.9</td><td class="n">1554.9</td><td class="n">1638.1</td><td class="n">1497.5</td><td class="n">1574.4</td></tr>
+<tr><td>80,000</td><td class="n">1691.1</td><td class="n">1700.9</td><td class="n">1568.8</td><td class="n">1620.1</td><td class="n">1465.1</td><td class="n">1570.3</td></tr>
+<tr><td>100,000</td><td class="n">1707.0</td><td class="n">1707.0</td><td class="n"></td><td class="n"></td><td class="n"></td><td class="n"></td></tr>
+<tr><td>120,000</td><td class="n">1726.6</td><td class="n">1726.6</td><td class="n"></td><td class="n"></td><td class="n"></td><td class="n"></td></tr>
+</tbody>
+</table></div>
+<p>Start 1,637.6 (NLL 2.0654); <b>peak 1,726.6 at 120,000</b> (NLL 1.9449); <b>final 1,716.3 at 127,931</b> (NLL 1.9634; lowest NLL 1.9361 at 126,222). pElo at the LR peaks averaged 18 below the same cycle's best (R-replay's 1.0 peaks: 194). Health: 0 clips (largest gNormMax 0.742), no GPU faults, no non-finite values, 0 parked channels and 0 zero-velocity value FC1 units at all 130 checkpoints; BN running-variance max/median 278 → 415 (inherited channel <code>blocks.2.bn1[13]</code>); only alarm <code>policy_offset_drift</code> (warning, carried in with the start weights, 10.40 → 9.36).</p>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>The elite corpus at a fixed 0.002 did not move the network; the same corpus on a 10× cycle gained about 80 pElo over 128k steps and was still climbing slowly at the end of the epoch. One run, one seed, and the cycle is confounded with the extra steps (R-elite stopped at 21k), so the cycle's share is not measured. From scratch on the same 0.001–1.0 schedule, the elite corpus has so far trained slower than <code>w3aA5b</code> (R-elitefresh below R-replay at every 10k step through 80k), so whether the stronger teacher helps only an already-trained network is open.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">A gentle 0.002–0.02 LR cycle took R-replay’s network from 1,638 to 1,727 wide pElo on the elite corpus where a fixed 0.002 stayed flat; continue trained networks on the gentle cycle, whose peaks cost ~18 pElo against ~194 for the 0.001–1.0 cycle.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts">
+<li><a href="../20261008-zlra-selfplay-lr/README.md">experiments/20261008-zlra-selfplay-lr/</a> — section 3: segments, full comparison table, health, Reproduce; launch scripts, parameter files, stdout and results JSON per segment.</li>
+</ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>
