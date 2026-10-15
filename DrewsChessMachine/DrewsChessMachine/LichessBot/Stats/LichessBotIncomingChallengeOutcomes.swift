@@ -111,10 +111,13 @@ struct LichessBotIncomingChallengeOutcomeLog: Sendable, Equatable {
         return summary
     }
 
-    /// The most recent failed answer among the records, by when it failed.
-    var latestAnswerFailure: (record: LichessBotIncomingChallengeRecord, failure: LichessBotIncomingAnswerFailure)? {
+    /// The most recent failed answer, by when it failed, among the records
+    /// received within the last day of `now`: the same records `summary`
+    /// counts. The log is refolded only when a fact arrives, so records age
+    /// out between refolds and the window is applied at the reader's time.
+    func latestAnswerFailure(now: Date) -> (record: LichessBotIncomingChallengeRecord, failure: LichessBotIncomingAnswerFailure)? {
         var latest: (record: LichessBotIncomingChallengeRecord, failure: LichessBotIncomingAnswerFailure)?
-        for record in records {
+        for record in records where now.timeIntervalSince(record.receivedAt) < LichessBotChallengeCredits.dayWindow {
             guard case .answerFailed(let failure) = record.outcome else { continue }
             if let current = latest, current.failure.at >= failure.at { continue }
             latest = (record, failure)

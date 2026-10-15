@@ -38,7 +38,7 @@ struct LichessBotIncomingChallengeOutcomesCard: View {
                         }
                     }
                     .shown(controller.incomingChallengeOutcomeLog != nil)
-                    Text(Self.latestFailureText(controller.incomingChallengeOutcomeLog))
+                    Text(Self.latestFailureText(controller.incomingChallengeOutcomeLog, now: context.date))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -79,9 +79,9 @@ struct LichessBotIncomingChallengeOutcomesCard: View {
         return rows
     }
 
-    private static func latestFailureText(_ log: LichessBotIncomingChallengeOutcomeLog?) -> String {
+    private static func latestFailureText(_ log: LichessBotIncomingChallengeOutcomeLog?, now: Date) -> String {
         guard let log else { return "" }
-        guard let latest = log.latestAnswerFailure else { return "No failed answers." }
+        guard let latest = log.latestAnswerFailure(now: now) else { return "No failed answers." }
         let time = latest.failure.at.formatted(date: .omitted, time: .standard)
         let challenger = latest.record.challengerID ?? "challenger not recorded"
         return "Latest failed answer (\(time), \(challenger), \(latest.failure.answer.label)): \(latest.failure.error)"

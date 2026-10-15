@@ -83,8 +83,8 @@ final class LichessBotIncomingChallengeOutcomesTests: XCTestCase {
         let summary = log.summary(now: F.at(600))
         XCTAssertEqual(summary.answerFailed, 2)
         XCTAssertEqual(summary.answerFailedByAnswer, [.accept: 1, .decline: 1])
-        XCTAssertEqual(log.latestAnswerFailure?.record.id, "decFail")
-        XCTAssertEqual(log.latestAnswerFailure?.failure.error, "timed out")
+        XCTAssertEqual(log.latestAnswerFailure(now: F.at(600))?.record.id, "decFail")
+        XCTAssertEqual(log.latestAnswerFailure(now: F.at(600))?.failure.error, "timed out")
     }
 
     func testDeclinesAreCountedByReason() {
@@ -126,5 +126,24 @@ final class LichessBotIncomingChallengeOutcomesTests: XCTestCase {
         let day = LichessBotChallengeCredits.dayWindow
         let log = fold(ledger([(F.received("old"), 0), (.canceledOnLichess(challengeID: "old"), day + 5)]), now: F.at(day + 10))
         XCTAssertTrue(log.records.isEmpty)
+    }
+
+    func testTheLatestFailedAnswerIsOnlyFromChallengesReceivedWithinTheRollingDay() {
+        // The log is refolded only when a fact arrives, so its records can
+        // age out before the next refold: the latest failure must apply the
+        // window at the reader's time, as the counts do, or the card shows
+        // a failure the counts no longer include.
+        let day = LichessBotChallengeCredits.dayWindow
+        let log = fold(ledger([
+            (F.received("older"), 1), (.incomingDecided(challengeID: "older", decision: .accept), 2),
+            (.incomingResponseFailed(challengeID: "older", error: "HTTP 429"), 3),
+            (F.received("newer"), 100), (.incomingDecided(challengeID: "newer", decision: .accept), 101),
+            (.incomingResponseFailed(challengeID: "newer", error: "timed out"), 102),
+        ]), now: F.at(600))
+        XCTAssertEqual(log.latestAnswerFailure(now: F.at(600))?.record.id, "newer")
+        XCTAssertEqual(log.summary(now: F.at(day + 50)).answerFailed, 1)
+        XCTAssertEqual(log.latestAnswerFailure(now: F.at(day + 50))?.record.id, "newer")
+        XCTAssertEqual(log.summary(now: F.at(day + 200)).answerFailed, 0)
+        XCTAssertNil(log.latestAnswerFailure(now: F.at(day + 200)), "a failure on a challenge received over a day ago is out, as in the counts")
     }
 }
