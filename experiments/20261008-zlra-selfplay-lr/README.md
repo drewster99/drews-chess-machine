@@ -290,3 +290,95 @@ $E/launch/elitecyc_resume2_launch.sh             # segment 2, exact resume to th
 Without the interruptions, segment 0 alone runs to the end of the epoch (`--epochs 1`); the exact resumes reproduce
 the uninterrupted run's feed and random streams (determinism plan D-1), weights bit for bit only where MPSGraph is
 deterministic.
+
+## 4. Numerics: single-channel residual-stream concentration (2026-10-16)
+
+A full static-numerics + puzzle-probe analysis of the live R-elitecyc net, with an architecture-matched
+independent-seed control (ZlrA), to understand why one or two channels carry far more magnitude (and gradient)
+than the rest.
+
+### Nets compared
+
+Identical architecture (8,271,279 parameters; basic24; stem 128×5×5; 3 blocks 9×9+9×9 @128; no SE; SiLU
+pre-activation; clean-add skip; `out:layer_norm`; intermediate_conv policy head; WDL value head; bf16 compute,
+`fp32_from_pre_bn` tail), two lineages with **no shared history**:
+
+- **R-elitecyc** (`E709F4EB`), trainer step 167,000, model `20261016-2-qGIj` — the strong run.
+- **ZlrA** (`716F996A`), trainer step 51,154 (its final `-sigusr2` trainer file) — the failed GUI seed from §1.
+
+A scan of all 5,067 model files in `Models/` and 160 in `Sessions/` found exactly one matched lineage independent
+of R-elitecyc: ZlrA. Every other same-architecture run (R-replay, R-elite, R-elitefresh, R-fixedlr/peGM) branches
+from the `FCFD86A9` zlra-ab-fresh seed, so none of those is an independent control.
+
+| | R-elitecyc (167k) | ZlrA (51k) |
+|---|---|---|
+| Wide-set pElo | **1713** (peak 1739 @160k) | **506** (seed ≈546) |
+| lichess-200 pElo | 1425 | 727 (n=200, noisy) |
+| Wide top-1 | 2373/4435 = 54% | 240/4435 = 5.4% |
+| Wide avg rank | 2.48 | 15.4 (≈ uniform) |
+| HangingPiece | 88% | 16% |
+| Policy logit abs-max | ~29 | ~47 |
+| rv max/median (worst bn1 site) | 398× | **1656×** |
+| rv ≥10×median channels | 39 | 75 |
+| policy final offset ÷ init | 4.6× | 5.05× |
+| `policy.pre_bn` max β/|γ| | +2.0 | **+101** |
+
+ZlrA never learned a policy (avg rank ≈ uniform; fails even hanging-piece). It promoted 19 times climbing 546→~506;
+the promotions were noise.
+
+### Finding: this architecture elects one trunk channel as a high-amplitude material carrier
+
+Both independent seeds spontaneously funnel magnitude into **one trunk channel** — channel **13** in R-elitecyc,
+channel **25** in ZlrA. Because the channel index differs by seed, it is an emergent training outcome, not a fixed
+wiring defect. In R-elitecyc the hot channel shows runaway batch-norm running-variance at every block input
+(rv max/median 13× → 206× → 398× at `blocks.0/1/2.bn1[13]`, 32× at `tower_final_bn[13]`).
+
+The mechanism is the clean-add skip, shown directly (not inferred) from per-position activations of the net's own
+forward pass over the 4,635 probe positions (numpy fp32 forward validated against the app: top-1 match 98.83%,
+valueWin MAE 0.006). Channel-13 trunk value (mean over the 64 squares), per position:
+
+- **block0 injects it:** +0.96 → +8.62 (the block-0 residual branch writes the large DC onto ch13).
+- **the skip carries it:** block1→block2 Pearson **0.926**, net increment −0.02 (std 0.32) on a carried level
+  of +8.6 — block 1 passes ch13 to block 2 essentially untouched, which is exactly the identity term in
+  `clean_add`; `res_ln` (channel-wise LayerNorm on the sum) does not rein it in.
+- **tower_final_bn re-centers it:** +8.6 → +4.8.
+
+Channel 13 genuinely co-varies with board "fullness"/material (max-abs over squares vs total_pawns Pearson +0.38,
+piece_total +0.33, legal_count +0.33, in_check −0.32, endgame-phase −0.33); it is modulated, not collapsed (the
+modulation rides on a large constant offset, so its coefficient of variation is small, ~0.047 deep in the trunk).
+
+### The `|mean|/std` "degraded" flags are the opposite — near-constant channels, not gradient hogs
+
+R-elitecyc's other two flagged channels (`blocks.1.bn1[25]` |mean|/std 16.6, `blocks.2.bn1[48]` 49.0) are
+low-amplitude (5–10× below ch13) and weakly feature-correlated (|r| ≤ 0.33). They do **not** carry forward
+(block1→block2 Pearson −0.02 / +0.20); each block's branch bias sets their level (ch48's −2.06 increment pins it at
+the −2.573 constant, std 0.013 across all 4,635 positions). These are saturated bias-like channels — low gradient,
+a cosmetic `|mean|/std` flag, a different mechanism than ch13's residual carry.
+
+### Takeaway
+
+The residual single-channel magnitude concentration is a **universal behaviour of this clean-add 3-block
+architecture**, present in both independent seeds. It is benign at ~398× in the net that learned and pathological at
+~1656× (plus a +101 always-on policy-head channel and logits ~47) in the net that blew up. So it is a
+learning-rate / optimisation / seed sensitivity, not a design defect: this topology *will* pick one channel to carry
+trunk magnitude, and keeping that concentration moderate is part of what "training worked" means here. If a future
+change wants to damp it, the levers are the skip-merge style (clean-add vs a normalised/projected merge), per-channel
+output normalisation, or the LR schedule — not removing the feature, which is doing real work (material sensing).
+
+### Reproduce
+
+Model files (immutable checkpoints): R-elitecyc `Models/20261011-zlra-elitecyc-latest-step167000.safetensors`
+(`20261016-2-qGIj`); ZlrA `Sessions/20261008-144140-20261007-61-FNz0-sigusr2.dcmsession/trainer.safetensors`
+(`20261007-60-ZlrA-20`). Build `FrozenBuilds/DCM-2566-8747714d.app`.
+
+```sh
+APP=".../FrozenBuilds/DCM-2566-8747714d.app/Contents/MacOS/DrewsChessMachine"
+"$APP" --analyze-numerics <file> --numerics-static-only --numerics-out <dir>
+"$APP" --probe-model <file> --probe-set both --probe-out <positions.jsonl>
+```
+
+`analysis/analyze_channels.py` reimplements the forward pass in numpy (fp32), reconstructs the probe FENs from the
+bundled `lichess_probes_200.json` / `lichess_probes_wide.json`, self-checks against the app's recorded top-1 and
+W/D/L, then captures channel 13/25/48 activations at the four taps and correlates them with board features
+(needs python-chess). Its outputs: `analysis/channel_feature_correlations.json` (self-check, per-tap stds, full
+Pearson+Spearman tables) and `analysis/residual_carry_forward.json` (the carry-forward correlations above).

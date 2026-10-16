@@ -1,0 +1,2298 @@
+{
+  "model": "/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261011-zlra-elitecyc-latest-step167000.safetensors",
+  "model_id": "20261016-2-qGIj",
+  "n_positions": 4635,
+  "n_valid": 4635,
+  "selfcheck": {
+    "n_compared": 4635,
+    "top1_match": 4581,
+    "top1_match_pct": 98.83495145631068,
+    "valueWin_mae": 0.005852258820669422,
+    "valueWin_max_abs_err": 0.05190008878707886,
+    "top1prob_mae": 0.003863857749210592
+  },
+  "channel_stats": {
+    "13": {
+      "block0_in": {
+        "meanact_std": 0.2379652932086755,
+        "meanact_mean": 0.9619792645899609,
+        "maxabs_std": 1.6511555779806404,
+        "maxabs_mean": 7.884515829353785,
+        "maxabs_cv": 0.20941749798053885
+      },
+      "block1_in": {
+        "meanact_std": 0.8255513271159987,
+        "meanact_mean": 8.620024368961008,
+        "maxabs_std": 0.7253945468981677,
+        "maxabs_mean": 15.689669064436401,
+        "maxabs_cv": 0.04623389721432542
+      },
+      "block2_in": {
+        "meanact_std": 0.8188697496884718,
+        "meanact_mean": 8.595749183560137,
+        "maxabs_std": 0.5242697650122089,
+        "maxabs_mean": 14.194069966271986,
+        "maxabs_cv": 0.03693583068288696
+      },
+      "tower_final_in": {
+        "meanact_std": 0.44484876591464273,
+        "meanact_mean": 4.819885185029771,
+        "maxabs_std": 0.35241690962807387,
+        "maxabs_mean": 7.427640293639841,
+        "maxabs_cv": 0.04744668503702255
+      }
+    },
+    "25": {
+      "block0_in": {
+        "meanact_std": 0.03917826305273713,
+        "meanact_mean": -0.17806254783896439,
+        "maxabs_std": 1.2245757719482981,
+        "maxabs_mean": 3.6342713818066588,
+        "maxabs_cv": 0.3369522093869028
+      },
+      "block1_in": {
+        "meanact_std": 0.020760211710506425,
+        "meanact_mean": -1.3170285930911314,
+        "maxabs_std": 0.04834947398271086,
+        "maxabs_mean": 1.4585529576613294,
+        "maxabs_cv": 0.03314893277998377
+      },
+      "block2_in": {
+        "meanact_std": 0.03421942864470168,
+        "meanact_mean": -0.8448956566078121,
+        "maxabs_std": 0.09712342117377613,
+        "maxabs_mean": 1.1852910838209438,
+        "maxabs_cv": 0.08194056499500972
+      },
+      "tower_final_in": {
+        "meanact_std": 0.15800527654873464,
+        "meanact_mean": -0.624639816847434,
+        "maxabs_std": 0.43313588927833285,
+        "maxabs_mean": 1.829772161704437,
+        "maxabs_cv": 0.2367157497019465
+      }
+    },
+    "48": {
+      "block0_in": {
+        "meanact_std": 0.14219126836020582,
+        "meanact_mean": -0.17787063367536218,
+        "maxabs_std": 0.2064887348339953,
+        "maxabs_mean": 1.1989573595528977,
+        "maxabs_cv": 0.17222358494781936
+      },
+      "block1_in": {
+        "meanact_std": 0.07641090945007958,
+        "meanact_mean": -0.514007194033204,
+        "maxabs_std": 0.11815258515825558,
+        "maxabs_mean": 0.9660483073390932,
+        "maxabs_cv": 0.12230504845186559
+      },
+      "block2_in": {
+        "meanact_std": 0.012856782867620898,
+        "meanact_mean": -2.573312315740246,
+        "maxabs_std": 0.02788859700459879,
+        "maxabs_mean": 2.681683137270239,
+        "maxabs_cv": 0.010399661543379698
+      },
+      "tower_final_in": {
+        "meanact_std": 0.1689481646341755,
+        "meanact_mean": -1.0660510960906069,
+        "maxabs_std": 0.2901263716848968,
+        "maxabs_mean": 2.142868958090501,
+        "maxabs_cv": 0.13539156020442578
+      }
+    }
+  },
+  "correlations": {
+    "13": {
+      "block0_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": -0.25588732040121887,
+            "spearman": -0.18264925317622138
+          },
+          "own_material": {
+            "pearson": -0.2905710533871458,
+            "spearman": -0.23707035627601983
+          },
+          "opp_material": {
+            "pearson": -0.23004750639716362,
+            "spearman": -0.18729777135401227
+          },
+          "material_imbalance": {
+            "pearson": -0.2381984066187922,
+            "spearman": -0.27807444164091016
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.2381984066187922,
+            "spearman": 0.2696113953243471
+          },
+          "own_pawns": {
+            "pearson": -0.26526362743395715,
+            "spearman": -0.23325774054991175
+          },
+          "opp_pawns": {
+            "pearson": 0.0027462268330664475,
+            "spearman": 0.07683673091236784
+          },
+          "total_pawns": {
+            "pearson": -0.14116740695992444,
+            "spearman": -0.09020140284320555
+          },
+          "nonpawn_material": {
+            "pearson": -0.27169363485572046,
+            "spearman": -0.2266475745722445
+          },
+          "own_knight": {
+            "pearson": -0.32931834608319255,
+            "spearman": -0.24695484714161736
+          },
+          "opp_knight": {
+            "pearson": -0.16923449806353147,
+            "spearman": -0.05181463069971959
+          },
+          "own_bishop": {
+            "pearson": -0.26906109873900996,
+            "spearman": -0.1925730194230325
+          },
+          "opp_bishop": {
+            "pearson": -0.2729807439234225,
+            "spearman": -0.21090858043572294
+          },
+          "own_rook": {
+            "pearson": -0.18523972405936565,
+            "spearman": -0.15247177842484388
+          },
+          "opp_rook": {
+            "pearson": -0.23563134918136808,
+            "spearman": -0.18727555331027934
+          },
+          "own_queen": {
+            "pearson": -0.08778302688616961,
+            "spearman": -0.019478251139701353
+          },
+          "opp_queen": {
+            "pearson": -0.10473410940761371,
+            "spearman": -0.034277518544771894
+          },
+          "queens_present": {
+            "pearson": -0.10002788997377841,
+            "spearman": -0.03233236239675992
+          },
+          "in_check": {
+            "pearson": -0.03806733430366527,
+            "spearman": 0.004436774362904196
+          },
+          "legal_count": {
+            "pearson": -0.1159566197344496,
+            "spearman": -0.12859793794432883
+          },
+          "phase_endgame": {
+            "pearson": 0.018412340902322043,
+            "spearman": 0.003355060059705959
+          },
+          "phase_opening": {
+            "pearson": -0.37116191980122004,
+            "spearman": -0.11965601754334987
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": 0.5359137236281636,
+            "spearman": 0.5498414064702939
+          },
+          "own_material": {
+            "pearson": 0.45989116005297787,
+            "spearman": 0.47898302806610377
+          },
+          "opp_material": {
+            "pearson": 0.46727408137682214,
+            "spearman": 0.4888043186883943
+          },
+          "material_imbalance": {
+            "pearson": -0.06771219178746442,
+            "spearman": -0.07347467076431298
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.06771219178746442,
+            "spearman": 0.0810214577461159
+          },
+          "own_pawns": {
+            "pearson": 0.4748872806934302,
+            "spearman": 0.47501880666662105
+          },
+          "opp_pawns": {
+            "pearson": 0.5421106160846296,
+            "spearman": 0.5448741802449862
+          },
+          "total_pawns": {
+            "pearson": 0.549227216243816,
+            "spearman": 0.5559424714214306
+          },
+          "nonpawn_material": {
+            "pearson": 0.42903375653830794,
+            "spearman": 0.45228726669624497
+          },
+          "own_knight": {
+            "pearson": 0.30097415246919496,
+            "spearman": 0.24055585893168302
+          },
+          "opp_knight": {
+            "pearson": 0.35933709413393067,
+            "spearman": 0.3607279775899124
+          },
+          "own_bishop": {
+            "pearson": 0.30077796348809965,
+            "spearman": 0.30038305641329205
+          },
+          "opp_bishop": {
+            "pearson": 0.30102942086747786,
+            "spearman": 0.3121466108838946
+          },
+          "own_rook": {
+            "pearson": 0.2942672273449291,
+            "spearman": 0.3097878091199384
+          },
+          "opp_rook": {
+            "pearson": 0.29913263779359883,
+            "spearman": 0.2816174314043855
+          },
+          "own_queen": {
+            "pearson": 0.2880964051152958,
+            "spearman": 0.2321524654528449
+          },
+          "opp_queen": {
+            "pearson": 0.2724725933147222,
+            "spearman": 0.19965006668492213
+          },
+          "queens_present": {
+            "pearson": 0.27239567006468307,
+            "spearman": 0.1968527388994149
+          },
+          "in_check": {
+            "pearson": -0.020898575213151672,
+            "spearman": -0.08680782663095722
+          },
+          "legal_count": {
+            "pearson": 0.250303693771881,
+            "spearman": 0.2651442236146709
+          },
+          "phase_endgame": {
+            "pearson": -0.3992732671253312,
+            "spearman": -0.3144551691841249
+          },
+          "phase_opening": {
+            "pearson": 0.2431236835496173,
+            "spearman": 0.05214620478091427
+          }
+        }
+      },
+      "block1_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": -0.9123106153357323,
+            "spearman": -0.9231419694695664
+          },
+          "own_material": {
+            "pearson": -0.8845641099393361,
+            "spearman": -0.9013009912331659
+          },
+          "opp_material": {
+            "pearson": -0.8466933706419829,
+            "spearman": -0.8746107451172975
+          },
+          "material_imbalance": {
+            "pearson": -0.09420326034113478,
+            "spearman": -0.07376636714288153
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.09420326034113478,
+            "spearman": 0.05987001773764252
+          },
+          "own_pawns": {
+            "pearson": -0.7578438056002914,
+            "spearman": -0.7627160058143273
+          },
+          "opp_pawns": {
+            "pearson": -0.7035456688251145,
+            "spearman": -0.7012383622190498
+          },
+          "total_pawns": {
+            "pearson": -0.7889001604839959,
+            "spearman": -0.8037511931625041
+          },
+          "nonpawn_material": {
+            "pearson": -0.8448879362773399,
+            "spearman": -0.8687323945943222
+          },
+          "own_knight": {
+            "pearson": -0.5714797645892993,
+            "spearman": -0.4139561348067001
+          },
+          "opp_knight": {
+            "pearson": -0.6034279424966809,
+            "spearman": -0.526166073797651
+          },
+          "own_bishop": {
+            "pearson": -0.6344141671812613,
+            "spearman": -0.5656566738037415
+          },
+          "opp_bishop": {
+            "pearson": -0.6513490057708995,
+            "spearman": -0.6050446352524282
+          },
+          "own_rook": {
+            "pearson": -0.6608607496830998,
+            "spearman": -0.6690352488625708
+          },
+          "opp_rook": {
+            "pearson": -0.6309389174829909,
+            "spearman": -0.5696504211241991
+          },
+          "own_queen": {
+            "pearson": -0.5082090198525898,
+            "spearman": -0.3838400015140224
+          },
+          "opp_queen": {
+            "pearson": -0.49873475539525297,
+            "spearman": -0.35378216107564825
+          },
+          "queens_present": {
+            "pearson": -0.5009483807722932,
+            "spearman": -0.3486626700941719
+          },
+          "in_check": {
+            "pearson": 0.024807018038624586,
+            "spearman": 0.1641106646553277
+          },
+          "legal_count": {
+            "pearson": -0.5816552822400815,
+            "spearman": -0.6444460657792803
+          },
+          "phase_endgame": {
+            "pearson": 0.5747919500715913,
+            "spearman": 0.47029356433417596
+          },
+          "phase_opening": {
+            "pearson": -0.5431962136684002,
+            "spearman": -0.06960728681262326
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": 0.3366695163679141,
+            "spearman": 0.308557608729617
+          },
+          "own_material": {
+            "pearson": 0.2297803084949452,
+            "spearman": 0.2187775738220422
+          },
+          "opp_material": {
+            "pearson": 0.23196208436703483,
+            "spearman": 0.22205085338465594
+          },
+          "material_imbalance": {
+            "pearson": -0.027336010231625598,
+            "spearman": -0.03558907366156719
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.027336010231625598,
+            "spearman": 0.03383988973869032
+          },
+          "own_pawns": {
+            "pearson": 0.3805356732779025,
+            "spearman": 0.34292356668897794
+          },
+          "opp_pawns": {
+            "pearson": 0.41775401579956656,
+            "spearman": 0.3550535181676256
+          },
+          "total_pawns": {
+            "pearson": 0.4310814502906572,
+            "spearman": 0.38306838367700924
+          },
+          "nonpawn_material": {
+            "pearson": 0.18433543206561048,
+            "spearman": 0.18127905379070902
+          },
+          "own_knight": {
+            "pearson": 0.13804509420130212,
+            "spearman": 0.11801660687867417
+          },
+          "opp_knight": {
+            "pearson": 0.17191170462808597,
+            "spearman": 0.17982690651625927
+          },
+          "own_bishop": {
+            "pearson": 0.1506457769408806,
+            "spearman": 0.1469096721920907
+          },
+          "opp_bishop": {
+            "pearson": 0.14325817369157187,
+            "spearman": 0.14072941173671863
+          },
+          "own_rook": {
+            "pearson": 0.14684892575083702,
+            "spearman": 0.15171223051601612
+          },
+          "opp_rook": {
+            "pearson": 0.1655283096592856,
+            "spearman": 0.14529568098537834
+          },
+          "own_queen": {
+            "pearson": 0.09316162324570447,
+            "spearman": 0.041757495211192264
+          },
+          "opp_queen": {
+            "pearson": 0.06589446392221138,
+            "spearman": 0.021600267316943367
+          },
+          "queens_present": {
+            "pearson": 0.06890959618102604,
+            "spearman": 0.019656154445535676
+          },
+          "in_check": {
+            "pearson": -0.01086331790701223,
+            "spearman": -0.018485299586096123
+          },
+          "legal_count": {
+            "pearson": 0.08823718610646221,
+            "spearman": 0.0666467126910364
+          },
+          "phase_endgame": {
+            "pearson": -0.2570428516795383,
+            "spearman": -0.14145148520294593
+          },
+          "phase_opening": {
+            "pearson": 0.12131168754015215,
+            "spearman": 0.0560274579122279
+          }
+        }
+      },
+      "block2_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": -0.8248027561922734,
+            "spearman": -0.8344079890996261
+          },
+          "own_material": {
+            "pearson": -0.7769585423704696,
+            "spearman": -0.7896540538044172
+          },
+          "opp_material": {
+            "pearson": -0.7141933095356625,
+            "spearman": -0.7425555305905903
+          },
+          "material_imbalance": {
+            "pearson": -0.20990336161289344,
+            "spearman": -0.1998820584053961
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.20990336161289344,
+            "spearman": 0.18788971423111245
+          },
+          "own_pawns": {
+            "pearson": -0.7174655676446897,
+            "spearman": -0.7217981188138085
+          },
+          "opp_pawns": {
+            "pearson": -0.6451432876679932,
+            "spearman": -0.6522664588896407
+          },
+          "total_pawns": {
+            "pearson": -0.7355295808852051,
+            "spearman": -0.7583641846807737
+          },
+          "nonpawn_material": {
+            "pearson": -0.7171244485020926,
+            "spearman": -0.7382584279109611
+          },
+          "own_knight": {
+            "pearson": -0.5440023455946881,
+            "spearman": -0.4028987103617662
+          },
+          "opp_knight": {
+            "pearson": -0.5711149694050819,
+            "spearman": -0.510192247943375
+          },
+          "own_bishop": {
+            "pearson": -0.5837137303340142,
+            "spearman": -0.5243999211139718
+          },
+          "opp_bishop": {
+            "pearson": -0.5848617332293529,
+            "spearman": -0.5444587800877366
+          },
+          "own_rook": {
+            "pearson": -0.5954077117715991,
+            "spearman": -0.6010202816165453
+          },
+          "opp_rook": {
+            "pearson": -0.5404541292064108,
+            "spearman": -0.4761550666088366
+          },
+          "own_queen": {
+            "pearson": -0.37871948583924814,
+            "spearman": -0.24495071688221004
+          },
+          "opp_queen": {
+            "pearson": -0.3405040819978034,
+            "spearman": -0.1948395410394231
+          },
+          "queens_present": {
+            "pearson": -0.34456341438781324,
+            "spearman": -0.19125614066710195
+          },
+          "in_check": {
+            "pearson": 0.13947515416980427,
+            "spearman": 0.19441574333101938
+          },
+          "legal_count": {
+            "pearson": -0.5382023989370708,
+            "spearman": -0.5831597526296568
+          },
+          "phase_endgame": {
+            "pearson": 0.46899444629735426,
+            "spearman": 0.3878760132869211
+          },
+          "phase_opening": {
+            "pearson": -0.5389690629202143,
+            "spearman": -0.07180095212264591
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": 0.34980964618246346,
+            "spearman": 0.31279324485858445
+          },
+          "own_material": {
+            "pearson": 0.2863518461808667,
+            "spearman": 0.26239598984478385
+          },
+          "opp_material": {
+            "pearson": 0.3170561913728415,
+            "spearman": 0.29314473982268036
+          },
+          "material_imbalance": {
+            "pearson": -0.15469152760353072,
+            "spearman": -0.1755419493261452
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.15469152760353072,
+            "spearman": 0.17223606764080066
+          },
+          "own_pawns": {
+            "pearson": 0.3097453344281899,
+            "spearman": 0.26810221310493837
+          },
+          "opp_pawns": {
+            "pearson": 0.40268220835148366,
+            "spearman": 0.3360126944576392
+          },
+          "total_pawns": {
+            "pearson": 0.3848418573402217,
+            "spearman": 0.3299017214518302
+          },
+          "nonpawn_material": {
+            "pearson": 0.27425569968211516,
+            "spearman": 0.2582642002903948
+          },
+          "own_knight": {
+            "pearson": 0.154347292891375,
+            "spearman": 0.11044236582658146
+          },
+          "opp_knight": {
+            "pearson": 0.17077082246196687,
+            "spearman": 0.1483483458089005
+          },
+          "own_bishop": {
+            "pearson": 0.1751121356945029,
+            "spearman": 0.15037941952718814
+          },
+          "opp_bishop": {
+            "pearson": 0.19151701411362765,
+            "spearman": 0.17366151139673278
+          },
+          "own_rook": {
+            "pearson": 0.16405549874025704,
+            "spearman": 0.163928494243336
+          },
+          "opp_rook": {
+            "pearson": 0.19520094314909575,
+            "spearman": 0.15298475730219718
+          },
+          "own_queen": {
+            "pearson": 0.21286927102257697,
+            "spearman": 0.14145177949444038
+          },
+          "opp_queen": {
+            "pearson": 0.22209909422153218,
+            "spearman": 0.14478709490870686
+          },
+          "queens_present": {
+            "pearson": 0.22279314109813708,
+            "spearman": 0.14430028290776437
+          },
+          "in_check": {
+            "pearson": 0.10742325374996603,
+            "spearman": -0.028491268605755727
+          },
+          "legal_count": {
+            "pearson": 0.0826088166658874,
+            "spearman": 0.06535320407821922
+          },
+          "phase_endgame": {
+            "pearson": -0.29042920053834975,
+            "spearman": -0.20204846391125877
+          },
+          "phase_opening": {
+            "pearson": 0.12955444501613922,
+            "spearman": 0.003974726231993043
+          }
+        }
+      },
+      "tower_final_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": -0.6541302084348101,
+            "spearman": -0.6648336613677217
+          },
+          "own_material": {
+            "pearson": -0.6378768386516771,
+            "spearman": -0.6501566454453456
+          },
+          "opp_material": {
+            "pearson": -0.6342052336224799,
+            "spearman": -0.6647572272866248
+          },
+          "material_imbalance": {
+            "pearson": 0.03395380404861092,
+            "spearman": 0.029281410658247558
+          },
+          "abs_material_imbalance": {
+            "pearson": -0.03395380404861092,
+            "spearman": -0.035013730295007685
+          },
+          "own_pawns": {
+            "pearson": -0.5493688596219454,
+            "spearman": -0.5606371899895043
+          },
+          "opp_pawns": {
+            "pearson": -0.4410661998940536,
+            "spearman": -0.4516993435131653
+          },
+          "total_pawns": {
+            "pearson": -0.5345139312982081,
+            "spearman": -0.5576821493192935
+          },
+          "nonpawn_material": {
+            "pearson": -0.629330051518434,
+            "spearman": -0.6502428030764963
+          },
+          "own_knight": {
+            "pearson": -0.4316310158105561,
+            "spearman": -0.313065432555164
+          },
+          "opp_knight": {
+            "pearson": -0.5065300218873142,
+            "spearman": -0.4170570633148037
+          },
+          "own_bishop": {
+            "pearson": -0.46774148163365414,
+            "spearman": -0.38531531635009414
+          },
+          "opp_bishop": {
+            "pearson": -0.498909307954309,
+            "spearman": -0.45116189590086253
+          },
+          "own_rook": {
+            "pearson": -0.43538626618779236,
+            "spearman": -0.470893843180549
+          },
+          "opp_rook": {
+            "pearson": -0.44843501636365596,
+            "spearman": -0.4146270263784613
+          },
+          "own_queen": {
+            "pearson": -0.38629876998433105,
+            "spearman": -0.32065895174885706
+          },
+          "opp_queen": {
+            "pearson": -0.39556237594848587,
+            "spearman": -0.32440437802729705
+          },
+          "queens_present": {
+            "pearson": -0.39900764345403245,
+            "spearman": -0.32385739606954567
+          },
+          "in_check": {
+            "pearson": -0.27117585702597646,
+            "spearman": -0.046607016407908944
+          },
+          "legal_count": {
+            "pearson": -0.2379344872831728,
+            "spearman": -0.3209733716005312
+          },
+          "phase_endgame": {
+            "pearson": 0.3446262814325055,
+            "spearman": 0.24880380142469544
+          },
+          "phase_opening": {
+            "pearson": -0.4797817179423336,
+            "spearman": -0.16641049230788854
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": 0.3308568013566719,
+            "spearman": 0.30092028360825523
+          },
+          "own_material": {
+            "pearson": 0.2729571632621856,
+            "spearman": 0.250567102662408
+          },
+          "opp_material": {
+            "pearson": 0.2508447326403005,
+            "spearman": 0.2174927210186397
+          },
+          "material_imbalance": {
+            "pearson": 0.07400971083001547,
+            "spearman": 0.044703515039663785
+          },
+          "abs_material_imbalance": {
+            "pearson": -0.07400971083001547,
+            "spearman": -0.033241370254122285
+          },
+          "own_pawns": {
+            "pearson": 0.33315143336838005,
+            "spearman": 0.28738262540158566
+          },
+          "opp_pawns": {
+            "pearson": 0.3662165145793457,
+            "spearman": 0.3110828407695726
+          },
+          "total_pawns": {
+            "pearson": 0.3776640599442543,
+            "spearman": 0.32837581017095674
+          },
+          "nonpawn_material": {
+            "pearson": 0.22970568564166743,
+            "spearman": 0.2069771807327233
+          },
+          "own_knight": {
+            "pearson": 0.14008290185389435,
+            "spearman": 0.10755499327963919
+          },
+          "opp_knight": {
+            "pearson": 0.12131441085567202,
+            "spearman": 0.12253700690536672
+          },
+          "own_bishop": {
+            "pearson": 0.1601455102021212,
+            "spearman": 0.15867719610300648
+          },
+          "opp_bishop": {
+            "pearson": 0.16159433399208828,
+            "spearman": 0.15340989438638694
+          },
+          "own_rook": {
+            "pearson": 0.25200288535122667,
+            "spearman": 0.19859039941823703
+          },
+          "opp_rook": {
+            "pearson": 0.23267797636359264,
+            "spearman": 0.16644452539589596
+          },
+          "own_queen": {
+            "pearson": 0.11175361759067055,
+            "spearman": 0.03538805618114291
+          },
+          "opp_queen": {
+            "pearson": 0.09012445218436517,
+            "spearman": 0.0035974757488111794
+          },
+          "queens_present": {
+            "pearson": 0.09091545886914197,
+            "spearman": -0.0006093968211772815
+          },
+          "in_check": {
+            "pearson": -0.31564610636984214,
+            "spearman": -0.1928394604816457
+          },
+          "legal_count": {
+            "pearson": 0.3324722545172662,
+            "spearman": 0.26361699513230896
+          },
+          "phase_endgame": {
+            "pearson": -0.3303743479441527,
+            "spearman": -0.24101808072108868
+          },
+          "phase_opening": {
+            "pearson": 0.033664665915605074,
+            "spearman": -0.085679768768641
+          }
+        }
+      }
+    },
+    "25": {
+      "block0_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": 0.10758988499120914,
+            "spearman": 0.06819251154515957
+          },
+          "own_material": {
+            "pearson": 0.2248021883202641,
+            "spearman": 0.18649392498297943
+          },
+          "opp_material": {
+            "pearson": 0.2899384668264756,
+            "spearman": 0.25659924808860596
+          },
+          "material_imbalance": {
+            "pearson": -0.2983000477668037,
+            "spearman": -0.30202901367782625
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.2983000477668037,
+            "spearman": 0.2986453836021963
+          },
+          "own_pawns": {
+            "pearson": -0.06296872387470624,
+            "spearman": -0.09373382992817646
+          },
+          "opp_pawns": {
+            "pearson": -0.0978376633273135,
+            "spearman": -0.1265610791445913
+          },
+          "total_pawns": {
+            "pearson": -0.0868944402971164,
+            "spearman": -0.11949414697782754
+          },
+          "nonpawn_material": {
+            "pearson": 0.31142676414367126,
+            "spearman": 0.2745444452928122
+          },
+          "own_knight": {
+            "pearson": -0.03844161500387997,
+            "spearman": -0.1172206923985436
+          },
+          "opp_knight": {
+            "pearson": 0.23906823412137096,
+            "spearman": 0.16347199691759906
+          },
+          "own_bishop": {
+            "pearson": 0.2458222050632899,
+            "spearman": 0.17771474813998225
+          },
+          "opp_bishop": {
+            "pearson": 0.13849901391861408,
+            "spearman": 0.09301435025221763
+          },
+          "own_rook": {
+            "pearson": 0.06866207259596567,
+            "spearman": 0.052049127995321146
+          },
+          "opp_rook": {
+            "pearson": 0.15581841864704193,
+            "spearman": 0.11854146852831994
+          },
+          "own_queen": {
+            "pearson": 0.36278900466112285,
+            "spearman": 0.33387742443753443
+          },
+          "opp_queen": {
+            "pearson": 0.39231899030235406,
+            "spearman": 0.34257844146061384
+          },
+          "queens_present": {
+            "pearson": 0.3907009687830123,
+            "spearman": 0.34594739142809156
+          },
+          "in_check": {
+            "pearson": 0.10333957557245636,
+            "spearman": 0.004339399067879534
+          },
+          "legal_count": {
+            "pearson": 0.15195090309193685,
+            "spearman": 0.17093357614767773
+          },
+          "phase_endgame": {
+            "pearson": -0.04569464910112982,
+            "spearman": -0.05011514926001229
+          },
+          "phase_opening": {
+            "pearson": 0.14140034504481983,
+            "spearman": 0.02118876248482707
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": 0.6054176067699439,
+            "spearman": 0.5243532145712415
+          },
+          "own_material": {
+            "pearson": 0.6328391306194666,
+            "spearman": 0.521212739408315
+          },
+          "opp_material": {
+            "pearson": 0.6561965752734492,
+            "spearman": 0.5429511398256054
+          },
+          "material_imbalance": {
+            "pearson": -0.15006386321000226,
+            "spearman": -0.10948383842400555
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.15006386321000226,
+            "spearman": 0.12013714689845681
+          },
+          "own_pawns": {
+            "pearson": 0.4475860745098716,
+            "spearman": 0.36388391715625973
+          },
+          "opp_pawns": {
+            "pearson": 0.4062251016063026,
+            "spearman": 0.3047391840605864
+          },
+          "total_pawns": {
+            "pearson": 0.4608914679028691,
+            "spearman": 0.3628463911668531
+          },
+          "nonpawn_material": {
+            "pearson": 0.6528862983538566,
+            "spearman": 0.542585187508639
+          },
+          "own_knight": {
+            "pearson": 0.34334328463651026,
+            "spearman": 0.2695350034226209
+          },
+          "opp_knight": {
+            "pearson": 0.2292089913130361,
+            "spearman": 0.20066474073491164
+          },
+          "own_bishop": {
+            "pearson": 0.425742195760069,
+            "spearman": 0.40369506194068894
+          },
+          "opp_bishop": {
+            "pearson": 0.7402005772535124,
+            "spearman": 0.7614788942738728
+          },
+          "own_rook": {
+            "pearson": 0.3951959240290701,
+            "spearman": 0.33695940199544117
+          },
+          "opp_rook": {
+            "pearson": 0.3520686894307315,
+            "spearman": 0.26656462826145066
+          },
+          "own_queen": {
+            "pearson": 0.514950259051002,
+            "spearman": 0.2711276582549589
+          },
+          "opp_queen": {
+            "pearson": 0.5567149515769242,
+            "spearman": 0.266552332613376
+          },
+          "queens_present": {
+            "pearson": 0.5619685391322118,
+            "spearman": 0.2678734554575789
+          },
+          "in_check": {
+            "pearson": -0.006575079445540567,
+            "spearman": -0.0636956438713886
+          },
+          "legal_count": {
+            "pearson": 0.48603747087303717,
+            "spearman": 0.367490271060025
+          },
+          "phase_endgame": {
+            "pearson": -0.5421108611801002,
+            "spearman": -0.2891769143767465
+          },
+          "phase_opening": {
+            "pearson": 0.19332666318373873,
+            "spearman": 0.04447072263422288
+          }
+        }
+      },
+      "block1_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": -0.5432945225933997,
+            "spearman": -0.5156172262704395
+          },
+          "own_material": {
+            "pearson": -0.6390590823248724,
+            "spearman": -0.5958762826130486
+          },
+          "opp_material": {
+            "pearson": -0.6460198299403045,
+            "spearman": -0.5872793135409143
+          },
+          "material_imbalance": {
+            "pearson": 0.07987465031570437,
+            "spearman": 0.0353160009212794
+          },
+          "abs_material_imbalance": {
+            "pearson": -0.07987465031570437,
+            "spearman": -0.05371870630996768
+          },
+          "own_pawns": {
+            "pearson": -0.4047413162258326,
+            "spearman": -0.3833574995216829
+          },
+          "opp_pawns": {
+            "pearson": -0.32173276319552957,
+            "spearman": -0.29197297123756055
+          },
+          "total_pawns": {
+            "pearson": -0.3920529905889462,
+            "spearman": -0.3650550876379041
+          },
+          "nonpawn_material": {
+            "pearson": -0.6633445599370892,
+            "spearman": -0.6107015467308976
+          },
+          "own_knight": {
+            "pearson": -0.27964893181417977,
+            "spearman": -0.18947775680952889
+          },
+          "opp_knight": {
+            "pearson": -0.1318238926145198,
+            "spearman": -0.10998368867097066
+          },
+          "own_bishop": {
+            "pearson": -0.44126400804819915,
+            "spearman": -0.40719766097987875
+          },
+          "opp_bishop": {
+            "pearson": -0.470503881424929,
+            "spearman": -0.44094742738299225
+          },
+          "own_rook": {
+            "pearson": -0.3629840309410062,
+            "spearman": -0.3141076194855373
+          },
+          "opp_rook": {
+            "pearson": -0.43129492142839687,
+            "spearman": -0.32689619713650586
+          },
+          "own_queen": {
+            "pearson": -0.5969935463715608,
+            "spearman": -0.46663795830240695
+          },
+          "opp_queen": {
+            "pearson": -0.6977336600196606,
+            "spearman": -0.5291918295083519
+          },
+          "queens_present": {
+            "pearson": -0.697651001525343,
+            "spearman": -0.5236311337537524
+          },
+          "in_check": {
+            "pearson": -0.041449167847443395,
+            "spearman": 0.07025132036885781
+          },
+          "legal_count": {
+            "pearson": -0.43887890694289544,
+            "spearman": -0.3821171968105594
+          },
+          "phase_endgame": {
+            "pearson": 0.5063246957769778,
+            "spearman": 0.3559097093786289
+          },
+          "phase_opening": {
+            "pearson": -0.16487235275170398,
+            "spearman": -2.2783608836750237e-05
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": 0.7327312892820944,
+            "spearman": 0.7358345935113254
+          },
+          "own_material": {
+            "pearson": 0.7455105744493887,
+            "spearman": 0.7427901909395874
+          },
+          "opp_material": {
+            "pearson": 0.7452017756046043,
+            "spearman": 0.7430816430393438
+          },
+          "material_imbalance": {
+            "pearson": -0.05684816246163309,
+            "spearman": -0.03572379059443106
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.05684816246163309,
+            "spearman": 0.05483182797509566
+          },
+          "own_pawns": {
+            "pearson": 0.5637809959747744,
+            "spearman": 0.5603842263244183
+          },
+          "opp_pawns": {
+            "pearson": 0.5363473074737345,
+            "spearman": 0.5292558900903072
+          },
+          "total_pawns": {
+            "pearson": 0.5939094406746827,
+            "spearman": 0.5926667388512364
+          },
+          "nonpawn_material": {
+            "pearson": 0.7435555374042251,
+            "spearman": 0.7414092170146176
+          },
+          "own_knight": {
+            "pearson": 0.4577646173214662,
+            "spearman": 0.3583728214492155
+          },
+          "opp_knight": {
+            "pearson": 0.3411257209128022,
+            "spearman": 0.312380098043826
+          },
+          "own_bishop": {
+            "pearson": 0.5460361872448704,
+            "spearman": 0.5091696125974364
+          },
+          "opp_bishop": {
+            "pearson": 0.67761159328682,
+            "spearman": 0.6536114999677503
+          },
+          "own_rook": {
+            "pearson": 0.47167446674046043,
+            "spearman": 0.46155602768893467
+          },
+          "opp_rook": {
+            "pearson": 0.49296469976595847,
+            "spearman": 0.4263289786013411
+          },
+          "own_queen": {
+            "pearson": 0.5379241089085468,
+            "spearman": 0.41700935001075273
+          },
+          "opp_queen": {
+            "pearson": 0.5683413305237497,
+            "spearman": 0.4154110513376002
+          },
+          "queens_present": {
+            "pearson": 0.5728912338257703,
+            "spearman": 0.4139755963683065
+          },
+          "in_check": {
+            "pearson": 0.012597978629516254,
+            "spearman": -0.09166720623120131
+          },
+          "legal_count": {
+            "pearson": 0.4968209385903241,
+            "spearman": 0.4975124034073281
+          },
+          "phase_endgame": {
+            "pearson": -0.5519346581481244,
+            "spearman": -0.395136579857075
+          },
+          "phase_opening": {
+            "pearson": 0.3279116251635824,
+            "spearman": 0.0677935577270789
+          }
+        }
+      },
+      "block2_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": 0.13233366933013727,
+            "spearman": 0.13822752007329203
+          },
+          "own_material": {
+            "pearson": 0.1442617260723799,
+            "spearman": 0.15790735594569635
+          },
+          "opp_material": {
+            "pearson": 0.06509276036724876,
+            "spearman": 0.09397013346494068
+          },
+          "material_imbalance": {
+            "pearson": 0.3299835641605969,
+            "spearman": 0.2654515012937732
+          },
+          "abs_material_imbalance": {
+            "pearson": -0.3299835641605969,
+            "spearman": -0.25922628498057676
+          },
+          "own_pawns": {
+            "pearson": 0.014472613554140751,
+            "spearman": 0.03508052916170391
+          },
+          "opp_pawns": {
+            "pearson": 0.15683349674318425,
+            "spearman": 0.18934506834285458
+          },
+          "total_pawns": {
+            "pearson": 0.09279101538784126,
+            "spearman": 0.1279589157793745
+          },
+          "nonpawn_material": {
+            "pearson": 0.10226404168784838,
+            "spearman": 0.12213600702627328
+          },
+          "own_knight": {
+            "pearson": 0.14148778542640386,
+            "spearman": 0.12976121570162935
+          },
+          "opp_knight": {
+            "pearson": 0.08139764522629664,
+            "spearman": 0.06282908641723553
+          },
+          "own_bishop": {
+            "pearson": 0.16697473645991048,
+            "spearman": 0.15088696148366787
+          },
+          "opp_bishop": {
+            "pearson": 0.13651580192136598,
+            "spearman": 0.12213101551955353
+          },
+          "own_rook": {
+            "pearson": 0.19166306429442023,
+            "spearman": 0.2083803360656298
+          },
+          "opp_rook": {
+            "pearson": 0.0681749392615319,
+            "spearman": -0.01224967955036627
+          },
+          "own_queen": {
+            "pearson": -0.003023597290603784,
+            "spearman": -0.08773399606910197
+          },
+          "opp_queen": {
+            "pearson": -0.08671159218714838,
+            "spearman": -0.16758397277289327
+          },
+          "queens_present": {
+            "pearson": -0.07913260942756856,
+            "spearman": -0.16853376000731324
+          },
+          "in_check": {
+            "pearson": 0.049926836783965645,
+            "spearman": -0.05339253179077542
+          },
+          "legal_count": {
+            "pearson": -0.055695054835067696,
+            "spearman": -0.05484734998348562
+          },
+          "phase_endgame": {
+            "pearson": 0.03284327438809567,
+            "spearman": 0.007772293804812023
+          },
+          "phase_opening": {
+            "pearson": 0.2172082597106887,
+            "spearman": 0.056754323919058075
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": -0.06671807991637883,
+            "spearman": -0.03756411847314144
+          },
+          "own_material": {
+            "pearson": -0.09259781722042042,
+            "spearman": -0.05853922979194216
+          },
+          "opp_material": {
+            "pearson": -0.0671091863663024,
+            "spearman": -0.023769337594929656
+          },
+          "material_imbalance": {
+            "pearson": -0.10263726248005108,
+            "spearman": -0.08074141492508859
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.10263726248005108,
+            "spearman": 0.06990673792873743
+          },
+          "own_pawns": {
+            "pearson": 0.025135885403294693,
+            "spearman": 0.039237009555556854
+          },
+          "opp_pawns": {
+            "pearson": -0.11352627225136282,
+            "spearman": -0.08745000140258458
+          },
+          "total_pawns": {
+            "pearson": -0.04801635729639304,
+            "spearman": -0.025140462757371
+          },
+          "nonpawn_material": {
+            "pearson": -0.0824327939389105,
+            "spearman": -0.04346730372749088
+          },
+          "own_knight": {
+            "pearson": -0.021657599907499523,
+            "spearman": -0.015236792690925345
+          },
+          "opp_knight": {
+            "pearson": 0.017371526467858143,
+            "spearman": -0.0061470821624385235
+          },
+          "own_bishop": {
+            "pearson": -0.03690490334260212,
+            "spearman": -0.04996209948550001
+          },
+          "opp_bishop": {
+            "pearson": -0.027262308735625553,
+            "spearman": -0.03732726383277189
+          },
+          "own_rook": {
+            "pearson": -0.14853847587629654,
+            "spearman": -0.1063656815712016
+          },
+          "opp_rook": {
+            "pearson": -0.0844327577526303,
+            "spearman": -0.013734202504582828
+          },
+          "own_queen": {
+            "pearson": -0.059483323172323535,
+            "spearman": -0.0020976600009558807
+          },
+          "opp_queen": {
+            "pearson": -0.03316596039417044,
+            "spearman": 0.03376270257505913
+          },
+          "queens_present": {
+            "pearson": -0.03546611963873316,
+            "spearman": 0.03545535927208683
+          },
+          "in_check": {
+            "pearson": 0.1085716388069013,
+            "spearman": 0.08477644789556377
+          },
+          "legal_count": {
+            "pearson": -0.16207908069556007,
+            "spearman": -0.11209553937886708
+          },
+          "phase_endgame": {
+            "pearson": 0.11229752311262915,
+            "spearman": 0.086176240930069
+          },
+          "phase_opening": {
+            "pearson": 0.03315150610624919,
+            "spearman": 0.05961518263413801
+          }
+        }
+      },
+      "tower_final_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": 0.4764261031830756,
+            "spearman": 0.46579651167373676
+          },
+          "own_material": {
+            "pearson": 0.510040978516075,
+            "spearman": 0.49348963463116824
+          },
+          "opp_material": {
+            "pearson": 0.5131628999565508,
+            "spearman": 0.5002841818224104
+          },
+          "material_imbalance": {
+            "pearson": -0.05325968230364713,
+            "spearman": -0.03145198830642749
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.05325968230364713,
+            "spearman": 0.042222289821693536
+          },
+          "own_pawns": {
+            "pearson": 0.3793235330342285,
+            "spearman": 0.37465584486703213
+          },
+          "opp_pawns": {
+            "pearson": 0.340391906392147,
+            "spearman": 0.33103955203329527
+          },
+          "total_pawns": {
+            "pearson": 0.38849731623455364,
+            "spearman": 0.3841874715538558
+          },
+          "nonpawn_material": {
+            "pearson": 0.5139480313743517,
+            "spearman": 0.4986769602841709
+          },
+          "own_knight": {
+            "pearson": 0.37517673955228387,
+            "spearman": 0.2831261109662089
+          },
+          "opp_knight": {
+            "pearson": 0.28920386753766103,
+            "spearman": 0.27544492785578384
+          },
+          "own_bishop": {
+            "pearson": 0.18072538895665002,
+            "spearman": 0.186276856926395
+          },
+          "opp_bishop": {
+            "pearson": 0.3050237899489311,
+            "spearman": 0.2940402334096945
+          },
+          "own_rook": {
+            "pearson": 0.32771083843520465,
+            "spearman": 0.3010584923904444
+          },
+          "opp_rook": {
+            "pearson": 0.3643786873963836,
+            "spearman": 0.3338583670748112
+          },
+          "own_queen": {
+            "pearson": 0.435235850965996,
+            "spearman": 0.3900188364271799
+          },
+          "opp_queen": {
+            "pearson": 0.44235268733197636,
+            "spearman": 0.37917361904713454
+          },
+          "queens_present": {
+            "pearson": 0.4430097653849506,
+            "spearman": 0.3768992820754172
+          },
+          "in_check": {
+            "pearson": -0.35681820299423767,
+            "spearman": -0.18918727905323393
+          },
+          "legal_count": {
+            "pearson": 0.5916131282141325,
+            "spearman": 0.5531703849764302
+          },
+          "phase_endgame": {
+            "pearson": -0.38532785654649654,
+            "spearman": -0.30104336867582565
+          },
+          "phase_opening": {
+            "pearson": 0.25877212002205735,
+            "spearman": 0.0531096006469602
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": 0.15221662209782855,
+            "spearman": 0.1715281994635249
+          },
+          "own_material": {
+            "pearson": 0.12211805865187145,
+            "spearman": 0.14318284773917134
+          },
+          "opp_material": {
+            "pearson": 0.11813658701249953,
+            "spearman": 0.1463996392424943
+          },
+          "material_imbalance": {
+            "pearson": 0.007631303827912461,
+            "spearman": 0.009359608005753969
+          },
+          "abs_material_imbalance": {
+            "pearson": -0.007631303827912461,
+            "spearman": 0.001614128952485562
+          },
+          "own_pawns": {
+            "pearson": 0.07785005694898695,
+            "spearman": 0.08634185834934018
+          },
+          "opp_pawns": {
+            "pearson": 0.10248053884972046,
+            "spearman": 0.12244561650149627
+          },
+          "total_pawns": {
+            "pearson": 0.0974140198037891,
+            "spearman": 0.11202488290744597
+          },
+          "nonpawn_material": {
+            "pearson": 0.11950109149814102,
+            "spearman": 0.14448388163375794
+          },
+          "own_knight": {
+            "pearson": 0.3106659798044702,
+            "spearman": 0.27128875910722355
+          },
+          "opp_knight": {
+            "pearson": 0.13970376680427107,
+            "spearman": 0.1346121100176286
+          },
+          "own_bishop": {
+            "pearson": 0.14429011904947472,
+            "spearman": 0.15812886392334521
+          },
+          "opp_bishop": {
+            "pearson": 0.17692844978165717,
+            "spearman": 0.17684229714314048
+          },
+          "own_rook": {
+            "pearson": 0.04887451556480078,
+            "spearman": 0.08741592541213163
+          },
+          "opp_rook": {
+            "pearson": 0.0949656960101889,
+            "spearman": 0.08891635842494792
+          },
+          "own_queen": {
+            "pearson": -0.02477330126566208,
+            "spearman": -0.0324315875584677
+          },
+          "opp_queen": {
+            "pearson": -0.014233918456586555,
+            "spearman": -0.01972581488124759
+          },
+          "queens_present": {
+            "pearson": -0.015165727715135127,
+            "spearman": -0.021460498380091026
+          },
+          "in_check": {
+            "pearson": 0.10221299615587721,
+            "spearman": 0.07293791212190123
+          },
+          "legal_count": {
+            "pearson": 0.0018514798447403968,
+            "spearman": 0.00693168449690496
+          },
+          "phase_endgame": {
+            "pearson": -0.06964798345864114,
+            "spearman": -0.03251495641014519
+          },
+          "phase_opening": {
+            "pearson": 0.08429441654650788,
+            "spearman": 0.07308165809135356
+          }
+        }
+      }
+    },
+    "48": {
+      "block0_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": 0.7673793881852273,
+            "spearman": 0.8627739615952033
+          },
+          "own_material": {
+            "pearson": 0.7840416907992259,
+            "spearman": 0.9111145719485562
+          },
+          "opp_material": {
+            "pearson": 0.7650104915967771,
+            "spearman": 0.8981951049618393
+          },
+          "material_imbalance": {
+            "pearson": 0.02084397664233072,
+            "spearman": -0.016266769898627558
+          },
+          "abs_material_imbalance": {
+            "pearson": -0.02084397664233072,
+            "spearman": 0.03041791536132511
+          },
+          "own_pawns": {
+            "pearson": 0.5620691558231079,
+            "spearman": 0.6112711057390822
+          },
+          "opp_pawns": {
+            "pearson": 0.5719465187560215,
+            "spearman": 0.6247256012909403
+          },
+          "total_pawns": {
+            "pearson": 0.6122845218293773,
+            "spearman": 0.6764313412454048
+          },
+          "nonpawn_material": {
+            "pearson": 0.7734629851928788,
+            "spearman": 0.9097433932785703
+          },
+          "own_knight": {
+            "pearson": 0.5133114456435023,
+            "spearman": 0.40294829426064804
+          },
+          "opp_knight": {
+            "pearson": 0.5091440379828167,
+            "spearman": 0.4494030691712984
+          },
+          "own_bishop": {
+            "pearson": 0.5252309254500295,
+            "spearman": 0.47722038988809745
+          },
+          "opp_bishop": {
+            "pearson": 0.6027679486509666,
+            "spearman": 0.6326940253127585
+          },
+          "own_rook": {
+            "pearson": 0.559464750041907,
+            "spearman": 0.6465626728740335
+          },
+          "opp_rook": {
+            "pearson": 0.5396412045547604,
+            "spearman": 0.5707272380409303
+          },
+          "own_queen": {
+            "pearson": 0.5325432826538864,
+            "spearman": 0.5215887915153211
+          },
+          "opp_queen": {
+            "pearson": 0.5141145860537691,
+            "spearman": 0.46857717306427266
+          },
+          "queens_present": {
+            "pearson": 0.5170231307010777,
+            "spearman": 0.4649854216586177
+          },
+          "in_check": {
+            "pearson": 0.028439323466288625,
+            "spearman": -0.15743769407684993
+          },
+          "legal_count": {
+            "pearson": 0.4506544013068191,
+            "spearman": 0.6391013393689168
+          },
+          "phase_endgame": {
+            "pearson": -0.4709843214286636,
+            "spearman": -0.47293886814746455
+          },
+          "phase_opening": {
+            "pearson": 0.5281821842200689,
+            "spearman": 0.04612436594418478
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": 0.47482171180020094,
+            "spearman": 0.4375233739241926
+          },
+          "own_material": {
+            "pearson": 0.3940257855338583,
+            "spearman": 0.3701884808194259
+          },
+          "opp_material": {
+            "pearson": 0.38879595270805045,
+            "spearman": 0.3724731866855678
+          },
+          "material_imbalance": {
+            "pearson": -0.008207398384475336,
+            "spearman": -0.0019892944491211925
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.008207398384475336,
+            "spearman": 0.007417652548897499
+          },
+          "own_pawns": {
+            "pearson": 0.43127530360802174,
+            "spearman": 0.3982975246685657
+          },
+          "opp_pawns": {
+            "pearson": 0.5135819122196712,
+            "spearman": 0.4721538628192399
+          },
+          "total_pawns": {
+            "pearson": 0.5103098698059273,
+            "spearman": 0.4725281002492092
+          },
+          "nonpawn_material": {
+            "pearson": 0.35351051572974296,
+            "spearman": 0.3392140457805513
+          },
+          "own_knight": {
+            "pearson": 0.23834036528041885,
+            "spearman": 0.1531690947697391
+          },
+          "opp_knight": {
+            "pearson": 0.29012363421314846,
+            "spearman": 0.2547879532347966
+          },
+          "own_bishop": {
+            "pearson": 0.2894305814070589,
+            "spearman": 0.2542857967403582
+          },
+          "opp_bishop": {
+            "pearson": 0.23882021570233034,
+            "spearman": 0.20042791959701364
+          },
+          "own_rook": {
+            "pearson": 0.27712209859218007,
+            "spearman": 0.2707849547250311
+          },
+          "opp_rook": {
+            "pearson": 0.2633101514166452,
+            "spearman": 0.21119729593791314
+          },
+          "own_queen": {
+            "pearson": 0.2086416675473387,
+            "spearman": 0.11887380882791014
+          },
+          "opp_queen": {
+            "pearson": 0.19943424266299722,
+            "spearman": 0.09747283373462003
+          },
+          "queens_present": {
+            "pearson": 0.20130334701014532,
+            "spearman": 0.09400746473870596
+          },
+          "in_check": {
+            "pearson": -0.008118214321231271,
+            "spearman": -0.11503658818774172
+          },
+          "legal_count": {
+            "pearson": 0.20590745785807502,
+            "spearman": 0.19788499861363035
+          },
+          "phase_endgame": {
+            "pearson": -0.3405560220466029,
+            "spearman": -0.266558864028661
+          },
+          "phase_opening": {
+            "pearson": 0.2577899233529224,
+            "spearman": 0.02869143333981847
+          }
+        }
+      },
+      "block1_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": 0.3610826163514534,
+            "spearman": 0.3506604212660785
+          },
+          "own_material": {
+            "pearson": 0.48569814070148415,
+            "spearman": 0.46003160172446955
+          },
+          "opp_material": {
+            "pearson": 0.5386057369730105,
+            "spearman": 0.5087718420914705
+          },
+          "material_imbalance": {
+            "pearson": -0.26595096656132444,
+            "spearman": -0.25430729532454077
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.26595096656132444,
+            "spearman": 0.26321554513907475
+          },
+          "own_pawns": {
+            "pearson": 0.09556990597870506,
+            "spearman": 0.10473345284821844
+          },
+          "opp_pawns": {
+            "pearson": 0.11007809338680834,
+            "spearman": 0.0990907976354828
+          },
+          "total_pawns": {
+            "pearson": 0.11106163494645536,
+            "spearman": 0.10703901448493454
+          },
+          "nonpawn_material": {
+            "pearson": 0.5664705833652607,
+            "spearman": 0.5355066669815899
+          },
+          "own_knight": {
+            "pearson": 0.2421049042720581,
+            "spearman": 0.14303273907191646
+          },
+          "opp_knight": {
+            "pearson": 0.2735362337535771,
+            "spearman": 0.2412553066604322
+          },
+          "own_bishop": {
+            "pearson": 0.3156077861432293,
+            "spearman": 0.29151328563345436
+          },
+          "opp_bishop": {
+            "pearson": 0.42649529158374894,
+            "spearman": 0.40083086780149246
+          },
+          "own_rook": {
+            "pearson": 0.3200735280285389,
+            "spearman": 0.2731278132894535
+          },
+          "opp_rook": {
+            "pearson": 0.3676248921327214,
+            "spearman": 0.333028557372959
+          },
+          "own_queen": {
+            "pearson": 0.4951016145187033,
+            "spearman": 0.466560667377524
+          },
+          "opp_queen": {
+            "pearson": 0.5363934497260707,
+            "spearman": 0.48793503174691183
+          },
+          "queens_present": {
+            "pearson": 0.5437834309051431,
+            "spearman": 0.4922348747599944
+          },
+          "in_check": {
+            "pearson": 0.045894686559378325,
+            "spearman": -0.023624813235320574
+          },
+          "legal_count": {
+            "pearson": 0.4323602429729206,
+            "spearman": 0.43237027285354007
+          },
+          "phase_endgame": {
+            "pearson": -0.32730600801374876,
+            "spearman": -0.2556037507087023
+          },
+          "phase_opening": {
+            "pearson": 0.1324493867895341,
+            "spearman": 0.01462339545772551
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": -0.006643413728392149,
+            "spearman": -0.02084129678344325
+          },
+          "own_material": {
+            "pearson": -0.09349036225897729,
+            "spearman": -0.09597156195489076
+          },
+          "opp_material": {
+            "pearson": -0.10074019262445116,
+            "spearman": -0.1050347631104773
+          },
+          "material_imbalance": {
+            "pearson": 0.038544842344834976,
+            "spearman": 0.05011513865491339
+          },
+          "abs_material_imbalance": {
+            "pearson": -0.038544842344834976,
+            "spearman": -0.04521384734227912
+          },
+          "own_pawns": {
+            "pearson": 0.07377862819122934,
+            "spearman": 0.05963382663902915
+          },
+          "opp_pawns": {
+            "pearson": 0.1793291515012178,
+            "spearman": 0.16614575625994854
+          },
+          "total_pawns": {
+            "pearson": 0.13687837865852487,
+            "spearman": 0.11739530884679385
+          },
+          "nonpawn_material": {
+            "pearson": -0.13679355322374642,
+            "spearman": -0.13686988736843866
+          },
+          "own_knight": {
+            "pearson": -0.09858180375206148,
+            "spearman": -0.07020159884471523
+          },
+          "opp_knight": {
+            "pearson": -0.07117866815891624,
+            "spearman": -0.0564506936709024
+          },
+          "own_bishop": {
+            "pearson": -0.018443408797059163,
+            "spearman": -0.0012221467818067557
+          },
+          "opp_bishop": {
+            "pearson": -0.16135029438352405,
+            "spearman": -0.14352578229153765
+          },
+          "own_rook": {
+            "pearson": -0.06563908114624527,
+            "spearman": -0.05670226770649516
+          },
+          "opp_rook": {
+            "pearson": -0.07441504824965593,
+            "spearman": -0.097221720177242
+          },
+          "own_queen": {
+            "pearson": -0.12473772443115667,
+            "spearman": -0.13086675568514375
+          },
+          "opp_queen": {
+            "pearson": -0.12286055259354878,
+            "spearman": -0.12184687635856362
+          },
+          "queens_present": {
+            "pearson": -0.12780713383159095,
+            "spearman": -0.12815080805424528
+          },
+          "in_check": {
+            "pearson": -0.01499836430995039,
+            "spearman": -0.02529795667088481
+          },
+          "legal_count": {
+            "pearson": -0.10524765962167601,
+            "spearman": -0.12000961540214762
+          },
+          "phase_endgame": {
+            "pearson": -0.03204054373009061,
+            "spearman": -0.016612214003033563
+          },
+          "phase_opening": {
+            "pearson": 0.0056527967215021626,
+            "spearman": 0.006180167419731726
+          }
+        }
+      },
+      "block2_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": 0.12453398183528909,
+            "spearman": 0.17743471423687898
+          },
+          "own_material": {
+            "pearson": 0.06667550066975966,
+            "spearman": 0.1292598050589761
+          },
+          "opp_material": {
+            "pearson": 0.13911740218045174,
+            "spearman": 0.2120339925668886
+          },
+          "material_imbalance": {
+            "pearson": -0.3174493364064729,
+            "spearman": -0.24294681764524123
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.3174493364064729,
+            "spearman": 0.23717589906385983
+          },
+          "own_pawns": {
+            "pearson": 0.08188720343811737,
+            "spearman": 0.133507598608195
+          },
+          "opp_pawns": {
+            "pearson": 0.040442877125092744,
+            "spearman": 0.08699735529441069
+          },
+          "total_pawns": {
+            "pearson": 0.06595914160746509,
+            "spearman": 0.12353702049073943
+          },
+          "nonpawn_material": {
+            "pearson": 0.1060105111973642,
+            "spearman": 0.17131552191788507
+          },
+          "own_knight": {
+            "pearson": 0.10535821607844365,
+            "spearman": 0.07261688083465048
+          },
+          "opp_knight": {
+            "pearson": 0.19888439995904453,
+            "spearman": 0.13744380085433397
+          },
+          "own_bishop": {
+            "pearson": 0.10782583291225514,
+            "spearman": 0.06528486084399568
+          },
+          "opp_bishop": {
+            "pearson": 0.2054119106318829,
+            "spearman": 0.19022221655492164
+          },
+          "own_rook": {
+            "pearson": 0.11704238316045838,
+            "spearman": 0.1533496996040057
+          },
+          "opp_rook": {
+            "pearson": 0.09484924248077767,
+            "spearman": 0.08706748946471098
+          },
+          "own_queen": {
+            "pearson": -0.09121366256145845,
+            "spearman": -0.09394762390150051
+          },
+          "opp_queen": {
+            "pearson": 0.014820541737830388,
+            "spearman": -0.0044257309600871835
+          },
+          "queens_present": {
+            "pearson": 0.016316619378773364,
+            "spearman": -0.0007112965165201465
+          },
+          "in_check": {
+            "pearson": 0.07753272534638639,
+            "spearman": -0.05031536412726982
+          },
+          "legal_count": {
+            "pearson": -0.09615621638386368,
+            "spearman": -0.0520907891622498
+          },
+          "phase_endgame": {
+            "pearson": 0.05272933736358586,
+            "spearman": 0.001048652545840097
+          },
+          "phase_opening": {
+            "pearson": 0.22100761191722573,
+            "spearman": 0.04816549353725453
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": 0.15789419251391965,
+            "spearman": 0.1442860518291405
+          },
+          "own_material": {
+            "pearson": 0.16579709109371749,
+            "spearman": 0.1592378922613228
+          },
+          "opp_material": {
+            "pearson": 0.13279962556624939,
+            "spearman": 0.1299979882729949
+          },
+          "material_imbalance": {
+            "pearson": 0.1292901355285368,
+            "spearman": 0.11372146963720353
+          },
+          "abs_material_imbalance": {
+            "pearson": -0.1292901355285368,
+            "spearman": -0.1195742390949699
+          },
+          "own_pawns": {
+            "pearson": 0.1326671954333972,
+            "spearman": 0.11560598920405511
+          },
+          "opp_pawns": {
+            "pearson": 0.12998339815736712,
+            "spearman": 0.12353120455809272
+          },
+          "total_pawns": {
+            "pearson": 0.14180134761645438,
+            "spearman": 0.13004473494638355
+          },
+          "nonpawn_material": {
+            "pearson": 0.14451497591328327,
+            "spearman": 0.14338359093317404
+          },
+          "own_knight": {
+            "pearson": 0.1313836628877703,
+            "spearman": 0.11391469008019907
+          },
+          "opp_knight": {
+            "pearson": 0.1167939206564892,
+            "spearman": 0.10678114849236942
+          },
+          "own_bishop": {
+            "pearson": 0.15450137260556326,
+            "spearman": 0.1413905199842321
+          },
+          "opp_bishop": {
+            "pearson": 0.0935963592142182,
+            "spearman": 0.08636435610255659
+          },
+          "own_rook": {
+            "pearson": 0.022037127440336337,
+            "spearman": 0.049802645556889506
+          },
+          "opp_rook": {
+            "pearson": 0.05854808093482276,
+            "spearman": 0.047926289626453664
+          },
+          "own_queen": {
+            "pearson": 0.15726025337190508,
+            "spearman": 0.1317522672228183
+          },
+          "opp_queen": {
+            "pearson": 0.0982048336075245,
+            "spearman": 0.07550350813237004
+          },
+          "queens_present": {
+            "pearson": 0.09490851901935149,
+            "spearman": 0.07214779863086895
+          },
+          "in_check": {
+            "pearson": 0.10846764618351615,
+            "spearman": 0.0488816805710299
+          },
+          "legal_count": {
+            "pearson": 0.037285667396722476,
+            "spearman": 0.058722698243936736
+          },
+          "phase_endgame": {
+            "pearson": -0.09247540178466004,
+            "spearman": -0.05440188051445483
+          },
+          "phase_opening": {
+            "pearson": 0.12209306243687706,
+            "spearman": 0.08830198516111182
+          }
+        }
+      },
+      "tower_final_in": {
+        "mean": {
+          "piece_total": {
+            "pearson": 0.6739765369165855,
+            "spearman": 0.6487715311933552
+          },
+          "own_material": {
+            "pearson": 0.7091501932877953,
+            "spearman": 0.6758625478530533
+          },
+          "opp_material": {
+            "pearson": 0.6941241592990464,
+            "spearman": 0.6480607756573915
+          },
+          "material_imbalance": {
+            "pearson": 0.009425015342534869,
+            "spearman": 0.018103838637625994
+          },
+          "abs_material_imbalance": {
+            "pearson": -0.009425015342534869,
+            "spearman": -0.001297963838967565
+          },
+          "own_pawns": {
+            "pearson": 0.5306550022515271,
+            "spearman": 0.4901269683053012
+          },
+          "opp_pawns": {
+            "pearson": 0.506151421180799,
+            "spearman": 0.44848103210634993
+          },
+          "total_pawns": {
+            "pearson": 0.5597276877172614,
+            "spearman": 0.5134416551873401
+          },
+          "nonpawn_material": {
+            "pearson": 0.6997432983046042,
+            "spearman": 0.6621992076552202
+          },
+          "own_knight": {
+            "pearson": 0.4264915871544962,
+            "spearman": 0.35471263401472164
+          },
+          "opp_knight": {
+            "pearson": 0.3771232404196459,
+            "spearman": 0.36710947763022317
+          },
+          "own_bishop": {
+            "pearson": 0.38611708316159,
+            "spearman": 0.36298274297212235
+          },
+          "opp_bishop": {
+            "pearson": 0.42424813532149674,
+            "spearman": 0.39929173593920275
+          },
+          "own_rook": {
+            "pearson": 0.512433863913199,
+            "spearman": 0.4358185242557297
+          },
+          "opp_rook": {
+            "pearson": 0.5367476421173039,
+            "spearman": 0.43803484374417745
+          },
+          "own_queen": {
+            "pearson": 0.5315288011436625,
+            "spearman": 0.3915301720842278
+          },
+          "opp_queen": {
+            "pearson": 0.54247454318144,
+            "spearman": 0.3690800692643594
+          },
+          "queens_present": {
+            "pearson": 0.5512102121539406,
+            "spearman": 0.36895604359682405
+          },
+          "in_check": {
+            "pearson": -0.3170669241984864,
+            "spearman": -0.2464592672546468
+          },
+          "legal_count": {
+            "pearson": 0.7719477863106553,
+            "spearman": 0.7405338513027533
+          },
+          "phase_endgame": {
+            "pearson": -0.6165850933010627,
+            "spearman": -0.4493843228513053
+          },
+          "phase_opening": {
+            "pearson": 0.1820718009650191,
+            "spearman": -0.05577514634021164
+          }
+        },
+        "maxabs": {
+          "piece_total": {
+            "pearson": -0.13061149590676605,
+            "spearman": -0.15345950985954057
+          },
+          "own_material": {
+            "pearson": -0.12732913079471364,
+            "spearman": -0.14820179611642653
+          },
+          "opp_material": {
+            "pearson": -0.10591889506608021,
+            "spearman": -0.1268953440286069
+          },
+          "material_imbalance": {
+            "pearson": -0.08234776330060893,
+            "spearman": -0.06929599932152433
+          },
+          "abs_material_imbalance": {
+            "pearson": 0.08234776330060893,
+            "spearman": 0.07164757660287992
+          },
+          "own_pawns": {
+            "pearson": -0.13256766391546762,
+            "spearman": -0.1363700811085315
+          },
+          "opp_pawns": {
+            "pearson": -0.08703818878285345,
+            "spearman": -0.09778137101024172
+          },
+          "total_pawns": {
+            "pearson": -0.1184704098342498,
+            "spearman": -0.12945638129269857
+          },
+          "nonpawn_material": {
+            "pearson": -0.11147684336020396,
+            "spearman": -0.13389346332398333
+          },
+          "own_knight": {
+            "pearson": -0.09109654262164635,
+            "spearman": -0.08572271218843666
+          },
+          "opp_knight": {
+            "pearson": -0.1109957662874425,
+            "spearman": -0.10983011201586303
+          },
+          "own_bishop": {
+            "pearson": -0.10066300936291352,
+            "spearman": -0.10199042811009108
+          },
+          "opp_bishop": {
+            "pearson": -0.0724024523631887,
+            "spearman": -0.07448344223317728
+          },
+          "own_rook": {
+            "pearson": -0.08270928061414665,
+            "spearman": -0.06952070497751654
+          },
+          "opp_rook": {
+            "pearson": -0.07146496537141966,
+            "spearman": -0.05755748734582426
+          },
+          "own_queen": {
+            "pearson": -0.06551539130608222,
+            "spearman": -0.0009665636572923389
+          },
+          "opp_queen": {
+            "pearson": -0.055788442073653695,
+            "spearman": 0.025527677333531833
+          },
+          "queens_present": {
+            "pearson": -0.05510698991420153,
+            "spearman": 0.02782514956952451
+          },
+          "in_check": {
+            "pearson": 0.32467175483788024,
+            "spearman": 0.21112093573097118
+          },
+          "legal_count": {
+            "pearson": -0.26238556779506317,
+            "spearman": -0.23884608548451827
+          },
+          "phase_endgame": {
+            "pearson": 0.08590311160926398,
+            "spearman": 0.11889348369661935
+          },
+          "phase_opening": {
+            "pearson": -0.029005932050698187,
+            "spearman": 0.07819554680882349
+          }
+        }
+      }
+    }
+  }
+}

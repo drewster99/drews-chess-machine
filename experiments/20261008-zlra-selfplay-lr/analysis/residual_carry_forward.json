@@ -1,0 +1,142 @@
+{
+  "n_positions": 4635,
+  "metric": "mean-over-64-squares per position",
+  "taps": [
+    "block0_in",
+    "block1_in",
+    "block2_in",
+    "tower_final_in"
+  ],
+  "channels": {
+    "c13": {
+      "carry": {
+        "block0_in->block1_in": {
+          "pearson": 0.4704,
+          "level_mean": [
+            0.962,
+            8.62
+          ],
+          "level_std": [
+            0.238,
+            0.826
+          ]
+        },
+        "block1_in->block2_in": {
+          "pearson": 0.9258,
+          "level_mean": [
+            8.62,
+            8.596
+          ],
+          "level_std": [
+            0.826,
+            0.819
+          ]
+        },
+        "block2_in->tower_final_in": {
+          "pearson": 0.6187,
+          "level_mean": [
+            8.596,
+            4.82
+          ],
+          "level_std": [
+            0.819,
+            0.445
+          ]
+        }
+      },
+      "block1_to_block2_increment": {
+        "mean": -0.024,
+        "std": 0.317,
+        "carried_level_std": 0.826
+      }
+    },
+    "c25": {
+      "carry": {
+        "block0_in->block1_in": {
+          "pearson": -0.222,
+          "level_mean": [
+            -0.178,
+            -1.317
+          ],
+          "level_std": [
+            0.039,
+            0.021
+          ]
+        },
+        "block1_in->block2_in": {
+          "pearson": -0.0214,
+          "level_mean": [
+            -1.317,
+            -0.845
+          ],
+          "level_std": [
+            0.021,
+            0.034
+          ]
+        },
+        "block2_in->tower_final_in": {
+          "pearson": 0.0499,
+          "level_mean": [
+            -0.845,
+            -0.625
+          ],
+          "level_std": [
+            0.034,
+            0.158
+          ]
+        }
+      },
+      "block1_to_block2_increment": {
+        "mean": 0.472,
+        "std": 0.04,
+        "carried_level_std": 0.021
+      }
+    },
+    "c48": {
+      "carry": {
+        "block0_in->block1_in": {
+          "pearson": 0.5463,
+          "level_mean": [
+            -0.178,
+            -0.514
+          ],
+          "level_std": [
+            0.142,
+            0.076
+          ]
+        },
+        "block1_in->block2_in": {
+          "pearson": 0.2041,
+          "level_mean": [
+            -0.514,
+            -2.573
+          ],
+          "level_std": [
+            0.076,
+            0.013
+          ]
+        },
+        "block2_in->tower_final_in": {
+          "pearson": -0.0542,
+          "level_mean": [
+            -2.573,
+            -1.066
+          ],
+          "level_std": [
+            0.013,
+            0.169
+          ]
+        }
+      },
+      "block1_to_block2_increment": {
+        "mean": -2.059,
+        "std": 0.075,
+        "carried_level_std": 0.076
+      }
+    }
+  },
+  "cross_channel_block1_in": {
+    "c13_vs_c25": 0.4742,
+    "c13_vs_c48": -0.3593
+  }
+}
