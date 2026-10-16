@@ -343,9 +343,25 @@ valueWin MAE 0.006). Channel-13 trunk value (mean over the 64 squares), per posi
   `clean_add`; `res_ln` (channel-wise LayerNorm on the sum) does not rein it in.
 - **tower_final_bn re-centers it:** +8.6 → +4.8.
 
-Channel 13 genuinely co-varies with board "fullness"/material (max-abs over squares vs total_pawns Pearson +0.38,
+Channel 13 co-varies with board "fullness"/material (max-abs over squares vs total_pawns Pearson +0.38,
 piece_total +0.33, legal_count +0.33, in_check −0.32, endgame-phase −0.33); it is modulated, not collapsed (the
 modulation rides on a large constant offset, so its coefficient of variation is small, ~0.047 deep in the trunk).
+
+What game-state attribute confers the amplitude was settled by a single-attribute **intervention** on 350 quiet probe
+positions (perturb one thing, hold the rest; `analysis/intervene_ch13.py`), because the observational correlates are
+collinear and a standardized regression misleadingly credited `total_pawns` (β +0.45). Causally:
+
+- **Per-unit material is a weak, non-specific driver.** Removing a pawn (Δ −0.063) and removing a minor piece
+  (Δ −0.073, piece-count drop matched) move ch13 by the same tiny amount (<1% of base, statistically
+  indistinguishable). So the pawn/piece counts are collinear proxies for aggregate board fullness/phase, not a
+  per-pawn detector; each scalar count explains only ~19% of ch13's across-position variance (one-way η²), and
+  rearranging a pawn at fixed count moves ch13 as much as removing one — ~80% of the variance is configuration.
+- **Side-to-move in check is the one strong, clean causal lever, and it suppresses ch13.** Imposing check with
+  material and pawn structure held identical drops ch13 by −0.54 (~7% of base, 90% consistent), confirmed on an
+  independent material-matched not-in-check subset (−0.48, 91%) — ~8× any material perturbation.
+
+So ch13's high amplitude is conferred mainly by aggregate board configuration/phase ("fullness", which the pawn and
+piece counts proxy) and is causally suppressed when the side to move is in check; it is not a per-pawn counter.
 
 ### The `|mean|/std` "degraded" flags are the opposite — near-constant channels, not gradient hogs
 
@@ -382,3 +398,5 @@ bundled `lichess_probes_200.json` / `lichess_probes_wide.json`, self-checks agai
 W/D/L, then captures channel 13/25/48 activations at the four taps and correlates them with board features
 (needs python-chess). Its outputs: `analysis/channel_feature_correlations.json` (self-check, per-tap stds, full
 Pearson+Spearman tables) and `analysis/residual_carry_forward.json` (the carry-forward correlations above).
+`analysis/intervene_ch13.py` runs the causal intervention (remove pawn / remove minor / add pawn / impose check /
+move pawn at fixed count) and writes `analysis/intervention_results.json`.

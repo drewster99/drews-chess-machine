@@ -1,0 +1,62 @@
+{
+  "metric": "ch13 max-abs over 64 squares at tower_final_bn input",
+  "n_base_candidates": 350,
+  "interventions": {
+    "remove_pawn": {
+      "n": 350,
+      "mean_dCh13": -0.06328916004725865,
+      "std_dCh13": 0.17951646164886217,
+      "mean_abs_dCh13": 0.11508638109479631,
+      "pct_expected_or_change": 61.71428571428571,
+      "sign_desc": "% sign==-1",
+      "base_mean": 7.450506245749337
+    },
+    "remove_minor": {
+      "n": 286,
+      "mean_dCh13": -0.07280651506010469,
+      "std_dCh13": 0.23732981586614152,
+      "mean_abs_dCh13": 0.17917422648076411,
+      "pct_expected_or_change": 62.58741258741259,
+      "sign_desc": "% sign==-1",
+      "base_mean": 7.482579763119038
+    },
+    "add_pawn": {
+      "n": 344,
+      "mean_dCh13": -0.10352256131726642,
+      "std_dCh13": 0.22076008113859844,
+      "mean_abs_dCh13": 0.157910754514295,
+      "pct_expected_or_change": 31.976744186046513,
+      "sign_desc": "% sign==+1",
+      "base_mean": 7.448060246401055
+    },
+    "move_pawn_fixed_count": {
+      "n": 350,
+      "mean_dCh13": -0.03374515805925642,
+      "std_dCh13": 0.2073844677167857,
+      "mean_abs_dCh13": 0.13894359861101424,
+      "pct_expected_or_change": 46.57142857142857,
+      "sign_desc": "% |\u0394|>0.1",
+      "base_mean": 7.450506245749337
+    },
+    "construct_check": {
+      "n": 350,
+      "mean_dCh13": -0.5430984170096261,
+      "std_dCh13": 0.4542585289798067,
+      "mean_abs_dCh13": 0.5745318058558873,
+      "pct_expected_or_change": 90.28571428571428,
+      "sign_desc": "% sign==-1",
+      "base_mean": 7.450506245749337
+    }
+  },
+  "check_matched_subset": {
+    "n_incheck_matched": 226,
+    "mean_dCh13_incheck_minus_matched": -0.47832566672514204,
+    "std": 0.38737411237372743,
+    "pct_negative": 90.7079646017699
+  },
+  "count_vs_structure": {
+    "eta2_total_pawns": 0.18962655135364243,
+    "eta2_piece_total": 0.1813407390542445,
+    "note": "eta^2 = fraction of across-position ch13-maxabs variance explained by the scalar (one-way ANOVA)."
+  }
+}
