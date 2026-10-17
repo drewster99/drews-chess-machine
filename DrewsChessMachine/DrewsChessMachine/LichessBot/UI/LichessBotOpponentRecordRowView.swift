@@ -2,12 +2,20 @@ import SwiftUI
 
 /// One opponent's row of the most-played table (a `GridRow`).
 struct LichessBotOpponentRecordRowView: View {
+    let controller: LichessBotController
     let row: LichessBotOpponentRecordRow
     let countWidth: Int
 
     var body: some View {
         GridRow {
-            LichessBotRowLabel(text: row.name)
+            Button {
+                LichessBotOpponentWindowLauncher.open(opponentID: row.id, name: row.name, controller: controller)
+            } label: {
+                LichessBotRowLabel(text: row.name)
+            }
+            .buttonStyle(.link)
+            .gridColumnAlignment(.leading)
+            .help("Open \(row.name)'s breakdown")
             Text(Self.kindText(row.kind))
                 .font(LichessBotStatsStyle.noteFont)
                 .foregroundStyle(LichessBotStatsStyle.neutral)

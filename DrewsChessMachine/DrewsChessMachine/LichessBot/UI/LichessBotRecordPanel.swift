@@ -4,6 +4,7 @@ import SwiftUI
 /// in the hierarchy, shown only when selected, so switching tabs keeps each
 /// pane's state (the Models table's expanded groups).
 struct LichessBotRecordPanel: View {
+    let controller: LichessBotController
     /// Nil while the account is not loaded.
     let account: LichessBotAccount?
     let pipeline: LichessBotRecordStatisticsPipeline
@@ -20,7 +21,7 @@ struct LichessBotRecordPanel: View {
                 .shown(statistics[filter].periodRows[period].record.all.games == 0)
             ZStack(alignment: .topLeading) {
                 LichessBotFirstPassPanes(account: account, statistics: statistics, filter: filter, period: period, pane: pipeline.rememberedPane)
-                LichessBotLaterPanes(later: breakdowns.later, pane: pipeline.rememberedPane)
+                LichessBotLaterPanes(controller: controller, later: breakdowns.later, pane: pipeline.rememberedPane)
             }
         }
     }

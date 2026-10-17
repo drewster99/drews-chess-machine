@@ -17,8 +17,15 @@ struct LichessBotRecentGameRow: View {
                 .font(LichessBotStatsStyle.noteFont)
             HStack(spacing: 4) {
                 LichessBotFavoriteStar(controller: controller, userID: row.opponentID)
-                Text(row.opponentName ?? "?")
-                    .lineLimit(1)
+                Button {
+                    LichessBotOpponentWindowLauncher.open(opponentID: row.opponentID, name: row.opponentName, controller: controller)
+                } label: {
+                    Text(row.opponentName ?? "?")
+                        .lineLimit(1)
+                }
+                .buttonStyle(.link)
+                .disabled(row.opponentID == nil)
+                .help("Open this opponent's breakdown")
             }
             LichessBotNoteText(text: Self.kindText(row))
             Text(row.opponentRating.map { "\($0)" } ?? "")

@@ -152,7 +152,14 @@ struct LichessBotAllGamesTable: View {
                     Text(row.summary.opponentTitle ?? "")
                         .foregroundStyle(.orange)
                         .shown(row.summary.opponentTitle != nil)
-                    Text(row.summary.opponentName ?? "?")
+                    Button {
+                        LichessBotOpponentWindowLauncher.open(opponentID: row.summary.opponentID, name: row.summary.opponentName, controller: controller)
+                    } label: {
+                        Text(row.summary.opponentName ?? "?")
+                    }
+                    .buttonStyle(.link)
+                    .disabled(row.summary.opponentID == nil)
+                    .help("Open this opponent's breakdown")
                 }
             }
             TableColumn("Rating", value: \.opponentRatingSortKey) { row in

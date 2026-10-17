@@ -11,8 +11,8 @@ final class LichessBotWindowController: NSWindowController, NSWindowDelegate {
         // games in progress) becomes the window's title.
         hosting.sceneBridgingOptions.insert(.title)
         let window = NSWindow(contentViewController: hosting)
-        window.setContentSize(NSSize(width: 1180, height: 820))
-        window.minSize = NSSize(width: 900, height: 600)
+        window.setContentSize(NSSize(width: 1480, height: 820))
+        window.minSize = NSSize(width: 1000, height: 600)
         window.title = LichessBotWindowTitle.name
         window.isReleasedWhenClosed = false
         window.center()

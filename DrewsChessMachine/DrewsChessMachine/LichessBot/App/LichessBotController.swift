@@ -856,6 +856,14 @@ final class LichessBotController {
         recordsByOpponent[opponentID.lowercased()] ?? LichessBotHeadToHead()
     }
 
+    /// Every filed game against one opponent, from the finished-games index,
+    /// newest first; the per-opponent detail window's source of truth
+    /// (plan §14.3c). A player DCM hasn't played returns no games.
+    func games(againstOpponent opponentID: String) -> [LichessBotGameSummary] {
+        let id = opponentID.lowercased()
+        return (index?.rows ?? []).filter { $0.opponentID?.lowercased() == id }
+    }
+
     // MARK: - Settings
 
     /// Apply new settings. Invalid settings are rejected whole (plan §12.1).

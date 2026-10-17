@@ -10,6 +10,7 @@ import SwiftUI
 /// `LichessBotStatsStyle.paneMinimumHeight`, so the pickers always show what
 /// they select; a card dragged taller leaves the extra space below it.
 struct LichessBotRecordStatisticsContent: View {
+    let controller: LichessBotController
     /// Nil while the account is not loaded.
     let account: LichessBotAccount?
     let pipeline: LichessBotRecordStatisticsPipeline
@@ -25,7 +26,7 @@ struct LichessBotRecordStatisticsContent: View {
             // a frame reports the offered height and lets the pane spill
             // over whatever is laid out below it (the recent games).
             LichessBotAtLeastHeightLayout(minimumHeight: LichessBotStatsStyle.paneMinimumHeight) {
-                LichessBotRecordPanel(account: account, pipeline: pipeline, statistics: statistics)
+                LichessBotRecordPanel(controller: controller, account: account, pipeline: pipeline, statistics: statistics)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }

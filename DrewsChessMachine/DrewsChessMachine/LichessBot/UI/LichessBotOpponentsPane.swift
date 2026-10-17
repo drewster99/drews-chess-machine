@@ -4,6 +4,7 @@ import SwiftUI
 /// highest-rated win, and the most played opponents with DCM's record and
 /// net rating change against each.
 struct LichessBotOpponentsPane: View {
+    let controller: LichessBotController
     let opponents: LichessBotOpponentsStatistics
 
     static let titles = ["Opponent", "Kind", "Games", "W–D–L", "Score", "Rating Δ", "Last played"]
@@ -16,7 +17,7 @@ struct LichessBotOpponentsPane: View {
                 Grid(alignment: .trailing, horizontalSpacing: LichessBotStatsStyle.columnSpacing, verticalSpacing: LichessBotStatsStyle.rowSpacing) {
                     LichessBotStatsHeaderRow(titles: Self.titles)
                     ForEach(opponents.mostPlayed) { row in
-                        LichessBotOpponentRecordRowView(row: row, countWidth: countWidth)
+                        LichessBotOpponentRecordRowView(controller: controller, row: row, countWidth: countWidth)
                     }
                 }
             }

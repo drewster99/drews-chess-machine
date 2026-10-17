@@ -56,7 +56,7 @@ final class LichessBotRecordCardHeightTests: XCTestCase {
         guard case .ready(let statistics) = controller.recordStatistics.state else { return XCTFail("expected a snapshot") }
         func heights(_ pane: LichessBotRecordPane) -> (pane: CGFloat, card: CGFloat) {
             controller.recordStatistics.rememberedPane = pane
-            let panel = NSHostingView(rootView: LichessBotRecordPanel(account: nil, pipeline: controller.recordStatistics, statistics: statistics)
+            let panel = NSHostingView(rootView: LichessBotRecordPanel(controller: controller, account: nil, pipeline: controller.recordStatistics, statistics: statistics)
                 .frame(width: 900)).fittingSize.height
             return (panel, cardHeight(controller, defaults: defaults))
         }
