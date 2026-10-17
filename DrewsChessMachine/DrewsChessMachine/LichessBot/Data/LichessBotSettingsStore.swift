@@ -114,17 +114,46 @@ enum LichessBotSettingsStore {
     /// key is then dropped from what is decoded; the stored blob itself is
     /// not touched until the operator next saves.
     static func carryForwardReplacedFields(_ saved: [String: Any]) -> (saved: [String: Any], notes: [String]) {
-        guard var challenge = saved["challenge"] as? [String: Any],
-              let old = challenge["maxGamesPerOpponentPerDay"] else { return (saved, []) }
-        challenge["maxGamesPerOpponentPerDay"] = nil
-        var notes: [String] = []
-        if challenge["maxGamesPerHumanOpponentPerDay"] == nil && challenge["maxGamesPerBotOpponentPerDay"] == nil {
-            challenge["maxGamesPerHumanOpponentPerDay"] = old
-            challenge["maxGamesPerBotOpponentPerDay"] = old
-            notes.append("challenge.maxGamesPerOpponentPerDay \(old) → challenge.maxGamesPerHumanOpponentPerDay and challenge.maxGamesPerBotOpponentPerDay")
-        }
         var result = saved
-        result["challenge"] = challenge
+        var notes: [String] = []
+
+        // challenge.maxGamesPerOpponentPerDay → human + bot (2026-10-12).
+        if var challenge = result["challenge"] as? [String: Any],
+           let old = challenge["maxGamesPerOpponentPerDay"] {
+            challenge["maxGamesPerOpponentPerDay"] = nil
+            if challenge["maxGamesPerHumanOpponentPerDay"] == nil && challenge["maxGamesPerBotOpponentPerDay"] == nil {
+                challenge["maxGamesPerHumanOpponentPerDay"] = old
+                challenge["maxGamesPerBotOpponentPerDay"] = old
+                notes.append("challenge.maxGamesPerOpponentPerDay \(old) → challenge.maxGamesPerHumanOpponentPerDay and challenge.maxGamesPerBotOpponentPerDay")
+            }
+            result["challenge"] = challenge
+        }
+
+        // chat.room (one picker for greeting and goodbye) → per-room fields
+        // (chat-events plan §1). The pre-split greeting/goodbye are the
+        // player room's fields today; when the save named the spectator room,
+        // move them there and leave the player room silent. An already-split
+        // save has no `room` key and is untouched.
+        if var chat = result["chat"] as? [String: Any],
+           let room = chat["room"] as? String {
+            chat["room"] = nil
+            if room == LichessBotChatRoom.spectator.rawValue {
+                let defaults = LichessBotChatSettings()
+                if chat["greetingSpectatorEnabled"] == nil && chat["greetingSpectatorTemplate"] == nil {
+                    chat["greetingSpectatorEnabled"] = (chat["greetingEnabled"] as? Bool) ?? defaults.greetingEnabled
+                    chat["greetingSpectatorTemplate"] = (chat["greetingTemplate"] as? String) ?? defaults.greetingTemplate
+                    chat["greetingEnabled"] = false
+                }
+                if chat["goodbyeSpectatorEnabled"] == nil && chat["goodbyeSpectatorTemplate"] == nil {
+                    chat["goodbyeSpectatorEnabled"] = (chat["goodbyeEnabled"] as? Bool) ?? defaults.goodbyeEnabled
+                    chat["goodbyeSpectatorTemplate"] = (chat["goodbyeTemplate"] as? String) ?? defaults.goodbyeTemplate
+                    chat["goodbyeEnabled"] = false
+                }
+                notes.append("chat.room spectator → spectator-room greeting and goodbye")
+            }
+            result["chat"] = chat
+        }
+
         return (result, notes)
     }
 

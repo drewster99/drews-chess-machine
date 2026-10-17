@@ -133,6 +133,18 @@ actor LichessBotGameSession {
     /// checked against `attemptedPosts`; the first one may carry moves this
     /// client made before a relaunch.
     private var checksForeignMoves = false
+
+    // Chat event messages (chat-events plan §2): the per-game spam guard and
+    // the baselines each evaluation compares the new position against. The
+    // first observed state (game start, or a mid-game resume) only records
+    // the baseline, so nothing fires on stale history; a takeback re-baselines
+    // the same way.
+    private var chatEventGuard = LichessBotChatEventGuard()
+    private var chatEventBaselineReady = false
+    private var lastChatEventPly = 0
+    private var lastOurQueenCount: Int?
+    private var lastTheirQueenCount: Int?
+    private var lastReadingCountForChatEvents = 0
     private var movingStopped = false
     private static let maximumRejectionsPerPly = 3
     private static let maximumConsecutiveResyncs = 8
@@ -645,11 +657,18 @@ actor LichessBotGameSession {
                 break
             case .send:
                 greeted = true
-                await sendChat(settings.chat.greetingEnabled ? settings.chat.greetingTemplate : nil, origin: .greeting, settings: settings)
+                if settings.chat.greetingEnabled {
+                    await sendChat(settings.chat.greetingTemplate, origin: .greeting, room: .player, settings: settings)
+                }
+                if settings.chat.greetingSpectatorEnabled {
+                    await sendChat(settings.chat.greetingSpectatorTemplate, origin: .greeting, room: .spectator, settings: settings)
+                }
             case .tooLate:
                 greeted = true
             }
         }
+
+        await sendChatEventIfAny(state: state, ourColor: ourColor, ourPieceColor: ourPieceColor, opponentColor: opponentColor, settings: settings)
     }
 
     enum GreetingTiming: Equatable {
@@ -1309,7 +1328,12 @@ actor LichessBotGameSession {
         await onTurnStatus(gameID, LichessBotTurnStatus(awaitingOurMove: false, ourClock: nil))
         if status.known != .aborted && status.known != .noStart && !farewellSent {
             farewellSent = true
-            await sendChat(settings.chat.goodbyeEnabled ? settings.chat.goodbyeTemplate : nil, origin: .goodbye, settings: settings)
+            if settings.chat.goodbyeEnabled {
+                await sendChat(settings.chat.goodbyeTemplate, origin: .goodbye, room: .player, settings: settings)
+            }
+            if settings.chat.goodbyeSpectatorEnabled {
+                await sendChat(settings.chat.goodbyeSpectatorTemplate, origin: .goodbye, room: .spectator, settings: settings)
+            }
         }
     }
 
@@ -1417,7 +1441,7 @@ actor LichessBotGameSession {
         return nil
     }
 
-    private func sendChat(_ template: String?, origin: LichessBotChatOrigin, settings: LichessBotSettings) async {
+    private func sendChat(_ template: String?, origin: LichessBotChatOrigin, room: LichessBotChatRoom, extraValues: [String: String] = [:], settings: LichessBotSettings) async {
         guard let template else { return }
         let info = playingMoveSource.info
         var values = [
@@ -1425,6 +1449,9 @@ actor LichessBotGameSession {
             "source": info.sourceKind.rawValue,
             "build": "\(BuildInfo.buildNumber)",
         ]
+        for (key, value) in extraValues {
+            values[key] = value
+        }
         // A template that names the opponent needs a name for them; one that
         // doesn't is never held back by a missing name.
         if template.contains("{opponent}") {
@@ -1439,10 +1466,89 @@ actor LichessBotGameSession {
             return
         }
         do {
-            try await api.chat(gameID: gameID, room: settings.chat.room, text: text)
-            await observer.gameEvent(gameID: gameID, .chatSent(room: settings.chat.room, text: text, origin: origin))
+            try await api.chat(gameID: gameID, room: room, text: text)
+            await observer.gameEvent(gameID: gameID, .chatSent(room: room, text: text, origin: origin))
         } catch {
             await observer.gameEvent(gameID: gameID, .anomaly("chat failed: \(error.localizedDescription)"))
+        }
+    }
+
+    /// Queens of one color on the board.
+    private static func queenCount(_ state: GameState, color: PieceColor) -> Int {
+        state.board.reduce(0) { count, piece in
+            count + (piece?.type == .queen && piece?.color == color ? 1 : 0)
+        }
+    }
+
+    /// Detect game events worth a chat line in the position just reached and
+    /// send at most one, honoring each rule's odds, the shared spam guards
+    /// and the clock floor (chat-events plan §2). A takeback or a
+    /// non-advancing state only refreshes the baselines.
+    private func sendChatEventIfAny(state: LichessBotGameState, ourColor: LichessBotColorName, ourPieceColor: PieceColor, opponentColor: LichessBotColorName, settings: LichessBotSettings) async {
+        let events = settings.chat.events
+        guard events.enabled, let tracker else { return }
+        let board = tracker.engine.state
+        let ourQueens = Self.queenCount(board, color: ourPieceColor)
+        let theirQueens = Self.queenCount(board, color: ourPieceColor.opposite)
+
+        guard chatEventBaselineReady, tracker.ply > lastChatEventPly else {
+            chatEventBaselineReady = true
+            lastChatEventPly = tracker.ply
+            lastOurQueenCount = ourQueens
+            lastTheirQueenCount = theirQueens
+            lastReadingCountForChatEvents = readings.count
+            return
+        }
+
+        let from = max(0, min(lastChatEventPly, tracker.moves.count))
+        let to = min(tracker.ply, tracker.moves.count)
+        let promotion = from < to && tracker.moves[from..<to].contains { $0.promotion != nil }
+        let newReading = readings.count > lastReadingCountForChatEvents
+        let ourPct = readings.last.map { Int(($0.win * 100).rounded()) }
+        let prevPct = readings.count >= 2 ? Int((readings[readings.count - 2].win * 100).rounded()) : nil
+
+        let context = LichessBotChatEventContext(
+            ply: tracker.ply,
+            moveNumber: tracker.ply / 2,
+            ourQueensBefore: lastOurQueenCount ?? ourQueens,
+            ourQueensNow: ourQueens,
+            theirQueensBefore: lastTheirQueenCount ?? theirQueens,
+            theirQueensNow: theirQueens,
+            inCheckNow: MoveGenerator.isInCheck(board, color: tracker.sideToMove),
+            promotionJustPlayed: promotion,
+            ourWinPercent: ourPct,
+            previousOurWinPercent: prevPct,
+            newReadingThisStep: newReading,
+            opponentName: opponentDisplayName()
+        )
+
+        // Commit the baselines before any suspension so the actor's state is
+        // consistent if another call interleaves during the chat POST.
+        lastOurQueenCount = ourQueens
+        lastTheirQueenCount = theirQueens
+        lastChatEventPly = tracker.ply
+        lastReadingCountForChatEvents = readings.count
+
+        let floorMilliseconds = events.minClockSecondsEitherSide * 1000
+        let clocksClear = state.remaining(for: ourColor).value >= floorMilliseconds
+            && state.remaining(for: opponentColor).value >= floorMilliseconds
+        if clocksClear {
+            await fireFirstEligibleChatEvent(context: context, events: events, settings: settings)
+        }
+    }
+
+    /// Send the highest-priority eligible event message, rolling each rule's
+    /// chance in turn until one fires (at most one per step).
+    private func fireFirstEligibleChatEvent(context: LichessBotChatEventContext, events: LichessBotChatEventSettings, settings: LichessBotSettings) async {
+        let now = time.now()
+        for trigger in LichessBotChatEventEvaluator.matchingTriggers(context, rules: events.rules) {
+            guard let rule = events.rules.first(where: { $0.trigger == trigger }), rule.enabled else { continue }
+            guard chatEventGuard.admits(trigger: trigger, ply: context.ply, now: now, settings: events) else { continue }
+            guard Int.random(in: 1...100) <= rule.chancePercent else { continue }
+            guard let template = rule.templates.randomElement() else { continue }
+            chatEventGuard.recordSend(trigger: trigger, ply: context.ply, now: now)
+            await sendChat(template, origin: .event, room: rule.room, extraValues: LichessBotChatEventEvaluator.templateValues(context), settings: settings)
+            return
         }
     }
 }

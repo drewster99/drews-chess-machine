@@ -386,6 +386,7 @@ struct LichessBotChatBubble: View {
         case .goodbye: kind = "goodbye"
         case .commandReply: kind = "command reply"
         case .operator: kind = "operator"
+        case .event: kind = "event"
         }
         return message.echoed ? kind : "\(kind) · sent (not echoed by Lichess)"
     }

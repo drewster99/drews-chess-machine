@@ -211,6 +211,8 @@ enum LichessBotChatOrigin: String, Sendable, Codable, Equatable {
     case goodbye
     case commandReply
     case `operator`
+    /// A message a game event triggered (chat-events plan §2).
+    case event
 }
 
 /// The operator's per-game move pacing as the session reads it (plan

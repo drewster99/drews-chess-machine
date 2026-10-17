@@ -1,6 +1,10 @@
 # Lichess bot: per-room greetings and event messages
 
-Status (2026-10-15): owner-requested, design agreed in outline; not started.
+Status (2026-10-17): IMPLEMENTED. Per-room greeting/goodbye (§1) and event messages (§2) built, with the spam guards and neutral default texts. Owner overrides applied: clock floor defaults to **4 minutes** (not 1), absolutely no trash talk. Default room for event messages = spectator. Every rule ships disabled. Unit tests in `LichessBotChatEventTests.swift` (trigger detection, guard limits, forward-compatible decode, room carry-forward, template validation).
+
+Code: `LichessBot/Play/LichessBotChatEvents.swift` (trigger/rule/settings model), `LichessBotChatEventEvaluator.swift` (pure detector + per-game guard), live detection in `LichessBotGameSession.sendChatEventIfAny`, per-room sends + `.event` chat origin, UI in `LichessBotChatEventSettingsSection.swift` + per-room rows in `LichessBotChatSettingsSection`, carry-forward of the old `chat.room` picker in `LichessBotSettingsStore`.
+
+Original outline (2026-10-15):
 
 ## Requests (owner, 2026-10-15)
 

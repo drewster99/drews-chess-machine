@@ -161,6 +161,7 @@ struct LichessBotSettingsTabForm: View {
                 LichessBotModelSettingsSection(settings: $draft.model, controller: controller)
             case .chat:
                 LichessBotChatSettingsSection(settings: $draft.chat)
+                LichessBotChatEventSettingsSection(settings: $draft.chat.events)
             case .alerts:
                 LichessBotAlertSettingsSection(settings: $draft.alerts)
             case .connection:
@@ -383,31 +384,41 @@ struct LichessBotPlaySettingsSection: View {
     }
 }
 
-/// Greeting and goodbye messages (plan §12.5).
+/// Greeting and goodbye messages, set per room (plan §12.5, chat-events
+/// plan §1).
 struct LichessBotChatSettingsSection: View {
     @Binding var settings: LichessBotChatSettings
 
     var body: some View {
         Section("Chat — applies to the next game") {
-            Toggle("Greet at the start", isOn: $settings.greetingEnabled)
-            LabeledContent("Greeting") {
-                TextField("Greeting", text: $settings.greetingTemplate)
-                    .labelsHidden()
-                    .frame(minWidth: 320)
-            }
-            Toggle("Say goodbye at the end", isOn: $settings.goodbyeEnabled)
-            LabeledContent("Goodbye") {
-                TextField("Goodbye", text: $settings.goodbyeTemplate)
-                    .labelsHidden()
-                    .frame(minWidth: 320)
-            }
-            Picker("Room", selection: $settings.room) {
-                Text("Player").tag(LichessBotChatRoom.player)
-                Text("Spectator").tag(LichessBotChatRoom.spectator)
-            }
+            LichessBotChatMessageRow(enableTitle: "Greet players at the start", fieldTitle: "Player greeting",
+                                     enabled: $settings.greetingEnabled, template: $settings.greetingTemplate)
+            LichessBotChatMessageRow(enableTitle: "Greet spectators at the start", fieldTitle: "Spectator greeting",
+                                     enabled: $settings.greetingSpectatorEnabled, template: $settings.greetingSpectatorTemplate)
+            LichessBotChatMessageRow(enableTitle: "Say goodbye to players", fieldTitle: "Player goodbye",
+                                     enabled: $settings.goodbyeEnabled, template: $settings.goodbyeTemplate)
+            LichessBotChatMessageRow(enableTitle: "Say goodbye to spectators", fieldTitle: "Spectator goodbye",
+                                     enabled: $settings.goodbyeSpectatorEnabled, template: $settings.goodbyeSpectatorTemplate)
             Text("Placeholders: {modelID} {source} {build} {opponent}")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// A toggle plus the message text for one room's greeting or goodbye.
+struct LichessBotChatMessageRow: View {
+    let enableTitle: String
+    let fieldTitle: String
+    @Binding var enabled: Bool
+    @Binding var template: String
+
+    var body: some View {
+        Toggle(enableTitle, isOn: $enabled)
+        LabeledContent(fieldTitle) {
+            TextField(fieldTitle, text: $template)
+                .labelsHidden()
+                .frame(minWidth: 320)
         }
     }
 }

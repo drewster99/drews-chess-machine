@@ -102,13 +102,29 @@ struct LichessBotPlaySettings: Sendable, Equatable, Codable {
     }
 }
 
-/// Greeting and goodbye messages (plan §12.5).
+/// Greeting, goodbye and event messages (plan §12.5, chat-events plan).
+///
+/// Greeting and goodbye are set per room (chat-events plan §1): the four
+/// fields named without a room are the player room's — their names predate
+/// the split, so saves and call sites keep working — and the `…Spectator…`
+/// fields are the spectator room's. A save made before the split had one
+/// `room` picker; `LichessBotSettingsStore.carryForwardReplacedFields` moves
+/// its greeting and goodbye to the room it named.
 struct LichessBotChatSettings: Sendable, Equatable, Codable {
+    // Greeting — player room.
     var greetingEnabled = true
     var greetingTemplate = "Hi, I'm DrewsChessMachine ({modelID}), a from-scratch neural net, no search. Type !help for commands."
+    // Greeting — spectator room.
+    var greetingSpectatorEnabled = false
+    var greetingSpectatorTemplate = "DrewsChessMachine ({modelID}): a from-scratch neural net, no search."
+    // Goodbye — player room.
     var goodbyeEnabled = false
     var goodbyeTemplate = "Thanks for the game, {opponent}!"
-    var room: LichessBotChatRoom = .player
+    // Goodbye — spectator room.
+    var goodbyeSpectatorEnabled = false
+    var goodbyeSpectatorTemplate = "Thanks for watching."
+    /// Messages triggered by game events (chat-events plan §2).
+    var events = LichessBotChatEventSettings()
 }
 
 extension LichessBotChatRoom: Codable {}
@@ -397,9 +413,33 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(LichessBotLimits.stuckGameGraceSecondsRange.contains(p.stuckGameGraceSeconds),
                 "The stuck-game grace must be between \(LichessBotLimits.stuckGameGraceSecondsRange.lowerBound) and \(LichessBotLimits.stuckGameGraceSecondsRange.upperBound) seconds")
 
-        for (enabled, template, name) in [(chat.greetingEnabled, chat.greetingTemplate, "Greeting"), (chat.goodbyeEnabled, chat.goodbyeTemplate, "Goodbye")] where enabled {
+        let greetingGoodbye: [(Bool, String, String)] = [
+            (chat.greetingEnabled, chat.greetingTemplate, "Greeting (player)"),
+            (chat.greetingSpectatorEnabled, chat.greetingSpectatorTemplate, "Greeting (spectator)"),
+            (chat.goodbyeEnabled, chat.goodbyeTemplate, "Goodbye (player)"),
+            (chat.goodbyeSpectatorEnabled, chat.goodbyeSpectatorTemplate, "Goodbye (spectator)"),
+        ]
+        for (enabled, template, name) in greetingGoodbye where enabled {
             if let problem = LichessBotChat.templateProblem(template) {
                 problems.append("\(name): \(problem)")
+            }
+        }
+
+        let events = chat.events
+        require(events.maxMessagesPerGame >= 1, "Event messages: the per-game maximum must be at least one")
+        require(events.minClockSecondsEitherSide >= 0, "Event messages: the clock floor cannot be negative")
+        require(events.minSecondsBetweenMessages >= 0, "Event messages: the spacing in seconds cannot be negative")
+        require(events.minPliesBetweenMessages >= 0, "Event messages: the spacing in plies cannot be negative")
+        for rule in events.rules where events.enabled && rule.enabled {
+            require(rule.chancePercent >= 0 && rule.chancePercent <= 100, "Event \"\(rule.trigger.title)\": the chance must be between 0 and 100")
+            if let parameter = rule.trigger.parameter {
+                require(parameter.range.contains(rule.threshold), "Event \"\(rule.trigger.title)\": \(parameter.label) must be between \(parameter.range.lowerBound) and \(parameter.range.upperBound)")
+            }
+            require(!rule.templates.isEmpty, "Event \"\(rule.trigger.title)\": add at least one message")
+            for template in rule.templates {
+                if let problem = LichessBotChat.templateProblem(template, allowed: LichessBotChat.eventPlaceholders) {
+                    problems.append("Event \"\(rule.trigger.title)\": \(problem)")
+                }
             }
         }
 

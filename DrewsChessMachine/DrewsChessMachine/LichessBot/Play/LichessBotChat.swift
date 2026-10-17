@@ -16,6 +16,10 @@ enum LichessBotChat {
 
     static let placeholders = ["modelID", "source", "build", "opponent"]
 
+    /// Placeholders an event message (chat-events plan §2) may use, in place
+    /// of the greeting/goodbye set.
+    static let eventPlaceholders = ["opponent", "winPct", "move", "ply"]
+
     /// Longest plausible expansion of each placeholder, used to validate a
     /// template before any real values exist. Lichess usernames are at most
     /// this long; ModelIDs and build labels are generous upper bounds.
@@ -24,6 +28,9 @@ enum LichessBotChat {
         "source": String(repeating: "S", count: 20),
         "build": String(repeating: "B", count: 12),
         "opponent": String(repeating: "O", count: 20),
+        "winPct": "100",
+        "move": "999",
+        "ply": "999",
     ]
 
     /// `template` with every `{name}` replaced by `values[name]`. Unknown
@@ -36,15 +43,20 @@ enum LichessBotChat {
         return result
     }
 
-    /// Why `template` can't be used, or nil if it can.
-    static func templateProblem(_ template: String) -> String? {
+    /// Why `template` can't be used, or nil if it can. `allowed` is the set
+    /// of placeholder names the template may contain (greeting/goodbye by
+    /// default; pass `eventPlaceholders` for an event message).
+    static func templateProblem(_ template: String, allowed: [String] = placeholders) -> String? {
         let trimmed = template.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return "the message is empty"
         }
-        let expanded = expand(template, values: longestPlausibleValues)
+        // Expand only the allowed placeholders, so an unallowed one is left
+        // in the text and reported below even if it has a known long value.
+        let allowedValues = longestPlausibleValues.filter { allowed.contains($0.key) }
+        let expanded = expand(template, values: allowedValues)
         if let unknown = unknownPlaceholder(in: expanded) {
-            return "unknown placeholder {\(unknown)}; use \(placeholders.map { "{\($0)}" }.joined(separator: ", "))"
+            return "unknown placeholder {\(unknown)}; use \(allowed.map { "{\($0)}" }.joined(separator: ", "))"
         }
         if expanded.utf16.count > maximumLength {
             return "can reach \(expanded.utf16.count) characters with long values; Lichess allows \(maximumLength)"
