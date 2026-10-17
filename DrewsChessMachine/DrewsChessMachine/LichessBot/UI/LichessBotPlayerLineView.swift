@@ -30,9 +30,18 @@ struct LichessBotPlayerLineView: View {
             // The opponent can be starred; our own line and Lichess's AI
             // (no account) can't.
             LichessBotFavoriteStar(controller: controller, userID: isOurs ? nil : player?.id)
-            Text(player?.name ?? "—")
-                .font(.body.weight(.medium))
-                .lineLimit(1)
+            // The opponent's name opens their breakdown; our own line and an
+            // account-less AI have nothing to profile, so the button is disabled.
+            Button {
+                LichessBotOpponentWindowLauncher.open(opponentID: player?.id, name: player?.name, controller: controller)
+            } label: {
+                Text(player?.name ?? "—")
+                    .font(.body.weight(.medium))
+                    .lineLimit(1)
+            }
+            .buttonStyle(.link)
+            .disabled(isOurs || player?.id == nil)
+            .help(isOurs || player?.id == nil ? "" : "Open this opponent's breakdown")
             // The same marker as the grid's tiles, so the single view also
             // says when DCM is playing a person.
             LichessBotHumanOpponentGlyph(isHuman: !isOurs && player?.kind == .human)
