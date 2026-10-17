@@ -12,9 +12,16 @@ struct LichessBotChallengeLogOpponentCell: View {
             Text(player?.title ?? "")
                 .foregroundStyle(.orange)
                 .shown(player?.title != nil)
-            Text(LichessBotChallengeLogStyle.opponentText(opponent))
-                .foregroundStyle(player == nil ? Color.secondary : Color.primary)
-                .lineLimit(1)
+            Button {
+                LichessBotOpponentWindowLauncher.open(opponentID: player?.id, name: player?.name, controller: controller)
+            } label: {
+                Text(LichessBotChallengeLogStyle.opponentText(opponent))
+                    .foregroundStyle(player == nil ? Color.secondary : Color.primary)
+                    .lineLimit(1)
+            }
+            .buttonStyle(.link)
+            .disabled(player == nil)
+            .help("Open this opponent's breakdown")
         }
     }
 
