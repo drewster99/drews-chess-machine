@@ -1303,6 +1303,16 @@ extension SessionController {
                     // The trainer step of the last near-miss dump (at most
                     // one per `CrashDumpWriter.nearMissMinimumSpacingSteps`).
                     var lastNearMissDumpStep: Int? = nil
+                    // Self-play-rate heartbeat during buffer prefill. `[STATS]`
+                    // only emits once training starts, so a deliberately
+                    // training-free run (min-positions set at or above
+                    // capacity) would otherwise report no self-play rate. These
+                    // track the monotonic self-play position counter so the
+                    // reported rate is unaffected by ring-buffer eviction once
+                    // the buffer saturates.
+                    let prefillHeartbeatStart = Date()
+                    var prefillLastLogAt = prefillHeartbeatStart
+                    var prefillLastPositions = 0
                     while !Task.isCancelled {
                         // Pause gate check (between steps).
                         if trainingGate.isRequestedToPause {
@@ -1335,6 +1345,20 @@ extension SessionController {
                         // yet. Short sleep + retry keeps the worker
                         // responsive to Stop and to pause requests.
                         if buffer.count < sessionMinBufferBeforeTraining {
+                            let now = Date()
+                            let sinceLast = now.timeIntervalSince(prefillLastLogAt)
+                            if sinceLast >= 10 {
+                                let sp = pStatsBox.snapshot()
+                                let elapsed = now.timeIntervalSince(prefillHeartbeatStart)
+                                let deltaPositions = sp.selfPlayPositions - prefillLastPositions
+                                let instPerHour = sinceLast > 0 ? Double(deltaPositions) / sinceLast * 3600.0 : 0
+                                let avgPerHour = elapsed > 0 ? Double(sp.selfPlayPositions) / elapsed * 3600.0 : 0
+                                SessionLogger.shared.log(String(
+                                    format: "[PREFILL] elapsed=%.0fs spGames=%d spMoves=%d buffer=%d/%d pliesPerHr_inst=%.0f pliesPerHr_avg=%.0f",
+                                    elapsed, sp.selfPlayGames, sp.selfPlayPositions, buffer.count, buffer.capacity, instPerHour, avgPerHour))
+                                prefillLastLogAt = now
+                                prefillLastPositions = sp.selfPlayPositions
+                            }
                             // `try?` is intentional: only `CancellationError`
                             // can be thrown; the enclosing
                             // `while !Task.isCancelled` exits on the next

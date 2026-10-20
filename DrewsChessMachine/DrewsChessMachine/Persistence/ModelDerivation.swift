@@ -137,6 +137,7 @@ enum ModelDerivation {
         SetValueHeadFinalInitDeriveOperation.kind,
         SetValueHeadDrawPriorDeriveOperation.kind,
         SetPolicyTailPrecisionDeriveOperation.kind,
+        SetComputeDataTypeDeriveOperation.kind,
     ]
 
     /// The kind whose `flag` is `flag`, if any.
