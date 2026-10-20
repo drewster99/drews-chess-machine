@@ -147,6 +147,11 @@ struct DrewsChessMachineApp: App {
         // be fed (or writes it as CSV) and exits; no GUI, no GPU.
         ShowLRScheduleCLI.handleIfRequested(rawArgs: rawArgs)
 
+        // Pre-flight: the Core ML export path's commands (--describe-model,
+        // --export-inference-graph, --coreml-parity) read a model file, write
+        // or print their result and exit; no GUI.
+        InferenceGraphExportCLI.handleIfRequested(rawArgs: rawArgs)
+
         // Pre-flight: offline training-health replay (--replay-health-log).
         // Parses saved session logs and runs the real training-health
         // evaluator over them, synchronously on the launching thread; no

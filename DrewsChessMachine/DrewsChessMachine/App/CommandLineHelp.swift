@@ -145,6 +145,19 @@ enum CommandLineHelp {
                                       --set-rezero-alpha-cap <float > 0> (ReZero groups; no tensors);
                                       --group <0-based index>, repeatable, narrows them. Full list, with
                                       what each rewrites: --derive-model --help.
+      --describe-model <file>         Print a model file as this build reads it, as JSON: the resolved
+                                      architecture (format-version rules and legacy resolutions applied),
+                                      expanded blocks, weight plan, parameter count; then exit.
+      --export-inference-graph <file> --out <new folder>
+                                      Write the model's inference forward pass as recorded from the graph
+                                      builders (graph.json), its weights in graph layout (weights.bin) and
+                                      its description (model.json) into a new folder, for
+                                      scripts/dcm_coreml_export.py; then exit.
+      --coreml-parity <file> --coreml <model.mlpackage> [--compute-units cpu|cpu-gpu|cpu-ne|all] [--tolerance <x>]
+                                      Compare a Core ML export with the model's MPSGraph network on the
+                                      bundled test-set positions (max/mean |diff| of policy logits, value,
+                                      W/D/L; legal top-move agreement) and print JSON. --tolerance: exit 3
+                                      when a difference exceeds it or an output is non-finite.
       --show-default-parameters       Print every default training parameter as JSON and exit.
       --show-lr-schedule [--parameters <file>] [--from <step>] [--to <step>] [--buckets <n>] [--csv <path>]
                                       Print the LR and momentum a run would be fed, per step bucket (peak,

@@ -1685,6 +1685,26 @@ and the public surface. No behavior change. Lower priority than Part A.
 
 ## Completed
 
+- **Core ML export from the recorded inference graph (2026-10-20).** The
+  network is still defined once, by `ChessNetwork`'s graph builders: every
+  forward-pass op goes through `ForwardGraphOps`, which builds it into the
+  MPSGraph unchanged and, with an `InferenceGraphRecorder` attached, records it
+  as an `InferenceGraph` (primitive ops in build order, the MPSGraph data type of
+  each, weights by plan name). `--export-inference-graph` writes that recording
+  plus the weights in graph layout; `scripts/dcm_coreml_export.py` translates op
+  for op to Core ML MIL (precision `mirror` / `fp16` / `fp32`, enumerated batch
+  sizes) and holds no architecture knowledge; `--coreml-parity` compares an
+  export with the MPSGraph network on the 4,635 bundled test-set positions.
+  `--describe-model` prints a file's architecture as the app resolves it.
+  Measured: an fp32 export of an fp32 model matches to 1e-3 (float32 order),
+  100% same top move; the bf16 elitecyc model exports at 98.8% top-move
+  agreement (mirror on the Neural Engine) and 94.3% with fp16 everywhere on the
+  Neural Engine. Planned differently: `scripts/dcm_arch.py` was to become a thin
+  wrapper over `--describe-model`; not done — its tests feed partial
+  architectures the app's strict decoder refuses, and changing them needs the
+  owner's approval. No Swift Core ML inference consumer yet (export + parity
+  only). Details: `documentation/coreml-export.md`.
+
 - **Fast legal-move generation: make/unmake + pin-based (2026-06-24, `81ac884`,
   `d4becf6`).** Move-generation legality was a copy-make filter — for each
   pseudo-legal move it allocated a whole new `GameState` (board-array COW) just
