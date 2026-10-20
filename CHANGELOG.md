@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-20 17:50 — Core ML export from the recorded inference graph `746ff51f`
+
+- Every forward-pass op in `ChessNetwork`'s builders goes through `ForwardGraphOps`; with an `InferenceGraphRecorder` attached it is also recorded as an `InferenceGraph` (ops in build order, MPSGraph data types, weights by plan name). Production builds attach none; recorded and unrecorded networks compute bit-identical outputs.
+- New headless commands: `--describe-model` (resolved architecture JSON), `--export-inference-graph` (`graph.json`, `weights.bin`, `model.json`), `--coreml-parity` (Core ML vs MPSGraph on the 4,635 test-set positions).
+- `scripts/dcm_coreml_export.py` translates the recording op for op to Core ML (precision `mirror` / `fp16` / `fp32`); it holds no architecture knowledge.
+- Measured: fp32 export of an fp32 model, max policy-logit diff 1.0e-3, 100% same top move; bf16 `zlra-elitecyc` mirror on the Neural Engine 98.8%, fp16 everywhere on the Neural Engine 94.3%. `documentation/coreml-export.md`.
+
 ## 2026-10-10 04:24 — GPU fault forensics: review fixes; replay supervisor (not adopted) `0a7fbbd4`
 
 - `GPUFaultMonitor` counts only faults from 60 s before a start on and never reads a long pause, so a GUI Stop → Start no longer stops the new run on a fault from between runs; a closing poll after Stop, and a stopped run's last-seconds fault taints its trainer.
