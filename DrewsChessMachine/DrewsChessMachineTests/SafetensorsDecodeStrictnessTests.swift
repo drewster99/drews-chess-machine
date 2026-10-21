@@ -89,4 +89,17 @@ final class SafetensorsDecodeStrictnessTests: XCTestCase {
             XCTAssertEqual(decodedParent, headerParent, name)
         }
     }
+
+    /// Protects: `training_step` text is what Swift's `Int(String)` parses —
+    /// surrounding whitespace is malformed, not trimmed.
+    /// Fails if: the reader starts trimming the value.
+    func testDecodeRefusesATrainingStepWithWhitespace() throws {
+        let valid = try encoded(trainingStep: 12)
+        for raw in [" 40", "40 ", "40\n"] {
+            let malformed = try withRawMetadata(valid, key: SafetensorsModelIO.Key.trainingStep, value: raw)
+            XCTAssertThrowsError(try decode(malformed), "training_step \(raw.debugDescription)") { error in
+                XCTAssertTrue(String(describing: error).contains("training_step"), "\(error)")
+            }
+        }
+    }
 }

@@ -219,4 +219,24 @@ final class ModelTestSetResultsTests: XCTestCase {
         ProbeTestSet(id: set.id, title: set.title, description: set.description,
                      fingerprintSHA256: set.fingerprintSHA256, probes: Array(set.probes.prefix(count)))
     }
+
+    /// Protects: every malformed test-set value reads as unreadable (reported,
+    /// never thrown, never misread as results).
+    /// Fails if: a wrong JSON type, an unknown bound, or a missing required key
+    /// is accepted.
+    func testMalformedResultsReadAsUnreadable() throws {
+        let good = try ModelTestSetResultsField.evaluated(Self.results([Self.setResult()])).metadataValue()
+        var cases = ["[]", #"{"schema":true,"status":"failed","reason":"r"}"#]
+        cases.append(good.replacingOccurrences(of: #""pelo":1630.4,"pelo_bound":null"#,
+                                               with: #""pelo":null,"pelo_bound":"maybe""#))
+        cases.append(good.replacingOccurrences(of: #""build":2427,"#, with: ""))
+        cases.append(good.replacingOccurrences(of: #","pelo_bound":null"#, with: ""))
+        cases.append(good.replacingOccurrences(of: #""top1_correct":99"#, with: #""top1_correct":"99""#))
+        for raw in cases {
+            XCTAssertNotEqual(raw, good, "the case changes the value")
+            guard case .unreadable = ModelTestSetResultsField.reading(fromMetadata: [ModelTestSetResultsField.metadataKey: raw]) else {
+                return XCTFail("\(raw) should read as unreadable")
+            }
+        }
+    }
 }

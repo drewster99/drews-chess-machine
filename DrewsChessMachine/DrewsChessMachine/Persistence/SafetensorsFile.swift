@@ -134,22 +134,98 @@ enum SafetensorsFile {
 
     /// Decode safetensors bytes into ordered tensors (by ascending data offset
     /// = write order) + string metadata. Verifies `content_sha256` if present.
+    /// The header of a safetensors file: every tensor's name, shape and byte
+    /// range in the data region (sorted by offset), and `__metadata__`.
+    struct Header: Sendable, Equatable {
+        struct Entry: Sendable, Equatable {
+            let name: String
+            let shape: [Int]
+            /// Byte range in the data region (after the header).
+            let begin: Int
+            let end: Int
+            var elementCount: Int { (end - begin) / MemoryLayout<Float>.size }
+        }
+        let entries: [Entry]
+        let metadata: [String: String]
+    }
+
     static func decode(_ data: Data) throws -> (tensors: [SafetensorsTensor], metadata: [String: String]) {
         guard data.count >= 8 else { throw SafetensorsError.truncated("header length prefix") }
-
-        let headerLen = data.withUnsafeBytes { raw -> UInt64 in
+        let dataStart = try dataStartOffset(headerLength: data.withUnsafeBytes { raw -> UInt64 in
             UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: 0, as: UInt64.self))
-        }
-        let headerStart = 8
-        // Guard BEFORE the Int cast: a length > Int.max traps on the cast, and
-        // the addition could overflow-trap, both before any size check would
-        // run — and external / hand-edited files reach this path.
-        guard headerLen <= UInt64(data.count - headerStart) else {
-            throw SafetensorsError.truncated("declared header length \(headerLen) exceeds file")
-        }
-        let dataStart = headerStart + Int(headerLen)
+        }, fileByteCount: data.count)
+        let dataRegion = data.subdata(in: dataStart..<data.count)
+        let header = try parseHeader(data.subdata(in: headerPrefixByteCount..<dataStart),
+                                     dataRegionByteCount: dataRegion.count)
 
-        let headerData = data.subdata(in: headerStart..<dataStart)
+        var tensors: [SafetensorsTensor] = []
+        tensors.reserveCapacity(header.entries.count)
+        for entry in header.entries {
+            let slice = dataRegion.subdata(in: entry.begin..<entry.end)
+            let floats = slice.withUnsafeBytes { raw -> [Float] in
+                Array(raw.bindMemory(to: Float.self))
+            }
+            tensors.append(SafetensorsTensor(name: entry.name, shape: entry.shape, data: floats))
+        }
+
+        // Integrity.
+        if let expected = header.metadata[contentHashKey] {
+            let got = sha256Hex(dataRegion)
+            guard got == expected else {
+                throw SafetensorsError.contentHashMismatch(expected: expected, got: got)
+            }
+        }
+
+        return (tensors, header.metadata)
+    }
+
+    /// The header of the file at `url`, read without its tensor data: the same
+    /// structural checks `decode` applies to the header (`parseHeader`), against
+    /// the file's actual size. The content hash is not checked — that needs the
+    /// data.
+    static func readHeader(at url: URL) throws -> Header {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer {
+            do { try handle.close() } catch {
+                SessionLogger.shared.log("[SAFETENSORS] closing \(url.lastPathComponent) after a header read failed: \(error)")
+            }
+        }
+        let fileByteCount = try handle.seekToEnd()
+        try handle.seek(toOffset: 0)
+        guard let prefix = try handle.read(upToCount: headerPrefixByteCount), prefix.count == headerPrefixByteCount else {
+            throw SafetensorsError.truncated("header length prefix")
+        }
+        let headerLength = prefix.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self)) }
+        guard fileByteCount <= UInt64(Int.max) else { throw SafetensorsError.truncated("file larger than Int.max") }
+        let dataStart = try dataStartOffset(headerLength: headerLength, fileByteCount: Int(fileByteCount))
+        let headerByteCount = dataStart - headerPrefixByteCount
+        guard let headerData = try handle.read(upToCount: headerByteCount), headerData.count == headerByteCount else {
+            throw SafetensorsError.truncated("header")
+        }
+        return try parseHeader(headerData, dataRegionByteCount: Int(fileByteCount) - dataStart)
+    }
+
+    /// Bytes before the header JSON: its little-endian u64 length.
+    private static let headerPrefixByteCount = 8
+
+    /// Where the data region starts, refusing a declared header length the file
+    /// can't hold. Checked before any `Int` conversion: a length above
+    /// `Int.max` would trap on the cast, and external or hand-edited files reach
+    /// this path.
+    private static func dataStartOffset(headerLength: UInt64, fileByteCount: Int) throws -> Int {
+        guard headerLength <= UInt64(fileByteCount - headerPrefixByteCount) else {
+            throw SafetensorsError.truncated("declared header length \(headerLength) exceeds file")
+        }
+        return headerPrefixByteCount + Int(headerLength)
+    }
+
+    /// Parses and checks a header against the size of the data region it
+    /// describes: a JSON object; `__metadata__`, when present, a string→string
+    /// map; every tensor F32 with a non-negative shape whose element count
+    /// matches its byte range; byte ranges inside the data region and covering it
+    /// contiguously, without gaps or overlap. The one implementation of these
+    /// checks, shared by `decode` and `readHeader`.
+    static func parseHeader(_ headerData: Data, dataRegionByteCount: Int) throws -> Header {
         let obj: Any
         do {
             obj = try JSONSerialization.jsonObject(with: headerData)
@@ -157,8 +233,6 @@ enum SafetensorsFile {
             throw SafetensorsError.headerParseFailed(error.localizedDescription)
         }
         guard let header = obj as? [String: Any] else { throw SafetensorsError.headerNotObject }
-
-        let dataRegion = data.subdata(in: dataStart..<data.count)
 
         var metadata: [String: String] = [:]
         if let metaValue = header["__metadata__"] {
@@ -170,8 +244,7 @@ enum SafetensorsFile {
             metadata = meta
         }
 
-        struct Parsed { let name: String; let shape: [Int]; let begin: Int; let end: Int }
-        var parsed: [Parsed] = []
+        var entries: [Header.Entry] = []
         for (name, value) in header where name != "__metadata__" {
             guard let entry = value as? [String: Any] else { throw SafetensorsError.badTensorEntry(name) }
             guard let dtype = entry["dtype"] as? String else { throw SafetensorsError.badTensorEntry(name) }
@@ -184,59 +257,42 @@ enum SafetensorsFile {
                   let end = (offs[1] as? NSNumber)?.intValue else {
                 throw SafetensorsError.badTensorEntry(name)
             }
-            guard begin >= 0, end >= begin, end <= dataRegion.count else {
+            guard begin >= 0, end >= begin, end <= dataRegionByteCount else {
                 throw SafetensorsError.offsetsOutOfRange(name: name)
             }
-            parsed.append(Parsed(name: name, shape: shape, begin: begin, end: end))
+            entries.append(Header.Entry(name: name, shape: shape, begin: begin, end: end))
         }
-        parsed.sort { $0.begin < $1.begin }
+        entries.sort { $0.begin < $1.begin }
 
         // Coverage check: contiguous, no gaps/overlap.
         var cursor = 0
-        for p in parsed {
-            guard p.begin == cursor else {
-                throw SafetensorsError.dataRegionNotCovered(expected: dataRegion.count, covered: cursor)
+        for entry in entries {
+            guard entry.begin == cursor else {
+                throw SafetensorsError.dataRegionNotCovered(expected: dataRegionByteCount, covered: cursor)
             }
-            cursor = p.end
+            cursor = entry.end
         }
-        guard cursor == dataRegion.count else {
-            throw SafetensorsError.dataRegionNotCovered(expected: dataRegion.count, covered: cursor)
+        guard cursor == dataRegionByteCount else {
+            throw SafetensorsError.dataRegionNotCovered(expected: dataRegionByteCount, covered: cursor)
         }
 
-        var tensors: [SafetensorsTensor] = []
-        tensors.reserveCapacity(parsed.count)
-        for p in parsed {
-            let byteCount = p.end - p.begin
+        for entry in entries {
             // Overflow-safe shape product: dims are attacker-controlled (e.g.
             // [Int.max, 2]); a plain reduce(*) would trap and crash instead of
             // failing cleanly.
             var declared = 1
-            for dim in p.shape {
-                guard dim >= 0 else { throw SafetensorsError.negativeDimension(name: p.name) }
+            for dim in entry.shape {
+                guard dim >= 0 else { throw SafetensorsError.negativeDimension(name: entry.name) }
                 let (product, overflow) = declared.multipliedReportingOverflow(by: dim)
-                guard !overflow else { throw SafetensorsError.shapeProductOverflow(name: p.name) }
+                guard !overflow else { throw SafetensorsError.shapeProductOverflow(name: entry.name) }
                 declared = product
             }
             let (declaredBytes, byteOverflow) = declared.multipliedReportingOverflow(by: MemoryLayout<Float>.size)
-            guard !byteOverflow, byteCount == declaredBytes else {
-                throw SafetensorsError.shapeCountMismatch(name: p.name, declared: declared, bytes: byteCount)
-            }
-            let slice = dataRegion.subdata(in: p.begin..<p.end)
-            let floats = slice.withUnsafeBytes { raw -> [Float] in
-                Array(raw.bindMemory(to: Float.self))
-            }
-            tensors.append(SafetensorsTensor(name: p.name, shape: p.shape, data: floats))
-        }
-
-        // Integrity.
-        if let expected = metadata[contentHashKey] {
-            let got = sha256Hex(dataRegion)
-            guard got == expected else {
-                throw SafetensorsError.contentHashMismatch(expected: expected, got: got)
+            guard !byteOverflow, entry.end - entry.begin == declaredBytes else {
+                throw SafetensorsError.shapeCountMismatch(name: entry.name, declared: declared, bytes: entry.end - entry.begin)
             }
         }
-
-        return (tensors, metadata)
+        return Header(entries: entries, metadata: metadata)
     }
 
     static func sha256Hex(_ data: Data) -> String {

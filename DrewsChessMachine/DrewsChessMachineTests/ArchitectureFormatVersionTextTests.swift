@@ -23,18 +23,11 @@ final class ArchitectureFormatVersionTextTests: XCTestCase {
         }
     }
 
-    /// Protects: an unversioned file is legacy, and a version newer than this
-    /// build's is refused rather than read under rules that may not hold.
-    /// Fails if: a missing version stops meaning the legacy version, or the
-    /// upper bound is dropped.
-    func testNoVersionIsLegacyAndANewerVersionIsRefused() throws {
+    /// Protects: an unversioned file is the legacy format. (A newer version is
+    /// refused: SEBetaInitTests.testFutureAndMalformedVersionsAreRejected.)
+    /// Fails if: a missing version stops meaning the legacy version.
+    func testNoVersionIsTheLegacyFormat() throws {
         XCTAssertEqual(try ArchitectureFormat.safetensorsFormatVersion(metadataValue: nil, source: source),
                        ArchitectureFormat.unversionedLegacyVersion)
-        let newer = ArchitectureFormat.currentVersion + 1
-        XCTAssertThrowsError(try ArchitectureFormat.safetensorsFormatVersion(metadataValue: String(newer), source: source)) { error in
-            XCTAssertEqual(error as? ArchitectureFormat.FormatError,
-                           .unsupportedFutureVersion(version: newer, newestSupported: ArchitectureFormat.currentVersion,
-                                                     source: source))
-        }
     }
 }

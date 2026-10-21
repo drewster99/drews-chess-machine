@@ -300,7 +300,12 @@ final class LichessBotChallengeReconstructionTests: XCTestCase {
     /// and the attempt as an operator send.
     func testAPausedMatchmakingSendIsAFailureCompanion() throws {
         var lines = ProtocolLines()
-        lines.challenge(Self.refusedOutcome("atari-video-chess"), fields: ["credits_day": "108/200", "credits_minute": "1/25"], at: 1)
+        // The refusal a paused send follows: DCM's own daily bot-game limit (429),
+        // as the 2026-10-15 protocol log records it.
+        lines.challenge("challenge outcome: atari-video-chess refused: DCM's bot daily game limit (429), HTTP 429: "
+                        + "You played 100 games against other bots today, please wait before challenging another bot.; "
+                        + "counted 1 credits (worst case)",
+                        fields: ["credits_day": "108/200", "credits_minute": "1/25"], at: 1)
         lines.challenge("matchmaking send to ATARI-VIDEO-CHESS paused: Bot games paused: Lichess daily limit until 2:22 PM", at: 1.01)
         let reconstruction = try build(lines)
 

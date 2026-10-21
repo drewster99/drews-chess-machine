@@ -28,8 +28,7 @@ final class LichessBotFollowLineageSettingsTests: XCTestCase {
             "alerts.humanAcceptedOurChallengeSound", "alerts.weAcceptedHumanChallengeSound",
             "challenge.botGamesReservedForChallengeQueue", "challenge.botGamesReservedForIncoming",
             // Added 2026-10-17 by per-room greetings and event-triggered chat messages
-            // (LichessBotChatEvents); this save's room is the player's, so the
-            // spectator-room fields start from their defaults.
+            // (LichessBotChatEvents): absent from this save, so from their defaults.
             "chat.events", "chat.goodbyeSpectatorEnabled", "chat.goodbyeSpectatorTemplate",
             "chat.greetingSpectatorEnabled", "chat.greetingSpectatorTemplate",
             "matchmaking.noBotDeclineBlockDays",

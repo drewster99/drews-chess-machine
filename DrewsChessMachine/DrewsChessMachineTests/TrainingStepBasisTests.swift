@@ -327,4 +327,66 @@ final class TrainingStepBasisTests: XCTestCase {
         XCTAssertNil(decoded.file.trainingStepReading.statedTrainingStep)
         XCTAssertNil(decoded.file.trainingStepReading.legacyResolution)
     }
+
+    // MARK: - Rules scripts/dcm_lineage.py once mirrored
+
+    /// Protects: the trainer clock is a count — a negative one is refused — and
+    /// the schedule is whole: any schedule key without the clock is refused, in
+    /// the current and the previous schedule form.
+    /// Fails if: a negative clock or half a schedule reads as a trainer file.
+    func testAScheduleWithANegativeOrMissingClockIsRefused() throws {
+        let key = TrainerScheduleState.MetadataKey.completedTrainSteps
+        var negative = try schedule(5).metadataEntries()
+        negative[key] = "-1"
+        XCTAssertThrowsError(try TrainerScheduleState.decode(fromMetadata: negative)) { error in
+            guard case TrainerScheduleState.MetadataError.malformedValue(key, "-1")? = error as? TrainerScheduleState.MetadataError else {
+                return XCTFail("\(error)")
+            }
+        }
+        var current = try schedule(5).metadataEntries()
+        current.removeValue(forKey: key)
+        let legacy = [TrainerScheduleState.MetadataKey.legacyLRMomentumCycle: "{}",
+                      TrainerScheduleState.MetadataKey.lrWarmupSteps: "3"]
+        for (label, metadata) in [("current form", current), ("previous form", legacy)] {
+            XCTAssertThrowsError(try TrainerScheduleState.decode(fromMetadata: metadata), label) { error in
+                guard case TrainerScheduleState.MetadataError.missingKey(key)? = error as? TrainerScheduleState.MetadataError else {
+                    return XCTFail("\(label): \(error)")
+                }
+            }
+        }
+    }
+
+    /// Protects: a pre-v11 corpus-replay file with no trainer clock takes its
+    /// trainer step from its lineage record's cumulative total, and says so.
+    /// Fails if: the record's total is ignored (trainer step not recorded) or
+    /// the note stops naming where the step came from.
+    func testAPreV11ReplayFileWithoutAClockReadsItsTrainerStepFromItsRecord() throws {
+        let data = try rewritten(try plainFile(
+            creator: ModelCheckpointMetadata.corpusReplayCreator, trainingStep: 513,
+            record: try resumedRecord(startTrainerStep: 1_000, segmentStep: 513))) { md in
+            md[SafetensorsModelIO.Key.formatVersion] = "10"
+            md.removeValue(forKey: LineageRecord.MirrorKey.segmentLocalStep)
+        }
+        let reading = try SafetensorsModelIO.decode(data).file.trainingStepReading
+        XCTAssertEqual(reading.basis, .legacySegmentStep)
+        XCTAssertEqual(reading.trainerStep, 1_513)
+        XCTAssertEqual(reading.segmentStep, 513)
+        let note = try XCTUnwrap(reading.legacyResolution)
+        XCTAssertTrue(note.contains("lineage cum_trainer_step"), note)
+    }
+
+    /// Protects: a file at a format before lineage is read as unrecorded even
+    /// when it carries a `dcm_lineage` value — no writer of that format wrote
+    /// one, and the load reads that format by its own rules.
+    /// Fails if: the loader starts reading (or refusing) a record a pre-v7 file
+    /// carries.
+    func testAPreV7FileCarryingARecordReadsAsUnrecorded() throws {
+        let data = try rewritten(try plainFile(
+            creator: ModelCheckpointMetadata.corpusReplayCreator, trainingStep: 40,
+            record: try LineageRecord.forTests(trainerCompletedSteps: nil, corpus: nil))) { md in
+            md[SafetensorsModelIO.Key.formatVersion] = "6"
+        }
+        let file = try SafetensorsModelIO.decode(data).file
+        XCTAssertEqual(file.safetensorsProvenance?.lineage, .unrecorded(formatVersion: 6))
+    }
 }

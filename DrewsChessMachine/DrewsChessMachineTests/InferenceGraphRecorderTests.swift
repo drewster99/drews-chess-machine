@@ -35,12 +35,13 @@ final class InferenceGraphRecorderTests: XCTestCase {
         }
     }
 
-    /// Protects: attaching a recorder leaves the network's forward pass unchanged.
-    /// Fails if: a `ForwardGraphOps` wrapper calls a different MPSGraph op or
-    /// argument than the builder did directly (e.g. drops a name, swaps
-    /// operands, changes an epsilon), which would make the recording describe —
-    /// and the graph compute — something else.
-    func testARecordedNetworkComputesTheSameOutputsAsAnUnrecordedOne() async throws {
+    /// Protects: attaching a recorder leaves the built graph unchanged, so a
+    /// recording describes the network production builds without one.
+    /// Fails if: the recorder branch of a `ForwardGraphOps` wrapper builds an
+    /// extra op or returns a different tensor than the one it built. (A wrapper
+    /// that calls the wrong MPSGraph op changes both networks alike; the Core ML
+    /// parity test catches that.)
+    func testTheRecorderDoesNotChangeTheBuiltGraph() async throws {
         try requireMetal()
         let states = Array(LichessProbeData.largeSet.prefix(16)).map(\.state)
         for variant in try InferenceGraphTestArchitectures.all() {
@@ -85,7 +86,8 @@ final class InferenceGraphRecorderTests: XCTestCase {
         let output = ops.sigmoid(with: bypassed, name: "after_raw")
         XCTAssertThrowsError(try recorder.finish(persistentVariables: [], plan: [],
                                                  outputs: [(.policy, output)])) { error in
-            XCTAssertEqual(error as? InferenceGraphRecorder.RecordingError, .unrecordedTensor(consumer: "after_raw"))
+            XCTAssertEqual(error as? InferenceGraphRecorder.RecordingError,
+                           .unrecordedTensor(consumer: "after_raw", producer: "raw_relu"))
         }
     }
 
@@ -142,7 +144,8 @@ final class InferenceGraphRecorderTests: XCTestCase {
     /// Protects: weights.bin holds each plan tensor's float32 values at the
     /// offset graph.json gives, and refuses weights that do not fit the graph.
     /// Fails if: tensors are written out of order or at the wrong offset, or a
-    /// wrong-length tensor or a missing tensor is written instead of refused.
+    /// wrong-length tensor or a missing tensor is written instead of refused
+    /// (with the error that names it).
     func testTheWeightsFileLaysOutEveryTensorAtItsOffsetAndRefusesMismatches() throws {
         try requireMetal()
         let arch = try XCTUnwrap(InferenceGraphTestArchitectures.all().first).architecture
@@ -158,9 +161,34 @@ final class InferenceGraphRecorderTests: XCTestCase {
             XCTAssertEqual(stored, values, spec.name)
         }
 
-        XCTAssertThrowsError(try InferenceGraphExport.weightsFileData(graph: graph, weights: Array(weights.dropLast())))
+        XCTAssertThrowsError(try InferenceGraphExport.weightsFileData(graph: graph, weights: Array(weights.dropLast()))) { error in
+            XCTAssertEqual(error as? InferenceGraphExport.ExportError,
+                           .weightCountMismatch(have: weights.count - 1, want: graph.weights.count))
+        }
         var short = weights
         short[0].removeLast()
-        XCTAssertThrowsError(try InferenceGraphExport.weightsFileData(graph: graph, weights: short))
+        XCTAssertThrowsError(try InferenceGraphExport.weightsFileData(graph: graph, weights: short)) { error in
+            XCTAssertEqual(error as? InferenceGraphExport.ExportError,
+                           .weightSizeMismatch(name: graph.weights[0].name, have: short[0].count,
+                                               want: graph.weights[0].elementCount))
+        }
+    }
+
+    /// Protects: weights.bin holds the values a reduced-precision network's
+    /// variables hold — rounded to bf16 as `loadWeights` rounds them — so a
+    /// Core ML export computes with the same weights as the MPSGraph.
+    /// Fails if: the exporter writes the file's unrounded float32 values, or
+    /// stops recording the variable's data type.
+    func testTheWeightsFileHoldsTheValuesAReducedPrecisionVariableHolds() throws {
+        try requireMetal()
+        let fp32 = try XCTUnwrap(InferenceGraphTestArchitectures.all().first).architecture
+        let arch = try fp32.withComputeDataType(.bFloat16, tail: .mixedFinalProjection)
+        let graph = try InferenceGraphExport.record(architecture: arch)
+        XCTAssertTrue(graph.weights.allSatisfy { $0.dataType == .bfloat16 })
+        // 1 + 2^-10 is between two bf16 values (8 significant bits): it rounds to 1.
+        let weights = graph.weights.map { [Float](repeating: 1 + 1.0 / 1024, count: $0.elementCount) }
+        let data = try InferenceGraphExport.weightsFileData(graph: graph, weights: weights)
+        let stored = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        XCTAssertTrue(stored.allSatisfy { $0 == 1 })
     }
 }

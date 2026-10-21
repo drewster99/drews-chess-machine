@@ -413,4 +413,125 @@ final class LineageSchema3Tests: XCTestCase {
     private static func text(_ object: [String: Any]) throws -> String {
         String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
     }
+
+    // MARK: - What each schema requires and refuses (the rules scripts/dcm_lineage.py once mirrored)
+
+    private static func object(_ text: String) throws -> [String: Any] {
+        try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+    }
+
+    /// A current-schema record with a corpus position (the schema-2 replay
+    /// fixture, converted) and one with a segment summary (the second-segment
+    /// fixture, converted); each decodes as it stands.
+    private func currentSchemaRecords() throws -> (withCorpus: [String: Any], withSegment: [String: Any]) {
+        let withCorpus = try LineageRecord.decode(jsonText: Self.schemaTwoReplayRecord).withoutTrainerState().jsonText()
+        let withSegment = try LineageRecord.decode(jsonText: Self.schemaTwoSecondSegment).withoutTrainerState().jsonText()
+        XCTAssertNoThrow(try LineageRecord.decode(jsonText: withCorpus))
+        XCTAssertNoThrow(try LineageRecord.decode(jsonText: withSegment))
+        return (try Self.object(withCorpus), try Self.object(withSegment))
+    }
+
+    /// Protects: a record outside the decodable schemas is refused.
+    /// Fails if: the schema bounds stop being checked (a newer schema read
+    /// under older rules, or a retired one read at all).
+    func testASchemaOutsideTheDecodableRangeIsRefused() throws {
+        var object = try currentSchemaRecords().withCorpus
+        for schema in [LineageRecord.currentSchema + 1, LineageRecord.oldestDecodableSchema - 1] {
+            object["schema"] = schema
+            XCTAssertThrowsError(try LineageRecord.decode(jsonText: try Self.text(object)), "schema \(schema)")
+        }
+    }
+
+    /// Protects: every field schema 3 added is required from schema 3 on.
+    /// Fails if: any of them gains a silent default (read as unrecorded when
+    /// a schema-3 record omits it).
+    func testEveryFieldSchemaThreeAddedIsRequired() throws {
+        let records = try currentSchemaRecords()
+        for key in ["run_seeds", "ancestry"] {
+            var object = records.withCorpus
+            object.removeValue(forKey: key)
+            XCTAssertThrowsError(try LineageRecord.decode(jsonText: try Self.text(object)), key)
+        }
+        for key in ["git_diff_sha256", "xcode_build", "sdk_build", "configuration"] {
+            var object = records.withCorpus
+            var build = try XCTUnwrap(object["build"] as? [String: Any])
+            build.removeValue(forKey: key)
+            object["build"] = build
+            XCTAssertThrowsError(try LineageRecord.decode(jsonText: try Self.text(object)), "build.\(key)")
+        }
+        for key in ["configuration", "parameters", "corpus_identity", "segment_start_corpus", "path_kind", "argv", "run_seeds"] {
+            var object = records.withSegment
+            var segments = try XCTUnwrap(object["segments"] as? [[String: Any]])
+            XCTAssertNotNil(segments[0][key], key)
+            segments[0].removeValue(forKey: key)
+            object["segments"] = segments
+            XCTAssertThrowsError(try LineageRecord.decode(jsonText: try Self.text(object)), "segments[0].\(key)")
+        }
+    }
+
+    /// Protects: a schema-2 segment summary carrying a field only schema 3
+    /// wrote is refused, as a schema-2 record's top level is.
+    /// Fails if: a summary's schema-3 fields are read from a schema-2 record.
+    func testASchemaTwoSegmentSummaryCarryingASchemaThreeFieldIsRefused() throws {
+        var object = try Self.object(Self.schemaTwoSecondSegment)
+        var segments = try XCTUnwrap(object["segments"] as? [[String: Any]])
+        segments[0]["argv"] = ["recorded": true, "value": ["dcm"]]
+        object["segments"] = segments
+        XCTAssertThrowsError(try LineageRecord.decode(jsonText: try Self.text(object)))
+    }
+
+    /// Protects: each schema's corpus position has its own keys and none of
+    /// the other schema's.
+    /// Fails if: a position is read under the other schema's layout, or a
+    /// required key of it defaults.
+    func testACorpusPositionHasItsSchemasKeysOnly() throws {
+        let current = try currentSchemaRecords().withCorpus
+        func refused(_ base: [String: Any], _ label: String, _ change: (inout [String: Any]) -> Void) throws {
+            var object = base
+            var fed = try XCTUnwrap(object["fed"] as? [String: Any])
+            var corpus = try XCTUnwrap(fed["corpus"] as? [String: Any])
+            change(&corpus)
+            fed["corpus"] = corpus
+            object["fed"] = fed
+            XCTAssertThrowsError(try LineageRecord.decode(jsonText: try Self.text(object)), label)
+        }
+        try refused(current, "schema 3 with corpus_id") { $0["corpus_id"] = "c" }
+        try refused(current, "schema 3 with corpus_path") { $0["corpus_path"] = "/c" }
+        try refused(current, "schema 3 without corpus_identity") { $0.removeValue(forKey: "corpus_identity") }
+        try refused(current, "schema 3 without segment_start") { $0.removeValue(forKey: "segment_start") }
+        let schemaTwo = try Self.object(Self.schemaTwoReplayRecord)
+        try refused(schemaTwo, "schema 2 with corpus_identity") { $0["corpus_identity"] = ["first_only": ["corpus_id": "c"]] }
+        try refused(schemaTwo, "schema 2 without corpus_id") { $0.removeValue(forKey: "corpus_id") }
+        try refused(schemaTwo, "schema 2 without corpus_path") { $0.removeValue(forKey: "corpus_path") }
+
+        var notAnObject = current
+        var fed = try XCTUnwrap(notAnObject["fed"] as? [String: Any])
+        fed["corpus"] = "c"
+        notAnObject["fed"] = fed
+        XCTAssertThrowsError(try LineageRecord.decode(jsonText: try Self.text(notAnObject)), "corpus not an object")
+    }
+
+    /// Protects: the seed origin `command_line` is a schema-3 value: refused in
+    /// a schema-2 record, read in a later one.
+    /// Fails if: a schema-2 record may claim a seed given on the command line
+    /// (no schema-2 writer recorded one), or a later record may not.
+    func testCommandLineSeedOriginIsASchemaThreeValue() throws {
+        var schemaTwo = try Self.object(Self.schemaTwoReplayRecord)
+        var rng = try XCTUnwrap(schemaTwo["rng"] as? [String: Any])
+        var streams = try XCTUnwrap(rng["streams"] as? [String: Any])
+        XCTAssertNotNil(streams["seed_origin"])
+        streams["seed_origin"] = "command_line"
+        rng["streams"] = streams
+        schemaTwo["rng"] = rng
+        XCTAssertThrowsError(try LineageRecord.decode(jsonText: try Self.text(schemaTwo)))
+
+        var current = try currentSchemaRecords().withCorpus
+        var runSeeds = try XCTUnwrap(current["run_seeds"] as? [String: Any])
+        var entries = try XCTUnwrap(runSeeds["value"] as? [[String: Any]])
+        entries[0]["seed_origin"] = "command_line"
+        runSeeds["value"] = entries
+        current["run_seeds"] = runSeeds
+        let record = try LineageRecord.decode(jsonText: try Self.text(current))
+        XCTAssertEqual(record.runSeeds.value?.first?.seedOrigin, .commandLine)
+    }
 }

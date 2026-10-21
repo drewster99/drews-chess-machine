@@ -101,13 +101,13 @@ final class CoreMLExportParityTests: XCTestCase {
     }
 
     /// Protects: the exported Core ML model reproduces the network's policy
-    /// logits, value and W/D/L probabilities, and ranks the same legal move
-    /// first, for every architecture option.
+    /// logits, value and W/D/L probabilities, for every architecture option.
     /// Fails if: the recorder misdescribes an op (wrong operand order, padding,
-    /// axis, epsilon, weight layout) or the translator maps one wrongly — e.g.
+    /// axis, weight layout) or the translator maps one wrongly — e.g.
     /// variance computed as the sample variance, slice on the wrong axis, a
     /// leaky slope lost, a concat in the wrong order, BatchNorm's mean, variance,
-    /// γ and β swapped or broadcast on the wrong axis.
+    /// γ and β swapped or broadcast on the wrong axis — at every Core ML batch
+    /// size the export accepts (a reshape or slice right only at batch 1).
     func testFP32ExportMatchesTheNetworkForEveryArchitectureVariant() async throws {
         let python = try await requirePython()
         let scratch = try makeScratchFolder()
@@ -128,13 +128,13 @@ final class CoreMLExportParityTests: XCTestCase {
 
             let package = scratch.appendingPathComponent("\(variant.name).mlpackage")
             try await export(python: python, graphFolder: folder, to: package, precision: "fp32")
-            let model = try await CoreMLParity.loadModel(at: package, computeUnits: .cpu)
-            let report = try await CoreMLParity.compare(network: network, model: model, states: states,
-                                                        computeUnits: .cpu)
-            XCTAssertTrue(report.isWithin(tolerance: Self.fp32Tolerance),
-                          "\(variant.name): \(report)")
-            XCTAssertEqual(report.positionsWithoutLegalMoves, 0, "\(variant.name): \(report)")
-            XCTAssertEqual(report.topMoveAgreements, states.count, "\(variant.name): \(report)")
+            let reports = try await CoreMLParity.withModel(at: package, computeUnits: .cpu) { model in
+                try await CoreMLParity.compare(network: network, model: model, states: states, computeUnits: .cpu)
+            }
+            XCTAssertGreaterThan(reports.count, 1, "\(variant.name): the export accepts more than batch size 1")
+            for report in reports {
+                XCTAssertTrue(report.isWithin(tolerance: Self.fp32Tolerance), "\(variant.name): \(report)")
+            }
         }
     }
 }

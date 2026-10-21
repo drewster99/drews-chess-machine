@@ -3,14 +3,16 @@ import Foundation
 
 /// How closely a Core ML model exported from a network (`InferenceGraphExport`
 /// + `scripts/dcm_coreml_export.py`) reproduces that network's MPSGraph
-/// forward pass on the same positions.
+/// forward pass on the same positions, at one Core ML batch size.
 ///
 /// The check an export has to pass before anything plays with it, and the one
 /// `--coreml-parity` and `CoreMLExportParityTests` share. Differences are
 /// measured on the raw outputs (every policy logit, the value scalar, the W/D/L
-/// probabilities) and on the move each side would rank first among the legal
-/// moves — the quantity play depends on.
+/// probabilities) and on the move each side ranks first among the legal moves —
+/// the quantity play depends on.
 struct CoreMLParityReport: Encodable, Sendable {
+    /// The Core ML batch size the predictions ran at.
+    let batchSize: Int
     let positions: Int
     let computeUnits: String
     /// Largest |MPSGraph − Core ML| over every policy logit of every position.
@@ -22,18 +24,18 @@ struct CoreMLParityReport: Encodable, Sendable {
     let valueProbsMaxAbsDiff: Float
     /// Positions where both rank the same legal move first.
     let topMoveAgreements: Int
-    /// Positions with a non-finite Core ML output; their differences are not in
-    /// the maxima above.
+    /// Positions with a non-finite Core ML output.
     let nonFiniteCoreMLPositions: Int
     /// Positions with a non-finite MPSGraph output (a broken model, not an
-    /// export fault); also left out of the maxima.
+    /// export fault).
     let nonFiniteReferencePositions: Int
-    /// Positions with no legal move (checkmate, stalemate): there is no top
-    /// move to compare, so they are not in `topMoveAgreements`.
+    /// Positions with no legal move (checkmate, stalemate): no top move to
+    /// compare, so not in `topMoveAgreements`.
     let positionsWithoutLegalMoves: Int
 
     enum CodingKeys: String, CodingKey {
         case positions
+        case batchSize = "batch_size"
         case computeUnits = "compute_units"
         case policyMaxAbsDiff = "policy_max_abs_diff"
         case policyMeanAbsDiff = "policy_mean_abs_diff"
@@ -46,8 +48,9 @@ struct CoreMLParityReport: Encodable, Sendable {
         case positionsWithoutLegalMoves = "positions_without_legal_moves"
     }
 
-    /// Whether every raw-output difference is at most `tolerance` and nothing
-    /// on either side was non-finite.
+    /// Whether every raw-output difference (over the positions where both
+    /// sides are finite) is at most `tolerance` and nothing on either side was
+    /// non-finite.
     func isWithin(tolerance: Float) -> Bool {
         nonFiniteCoreMLPositions == 0 && nonFiniteReferencePositions == 0
             && policyMaxAbsDiff <= tolerance && valueMaxAbsDiff <= tolerance && valueProbsMaxAbsDiff <= tolerance
@@ -63,6 +66,8 @@ enum CoreMLParity {
         case missingOutput(String)
         case outputSize(name: String, have: Int, want: Int)
         case networkOutputSize(have: Int, want: Int)
+        case noBatchSizes
+        case compiledModelRemains(path: String, reason: String)
 
         var errorDescription: String? {
             switch self {
@@ -72,6 +77,10 @@ enum CoreMLParity {
                 return "Core ML output '\(name)' holds \(have) values; expected \(want)"
             case .networkOutputSize(let have, let want):
                 return "the network returned \(have) values; expected \(want)"
+            case .noBatchSizes:
+                return "the Core ML model's input names no batch size this check can use (it needs batch size 1)"
+            case .compiledModelRemains(let path, let reason):
+                return "the compiled model at \(path) could not be removed: \(reason)"
             }
         }
     }
@@ -98,31 +107,68 @@ enum CoreMLParity {
         var valueProbabilities: [Float]
     }
 
-    /// Loads an `.mlpackage` (compiled first; the compiled copy is Core ML's
-    /// temporary) or an already compiled `.mlmodelc`.
-    static func loadModel(at url: URL, computeUnits: ComputeUnits) async throws -> MLModel {
-        let compiled = url.pathExtension == "mlmodelc" ? url : try await MLModel.compileModel(at: url)
+    /// Runs `body` with the Core ML model at `url` loaded. An `.mlpackage` is
+    /// compiled first, and the compiled copy (Core ML's temporary, the
+    /// caller's to remove) is removed afterwards by identity; an `.mlmodelc`
+    /// is loaded as it is.
+    static func withModel<T: Sendable>(at url: URL, computeUnits: ComputeUnits,
+                                       _ body: (MLModel) async throws -> T) async throws -> T {
         let configuration = MLModelConfiguration()
         configuration.computeUnits = computeUnits.mlComputeUnits
-        return try await MLModel.load(contentsOf: compiled, configuration: configuration)
+        guard url.pathExtension != "mlmodelc" else {
+            return try await body(try await MLModel.load(contentsOf: url, configuration: configuration))
+        }
+        let compiled = try await MLModel.compileModel(at: url)
+        let identity = try FileSafety.existingItem(at: compiled)?.identity
+        let result: Result<T, Error>
+        do {
+            result = .success(try await body(try await MLModel.load(contentsOf: compiled, configuration: configuration)))
+        } catch {
+            result = .failure(error)
+        }
+        if let identity {
+            do {
+                try FileSafety.removeOwnedItem(at: compiled, identity: identity)
+            } catch {
+                throw ParityError.compiledModelRemains(path: compiled.path, reason: error.localizedDescription)
+            }
+        }
+        return try result.get()
     }
 
-    /// Core ML's outputs for `count` encoded boards, one prediction each.
+    /// The batch sizes the model's input accepts (its enumerated shapes), or
+    /// its one fixed batch size; batch size 1 must be among them.
+    static func batchSizes(of model: MLModel) throws -> [Int] {
+        guard let constraint = model.modelDescription.inputDescriptionsByName[inputName]?.multiArrayConstraint else {
+            throw ParityError.noBatchSizes
+        }
+        let shapes = constraint.shapeConstraint.enumeratedShapes
+        let sizes = shapes.isEmpty ? [constraint.shape[0].intValue] : shapes.map { $0[0].intValue }
+        let sorted = Array(Set(sizes)).sorted()
+        guard sorted.contains(1) else { throw ParityError.noBatchSizes }
+        return sorted
+    }
+
+    /// Core ML's outputs for `count` encoded boards, `batchSize` per prediction;
+    /// a remainder smaller than `batchSize` runs one board at a time.
     static func predict(model: MLModel, boards: [Float], count: Int, planes: Int,
-                        valueClasses: Int) async throws -> Outputs {
+                        valueClasses: Int, batchSize: Int) async throws -> Outputs {
         let boardLength = planes * ChessNetwork.boardSize * ChessNetwork.boardSize
         precondition(boards.count == count * boardLength, "boards hold count encoded positions")
         var outputs = Outputs(policy: [], value: [], valueProbabilities: [])
         outputs.policy.reserveCapacity(count * ChessNetwork.policySize)
-        for index in 0..<count {
-            let board = Array(boards[(index * boardLength)..<((index + 1) * boardLength)])
-            let input = MLMultiArray(MLShapedArray<Float>(scalars: board, shape: [1, planes, 8, 8]))
+        var start = 0
+        while start < count {
+            let size = count - start >= batchSize ? batchSize : 1
+            let slice = Array(boards[(start * boardLength)..<((start + size) * boardLength)])
+            let input = MLMultiArray(MLShapedArray<Float>(scalars: slice, shape: [size, planes, 8, 8]))
             let features = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: input)])
             let result = try await model.prediction(from: features)
-            outputs.policy += try values(result, InferenceGraphOutputName.policy.rawValue, count: ChessNetwork.policySize)
-            outputs.value += try values(result, InferenceGraphOutputName.value.rawValue, count: 1)
+            outputs.policy += try values(result, InferenceGraphOutputName.policy.rawValue, count: size * ChessNetwork.policySize)
+            outputs.value += try values(result, InferenceGraphOutputName.value.rawValue, count: size)
             outputs.valueProbabilities += try values(
-                result, InferenceGraphOutputName.valueProbabilities.rawValue, count: valueClasses)
+                result, InferenceGraphOutputName.valueProbabilities.rawValue, count: size * valueClasses)
+            start += size
         }
         return outputs
     }
@@ -150,9 +196,10 @@ enum CoreMLParity {
         return outputs
     }
 
-    /// Compares `model` with `network` on `states`.
+    /// Compares `model` with `network` on `states`, once per batch size the
+    /// model accepts.
     static func compare(network: ChessNetwork, model: MLModel, states: [GameState],
-                        computeUnits: ComputeUnits) async throws -> CoreMLParityReport {
+                        computeUnits: ComputeUnits) async throws -> [CoreMLParityReport] {
         let arch = network.arch
         let boards = await onWorkQueue {
             var boards: [Float] = []
@@ -161,12 +208,17 @@ enum CoreMLParity {
             return boards
         }
         let reference = try await networkOutputs(network: network, boards: boards, count: states.count)
-        let candidate = try await predict(model: model, boards: boards, count: states.count,
-                                          planes: arch.inputPlanes, valueClasses: arch.valueHeadClasses)
-        return await onWorkQueue {
-            report(states: states, reference: reference, candidate: candidate,
-                   valueClasses: arch.valueHeadClasses, computeUnits: computeUnits)
+        var reports: [CoreMLParityReport] = []
+        for batchSize in try batchSizes(of: model) {
+            let candidate = try await predict(model: model, boards: boards, count: states.count,
+                                              planes: arch.inputPlanes, valueClasses: arch.valueHeadClasses,
+                                              batchSize: batchSize)
+            reports.append(await onWorkQueue {
+                report(states: states, reference: reference, candidate: candidate,
+                       valueClasses: arch.valueHeadClasses, batchSize: batchSize, computeUnits: computeUnits)
+            })
         }
+        return reports
     }
 
     /// Runs CPU-bound work (encoding, move generation over thousands of
@@ -178,7 +230,7 @@ enum CoreMLParity {
     }
 
     static func report(states: [GameState], reference: Outputs, candidate: Outputs, valueClasses: Int,
-                       computeUnits: ComputeUnits) -> CoreMLParityReport {
+                       batchSize: Int, computeUnits: ComputeUnits) -> CoreMLParityReport {
         let size = ChessNetwork.policySize
         var policyMax: Float = 0, policySum: Double = 0, policyCount = 0
         var legalMax: Float = 0, valueMax: Float = 0, probabilitiesMax: Float = 0
@@ -188,16 +240,13 @@ enum CoreMLParity {
             let cand = candidate.policy[(index * size)..<((index + 1) * size)]
             let refProbabilities = reference.valueProbabilities[(index * valueClasses)..<((index + 1) * valueClasses)]
             let candProbabilities = candidate.valueProbabilities[(index * valueClasses)..<((index + 1) * valueClasses)]
-            guard ref.allSatisfy(\.isFinite), reference.value[index].isFinite,
-                  refProbabilities.allSatisfy(\.isFinite) else {
-                nonFiniteReference += 1
-                continue
-            }
-            guard cand.allSatisfy(\.isFinite), candidate.value[index].isFinite,
-                  candProbabilities.allSatisfy(\.isFinite) else {
-                nonFinite += 1
-                continue
-            }
+            let referenceFinite = ref.allSatisfy(\.isFinite) && reference.value[index].isFinite
+                && refProbabilities.allSatisfy(\.isFinite)
+            let candidateFinite = cand.allSatisfy(\.isFinite) && candidate.value[index].isFinite
+                && candProbabilities.allSatisfy(\.isFinite)
+            if !referenceFinite { nonFiniteReference += 1 }
+            if !candidateFinite { nonFinite += 1 }
+            guard referenceFinite, candidateFinite else { continue }
             for (r, c) in zip(ref, cand) {
                 let d = abs(r - c)
                 policyMax = max(policyMax, d)
@@ -222,7 +271,7 @@ enum CoreMLParity {
             if refBest == candBest { agreements += 1 }
         }
         return CoreMLParityReport(
-            positions: states.count, computeUnits: computeUnits.rawValue,
+            batchSize: batchSize, positions: states.count, computeUnits: computeUnits.rawValue,
             policyMaxAbsDiff: policyMax, policyMeanAbsDiff: policyCount == 0 ? 0 : Float(policySum / Double(policyCount)),
             legalPolicyMaxAbsDiff: legalMax, valueMaxAbsDiff: valueMax, valueProbsMaxAbsDiff: probabilitiesMax,
             topMoveAgreements: agreements, nonFiniteCoreMLPositions: nonFinite,

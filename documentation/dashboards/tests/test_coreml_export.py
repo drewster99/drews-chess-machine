@@ -1,7 +1,9 @@
-"""Tests for scripts/dcm_coreml_export.py: what it refuses and how it folds constants.
+"""Tests for scripts/dcm_coreml_export.py: what it refuses, how it folds constants,
+and the types mirror precision gives each op.
 
 The translation of every operation kind is proven end to end against the app's own
-forward pass by CoreMLExportParityTests (Swift); these cover the script's own rules.
+forward pass by CoreMLExportParityTests (Swift); these cover the script's own rules,
+on graph files written the way `--export-inference-graph` writes them.
 
 Run: python3 -m unittest discover -s documentation/dashboards/tests
 Tests that build a MIL program need coremltools and skip without it.
@@ -30,23 +32,22 @@ def write_graph(folder, graph, weights_bytes):
         handle.write(weights_bytes)
 
 
-def one_weight_graph(**overrides):
-    graph = {
-        "format_version": export.GRAPH_FORMAT_VERSION,
-        "input": {"id": "board", "shape": [-1, 2, 8, 8], "data_type": "float32"},
-        "weights": [{"id": "w0", "name": "stem.conv.weight", "shape": [1, 2, 1, 1],
-                     "byte_offset": 0, "element_count": 2}],
-        "operations": [],
-        "outputs": [],
-    }
-    graph.update(overrides)
-    return graph
+def weight(weight_id, name, shape, offset, data_type="float32"):
+    return {"id": weight_id, "name": name, "shape": shape, "data_type": data_type,
+            "byte_offset": offset, "element_count": int(np.prod(shape))}
+
+
+def graph_with(weights=(), operations=(), outputs=()):
+    return {"format_version": export.GRAPH_FORMAT_VERSION,
+            "input": {"id": "board", "shape": [-1, 2, 8, 8], "data_type": "float32"},
+            "weights": list(weights), "operations": list(operations), "outputs": list(outputs)}
 
 
 class LoadGraphTests(unittest.TestCase):
-    """Protects: a graph folder is read only when it is the format and size the script
-    understands. Fails if: a newer graph format, or a weights file that does not match
-    the graph, is read anyway (silently wrong weights)."""
+    """Protects: a graph folder is read only when it is the format the script reads,
+    its ids are unique and its weights tile weights.bin exactly. Fails if: a newer
+    format, overlapping or out-of-range weights, a short or long weights file, or a
+    reused id is read anyway (silently wrong weights or operands)."""
 
     def load(self, graph, weights_bytes):
         with tempfile.TemporaryDirectory() as folder:
@@ -54,108 +55,119 @@ class LoadGraphTests(unittest.TestCase):
             return export.load_graph(folder)
 
     def test_reads_weights_in_their_graph_shape(self):
-        _, weights = self.load(one_weight_graph(), np.array([1.5, -2.0], dtype="<f4").tobytes())
+        graph = graph_with([weight("w0", "a", [1, 2, 1, 1], 0), weight("w1", "b", [2], 8)])
+        _, weights = self.load(graph, np.array([1.5, -2.0, 3.0, 4.0], dtype="<f4").tobytes())
         self.assertEqual(weights["w0"].shape, (1, 2, 1, 1))
         self.assertEqual(weights["w0"].ravel().tolist(), [1.5, -2.0])
+        self.assertEqual(weights["w1"].tolist(), [3.0, 4.0])
 
     def test_refuses_another_graph_format(self):
+        graph = graph_with([weight("w0", "a", [2], 0)])
+        graph["format_version"] = export.GRAPH_FORMAT_VERSION + 1
         with self.assertRaisesRegex(export.ExportError, "graph format"):
-            self.load(one_weight_graph(format_version=export.GRAPH_FORMAT_VERSION + 1),
-                      np.zeros(2, dtype="<f4").tobytes())
+            self.load(graph, np.zeros(2, dtype="<f4").tobytes())
 
     def test_refuses_a_weights_file_longer_than_the_graph(self):
         with self.assertRaisesRegex(export.ExportError, "holds 3 values"):
-            self.load(one_weight_graph(), np.zeros(3, dtype="<f4").tobytes())
+            self.load(graph_with([weight("w0", "a", [2], 0)]), np.zeros(3, dtype="<f4").tobytes())
 
     def test_refuses_a_weight_past_the_end_of_the_file(self):
-        with self.assertRaisesRegex(export.ExportError, "does not fit"):
-            self.load(one_weight_graph(), np.zeros(1, dtype="<f4").tobytes())
+        with self.assertRaisesRegex(export.ExportError, "past the end"):
+            self.load(graph_with([weight("w0", "a", [2], 0)]), np.zeros(1, dtype="<f4").tobytes())
+
+    def test_refuses_overlapping_weights(self):
+        graph = graph_with([weight("w0", "a", [2], 0), weight("w1", "b", [2], 0)])
+        with self.assertRaisesRegex(export.ExportError, "does not continue"):
+            self.load(graph, np.zeros(4, dtype="<f4").tobytes())
 
     def test_refuses_a_weight_whose_shape_disagrees_with_its_count(self):
-        graph = one_weight_graph()
+        graph = graph_with([weight("w0", "a", [2], 0)])
         graph["weights"][0]["shape"] = [3]
-        with self.assertRaisesRegex(export.ExportError, "does not fit"):
+        with self.assertRaisesRegex(export.ExportError, "does not continue"):
+            self.load(graph, np.zeros(2, dtype="<f4").tobytes())
+
+    def test_refuses_an_id_used_twice(self):
+        graph = graph_with([weight("w0", "a", [2], 0)],
+                           [{"id": "w0", "label": None, "data_type": "float32", "kind": {"reLU": {"input": "board"}}}])
+        with self.assertRaisesRegex(export.ExportError, "used more than once: w0"):
             self.load(graph, np.zeros(2, dtype="<f4").tobytes())
 
 
 @unittest.skipUnless(HAVE_COREMLTOOLS, "coremltools is not installed")
 class TranslateTests(unittest.TestCase):
-    """Protects: the translator refuses what it does not know and folds constant-only
-    chains. Fails if: an unknown operation kind is skipped or guessed instead of refused,
-    or the ReZero chain C*tanh(a/C) (a weight and constants only) is not evaluated."""
+    """Protects: the translator refuses what it does not know, folds constant-only
+    chains, and gives each op the type the precision mode asks for. Fails if: an
+    unknown operation kind is skipped or guessed instead of refused, the ReZero chain
+    C*tanh(a/C) is not evaluated, or mirror stops running a recorded bf16 op in fp16
+    and a recorded fp32 op in fp32."""
 
-    def build(self, operations, outputs, weights=None):
+    def program(self, graph, weights, precision="fp32"):
         import coremltools as ct
         from coremltools.converters.mil import Builder as mb
-        graph = {"input": {"id": "board"}, "operations": operations, "outputs": outputs}
-        build, _ = export.translate(graph, weights or {}, mb)
+        from coremltools.converters.mil.mil import types
+        build = export.translate(graph, weights, mb, types, precision)
 
         @mb.program(input_specs=[mb.TensorSpec(shape=(1, 2, 8, 8))], opset_version=ct.target.macOS15)
         def program(board):
             return tuple(build(board).values())
         return program
 
+    def op(self, op_id, kind, args, data_type="float32"):
+        return {"id": op_id, "label": None, "data_type": data_type, "kind": {kind: args}}
+
     def test_an_unknown_operation_kind_is_refused(self):
         with self.assertRaisesRegex(export.ExportError, "unknown operation kind 'swish'"):
-            self.build([{"id": "t0", "data_type": "float32", "kind": {"swish": {"input": "board"}}}],
-                       [{"name": "policy", "id": "t0"}])
+            self.program(graph_with([], [self.op("t0", "swish", {"input": "board"})],
+                                    [{"name": "policy", "id": "t0"}]), {})
 
     def test_an_operand_read_before_it_is_defined_is_refused(self):
         with self.assertRaisesRegex(export.ExportError, "'t9' is not defined"):
-            self.build([{"id": "t0", "data_type": "float32", "kind": {"reLU": {"input": "t9"}}}],
-                       [{"name": "policy", "id": "t0"}])
+            self.program(graph_with([], [self.op("t0", "reLU", {"input": "t9"})], [{"name": "policy", "id": "t0"}]), {})
 
     def test_an_output_that_does_not_depend_on_the_board_is_refused(self):
         with self.assertRaisesRegex(export.ExportError, "does not depend on the board"):
-            self.build([{"id": "t0", "data_type": "float32", "kind": {"constant": {"values": [1.0], "shape": [1]}}}],
-                       [{"name": "policy", "id": "t0"}])
+            self.program(graph_with([], [self.op("t0", "constant", {"values": [1.0], "shape": [1]})],
+                                    [{"name": "policy", "id": "t0"}]), {})
 
     def test_the_rezero_scale_folds_to_one_constant(self):
-        cap, alpha = 0.5, np.array([0.8], dtype=np.float32)
-        ops = [
-            {"id": "t0", "data_type": "float32", "kind": {"constant": {"values": [cap], "shape": []}}},
-            {"id": "t1", "data_type": "float32", "kind": {"division": {"primary": "w0", "secondary": "t0"}}},
-            {"id": "t2", "data_type": "float32", "kind": {"tanh": {"input": "t1"}}},
-            {"id": "t3", "data_type": "float32", "kind": {"multiplication": {"primary": "t0", "secondary": "t2"}}},
-            {"id": "t4", "data_type": "float32", "kind": {"multiplication": {"primary": "board", "secondary": "t3"}}},
-        ]
-        program = self.build(ops, [{"name": "policy", "id": "t4"}], {"w0": alpha})
+        cap = 0.5
+        ops = [self.op("t0", "constant", {"values": [cap], "shape": []}),
+               self.op("t1", "division", {"primary": "w0", "secondary": "t0"}),
+               self.op("t2", "tanh", {"input": "t1"}),
+               self.op("t3", "multiplication", {"primary": "t0", "secondary": "t2"}),
+               self.op("t4", "multiplication", {"primary": "board", "secondary": "t3"})]
+        program = self.program(graph_with([weight("w0", "alpha", [1], 0)], ops, [{"name": "policy", "id": "t4"}]),
+                               {"w0": np.array([0.8], dtype=np.float32)})
         mul = [op for op in program.functions["main"].operations if op.op_type == "mul"]
         self.assertEqual(len(mul), 1, "only the board multiplication is left in the program")
         self.assertAlmostEqual(float(np.asarray(mul[0].y.val).ravel()[0]), cap * np.tanh(0.8 / cap), places=6)
 
+    def test_mirror_runs_each_op_in_its_recorded_type(self):
+        """A bf16 conv, widened to fp32 for its BN, as a policy tail is recorded."""
+        from coremltools.converters.mil.mil import types
+        graph = graph_with(
+            [weight("w0", "conv.weight", [3, 2, 1, 1], 0, "bfloat16")] +
+            [weight(f"w{i}", f"bn.{name}", [1, 3, 1, 1], 24 + 12 * (i - 1), "float32")
+             for i, name in enumerate(("weight", "bias", "running_mean", "running_var"), start=1)],
+            [self.op("t0", "cast", {"input": "board"}, "bfloat16"),
+             self.op("t1", "convolution2D", {"input": "t0", "weights": "w0", "strideY": 1, "strideX": 1,
+                                             "dilationY": 1, "dilationX": 1, "groups": 1, "paddingTop": 0,
+                                             "paddingBottom": 0, "paddingLeft": 0, "paddingRight": 0}, "bfloat16"),
+             self.op("t2", "cast", {"input": "t1"}, "float32"),
+             self.op("t3", "normalize", {"input": "t2", "mean": "w3", "variance": "w4", "gamma": "w1", "beta": "w2",
+                                         "epsilon": 1e-5}, "float32")],
+            [{"name": "policy", "id": "t3"}])
+        weights = {"w0": np.ones((3, 2, 1, 1), np.float32), "w1": np.ones((1, 3, 1, 1), np.float32),
+                   "w2": np.zeros((1, 3, 1, 1), np.float32), "w3": np.zeros((1, 3, 1, 1), np.float32),
+                   "w4": np.ones((1, 3, 1, 1), np.float32)}
+        operations = {op.name: op for op in self.program(graph, weights, "mirror").functions["main"].operations}
+        self.assertEqual(operations["t1"].outputs[0].dtype, types.fp16)
+        self.assertEqual(operations["t2"].outputs[0].dtype, types.fp32)
+        self.assertEqual(operations["t3"].outputs[0].dtype, types.fp32)
 
-class ComputePrecisionTests(unittest.TestCase):
-    """Protects: mirror precision runs an op in fp16 exactly when the MPSGraph ran it in
-    bf16/fp16, and an op a lowering adds follows the op it came from. Fails if: the
-    selector stops reading the recorded type, or stops mapping `<id>__<part>` to `<id>`
-    (the policy tail's normalization parts would then drop to fp16), or lets an op the
-    converter adds run in fp16 inside an all-fp32 model."""
-
-    @unittest.skipUnless(HAVE_COREMLTOOLS, "coremltools is not installed")
-    def test_mirror_selects_fp16_by_the_recorded_type(self):
-        import coremltools as ct
-        selector = export.compute_precision(ct, "mirror", {"t1": "bfloat16", "t2": "float32"}).op_selector
-
-        class Op:
-            def __init__(self, name):
-                self.name = name
-        self.assertTrue(selector(Op("t1")))
-        self.assertTrue(selector(Op("t1__scale")))
-        self.assertFalse(selector(Op("t2")))
-        self.assertFalse(selector(Op("t2__inv_std")))
-        self.assertTrue(selector(Op("converter_added")), "follows a reduced-precision network")
-
-    @unittest.skipUnless(HAVE_COREMLTOOLS, "coremltools is not installed")
-    def test_mirror_keeps_an_all_fp32_network_in_fp32(self):
-        import coremltools as ct
-        selector = export.compute_precision(ct, "mirror", {"t1": "float32", "policy": "float32"}).op_selector
-
-        class Op:
-            def __init__(self, name):
-                self.name = name
-        self.assertFalse(selector(Op("t1")))
-        self.assertFalse(selector(Op("converter_added")))
+    def test_an_unknown_recorded_type_is_refused(self):
+        with self.assertRaisesRegex(export.ExportError, "unknown recorded data type 'int8'"):
+            export.mil_type("int8", "mirror")
 
 
 if __name__ == "__main__":

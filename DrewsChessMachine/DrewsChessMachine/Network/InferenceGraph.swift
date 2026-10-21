@@ -24,7 +24,7 @@ import MetalPerformanceShadersGraph
 struct InferenceGraph: Codable, Equatable, Sendable {
     /// Bumped whenever an operation kind, field or meaning changes, so an
     /// exporter written for one version refuses another instead of misreading it.
-    static let currentFormatVersion = 1
+    static let currentFormatVersion = 2
 
     let formatVersion: Int
     let input: GraphInput
@@ -53,17 +53,20 @@ struct GraphInput: Codable, Equatable, Sendable {
 
 /// One persistent tensor the graph reads: its plan name (`weightTensorPlan`),
 /// the shape the MPSGraph variable is declared with (BN parameters
-/// `[1, C, 1, 1]`, fully connected weights `[in, out]`, conv weights OIHW), and
-/// where its float32 values sit in the weights file.
+/// `[1, C, 1, 1]`, fully connected weights `[in, out]`, conv weights OIHW), the
+/// data type the variable holds, and where its values sit in the weights file
+/// (float32, already rounded to `dataType` — the values the variable holds).
 struct GraphWeight: Codable, Equatable, Sendable {
     let id: String
     let name: String
     let shape: [Int]
+    let dataType: GraphDataType
     let byteOffset: Int
     let elementCount: Int
 
     enum CodingKeys: String, CodingKey {
         case id, name, shape
+        case dataType = "data_type"
         case byteOffset = "byte_offset"
         case elementCount = "element_count"
     }

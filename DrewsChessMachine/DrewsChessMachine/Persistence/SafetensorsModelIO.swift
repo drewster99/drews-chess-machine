@@ -451,97 +451,116 @@ enum SafetensorsModelIO {
         // Keep each tensor's stored SHAPE, not just its data: the dimensions are
         // what decide whether `fromTorchLayout` un-transposes correctly, and
         // discarding them here is what left the load guard unable to see a
-        // transposed tensor (see the dims check below).
+        // transposed tensor (see `inspect`).
         var byName: [String: SafetensorsTensor] = [:]
         byName.reserveCapacity(tensors.count)
         for t in tensors { byName[t.name] = t }
 
-        let (architecture, architectureFormat) = try decodeArchitecture(
-            fromMetadata: md, source: source, sessionTrainerPolicyTail: sessionTrainerPolicyTail)
-
-        // Identity is the embedded architecture itself (no arch_hash); integrity
-        // is content_sha256 (verified in SafetensorsFile). A hand-edited config
-        // surfaces as a weight-shape mismatch against the plan below.
-        let hasVelocity = tensors.contains { $0.name.hasPrefix("opt.") && $0.name.hasSuffix(".velocity") }
-        let names = tensorNames(for: architecture, includesVelocity: hasVelocity)
-        let plan = architecture.weightTensorPlan()
-
-        // Pass 1 — element counts, across EVERY plan position before any
-        // dimension is judged.
-        //
-        // The file's per-tensor element count (validated against its own header
-        // shape in `SafetensorsFile.decode`) must also agree with the embedded
-        // architecture's plan — they are two independent shape sources and
-        // `fromTorchLayout` indexes by the plan's dims. A mismatch (hand-edited
-        // config, buggy external writer) would otherwise run `transpose2D` off
-        // the end of the data; surface it as a clean error so the embedded arch
-        // stays the single source of truth for what shapes we accept.
-        //
-        // Deliberately a separate pass rather than folded into the loop below: a
-        // truncated or overlong tensor is a grosser failure than a mis-declared
-        // shape, so it should be reported wherever it sits. Interleaved, a
-        // dimension complaint about position 0 would mask a truncated tensor at
-        // position 90 and send the reader chasing the wrong thing.
-        for (i, name) in names.enumerated() where i < plan.count {
-            guard let tensor = byName[name] else { throw IOError.missingTensor(name) }
-            guard tensor.data.count == plan[i].elementCount else {
-                throw IOError.tensorShapeMismatch(
-                    name: name, expected: plan[i].elementCount, got: tensor.data.count
-                )
-            }
-        }
+        let inspected = try inspect(
+            tensorShapes: byName.mapValues(\.shape), metadata: md, source: source,
+            sessionTrainerPolicyTail: sessionTrainerPolicyTail)
+        let plan = inspected.architecture.weightTensorPlan()
 
         var weights: [[Float]] = []
-        weights.reserveCapacity(names.count)
-        for (i, name) in names.enumerated() {
+        weights.reserveCapacity(inspected.tensorNames.count)
+        for (i, name) in inspected.tensorNames.enumerated() {
             guard let tensor = byName[name] else { throw IOError.missingTensor(name) }
-            let torchData = tensor.data
             if i < plan.count {
-                // Count alone is not sufficient. `fromTorchLayout` un-transposes a
-                // `.linear` using the PLAN's dims, so a tensor stored `[in, out]`
-                // instead of `[out, in]` has an identical element count, sails past
-                // the check above, and comes back silently scrambled. Compare the
-                // stored dimensions against what this position is supposed to look
-                // like in torch layout. Squeezed, so a writer that spells a bias
-                // `[1, C, 1, 1]` rather than `[C]` is still accepted — the axes that
-                // carry no values are not worth rejecting a file over.
-                let expectedDims = WeightTensorSpec.squeeze(Self.torchShape(for: plan[i]))
-                let actualDims = WeightTensorSpec.squeeze(tensor.shape)
-                guard actualDims == expectedDims else {
-                    throw IOError.tensorDimsMismatch(
-                        name: name, expected: Self.torchShape(for: plan[i]), got: tensor.shape
-                    )
-                }
-                // Reverse the PyTorch layout back to the engine's native flat order.
-                weights.append(Self.fromTorchLayout(kind: plan[i].kind, nativeShape: plan[i].shape, torchData: torchData))
+                weights.append(Self.fromTorchLayout(kind: plan[i].kind, nativeShape: plan[i].shape, torchData: tensor.data))
             } else {
-                weights.append(torchData) // velocity: stored native flat
+                weights.append(tensor.data) // velocity: stored native flat
             }
         }
 
-        // Remove the value head's shared offset unless the file is marked as
-        // already centered (see `ValueHeadRecentering`). Runs here, on the
-        // decoded native-layout values, so every loader — model files,
-        // sessions' champion and trainer files, CLIs — sees the same weights.
         let valueHeadCentering: ValueHeadCentering
         switch valueHead {
         case .recenterUnlessMarked:
             valueHeadCentering = try ValueHeadRecentering.apply(
                 to: &weights,
-                architecture: architecture,
-                includesVelocity: hasVelocity,
-                markedCentered: try ValueHeadRecentering.isMarkedCentered(md[ValueHeadRecentering.metadataKey])
+                architecture: inspected.architecture,
+                includesVelocity: inspected.hasVelocity,
+                markedCentered: inspected.markedCentered
             )
         case .asStored:
             valueHeadCentering = .keptAsStored
         }
 
+        let file = ModelCheckpointFile(
+            modelID: inspected.modelID,
+            createdAtUnix: md[Key.createdAt].flatMap { Int64($0) } ?? 0,
+            metadata: inspected.metadata,
+            weights: weights,
+            architecture: inspected.architecture,
+            valueHeadCentering: valueHeadCentering,
+            architectureFormat: inspected.architectureFormat,
+            safetensorsProvenance: inspected.provenance,
+            trainingStepReading: inspected.stepReading
+        )
+        return Decoded(file: file, architecture: inspected.architecture, hasVelocity: inspected.hasVelocity,
+                       architectureFormat: inspected.architectureFormat)
+    }
+
+    /// Everything a model file's header says, checked as a load checks it.
+    struct InspectedHeader {
+        let architecture: NetworkArchitecture
+        let architectureFormat: ArchitectureFormat.DecodeFormat
+        /// The tensors a load reads, in weight order (`tensorNames`).
+        let tensorNames: [String]
+        let hasVelocity: Bool
+        let markedCentered: Bool
+        let metadata: ModelCheckpointMetadata
+        let modelID: String
+        let provenance: ModelCheckpointFile.SafetensorsProvenance
+        let stepReading: ModelFileStepReading
+    }
+
+    /// Every rule of a model-file load that needs only the header: the
+    /// architecture (format-version gates, legacy resolutions); each tensor the
+    /// plan names present, with the plan's element count and dimensions
+    /// (`[out, in]` vs `[in, out]` included — a transposed tensor is refused,
+    /// not silently scrambled); the value-head centering mark; the trainer
+    /// schedule and gradient-norm history (and that a schedule comes with
+    /// velocity); the lineage record; `training_step` and the step reading;
+    /// the model ID. `decode` runs it before touching tensor data and
+    /// `ModelDescription` runs it on a header alone (`SafetensorsFile.readHeader`),
+    /// so a description and a load can never disagree about a header.
+    ///
+    /// `tensorShapes` maps each tensor name to its stored shape; the header
+    /// parse has already checked each shape against its byte range.
+    static func inspect(
+        tensorShapes: [String: [Int]], metadata md: [String: String], source: String,
+        sessionTrainerPolicyTail: ArchitectureFormat.RecordedPolicyTailPrecision?
+    ) throws -> InspectedHeader {
+        let (architecture, architectureFormat) = try decodeArchitecture(
+            fromMetadata: md, source: source, sessionTrainerPolicyTail: sessionTrainerPolicyTail)
+
+        let hasVelocity = tensorShapes.keys.contains { $0.hasPrefix("opt.") && $0.hasSuffix(".velocity") }
+        let names = tensorNames(for: architecture, includesVelocity: hasVelocity)
+        let plan = architecture.weightTensorPlan()
+
+        func elementCount(_ shape: [Int]) -> Int { shape.reduce(1, *) }
+        for (i, name) in names.enumerated() where i < plan.count {
+            guard let shape = tensorShapes[name] else { throw IOError.missingTensor(name) }
+            guard elementCount(shape) == plan[i].elementCount else {
+                throw IOError.tensorShapeMismatch(
+                    name: name, expected: plan[i].elementCount, got: elementCount(shape)
+                )
+            }
+        }
+        for (i, name) in names.enumerated() {
+            guard let shape = tensorShapes[name] else { throw IOError.missingTensor(name) }
+            guard i < plan.count else { continue }
+            let expectedDims = WeightTensorSpec.squeeze(Self.torchShape(for: plan[i]))
+            guard WeightTensorSpec.squeeze(shape) == expectedDims else {
+                throw IOError.tensorDimsMismatch(name: name, expected: Self.torchShape(for: plan[i]), got: shape)
+            }
+        }
+
+        let markedCentered = try ValueHeadRecentering.isMarkedCentered(md[ValueHeadRecentering.metadataKey])
         let trainerSchedule = try TrainerScheduleState.decode(fromMetadata: md)
         if trainerSchedule != nil && !hasVelocity {
             throw IOError.trainerScheduleWithoutVelocity
         }
-        // Decoded on its own: a trainer file written before the relative cap
-        // has the schedule keys but no history, and reads as such (nil).
         let trainerGradNormHistory = try GradientNormHistory.decode(fromMetadata: md)
         if let history = trainerGradNormHistory {
             guard let schedule = trainerSchedule else { throw IOError.gradNormHistoryWithoutTrainerSchedule }
@@ -561,11 +580,6 @@ enum SafetensorsModelIO {
             trainerSchedule: trainerSchedule,
             trainerGradNormHistory: trainerGradNormHistory
         )
-        // What `training_step` means in this file (format v11 or its
-        // writer's meaning before), checked against the trainer clock from
-        // v11. A file before v11 that states a step is flagged through the
-        // same legacy log as its architecture resolutions, so its loader
-        // writes one `[ARCH]` line for both.
         let stepReading = try ModelFileStepReading.reading(
             formatVersion: architectureFormat.formatVersion,
             creator: metadata.creator,
@@ -576,27 +590,14 @@ enum SafetensorsModelIO {
         if let legacy = stepReading.legacyResolution {
             architectureFormat.legacyLog.record(legacy)
         }
-        let file = ModelCheckpointFile(
-            modelID: try requiredModelID(fromMetadata: md, source: source),
-            createdAtUnix: md[Key.createdAt].flatMap { Int64($0) } ?? 0,
-            metadata: metadata,
-            weights: weights,
-            architecture: architecture,
-            valueHeadCentering: valueHeadCentering,
-            architectureFormat: architectureFormat,
-            safetensorsProvenance: provenance,
-            trainingStepReading: stepReading
-        )
-        return Decoded(file: file, architecture: architecture, hasVelocity: hasVelocity,
-                       architectureFormat: architectureFormat)
+        return InspectedHeader(
+            architecture: architecture, architectureFormat: architectureFormat, tensorNames: names,
+            hasVelocity: hasVelocity, markedCentered: markedCentered, metadata: metadata,
+            modelID: try requiredModelID(fromMetadata: md, source: source), provenance: provenance,
+            stepReading: stepReading)
     }
 
-    // MARK: - Lineage
 
-    /// The lineage a safetensors `__metadata__` map carries, under the file's
-    /// own format version: required (and decoded strictly) from
-    /// `ArchitectureFormat.lineageRequiredFromVersion`, reported unrecorded
-    /// for older files. Shared by the full decode and the header-only reader.
     static func lineage(fromMetadata md: [String: String], formatVersion: Int) throws -> LineageRecord.Presence {
         guard formatVersion >= ArchitectureFormat.lineageRequiredFromVersion else {
             return .unrecorded(formatVersion: formatVersion)

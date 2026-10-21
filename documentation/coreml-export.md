@@ -21,9 +21,9 @@ The app (headless, then exit):
 
 | Command | Does |
 |---|---|
-| `--describe-model <file>` | Prints the `ModelDescription` JSON of a model file. |
-| `--export-inference-graph <file> --out <new folder>` | Writes `graph.json` (the recording), `weights.bin` (little-endian float32, plan order, graph layout; the value head recentered as every load does) and `model.json` (the description). |
-| `--coreml-parity <file> --coreml <model.mlpackage> [--compute-units cpu\|cpu-gpu\|cpu-ne\|all] [--tolerance <x>]` | Runs the bundled test-set positions (lichess-200 + lichess-wide, 4,635 positions) through both and prints the largest and mean differences of every output, and how often both rank the same legal move first. Non-finite outputs are counted on both sides. With `--tolerance`, exits 3 when a difference exceeds it or an output on either side is non-finite. |
+| `--describe-model <file> [<file> ...]` | Prints one JSON line per file: its `ModelDescription` (header-only: the architecture the loader resolves, the lineage record, the step reading, the test-set results; every header rule a load applies, through `SafetensorsModelIO.inspect`), or the reason a load would refuse it. Exit 1 when any file was refused. |
+| `--export-inference-graph <file> --out <new folder>` | Writes `graph.json` (the recording, format 2), `weights.bin` (little-endian float32, plan order, graph layout, each value rounded to its variable's type — what `loadWeights` gives the network, value head recentered) and `model.json` (the description). The folder is staged and moved into place whole. |
+| `--coreml-parity <file> --coreml <model.mlpackage> [--compute-units cpu\|cpu-gpu\|cpu-ne\|all] [--tolerance <x>]` | Runs the bundled test-set positions (lichess-200 + lichess-wide, 4,635 positions) through both and prints the largest and mean differences of every output, and how often both rank the same legal move first, at every batch size the Core ML model accepts. Non-finite outputs are counted on each side independently. With `--tolerance`, exits 3 when a difference exceeds it or an output on either side is non-finite. |
 
 The exporter (Python 3.13 with coremltools):
 
@@ -50,39 +50,34 @@ The app binary is `--app`, else `$DCM_BINARY`, else the newest build in DerivedD
 | `fp16` | Every op | What the Neural Engine runs fastest. |
 | `fp32` | None | CPU / GPU only. The parity reference. |
 
-Core ML has no bf16, so a bf16 model's reduced-precision ops run in fp16. fp16's range is far smaller (largest finite value 65504, against bf16's ~3.4e38): an activation the bf16 network carries above it becomes inf in Core ML. `--coreml-parity` reports that as `non_finite_coreml_positions`.
+Every op is emitted with an explicit type (the recorded casts become real `cast` ops) and the converter is told to add no precision pass, so a fusion pass can't move a precision boundary. coremltools 9's `fuse_elementwise_to_batchnorm` pass is disabled: on fp16 constants it builds an invalid `batch_norm` (fp32 mean beside fp16 gamma/beta); the convolution fusion passes fold the BN anyway.
 
-In mirror mode, ops the converter adds itself follow the network: fp16 when it runs any op in reduced precision, fp32 for an all-fp32 model.
+Core ML has no bf16, so a bf16 model's reduced-precision ops run in fp16. fp16's range is far smaller (largest finite value 65504, against bf16's ~3.4e38): an activation the bf16 network carries above it becomes inf in Core ML. `--coreml-parity` reports that as `non_finite_coreml_positions`. Even an fp16 model differs between the two engines: Core ML and MPSGraph accumulate fp16 in different orders, so mirror is the closest equivalent, not a bit-exact one.
 
-## Measured (2026-10-20, Apple M5 Max)
+## Measured (2026-10-21, Apple M5 Max)
 
-**`zlra-elitecyc` step 314767** (bf16, 3 × 128 ch 9 × 9, `fp32_from_pre_bn`), 4,635 positions, against its bf16 MPSGraph:
+**`zlra-elitecyc` step 314767** (bf16, 3 × 128 ch 9 × 9, `fp32_from_pre_bn`), 4,635 positions, against its bf16 MPSGraph; batch 1 and batch 64 give the same numbers:
 
 | Export | Compute units | Max \|Δ\| policy logit | Mean \|Δ\| | Max \|Δ\| value | Same top move |
 |---|---|---|---|---|---|
-| fp32 | cpu | 1.29 | 0.045 | 0.071 | 4,578 (98.8%) |
-| mirror | cpu | 1.86 | 0.070 | 0.116 | 4,547 (98.1%) |
-| mirror | cpu-ne | 1.54 | 0.047 | 0.069 | 4,578 (98.8%) |
-| fp16 | cpu | 1.87 | 0.070 | 0.116 | 4,545 (98.1%) |
-| fp16 | cpu-ne | 7.42 | 0.202 | 0.589 | 4,373 (94.3%) |
+| fp32 | cpu | 0.54 | 0.020 | 0.032 | 4,619 (99.7%) |
+| mirror | cpu | 1.71 | 0.046 | 0.067 | 4,558 (98.3%) |
+| mirror | cpu-ne | 0.83 | 0.026 | 0.052 | 4,610 (99.5%) |
+| fp16 | cpu-ne | 0.83 | 0.026 | 0.052 | 4,610 (99.5%) |
 
-Every export's differences here include the MPSGraph's own bf16 rounding.
+Every export's differences here include the MPSGraph's own bf16 rounding. Requesting the Neural Engine is not a measurement of where each op ran (Core ML decides that).
 
-**peGM champion, derived to fp32** (`--derive-model --set-compute-dtype float32`), fp32 export, cpu, against its fp32 MPSGraph:
+**peGM champion, derived to fp32** (`--derive-model --set-compute-dtype float32`), fp32 export, cpu, against its fp32 MPSGraph: max \|Δ\| policy logit 6.0e-4, mean 4.0e-5, value 3.1e-4, same top move 4,635 (100%). The translation is exact up to float32 accumulation order.
 
-| Max \|Δ\| policy logit | Mean \|Δ\| | Max \|Δ\| value | Same top move |
-|---|---|---|---|
-| 1.04e-3 | 6.8e-5 | 4.6e-4 | 4,635 (100%) |
-
-The translation is exact up to float32 accumulation order.
+**The same weights derived to fp16**, mirror export, cpu, against its fp16 MPSGraph: max \|Δ\| policy logit 0.75, mean 0.029, value 0.16, same top move 4,550 (98.2%) — fp16 accumulation order.
 
 ## Tests
 
 - `InferenceGraphRecorderTests`:
   - every architecture option records completely (`InferenceGraphTestArchitectures`);
-  - a recorded network computes bit-identical outputs to an unrecorded one;
+  - attaching a recorder doesn't change the built graph (bit-identical outputs);
   - the refusals: a training-mode network, an op that bypasses `ForwardGraphOps`, an unread weight;
   - data types follow the policy tail;
-  - `graph.json` round-trips and `weights.bin` is laid out as described.
-- `CoreMLExportParityTests` gives every BatchNorm per-channel γ, β, mean and variance, so a swapped or misbroadcast BN parameter shows. It then exports every architecture variant at fp32 through the Python script and requires each output within 5e-3 and the same top move on all lichess-200 positions. It skips without a Python that has coremltools (`$DCM_COREML_PYTHON`, else `~/.venvs/dcm-coreml/bin/python`).
-- `documentation/dashboards/tests/test_coreml_export.py` covers the script's own rules: graph-format and weights-size refusals, unknown ops, constant folding, and mirror precision selection.
+  - `graph.json` round-trips; `weights.bin` is laid out as described and holds bf16-rounded values for a bf16 network.
+- `CoreMLExportParityTests` gives every BatchNorm per-channel γ, β, mean and variance, so a swapped or misbroadcast BN parameter shows. It then exports every architecture variant at fp32 through the Python script and requires every output within 5e-3 on all lichess-200 positions at every batch size the export accepts. It skips without a Python that has coremltools (`$DCM_COREML_PYTHON`, else `~/.venvs/dcm-coreml/bin/python`).
+- `documentation/dashboards/tests/test_coreml_export.py` covers the script's own rules: graph-format, weights-layout and duplicate-id refusals, unknown ops, constant folding, and that mirror runs each op in its recorded type.

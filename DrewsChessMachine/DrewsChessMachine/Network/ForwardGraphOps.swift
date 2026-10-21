@@ -249,8 +249,9 @@ final class InferenceGraphRecorder {
     enum RecordingError: LocalizedError, Equatable {
         /// A recorded op read a tensor that no recorded op produced and that is
         /// neither the graph input nor a recorded weight — a forward op built
-        /// with the raw MPSGraph instead of `ForwardGraphOps`.
-        case unrecordedTensor(consumer: String)
+        /// with the raw MPSGraph instead of `ForwardGraphOps`. `producer` is the
+        /// MPSGraph name of the op that built the tensor.
+        case unrecordedTensor(consumer: String, producer: String)
         case unsupported(String)
         case noInput
         case multipleInputs
@@ -264,9 +265,10 @@ final class InferenceGraphRecorder {
 
         var errorDescription: String? {
             switch self {
-            case .unrecordedTensor(let consumer):
-                return "inference graph recording: '\(consumer)' reads a tensor no recorded operation produced; "
-                    + "a forward-pass op was built with the MPSGraph directly instead of through ForwardGraphOps"
+            case .unrecordedTensor(let consumer, let producer):
+                return "inference graph recording: '\(consumer)' reads the output of '\(producer)', which no recorded "
+                    + "operation produced; a forward-pass op was built with the MPSGraph directly instead of through "
+                    + "ForwardGraphOps"
             case .unsupported(let detail):
                 return "inference graph recording: unsupported \(detail)"
             case .noInput:
@@ -331,7 +333,7 @@ final class InferenceGraphRecorder {
     /// failure (and returns a placeholder id) when it was never recorded.
     func operand(_ tensor: MPSGraphTensor, consumer: String?) -> String {
         if let known = idsByTensor[ObjectIdentifier(tensor)] { return known.id }
-        fail(.unrecordedTensor(consumer: consumer ?? "an unnamed operation"))
+        fail(.unrecordedTensor(consumer: consumer ?? "an unnamed operation", producer: tensor.operation.name))
         return "unrecorded"
     }
 
@@ -402,9 +404,12 @@ final class InferenceGraphRecorder {
                 throw RecordingError.planTensorNotRecorded(name: spec.name)
             }
             guard read.contains(id) else { throw RecordingError.weightUnused(name: spec.name) }
-            let shape = Self.shape(of: persistentVariables[index])
-            weights.append(GraphWeight(id: id, name: spec.name, shape: shape, byteOffset: offset,
-                                       elementCount: spec.elementCount))
+            let variable = persistentVariables[index]
+            guard let dataType = GraphDataType(variable.dataType) else {
+                throw RecordingError.unsupported("data type \(variable.dataType.rawValue) of weight \(spec.name)")
+            }
+            weights.append(GraphWeight(id: id, name: spec.name, shape: Self.shape(of: variable), dataType: dataType,
+                                       byteOffset: offset, elementCount: spec.elementCount))
             offset += spec.elementCount * MemoryLayout<Float>.size
         }
 

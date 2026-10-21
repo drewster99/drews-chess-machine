@@ -1918,21 +1918,33 @@ enum CheckpointManager {
         if data.count >= 8, Array(data.prefix(8)) == ModelCheckpointFile.magic {
             return try ModelCheckpointFile.decode(data, valueHead: .recenterUnlessMarked)
         }
-        let trainerTail: ArchitectureFormat.RecordedPolicyTailPrecision?
-        switch trainerFile.architectureFormat?.legacyLog.policyTailPrecisionOrigin {
+        return try SafetensorsModelIO.decode(
+            data, valueHead: .recenterUnlessMarked, source: source,
+            sessionTrainerPolicyTail: sessionTrainerPolicyTail(
+                trainerArchitecture: trainerFile.architecture,
+                trainerTailOrigin: trainerFile.architectureFormat?.legacyLog.policyTailPrecisionOrigin)).file
+    }
+
+    /// The tail a session's trainer file lends its champion (PT-D3 rule 4):
+    /// the trainer's tail when the trainer file states or records it, never one
+    /// it only resolved as unrecorded, and none from an fp32 trainer (an fp32
+    /// champion resolves to `does_not_apply` on its own). Shared by the session
+    /// load and `ModelDescription`, so a described champion and a loaded one
+    /// agree.
+    static func sessionTrainerPolicyTail(
+        trainerArchitecture: NetworkArchitecture,
+        trainerTailOrigin: ArchitectureFormat.PolicyTailPrecisionOrigin?
+    ) -> ArchitectureFormat.RecordedPolicyTailPrecision? {
+        switch trainerTailOrigin {
         case .stated?, .recorded?:
-            // An fp32 trainer has no tail to lend; an fp32 champion resolves
-            // to `does_not_apply` on its own.
-            trainerTail = trainerFile.architecture.policyTailPrecision == .doesNotApply
+            return trainerArchitecture.policyTailPrecision == .doesNotApply
                 ? nil
                 : ArchitectureFormat.RecordedPolicyTailPrecision(
-                value: trainerFile.architecture.policyTailPrecision,
-                recordedIn: "the same session's trainer.safetensors")
+                    value: trainerArchitecture.policyTailPrecision,
+                    recordedIn: "the same session's trainer.safetensors")
         case .notRecorded?, nil:
-            trainerTail = nil
+            return nil
         }
-        return try SafetensorsModelIO.decode(
-            data, valueHead: .recenterUnlessMarked, source: source, sessionTrainerPolicyTail: trainerTail).file
     }
 
     /// A model file exactly as stored, for the numerics audit: the value
