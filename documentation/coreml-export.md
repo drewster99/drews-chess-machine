@@ -13,7 +13,7 @@ The network is defined once, by `ChessNetwork`'s graph builders. Nothing else de
 - `scripts/dcm_coreml_export.py` translates each primitive to its Core ML MIL equivalent. It knows no blocks, heads or architecture options, so a new option reaches Core ML with no change there. An op kind it doesn't know is refused.
 - A forward op built on the raw MPSGraph instead of through `ForwardGraphOps` fails the recording: the next recorded op reads a tensor no recorded op produced. A plan tensor the forward pass never reads fails it too. **Never build a forward-pass op with the MPSGraph directly.** Only training-only ops may use the raw graph: dropout's random draws, comparisons and `minimum`, BN running-stat EMA assigns, the dropout RNG state, the weight-load assigns and the analysis-tap readbacks. None of them is part of the inference pass, and a training-mode network refuses a recorder.
 
-The architecture a file resolves to is also read only from the app: `--describe-model <file>` prints it as JSON after every format-version rule and legacy resolution the loader applies, with the expanded blocks and the weight plan.
+The architecture a file resolves to is also read only from the app: `--describe-model <file>` prints it as JSON after every format-version rule and legacy resolution the loader applies, with the expanded blocks and the weight plan. `scripts/dcm_arch.py` is a thin, file-based wrapper over it (`describe`, `architecture`, `site_activations`, `rezero_blocks`, the scripts' ReLU guards); no Python code resolves an architecture itself.
 
 ## Commands
 

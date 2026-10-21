@@ -1,7 +1,7 @@
 """Batched faithful forward pass of ChessNetwork (all block/head styles used by
 saved models), with per-op rounding emulation for bf16 / fp16 / fp32 compute."""
 import numpy as np, json, struct, math
-from archnorm import norm_arch_md, require_architecture_of, site_activations_md
+from archnorm import architecture, require_architecture_of, site_activations
 def load(p):
     with open(p,'rb') as f:
         n=struct.unpack('<Q',f.read(8))[0]; h=json.loads(f.read(n)); data=f.read()
@@ -44,7 +44,7 @@ def fc(x,W,b,q,qm=None):  # W stored [out,in]
 def se(z,T,pre,g,q,qm=None):
     base=pre+('se_attenuate.' if g['se_style']=='attenuate_only' else 'se_scalebias.')
     s=q(z.mean((2,3)))
-    # SE FC1 has its own activation (`se_activation`); norm_arch resolves it
+    # SE FC1 has its own activation (`se_activation`); the app resolves it
     # for files that predate the field.
     s=act(fc(s,T[base+'fc1.weight'],T[base+'fc1.bias'],q,qm),g['se_activation'],q)
     s=fc(s,T[base+'fc2.weight'],T[base+'fc2.bias'],q,qm)
@@ -53,11 +53,11 @@ def se(z,T,pre,g,q,qm=None):
     return q(q(z*sig(s[:,:C])[:,:,None,None])+s[:,C:][:,:,None,None])
 def prep(T,precision):
     q=Q[precision.split(':')[0]]; return {k:q(v) for k,v in T.items() if not k.startswith('opt.')}
-def forward(TT,arch,x,precision,*,md):
-    """md: the file's safetensors __metadata__; `arch` must be norm_arch_md(md). The
-    architecture-level site activations are read from md (site_activations_md)."""
-    require_architecture_of(md,arch,'fwd3.forward')
-    sites=site_activations_md(md)
+def forward(TT,arch,x,precision,*,path):
+    """path: the model file; `arch` must be architecture(path). The
+    architecture-level site activations are read from the file (site_activations)."""
+    require_architecture_of(path,arch,'fwd3.forward')
+    sites=site_activations(path)
     if ':' in precision:
         base,mode=precision.split(':'); qb=Q[base]; ident=lambda a:a
         return _forward(TT,arch,sites,x,ident,qb,qb)
@@ -112,6 +112,6 @@ def _forward(TT,arch,sites,x,q,qm,qout):
     vl=qout(fc(f1,TT['value.wdl_fc2.weight'],TT['value.wdl_fc2.bias'],q,qm))
     e=np.exp(vl-vl.max(1,keepdims=True)); vp=qout(e/e.sum(1,keepdims=True))
     return dict(vl=vl,vp=vp,pl=pl,f1=f1,pfeat=feat)
-def forward_batched(TT,arch,X,precision,bs=128,*,md):
-    outs=[forward(TT,arch,X[i:i+bs],precision,md=md) for i in range(0,len(X),bs)]
+def forward_batched(TT,arch,X,precision,bs=128,*,path):
+    outs=[forward(TT,arch,X[i:i+bs],precision,path=path) for i in range(0,len(X),bs)]
     return {k:np.concatenate([o[k] for o in outs]) for k in outs[0]}

@@ -1,4 +1,4 @@
-"""Tests for the shared analysis tooling: architecture rules (scripts/dcm_arch.py), session-log
+"""Tests for the shared analysis tooling: the safetensors header reader (scripts/dcm_arch.py), session-log
 ordering (scripts/dcm_session_logs.py), probe records (experiments/probe_record.py) and the
 replay-buffer game length (experiments/table_common.py).
 
@@ -28,47 +28,10 @@ sys.path.insert(0, HERE)
 from test_lineage import v11_header  # noqa: E402
 
 
-def group(**fields):
-    base = dict(count=3, channels=128, se_style="scale_and_bias", activation_function="relu", use_rezero=True,
-                rezero_alpha_init=0.4472136, se_beta_init="glorot", se_activation="relu")
-    base.update(fields)
-    return base
-
-
 def write_header(path, metadata):
     header = json.dumps({"__metadata__": metadata}).encode()
     with open(path, "wb") as handle:
         handle.write(struct.pack("<Q", len(header)) + header)
-
-
-class ArchitectureTests(unittest.TestCase):
-    def test_legacy_file_resolves_cap_to_init(self):
-        blocks = dcm_arch.rezero_blocks({"architecture": json.dumps({"block_groups": [group()]}),
-                                         "dcm_format_version": "5"})
-        self.assertEqual([b.alpha_cap for b in blocks], [0.4472136] * 3)
-
-    def test_v6_file_uses_its_cap_and_allows_zero_init(self):
-        blocks = dcm_arch.rezero_blocks({"architecture": json.dumps(
-            {"block_groups": [group(rezero_alpha_init=0.0, rezero_alpha_cap=1.0)]}), "dcm_format_version": "6"})
-        self.assertEqual([(b.alpha_init, b.alpha_cap) for b in blocks], [(0.0, 1.0)] * 3)
-        self.assertEqual(blocks[0].effective(0.0), 0.0)
-        self.assertAlmostEqual(blocks[0].effective(0.5), 0.46211715726000974)
-
-    def test_v6_file_without_cap_is_refused(self):
-        with self.assertRaises(dcm_arch.ArchitectureError):
-            dcm_arch.rezero_blocks({"architecture": json.dumps({"block_groups": [group()]}),
-                                    "dcm_format_version": "6"})
-
-    def test_non_positive_cap_is_refused(self):
-        with self.assertRaises(dcm_arch.ArchitectureError):
-            dcm_arch.rezero_blocks({"architecture": json.dumps({"block_groups": [group(rezero_alpha_init=0.0)]}),
-                                    "dcm_format_version": "5"})
-
-    def test_block_without_rezero_has_no_effective_alpha(self):
-        blocks = dcm_arch.rezero_blocks({"architecture": json.dumps({"block_groups": [group(use_rezero=False)]}),
-                                         "dcm_format_version": "5"})
-        with self.assertRaises(dcm_arch.ArchitectureError):
-            blocks[0].effective(0.1)
 
 
 class HeaderReadTests(unittest.TestCase):

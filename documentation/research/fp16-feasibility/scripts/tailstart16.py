@@ -12,10 +12,10 @@ tg = [list(legal[i]).index(P[i]['target']) for i in range(N)]
 def lsm(z): z = z - z.max(); return z - np.log(np.exp(z).sum())
 out = {}
 for rel in sys.argv[1:]:
-    md, T = load(A + rel); arch = norm_arch_md(md); T = {k: v for k, v in T.items() if not k.startswith('opt.')}
-    names = list(forward(T, arch, X[:2], capture=True, md=md)['acts'].keys())
+    path = A + rel; md, T = load(path); arch = architecture(path); T = {k: v for k, v in T.items() if not k.startswith('opt.')}
+    names = list(forward(T, arch, X[:2], capture=True, path=path)['acts'].keys())
     internal = frozenset(names) - {'p.convmm', 'v.fc2mm'}
-    o64 = forward_batched(T, arch, X, md=md); la64 = [lsm(o64['pl_raw'][i][legal[i]]) for i in range(N)]
+    o64 = forward_batched(T, arch, X, path=path); la64 = [lsm(o64['pl_raw'][i][legal[i]]) for i in range(N)]
     r = {}
     for dt, q in (('bf16', bf16), ('fp16', f16)):
         Tq = quantise_weights(T, q)
@@ -23,7 +23,7 @@ for rel in sys.argv[1:]:
                         ('tail from pre-BN normalize', internal - {'p.pre_bn', 'p.pre_bn.sub'}),
                         ('tail from pre-conv', internal - {'p.pre_bn', 'p.pre_bn.sub', 'p.pre_conv'})):
             # weights in the fp32 tail are the stored (compute-dtype-exact) values, as the plan specifies
-            o = forward_batched(Tq, arch, X, Rs, q, md=md); pl = f32(o['pl_raw'])
+            o = forward_batched(Tq, arch, X, Rs, q, path=path); pl = f32(o['pl_raw'])
             kl = []; top1 = []
             for i in range(N):
                 b = pl[i][legal[i]]; lb = lsm(b); la = la64[i]; kl.append(np.sum(np.exp(la) * (la - lb))); top1.append(b[int(np.argmax(la))] < b.max())

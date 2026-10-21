@@ -37,7 +37,7 @@ from _guarded_csv import (read_rows, read_text, replace_rows, replace_text_if_un
                           replay_row_key, snapshot_of)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
-import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, read from its own metadata
+import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, as the app resolves it
 import dcm_lineage  # noqa: E402  a checkpoint's lineage record (format v7+), read as the app reads it
 from dcm_probe_build import probe_build_id  # noqa: E402  which build made each pElo
 from _lineage_registry import derive_registry  # noqa: E402  registry bases from the lineage records
@@ -110,13 +110,13 @@ def meta_step_of(path):
 def internals(path):
     """bn1Mean, Σαeff² and the per-block effective ReZero α of one checkpoint.
 
-    Each block's cap comes from the file's own architecture metadata (`dcm_arch`:
-    `rezero_alpha_cap`, or `rezero_alpha_init` × 1.0 for files older than format
-    v6), never from the registry, so a derived or zero-init model is read with the
+    Each block's cap is the one the app resolves for the file (`dcm_arch`, from
+    `--describe-model`: `rezero_alpha_cap`, or the legacy cap of a file older than
+    format v6), never from the registry, so a derived or zero-init model is read with the
     cap it actually trains under. A model whose blocks use no ReZero has no α to
     report: Σαeff² and the α list come back None (written as blank cells). A tower
     mixing ReZero and non-ReZero blocks has no single Σαeff² and is refused."""
-    blocks = dcm_arch.rezero_blocks_of_file(path)
+    blocks = dcm_arch.rezero_blocks(path)
     W = _st_load(path, want=lambda k: k == "blocks.0.bn1.running_mean" or k.endswith(".rezero_alpha"))
     bn1 = float(abs(W["blocks.0.bn1.running_mean"]).max())
     users = {b.use_rezero for b in blocks}

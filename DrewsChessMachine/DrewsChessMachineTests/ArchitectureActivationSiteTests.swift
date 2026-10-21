@@ -1384,6 +1384,91 @@ final class ArchitectureActivationSiteTests: XCTestCase {
         removal.blockGroupDrafts[1].activationStyle = .pre
         XCTAssertEqual(removal.towerEndActivation, .doesNotApply)
     }
+
+    // MARK: - Structural refusals (the Python reader's former checks, pinned here)
+
+    /// Protects: a required key the decoder reads is refused when absent, at
+    /// every level the tooling depended on.
+    /// Fails if: one of these keys gains a silent default (e.g. a missing
+    /// `se_style` read as `none`, a missing `policy_head_style` read as a style).
+    func testAMissingRequiredKeyIsADecodeErrorNamingIt() throws {
+        var uniform = try Self.uniformTowerJSON(activation: "relu")
+        uniform.removeValue(forKey: "num_blocks")
+        var cases: [(name: String, object: [String: Any], key: String)] = [("uniform num_blocks", uniform, "num_blocks")]
+        for groupKey in ["rezero_alpha_init", "activation_style", "se_style"] {
+            var object = try object(Self.tiny())
+            var groups = try XCTUnwrap(object["block_groups"] as? [[String: Any]])
+            groups[0].removeValue(forKey: groupKey)
+            object["block_groups"] = groups
+            cases.append(("group \(groupKey)", object, groupKey))
+        }
+        var noPolicyStyle = try object(Self.tiny())
+        noPolicyStyle.removeValue(forKey: "policy_head_style")
+        cases.append(("policy_head_style", noPolicyStyle, "policy_head_style"))
+        for (name, object, key) in cases {
+            XCTAssertThrowsError(try decode(object, version: 5)) { error in
+                guard case DecodingError.keyNotFound(let missing, _)? = error as? DecodingError else {
+                    return XCTFail("\(name): expected keyNotFound, got \(error)")
+                }
+                XCTAssertEqual(missing.stringValue, key, name)
+            }
+        }
+    }
+
+    /// Protects: an unknown token in a group's `se_activation` is a decode
+    /// error at that field.
+    /// Fails if: an unknown SE token falls back to the group's activation or
+    /// to `does_not_apply`.
+    func testAnUnknownGroupSEActivationTokenIsADecodeError() throws {
+        var object = try object(Self.tiny(seStyle: .scaleAndBias))
+        var groups = try XCTUnwrap(object["block_groups"] as? [[String: Any]])
+        groups[0]["se_activation"] = "swish"
+        object["block_groups"] = groups
+        for version in [5, ArchitectureFormat.currentVersion] {
+            XCTAssertThrowsError(try decode(object, version: version)) { error in
+                guard case DecodingError.dataCorrupted(let context)? = error as? DecodingError else {
+                    return XCTFail("v\(version): expected dataCorrupted, got \(error)")
+                }
+                XCTAssertEqual(context.codingPath.last?.stringValue, "se_activation", "v\(version)")
+            }
+        }
+    }
+
+    /// Protects: an `attenuate_only` group, like `scale_and_bias`, must name its
+    /// FC1 activation.
+    /// Fails if: the SE-style check covers only `scale_and_bias`.
+    func testAnAttenuateOnlyGroupStatingDoesNotApplyIsRefused() throws {
+        var object = try object(Self.tiny(seStyle: .attenuateOnly))
+        var groups = try XCTUnwrap(object["block_groups"] as? [[String: Any]])
+        groups[0]["se_activation"] = "does_not_apply"
+        object["block_groups"] = groups
+        XCTAssertThrowsError(try decode(object, version: 9, source: "g.json")) { error in
+            XCTAssertEqual(error as? ArchitectureFormat.FormatError,
+                           .seActivationMismatch(seStyle: .attenuateOnly, seActivation: .doesNotApply,
+                                                 location: "block_groups[0]", formatVersion: 9, source: "g.json"))
+        }
+    }
+
+    /// Protects: a site key stated as JSON null is absent — in a pre-v9 file it
+    /// resolves from `activation_function`; in a current file it is missing.
+    /// Fails if: null is read as a value (a decode error in the legacy file) or
+    /// as present (a current file accepting a null site).
+    func testANullSiteKeyResolvesInALegacyFileAndIsMissingInACurrentOne() throws {
+        let arch = Self.tiny(activation: .gelu)
+        var legacy = try legacyObject(arch, activationFunction: "gelu")
+        legacy["policy_head_activation"] = NSNull()
+        let (decoded, _) = try decode(legacy, version: 8)
+        XCTAssertEqual(decoded.policyHeadActivation, .gelu)
+
+        var current = try object(arch)
+        current["policy_head_activation"] = NSNull()
+        let version = ArchitectureFormat.currentVersion
+        XCTAssertThrowsError(try decode(current, version: version, source: "n.json")) { error in
+            XCTAssertEqual(error as? ArchitectureFormat.FormatError,
+                           .missingRequiredField(field: "policy_head_activation", location: "the top level",
+                                                 formatVersion: version, source: "n.json"))
+        }
+    }
 }
 
 extension NetworkArchitecture {

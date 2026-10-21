@@ -1699,11 +1699,24 @@ and the public surface. No behavior change. Lower priority than Part A.
   Measured: an fp32 export of an fp32 model matches to 1e-3 (float32 order),
   100% same top move; the bf16 elitecyc model exports at 98.8% top-move
   agreement (mirror on the Neural Engine) and 94.3% with fp16 everywhere on the
-  Neural Engine. Planned differently: `scripts/dcm_arch.py` was to become a thin
-  wrapper over `--describe-model`; not done — its tests feed partial
-  architectures the app's strict decoder refuses, and changing them needs the
-  owner's approval. No Swift Core ML inference consumer yet (export + parity
+  Neural Engine. No Swift Core ML inference consumer yet (export + parity
   only). Details: `documentation/coreml-export.md`.
+  - **`scripts/dcm_arch.py` reads the app (2026-10-20).** It no longer
+    re-implements the architecture rules: `describe(path)` runs
+    `--describe-model` and every reader (`architecture`, `site_activations`,
+    `require_relu`, `require_architecture_of`, `rezero_blocks`) is file-based.
+    Owner decision: no metadata-from-stdin path in the app — tests test what the
+    app does, on files. The ~30 consumers (experiments, research scripts,
+    `replay.py`) pass the model file's path. The old resolver agreed with the app
+    on 5,306 of 5,308 model files; the 2 it accepted (`20260701-uni16-9x9stem-*`,
+    hand-made) the app refuses for a tensor shape mismatch. The dict-based Python
+    resolver tests were removed after mapping each to a Swift test; the 7 rules
+    with no Swift test got one (`ArchitectureFormatVersionTextTests`, five in
+    `ArchitectureActivationSiteTests`, one in `PolicyTailArchitectureTests`). The
+    script guards are tested on real files the app writes
+    (`documentation/dashboards/tests/test_dcm_arch.py`). Still re-implemented in
+    Python: `dcm_lineage`'s step reading (format-version gates), out of this
+    change's scope.
 
 - **Fast legal-move generation: make/unmake + pin-based (2026-06-24, `81ac884`,
   `d4becf6`).** Move-generation legality was a copy-make filter — for each

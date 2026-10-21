@@ -9,7 +9,7 @@ P = pickle.load(open(POSSET, 'rb'))
 X = np.stack([p['x'] for p in P]).astype(np.float64)
 out = {}
 for rel in sys.argv[1:]:
-    md, T = load(A + rel); arch = norm_arch_md(md); g = arch['block_groups'][0]
+    path = A + rel; md, T = load(path); arch = architecture(path); g = arch['block_groups'][0]
     r = dict(model_id=md['model_id'], training_step=md.get('training_step'))
     if g['use_rezero']:
         C = g['rezero_alpha_cap']; rz = {}
@@ -20,7 +20,7 @@ for rel in sys.argv[1:]:
         r['rezero'] = rz
     sat = {}
     for s in range(0, len(X), 128):
-        a = forward(T, arch, X[s:s + 128], capture=True, md=md)['acts']
+        a = forward(T, arch, X[s:s + 128], capture=True, path=path)['acts']
         for k, v in a.items():
             if not k.endswith('se.sig'): continue
             d = sat.setdefault(k, [0, 0, 0, 0, 0])

@@ -30,7 +30,7 @@ def load(path):
     for k, v in h.items():
         s, e = v["data_offsets"]
         t[k] = np.frombuffer(raw[base + s:base + e], dtype=np.float32).reshape(v["shape"]).copy()
-    return md, dcm_arch.norm_arch_md(md), t
+    return md, dcm_arch.architecture(path), t
 
 # ---------------------------------------------------------------- positions
 def row_col(sq):            # python-chess square -> DCM (row 0 = rank 8, col 0 = file a)
@@ -203,11 +203,11 @@ def ln(x, t, name):
     mu = x.mean(1, keepdims=True); var = x.var(1, keepdims=True)
     return (x - mu) / np.sqrt(var + EPS) * t[name + ".weight"][None, :, None, None] + t[name + ".bias"][None, :, None, None]
 
-def forward(x, arch, t, record, *, md):
-    """md: the file's safetensors __metadata__; `arch` must be dcm_arch.norm_arch_md(md)
+def forward(x, arch, t, record, *, path):
+    """path: the model file; `arch` must be dcm_arch.architecture(path)
     (dcm_arch.require_architecture_of). Every site this forward applies, and every
     block main path, is modelled as ReLU (dcm_arch.require_relu)."""
-    dcm_arch.require_architecture_of(md, arch, "relu_inputs.forward")
+    dcm_arch.require_architecture_of(path, arch, "relu_inputs.forward")
     groups = arch["block_groups"]
     if not all(g["activation_style"] == "pre" and g["se_style"] == "none" and not g["use_rezero"]
                and g["skip_merge"] == "clean_add" and g.get("output_norm") == "layer_norm" for g in groups):
@@ -216,7 +216,7 @@ def forward(x, arch, t, record, *, md):
         raise dcm_arch.ArchitectureError("relu_inputs.forward: only an intermediate_conv policy and a wdl_softmax value head are modelled")
     if arch["feature_skip_source"] != "none":
         raise dcm_arch.ArchitectureError("relu_inputs.forward: a feature skip is not modelled")
-    dcm_arch.require_relu(md, "relu_inputs.forward", ("tower_end_activation", "policy_head_activation",
+    dcm_arch.require_relu(path, "relu_inputs.forward", ("tower_end_activation", "policy_head_activation",
                                                       "value_head_conv_activation", "value_head_fc1_hidden_activation"),
                           block_main_path=True)
     h = conv(x, t["stem.conv.weight"]); record("tap:stem_bn_input", h)
@@ -267,7 +267,7 @@ def run(label, path, pos):
     X = np.stack([p[0] for p in pos])
     logits_all = []; vlog_all = []
     for i in range(0, len(X), 64):
-        lg, vl = forward(X[i:i + 64], arch, t, record, md=md)
+        lg, vl = forward(X[i:i + 64], arch, t, record, path=path)
         logits_all.append(lg); vlog_all.append(vl)
     L = np.concatenate(logits_all); V = np.concatenate(vlog_all)
     legal_means = []; legal_spreads = []; legal_min = []; legal_max = []; all_means = []

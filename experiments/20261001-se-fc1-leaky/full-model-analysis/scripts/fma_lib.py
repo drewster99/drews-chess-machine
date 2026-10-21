@@ -119,10 +119,10 @@ class Checkpoint:
         self.metadata, header, data_start = read_header(path)
         self.model_id = self.metadata["model_id"]
         self.training_step = int(self.metadata.get("training_step", "0"))
-        # Version-gated: fields a file's format predates resolve the way the app
-        # resolves them, and a v6+ file without `rezero_alpha_cap` is refused.
-        self.architecture = dcm_arch.norm_arch_md(self.metadata)
-        self.rezero_blocks = dcm_arch.rezero_blocks(self.metadata)
+        # As the app reads the file (`--describe-model`): fields its format
+        # predates resolved, a file the app refuses refused here.
+        self.architecture = dcm_arch.architecture(path)
+        self.rezero_blocks = dcm_arch.rezero_blocks(path)
         self.tensors = {}
         self.f32 = {}
         with open(path, "rb") as handle:
@@ -255,4 +255,4 @@ def run_rezero_blocks(run):
     found, _, _ = discover(run)
     if 0 not in found:
         raise FileNotFoundError(f"{run}: no fresh net to read the architecture from")
-    return dcm_arch.rezero_blocks_of_file(found[0])
+    return dcm_arch.rezero_blocks(found[0])

@@ -13,12 +13,12 @@ legal = [np.asarray(p['legal']) for p in P]; tg = [list(legal[i]).index(P[i]['ta
 def lsm(z): z = z - z.max(); return z - np.log(np.exp(z).sum())
 out = {}
 for rel in sys.argv[1:]:
-    md, T = load(A + rel); arch = norm_arch_md(md); T = {k: v for k, v in T.items() if not k.startswith('opt.')}
-    o64 = forward_batched(T, arch, X, md=md)
+    path = A + rel; md, T = load(path); arch = architecture(path); T = {k: v for k, v in T.items() if not k.startswith('opt.')}
+    o64 = forward_batched(T, arch, X, path=path)
     p64 = softmax(o64['vl_raw']); ce64 = -np.log(p64[np.arange(N), labels]); la64 = [lsm(o64['pl_raw'][i][legal[i]]) for i in range(N)]
     r = {}
     for dt, q in (('bf16', bf16), ('fp16', f16)):
-        o = forward_batched(quantise_weights(T, q), arch, X, frozenset({'p.pre_bn'}), q, md=md)
+        o = forward_batched(quantise_weights(T, q), arch, X, frozenset({'p.pre_bn'}), q, path=path)
         for tail, qt in ((dt + ' head outputs', q), ('fp32 head tails', f32)):
             vl = qt(o['vl_raw']); p = qt(softmax(vl)); pn = p / p.sum(1, keepdims=True)
             vkl = np.sum(p64 * (np.log(p64) - np.log(np.maximum(pn, 1e-30))), 1)

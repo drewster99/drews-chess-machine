@@ -83,7 +83,7 @@ def branch_scale(stem, step, expected_model_id):
     path = os.path.join(MODELS, f"{stem}-replay-step{step}.safetensors")
     if not os.path.exists(path):
         return None
-    blocks = dcm_arch.rezero_blocks_of_file(path)
+    blocks = dcm_arch.rezero_blocks(path)
     wanted = [f"blocks.{b.index}.{t}" for b in blocks for t in ("conv2.weight", "rezero_alpha")]
     metadata, tensors = read_tensors(path, wanted)
     for key in ("model_id", "training_step"):

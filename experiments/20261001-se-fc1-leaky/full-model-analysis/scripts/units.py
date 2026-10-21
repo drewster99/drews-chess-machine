@@ -194,7 +194,7 @@ def require_supported_architecture(ckpt):
     if ckpt.architecture["feature_skip_source"] != "none":
         raise ValueError(f"{ckpt.file}: a feature skip is not modelled (feature_skip_source "
                          f"{ckpt.architecture['feature_skip_source']!r})")
-    sites = L.dcm_arch.site_activations_md(ckpt.metadata)
+    sites = L.dcm_arch.site_activations(ckpt.path)
     for key in ("tower_end_activation", "policy_head_activation", "value_head_conv_activation",
                 "value_head_fc1_hidden_activation"):
         if sites[key] != "relu":
@@ -216,7 +216,7 @@ def analyze(run, ckpt, fresh):
         raise ValueError(f"{ckpt.file}: unexpected block activation {group}")
     if group["se_style"] != "scale_and_bias":
         raise ValueError(f"{ckpt.file}: se_style {group['se_style']!r} is not modelled (only scale_and_bias)")
-    # dcm_arch.norm_arch_md resolved the FC1 activation of a file older than the field.
+    # The app resolved the FC1 activation of a file older than the field.
     se_act = group["se_activation"]
     blocks = group["count"]
     channels = group["channels"]

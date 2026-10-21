@@ -115,14 +115,13 @@ def cmm(c, name, x, W, b=None):
     y = c(name + 'mm', x @ W.T)
     return y if b is None else c(name, y + b)
 
-def forward(T, arch, x, R=frozenset(), q=ident, capture=False, *, md):
-    """md: the file's safetensors `__metadata__`; `arch` must be `norm_arch_md(md)`
-    (`dcm_arch.require_architecture_of`). The site activations are read from `md`
-    (the normalized `arch` no longer carries the format version or the
-    uniform-tower form their resolution needs). Every architecture-level site this
+def forward(T, arch, x, R=frozenset(), q=ident, capture=False, *, path):
+    """path: the model file; `arch` must be `architecture(path)`
+    (`dcm_arch.require_architecture_of`). The site activations are the ones the
+    app resolves for the file. Every architecture-level site this
     forward applies, and the block main path, is modelled as ReLU; the SE FC1 has
     its own activation (`se_act`)."""
-    _dcm_arch.require_architecture_of(md, arch, 'fwd16.forward')
+    _dcm_arch.require_architecture_of(path, arch, 'fwd16.forward')
     groups = arch['block_groups']
     if len(groups) != 1:
         raise _dcm_arch.ArchitectureError(f'fwd16.forward: {len(groups)} block groups; only one is modelled')
@@ -134,7 +133,7 @@ def forward(T, arch, x, R=frozenset(), q=ident, capture=False, *, md):
              'value_head_conv_activation', 'value_head_fc1_hidden_activation')
     if arch['policy_head_style'] != 'simple_conv':
         sites += ('policy_head_activation',)
-    _dcm_arch.require_relu(md, 'fwd16.forward', sites, block_main_path=True)
+    _dcm_arch.require_relu(path, 'fwd16.forward', sites, block_main_path=True)
     c = Ctx(R, q, capture)
     x = c('input', x)
     h = cconv(c, 'stem.conv', x, T['stem.conv.weight'])
@@ -208,20 +207,14 @@ def forward(T, arch, x, R=frozenset(), q=ident, capture=False, *, md):
 def quantise_weights(T, q):
     return {k: q(v) for k, v in T.items() if not k.startswith('opt.')}
 
-def forward_batched(T, arch, X, R=frozenset(), q=ident, bs=128, keep=('pl_raw', 'vl_raw', 'f1'), *, md):
-    outs = [forward(T, arch, X[i:i + bs], R, q, md=md) for i in range(0, len(X), bs)]
+def forward_batched(T, arch, X, R=frozenset(), q=ident, bs=128, keep=('pl_raw', 'vl_raw', 'f1'), *, path):
+    outs = [forward(T, arch, X[i:i + bs], R, q, path=path) for i in range(0, len(X), bs)]
     return {k: np.concatenate([o[k] for o in outs]) for k in keep}
 
 def softmax(z):
     e = np.exp(z - z.max(-1, keepdims=True)); return e / e.sum(-1, keepdims=True)
 
-def norm_arch(s, format_version=None):
-    """The block-groups architecture for a model file, from `scripts/dcm_arch.py`
-    (the single source of the version-gated rules). Pass the file's
-    `dcm_format_version` (or use `norm_arch_md`) so a current-format file missing a
-    field raises the way the app's loader does; without it, a missing field takes
-    the legacy value (e.g. `rezero_alpha_cap` = `rezero_alpha_init` x 1.0)."""
-    return _dcm_arch.norm_arch(s, format_version)
-
-def norm_arch_md(md):
-    return _dcm_arch.norm_arch_md(md)
+def architecture(path):
+    """The model file's architecture as the app resolves it (`scripts/dcm_arch.py`,
+    `--describe-model`): every format-version rule and refusal is the app's."""
+    return _dcm_arch.architecture(path)

@@ -446,4 +446,18 @@ final class PolicyTailArchitectureTests: XCTestCase {
         XCTAssertEqual(BehaviorFingerprint.header(for: .init(arch: try fp32())),
                        "dcm-behavior-fingerprint recipe=3 policy_tail=does_not_apply")
     }
+
+    /// Protects: a pre-v12 fp32 file that records no tail resolves to
+    /// `does_not_apply`, never to the reduced-precision default.
+    /// Fails if: the `(float32, nothing recorded)` branch falls through to
+    /// `mixed_final_projection`, which `validate()` refuses on fp32.
+    func testAPreV12FP32ArchitectureRecordingNothingIsDoesNotApply() throws {
+        var object = try architectureObject(try fp32())
+        object.removeValue(forKey: Self.tailKey)
+        let (decoded, format) = try decode(object, version: 11)
+        XCTAssertEqual(decoded.policyTailPrecision, .doesNotApply)
+        XCTAssertEqual(format.legacyLog.resolutions.filter { $0.hasPrefix(Self.tailKey) },
+                       ["\(Self.tailKey) := does_not_apply (float32)"])
+        XCTAssertNoThrow(try decoded.validate())
+    }
 }

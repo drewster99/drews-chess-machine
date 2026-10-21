@@ -46,7 +46,7 @@ def main():
                 continue
             ckpt = L.Checkpoint(path)
             # The value-conv features below are read as ReLU(value.bn).
-            L.dcm_arch.require_relu(ckpt.metadata, ckpt.file, ("value_head_conv_activation",))
+            L.dcm_arch.require_relu(ckpt.path, ckpt.file, ("value_head_conv_activation",))
             if not ckpt.has_velocity:
                 raise ValueError(f"{ckpt.file}: expected optimizer velocity")
             v = ckpt.velocity("value.fc1.weight")  # [128 out, 1024 in]

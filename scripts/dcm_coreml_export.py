@@ -28,7 +28,6 @@ The app binary: --app, else $DCM_BINARY, else the newest built binary in
 DerivedData (Release or Debug).
 """
 import argparse
-import glob
 import json
 import math
 import os
@@ -38,6 +37,9 @@ import tempfile
 
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dcm_arch  # noqa: E402
+
 # InferenceGraph.currentFormatVersion: the graph format this script reads.
 GRAPH_FORMAT_VERSION = 1
 GRAPH_FILE = "graph.json"
@@ -46,7 +48,6 @@ OUTPUT_NAMES = ("policy", "value", "value_probs")
 REDUCED_PRECISION_TYPES = ("bfloat16", "float16")
 PRECISIONS = ("mirror", "fp16", "fp32")
 DEFAULT_BATCH_SIZES = (1, 8, 32, 64, 128, 256)
-DERIVED_DATA = os.path.expanduser("~/Library/Developer/Xcode/DerivedData")
 
 
 class ExportError(Exception):
@@ -54,18 +55,13 @@ class ExportError(Exception):
 
 
 def app_binary(explicit):
-    """The app binary to run: `explicit`, else $DCM_BINARY, else the newest
-    built one (the rule of scripts/dcm_launcher_common.sh dcm_resolve_binary)."""
+    """The app binary to run: `explicit`, else `dcm_arch.app_binary()`."""
     if explicit:
         return explicit
-    if os.environ.get("DCM_BINARY"):
-        return os.environ["DCM_BINARY"]
-    pattern = os.path.join(DERIVED_DATA, "DrewsChessMachine-*", "Build", "Products", "*",
-                           "DrewsChessMachine.app", "Contents", "MacOS", "DrewsChessMachine")
-    candidates = [p for p in glob.glob(pattern) if os.access(p, os.X_OK)]
-    if not candidates:
-        raise ExportError(f"no built DrewsChessMachine binary under {DERIVED_DATA}; pass --app")
-    return max(candidates, key=os.path.getmtime)
+    try:
+        return dcm_arch.app_binary()
+    except dcm_arch.ArchitectureError as error:
+        raise ExportError(f"{error}; or pass --app") from None
 
 
 def run_app(binary, args):

@@ -49,9 +49,19 @@ enum InferenceGraphExportCLI {
             }
             Darwin.exit(0)
         } catch {
-            FileHandle.standardError.write(Data("error: \(flag): \(error.localizedDescription)\n".utf8))
+            FileHandle.standardError.write(Data("error: \(flag): \(text(of: error))\n".utf8))
             Darwin.exit(2)
         }
+    }
+
+    /// The error's own text: a `LocalizedError`'s description, else its
+    /// `CustomStringConvertible` one (e.g. `SafetensorsModelIO.IOError`), never
+    /// Foundation's generic "the operation couldn't be completed".
+    static func text(of error: Error) -> String {
+        if let localized = error as? LocalizedError, let description = localized.errorDescription {
+            return description
+        }
+        return String(describing: error)
     }
 
     /// The model path after `flag`, and every `--name value` pair in

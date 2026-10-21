@@ -29,7 +29,7 @@ activations.
 The Gaussian input is a model, not a measurement: BN makes each channel's input mean 0 and
 variance 1 over the running statistics, but the true distribution need not be normal.
 The checkpoint's own architecture says which activation each BN site feeds (through
-`scripts/dcm_arch.py`, the app's rules); the trainer step is its lineage record's
+`scripts/dcm_arch.py`, which asks the app); the trainer step is its lineage record's
 `cum_trainer_step` (through `scripts/dcm_lineage.py`). Nothing is taken from a file name but
 where to look.
 
@@ -43,7 +43,6 @@ every BN site's running variance of the checkpoints in `RUNNING_VARIANCE_FIXTURE
 session trainer saves, read-only, to a new file (an existing one is refused).
 """
 import argparse
-import copy
 import hashlib
 import json
 import math
@@ -199,19 +198,18 @@ def pass_through(activation, gamma, beta):
     return floor + (1.0 - floor) * excess_pass_through(activation, gamma, beta)
 
 
-def bn_site_activations(metadata, source):
+def bn_site_activations(path, source):
     """BN site name -> the activation that consumes its output, from the file's own
-    architecture as the app resolves it: the block group's `activation_function` from
-    `dcm_arch.norm_arch_md`, the tower-end and head sites from `dcm_arch.site_activations_md`.
-    Both gate on `dcm_format_version`, refuse what the app refuses, and resolve a pre-v9 file's
-    single `activation_function`.
+    architecture as the app resolves it (`dcm_arch.architecture` / `dcm_arch.site_activations`,
+    i.e. `--describe-model`): the app applies every format-version rule and refusal, including a
+    pre-v9 file's single `activation_function`.
 
     Only the topology this experiment uses is mapped — one pre-activation, SE-less block group,
     no feature skip, an intermediate_conv policy head — because only its BN → activation wiring
     was checked against `ChessNetwork`; any other file is refused rather than guessed. Its
     `stem.bn` feeds no activation and is not a site."""
-    arch = dcm_arch.norm_arch_md(metadata)
-    sites_of_file = dcm_arch.site_activations_md(metadata)
+    arch = dcm_arch.architecture(path)
+    sites_of_file = dcm_arch.site_activations(path)
     groups = arch["block_groups"]
     if len(groups) != 1 or groups[0]["activation_style"] != "pre" or groups[0]["se_style"] != "none":
         raise dcm_arch.ArchitectureError(f"{source}: unsupported architecture for this script "
@@ -466,7 +464,7 @@ def analyze(path):
     """Site -> row of statistics for one checkpoint; one header read."""
     header, data_start = dcm_arch.read_header(path)
     name = os.path.basename(path)
-    sites = bn_site_activations(header["__metadata__"], name)
+    sites = bn_site_activations(path, name)
     unmodeled = sorted({act for act in sites.values() if act not in MODELED_ACTIVATIONS})
     if unmodeled:
         raise ValueError(f"{name}: no pass-through model for {', '.join(unmodeled)}")
@@ -542,40 +540,8 @@ def selftest():
         assert np.all(np.isfinite(x))
         assert excess_pass_through(act, np.array([]), np.array([])).size == 0
         assert np.array_equal(excess_pass_through(act, np.zeros(2), np.array([1.0, -1.0])), np.array([1.0, 0.0]))
-    # Site mapping: a legacy (pre-v9) file, a v9 per-site file, and the refusals.
-    legacy_group = dict(count=2, channels=8, conv1_kernel_size=3, conv2_kernel_size=3, se_style="none",
-                        se_reduction_ratio=4, use_rezero=False, rezero_alpha_init=0.1, rezero_alpha_cap=0.1,
-                        activation_function="relu", activation_style="pre", skip_merge="add",
-                        dropout_multiplier=1, se_beta_init="glorot", se_activation="relu")
-    legacy = dict(block_groups=[legacy_group], activation_function="relu", policy_head_style="intermediate_conv")
-    md = dict(architecture=json.dumps(legacy), dcm_format_version="8")
-    assert bn_site_activations(md, "legacy") == {
-        "blocks.0.bn1": "relu", "blocks.0.bn2": "relu", "blocks.1.bn1": "relu", "blocks.1.bn2": "relu",
-        "tower_final_bn": "relu", "policy.pre_bn": "relu", "value.bn": "relu"}
-    v9 = copy.deepcopy(legacy)
-    del v9["activation_function"]
-    v9["block_groups"][0].update(activation_function="silu", se_activation="silu")
-    v9.update(stem_activation="does_not_apply", tower_end_activation="silu", feature_skip_activation="does_not_apply",
-              policy_head_activation="leaky_relu", value_head_conv_activation="leaky_relu",
-              value_head_fc1_hidden_activation="leaky_relu")
-    sites = bn_site_activations(dict(architecture=json.dumps(v9), dcm_format_version="9"), "v9")
-    assert sites["blocks.1.bn2"] == "silu" and sites["tower_final_bn"] == "silu" and sites["value.bn"] == "leaky_relu"
-    refused = []
-    retired = dict(v9, activation_function="relu")
-    refused.append(dict(architecture=json.dumps(retired), dcm_format_version="9"))
-    two_groups = copy.deepcopy(legacy)
-    two_groups["block_groups"].append(dict(legacy_group))
-    refused.append(dict(architecture=json.dumps(two_groups), dcm_format_version="8"))
-    post = copy.deepcopy(legacy)
-    post["block_groups"][0]["activation_style"] = "post"
-    refused.append(dict(architecture=json.dumps(post), dcm_format_version="8"))
-    refused.append(dict(architecture=json.dumps(legacy), dcm_format_version="12"))
-    for case in refused:
-        try:
-            bn_site_activations(case, "refused")
-        except dcm_arch.ArchitectureError:
-            continue
-        raise AssertionError(f"not refused: {case}")
+    # Site mapping is read from the app (`dcm_arch`, `--describe-model`); its resolution rules
+    # are tested in Swift (ArchitectureActivationSiteTests), not here.
     # Checkpoint identity: the step from the record, never the name (run and segment agreement
     # is dcm_lineage.derive_runs', tested in documentation/dashboards/tests/test_lineage.py).
     def entry(name, filename_step, local, cum):
