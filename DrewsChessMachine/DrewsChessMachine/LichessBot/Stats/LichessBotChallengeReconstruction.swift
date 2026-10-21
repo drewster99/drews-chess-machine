@@ -405,7 +405,8 @@ enum LichessBotReconstructionMessage: Sendable, Equatable {
     /// "matchmaking sent a challenge to <name>", "matchmaking resent a
     /// challenge to <name> as casual", "challenge queue: sent <name>".
     case senderCompanion(name: String, sender: LichessBotReconstructedSender)
-    /// "matchmaking send to <name> failed: …" / "… stopped: …"; "challenge
+    /// "matchmaking send to <name> failed: …" / "… stopped: …" / "… paused: …"
+    /// (DCM's own bot-game limit, after Lichess refused the send); "challenge
     /// queue: skipped <name>: …" / "dropped <name>: …" / "stopped at <name>,
     /// which waits again: …"; "matchmaking: casual resend to <name> not
     /// sent: …".
@@ -448,7 +449,9 @@ enum LichessBotReconstructionMessage: Sendable, Equatable {
         if let rest = message.dropPrefix("matchmaking send to ") {
             guard let space = rest.firstIndex(of: " "), let name = playerName(rest[..<space]) else { return .unparsable }
             let outcome = rest[rest.index(after: space)...]
-            guard outcome.hasPrefix("failed: ") || outcome.hasPrefix("stopped: ") else { return .unparsable }
+            guard outcome.hasPrefix("failed: ") || outcome.hasPrefix("stopped: ") || outcome.hasPrefix("paused: ") else {
+                return .unparsable
+            }
             return .failureCompanion(name: name, sender: .matchmaking)
         }
         for prefix in ["challenge queue: skipped ", "challenge queue: dropped "] {

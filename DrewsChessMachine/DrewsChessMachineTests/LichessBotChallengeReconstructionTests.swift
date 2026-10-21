@@ -291,6 +291,24 @@ final class LichessBotChallengeReconstructionTests: XCTestCase {
         XCTAssertTrue(reconstruction.unexplainedLines.isEmpty)
     }
 
+    /// Protects: a matchmaking send stopped by DCM's own daily bot-game limit
+    /// ("matchmaking send to <name> paused: …", `MatchmakingPassOutcome.blocked`)
+    /// is a failure companion like "failed:" / "stopped:", so the refused
+    /// attempt before it is attributed to matchmaking.
+    /// Fails if: the parser accepts only "failed: " and "stopped: " after the
+    /// name — the real log of 2026-10-15 then reports the line as unparsable
+    /// and the attempt as an operator send.
+    func testAPausedMatchmakingSendIsAFailureCompanion() throws {
+        var lines = ProtocolLines()
+        lines.challenge(Self.refusedOutcome("atari-video-chess"), fields: ["credits_day": "108/200", "credits_minute": "1/25"], at: 1)
+        lines.challenge("matchmaking send to ATARI-VIDEO-CHESS paused: Bot games paused: Lichess daily limit until 2:22 PM", at: 1.01)
+        let reconstruction = try build(lines)
+
+        XCTAssertEqual(attempts(reconstruction).map(\.sender), [.attributed(sender: .matchmaking, confidence: .paired)])
+        XCTAssertEqual(reconstruction.counts.failureCompanionsPaired, 1)
+        XCTAssertTrue(reconstruction.unexplainedLines.isEmpty, "\(reconstruction.unexplainedLines)")
+    }
+
     func testOutcomeLineAndBotLimitLineAreOneRefusalAndABotLimitLineAloneIsAnAttempt() throws {
         var lines = ProtocolLines()
         // Before outcome lines existed: the bot-limit line alone.
