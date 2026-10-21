@@ -9,6 +9,11 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-20 19:45 — Challenge-log reconstruction reads paused matchmaking sends; two stale test expectations `86b96f32` `11143488`
+
+- "matchmaking send to <name> paused: …" (DCM at its own daily bot-game limit) is now a failure companion like "failed:" / "stopped:", so the refused attempt before it is attributed to matchmaking instead of the operator. Found by the real-data reconstruction test on the 2026-10-15 log.
+- Test expectations updated for `--set-compute-dtype` (`8d11fdc8`) and the chat-event settings fields (`553144e3`).
+
 ## 2026-10-20 17:50 — Core ML export from the recorded inference graph `746ff51f`
 
 - Every forward-pass op in `ChessNetwork`'s builders goes through `ForwardGraphOps`; with an `InferenceGraphRecorder` attached it is also recorded as an `InferenceGraph` (ops in build order, MPSGraph data types, weights by plan name). Production builds attach none; recorded and unrecorded networks compute bit-identical outputs.
