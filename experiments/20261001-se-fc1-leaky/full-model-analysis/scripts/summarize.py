@@ -532,8 +532,8 @@ def main():
           "LayerNorm rows: gamma/beta of the per-position LN at each block output (no running stats, no activation).\n\n" +
           md_table(bn) + "\n\n## Hottest (largest E[x^2]) channel per BN input\n\n" + md_table(hot))
     write("rezero.md", "# ReZero alpha by step\n\n" + header +
-          "\n`eff` = C tanh(raw/C), C = the block's ReZero cap from the run's checkpoint metadata "
-          "(`rezero_alpha_cap`; files older than format v6: `rezero_alpha_init` x 1.0). "
+          "\n`eff` = C tanh(raw/C), C = the block's ReZero cap as the app resolves the run's checkpoint "
+          "(`rezero_alpha_cap`; files older than format v6: the legacy cap). "
           "`d(eff)/d(raw)` = sech^2(raw/C): the gradient "
           "attenuation at the current raw value.\n\n" + md_table(rezero_table(units), "{:.5f}"))
     pers, n = persistence_table(units)

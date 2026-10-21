@@ -1,75 +1,69 @@
-"""Tests for `test_set_results` in scripts/dcm_lineage.py: the reading of a
-model file's `dcm_test_set_results` (test-set results plan D4), mirroring
-`ModelTestSetResultsField.reading` in Persistence/ModelTestSetResults.swift.
+"""Tests for `test_set_results` in scripts/dcm_lineage.py: the app's reading of a
+model file's `dcm_test_set_results` (test-set results plan D4), handed back as
+(status, record-or-reason).
+
+What reads as evaluated, failed or unreadable is the app's rule
+(`ModelTestSetResultsField.reading`; ModelTestSetResultsTests in Swift). These
+tests check that each status the app reports reaches the caller intact, on real
+model files (`app_files`).
 
 Run: python3 -m unittest discover -s documentation/dashboards/tests
+Needs a built DrewsChessMachine binary; without one these tests skip.
 """
 import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
+sys.path.insert(0, HERE)
+import app_files  # noqa: E402
 import dcm_lineage  # noqa: E402
 
-KEY = dcm_lineage.TEST_SET_RESULTS_KEY
+KEY = "dcm_test_set_results"
 
 
-def evaluated(pelo=1630.4, pelo_bound=None):
-    """The JSON the app writes (sorted keys), one set."""
-    return json.dumps({
-        "build": 2427, "evaluated_at_unix": 1791414697, "policy_tail_precision": "mixed_final_projection",
-        "schema": 1, "status": "evaluated",
-        "sets": [{
-            "avg_correct_probability": 0.1923, "avg_correct_rank": 3.667, "description": "200 puzzles.",
-            "fingerprint_sha256": "a" * 64, "id": "lichess-200", "nll": 2.071, "pelo": pelo,
-            "pelo_bound": pelo_bound, "positions": 200,
-            "themes": [{"correct": 20, "id": "hangingPiece", "title": "Hanging piece", "total": 25}],
-            "title": "Lichess puzzles, 200", "top1_correct": 99, "top5_correct": 170,
-        }],
-    }, sort_keys=True, separators=(",", ":"))
+def tearDownModule():
+    app_files.remove_base()
 
 
 class TestSetResultsTests(unittest.TestCase):
+    """Fails if: a status is mapped to another, the evaluated record or the
+    reason is dropped, or an unreadable value raises instead of being reported."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def file(self, name, metadata=None, remove=()):
+        return app_files.write_model_file(os.path.join(self.dir, name), metadata or {}, remove=remove,
+                                          keep_lineage=True)
 
     def test_absent_is_not_recorded(self):
-        self.assertEqual(dcm_lineage.test_set_results({}), ("not_recorded", None))
+        self.assertEqual(dcm_lineage.test_set_results(self.file("absent.safetensors", remove=(KEY,))),
+                         ("not_recorded", None))
 
-    def test_evaluated(self):
-        kind, record = dcm_lineage.test_set_results({KEY: evaluated()})
+    def test_a_minted_file_is_evaluated_with_its_sets(self):
+        kind, record = dcm_lineage.test_set_results(self.file("minted.safetensors"))
         self.assertEqual(kind, "evaluated")
-        self.assertEqual(record["sets"][0]["top1_correct"], 99)
-        self.assertEqual(record["sets"][0]["themes"][0]["id"], "hangingPiece")
+        self.assertEqual(sorted(s["id"] for s in record["sets"]), ["lichess-200", "lichess-wide"])
+        self.assertTrue(all(len(s["fingerprint_sha256"]) == 64 for s in record["sets"]))
 
-    def test_a_bound_instead_of_an_estimate(self):
-        kind, record = dcm_lineage.test_set_results({KEY: evaluated(pelo=None, pelo_bound="all_correct")})
-        self.assertEqual(kind, "evaluated")
-        self.assertEqual(record["sets"][0]["pelo_bound"], "all_correct")
-
-    def test_failed(self):
+    def test_failed_carries_the_writers_reason(self):
         raw = json.dumps({"reason": "r", "schema": 1, "status": "failed"}, sort_keys=True)
-        self.assertEqual(dcm_lineage.test_set_results({KEY: raw}), ("failed", "r"))
+        self.assertEqual(dcm_lineage.test_set_results(self.file("failed.safetensors", {KEY: raw})), ("failed", "r"))
 
-    def test_unreadable_values_are_reported_not_raised(self):
-        for raw in ["not json", "[]", json.dumps({"schema": 2, "status": "failed", "reason": "r"}),
-                    json.dumps({"schema": 1, "status": "maybe"}), json.dumps({"schema": 1, "status": "failed"}),
-                    evaluated(pelo=None, pelo_bound=None), evaluated(pelo=1.0, pelo_bound="all_wrong"),
-                    evaluated(pelo=None, pelo_bound="maybe"),
-                    json.dumps({"schema": True, "status": "failed", "reason": "r"}),
-                    evaluated().replace('"build":2427,', ''),
-                    evaluated().replace('"pelo_bound":null,', ''),
-                    evaluated().replace('"top1_correct":99', '"top1_correct":"99"')]:
-            kind, reason = dcm_lineage.test_set_results({KEY: raw})
-            self.assertEqual(kind, "unreadable", raw)
-            self.assertIsInstance(reason, str)
-
-    def test_the_key_and_schema_match_the_app(self):
-        swift = open(os.path.join(REPO, "DrewsChessMachine", "DrewsChessMachine", "Persistence",
-                                  "ModelTestSetResults.swift")).read()
-        self.assertIn(f'static let metadataKey = "{KEY}"', swift)
-        self.assertIn(f"static let schema = {dcm_lineage.TEST_SET_RESULTS_SCHEMA}", swift)
+    def test_an_unreadable_value_is_reported_not_raised(self):
+        kind, reason = dcm_lineage.test_set_results(self.file("bad.safetensors", {KEY: "not json"}))
+        self.assertEqual(kind, "unreadable")
+        self.assertIsInstance(reason, str)
+        self.assertTrue(reason)
 
 
 if __name__ == "__main__":

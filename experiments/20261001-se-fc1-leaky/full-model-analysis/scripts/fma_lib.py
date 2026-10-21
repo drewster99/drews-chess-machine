@@ -43,7 +43,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "..", "scripts"))
-import dcm_arch  # noqa: E402  the single source of the version-gated architecture rules
+import dcm_arch  # noqa: E402  a model file's architecture, as the app (--describe-model) resolves it
 
 MODELS_DIR = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")
 RESULTS_DIR = os.path.abspath(os.path.join(HERE, "..", "results"))
@@ -249,8 +249,8 @@ def bf16_grid_fraction(values32):
 
 
 def run_rezero_blocks(run):
-    """Per-block ReZero settings (init, cap) of a run, read from its fresh net's
-    metadata. Every checkpoint of a run shares one architecture, so the fresh net
+    """Per-block ReZero settings (init, cap) of a run, as the app resolves its fresh
+    net's file. Every checkpoint of a run shares one architecture, so the fresh net
     speaks for all of them."""
     found, _, _ = discover(run)
     if 0 not in found:

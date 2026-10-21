@@ -259,8 +259,8 @@ def read_bn_parameters(path, header, data_start, sites):
 
 
 def index_checkpoints(run, entries):
-    """Trainer step -> path for one run, from (file name, path, filename step, metadata, lineage
-    record) entries. The step is the record's `cum_trainer_step`. The file's `training_step` must
+    """Trainer step -> path for one run, from (file name, path, filename step, step reading, lineage
+    record) entries (the step reading and record as the app reads them, `dcm_lineage`). The step is the record's `cum_trainer_step`. The file's `training_step` must
     equal its filename step and agree with the record under the file's step basis
     (`dcm_lineage.step_reading`): from format v11 it is the trainer step and must equal
     `cum_trainer_step`; before v11 it is the segment's step and must equal `segment_local_step`.
@@ -268,8 +268,7 @@ def index_checkpoints(run, entries):
     segments agree (one `model_id` per segment among them) is `checkpoints`' check, through
     `dcm_lineage.derive_runs`."""
     found = {}
-    for name, path, filename_step, metadata, record in entries:
-        reading = dcm_lineage.step_reading(metadata, name)
+    for name, path, filename_step, reading, record in entries:
         stated = reading.stated_training_step
         cum = record["steps"]["cum_trainer_step"]
         if reading.basis == dcm_lineage.BASIS_TRAINER_STEP:
@@ -312,7 +311,7 @@ def checkpoints(run, models_dir=MODELS):
     lineage_runs = dcm_lineage.derive_runs(recorded)
     if len(lineage_runs) > 1:
         raise ValueError(f"{run}: files from more than one lineage run: {sorted(lineage_runs)}")
-    return index_checkpoints(run, [(f.name, f.path, filename_steps[f.path], f.metadata, f.record)
+    return index_checkpoints(run, [(f.name, f.path, filename_steps[f.path], f.step_reading, f.record)
                                    for f in recorded])
 
 
@@ -398,7 +397,7 @@ def _fixture_checkpoint(path, expected_step):
     as the same float32 (checked here, value by value, so the Swift test's Double → Float
     conversion of each number is exact)."""
     metadata = dcm_arch.read_header(path)[0]["__metadata__"]
-    record = dcm_lineage.lineage_of(metadata, os.path.basename(path))
+    record = dcm_lineage.lineage_of(path)
     if isinstance(record, dcm_lineage.Unrecorded):
         raise ValueError(f"{path}: no lineage record (trainer step not recorded)")
     step = record["steps"]["cum_trainer_step"]
@@ -545,35 +544,14 @@ def selftest():
     # Checkpoint identity: the step from the record, never the name (run and segment agreement
     # is dcm_lineage.derive_runs', tested in documentation/dashboards/tests/test_lineage.py).
     def entry(name, filename_step, local, cum):
-        return (name, name, filename_step, dict(training_step=str(local)),
-                dict(steps=dict(segment_local_step=local, cum_trainer_step=cum)))
+        # A pre-v11 corpus-replay file: `training_step` is the segment's step.
+        reading = dcm_lineage.StepReading(dcm_lineage.BASIS_LEGACY_SEGMENT_STEP, local, cum, local, "legacy")
+        return (name, name, filename_step, reading, dict(steps=dict(segment_local_step=local, cum_trainer_step=cum)))
 
     def v11_entry(name, filename_step, stated, local, cum):
-        # A format v11 header: `training_step` is the trainer step, and the segment step is
-        # the record's (which the reading takes from the header's own dcm_lineage).
-        record = dict(schema=dcm_lineage.SUPPORTED_SCHEMA,
-                      run=dict(lineage_run_id="r", segment_index=1, segment_id="s", segment_started_unix=0,
-                               start="resume", exact_resume=True, not_exact_items=[],
-                               continues_unrecorded_history=False, recorded_unix=0),
-                      parent=None, steps=dict(cum_trainer_step=cum, segment_start_trainer_step=None,
-                                              segment_local_step=local),
-                      fed=dict(cum_games=None, cum_positions=None, segment_games=0, segment_positions=0, corpus=None),
-                      time=dict(cum_train_step_sec=None, cum_wall_sec=None, segment_train_step_sec=0.0,
-                                segment_wall_sec=0.0),
-                      device=dict(hw_model="m", chip="c", is_vm=False, os_version="v", gpu_name="g"),
-                      invocation=dict(argv=[], path_kind="replay"), segments=[],
-                      # Schema 3 (hyperparameter recording P4) requires the build identity and
-                      # these top-level keys; their values don't affect the step reading.
-                      build=dict(build_number=2400, git_hash="abc1234", git_branch="main", git_dirty=False,
-                                 git_diff_sha256=dict(recorded=True, value=None),
-                                 xcode_build=dict(recorded=True, value="17A5241e"),
-                                 sdk_build=dict(recorded=True, value="26A5300a"),
-                                 configuration=dict(recorded=True, value="Release")),
-                      configuration=dict(recorded=False), run_seeds=dict(recorded=False),
-                      ancestry=dict(history_before_oldest_run="none", runs=[]))
-        metadata = dict(training_step=str(stated), dcm_format_version="11", creator="replay",
-                        dcm_lineage=json.dumps(record))
-        return (name, name, filename_step, metadata, record)
+        # A format v11 file: `training_step` is the trainer step; the segment step is the record's.
+        reading = dcm_lineage.StepReading(dcm_lineage.BASIS_TRAINER_STEP, stated, stated, local, None)
+        return (name, name, filename_step, reading, dict(steps=dict(segment_local_step=local, cum_trainer_step=cum)))
     assert index_checkpoints("t", [entry("a", 1000, 1000, 1000), entry("b", 1000, 1000, 37000)]) == \
         {1000: "a", 37000: "b"}
     # A resumed segment on a v11 build: name step = training_step = cum_trainer_step.

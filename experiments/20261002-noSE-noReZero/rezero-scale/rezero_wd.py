@@ -2,8 +2,8 @@
 
 Usage: rezero_wd.py [--output PATH]
 
-Each block's ReZero cap comes from its checkpoint's own metadata (`rezero_alpha_cap`,
-or `rezero_alpha_init` x 1.0 for files older than format v6), so runs with different
+Each block's ReZero cap is the one the app resolves for its checkpoint (`dcm_arch.rezero_blocks`:
+`rezero_alpha_cap`, or the legacy cap of a file older than format v6), so runs with different
 ReZero settings, zero-init included, are read correctly. Writes a new CSV and refuses
 to replace an existing one; the default output is rezero_wd.csv next to this script.
 """

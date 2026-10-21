@@ -24,7 +24,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DASH = os.path.abspath(os.path.join(HERE, ".."))
 sys.path.insert(0, DASH)
 sys.path.insert(0, HERE)
-from test_lineage import v11_header, write_chain, write_header  # noqa: E402
+from app_files import write_header  # noqa: E402
+from test_lineage import tearDownModule, v11_header, write_chain  # noqa: E402,F401
 
 STUB = """#!/usr/bin/env python3
 import json, os, sys, time
@@ -105,8 +106,8 @@ def make_stub_binary(root):
 
 class ProbeBackfillTests(unittest.TestCase):
     """probe_backfill over a run whose segments are identified by lineage `segment_id`:
-    the checkpoints are header-only lineage files, the probe is the stub, and the
-    architecture-derived cells are patched (the files carry no tensors)."""
+    the checkpoints are lineage files (`app_files`), the probe is the stub, and the
+    architecture-derived cells are patched (what the test controls is which file fails)."""
 
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
@@ -231,7 +232,7 @@ class TrainerStepNamedFilesTests(unittest.TestCase):
     def test_a_stem_holding_several_segments_files_is_reported_not_filed(self):
         write_header(os.path.join(self.root, "S-replay-step1000.safetensors"),
                      {"dcm_format_version": "10", "model_id": "20261006-1-SSSS", "creator": "replay",
-                      "training_step": "1000", "trainer_completed_steps": "1000"} | {
+                      "training_step": "1000"} | {
                          "dcm_lineage": v11_header(local_step=1000, cum=1000)["dcm_lineage"]})
         write_header(os.path.join(self.root, "S-replay-step2000.safetensors"), v11_header(local_step=487, cum=2000))
         self.load({"r": {"frozen_glob": "r-step*-frozen.safetensors", "out_model": "S-replay-latest.safetensors",
@@ -245,7 +246,7 @@ class TrainerStepNamedFilesTests(unittest.TestCase):
     def test_discover_stems_refuses_a_stem_shared_by_two_segments(self):
         write_header(os.path.join(self.root, "S-replay-step1000.safetensors"),
                      {"dcm_format_version": "10", "model_id": "20261006-1-SSSS", "creator": "replay",
-                      "training_step": "1000", "trainer_completed_steps": "1000",
+                      "training_step": "1000",
                       "dcm_lineage": v11_header(local_step=1000, cum=1000)["dcm_lineage"]})
         write_header(os.path.join(self.root, "S-replay-step2000.safetensors"), v11_header(local_step=487, cum=2000))
         self.load({})
@@ -402,8 +403,8 @@ class TrainerStepNamedFilesTests(unittest.TestCase):
             added = self.replay.import_probes("r", probes, 1, ckpt_dirs=(self.root,), verbose=True)
         self.assertEqual(added, 1, "the record whose file is not there is imported; the import is not aborted")
         self.assertEqual(self.probed("r"), [(2013, 500)])
-        self.assertIn("S-replay-step300.safetensors: header cannot be read", printed.getvalue())
-        self.assertIn("S-replay-step400.safetensors: header cannot be read", printed.getvalue())
+        self.assertIn("S-replay-step300.safetensors: the app cannot read the file", printed.getvalue())
+        self.assertIn("S-replay-step400.safetensors: the app cannot read the file", printed.getvalue())
 
     def test_import_probes_rejects_a_record_stating_an_unknown_step_basis(self):
         self.load({"r": {"frozen_glob": "r-step*-frozen.safetensors", "out_model": "S-replay-latest.safetensors",

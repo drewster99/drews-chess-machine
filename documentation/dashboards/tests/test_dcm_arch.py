@@ -30,7 +30,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 import dcm_arch  # noqa: E402
-import dcm_lineage  # noqa: E402
 
 FMA_SCRIPTS = os.path.join(REPO, "experiments", "20261001-se-fc1-leaky", "full-model-analysis", "scripts")
 FP16_SCRIPTS = os.path.join(REPO, "documentation", "research", "fp16-feasibility", "scripts")
@@ -66,6 +65,7 @@ class Fixtures:
     folder = None
     paths = {}
     skip_reason = None
+    build_error = None
 
     @classmethod
     def build(cls):
@@ -93,6 +93,14 @@ class Fixtures:
             run("--derive-model", "--from", cls.paths[source], *operations, "--out", path)
             cls.paths[name] = path
 
+        try:
+            cls._build_files(new_model, derive)
+        except Exception as error:
+            cls.build_error = error
+            raise
+
+    @classmethod
+    def _build_files(cls, new_model, derive):
         new_model("relu", "v4_4block_3x3_fp32")
         derive("leaky_fc1", "relu", "--set-value-head-fc1-hidden-activation", "leaky_relu")
         derive("silu_main", "relu", "--set-activation", "silu", "--set-tower-end-activation", "relu",
@@ -103,16 +111,24 @@ class Fixtures:
         simple.update(policy_head_style="simple_conv", policy_head_activation=dcm_arch.DOES_NOT_APPLY)
         preset = os.path.join(cls.folder, "simple_conv-preset.json")
         with open(preset, "w") as handle:
-            json.dump({"label": "simple_conv", "format_version": dcm_arch.CURRENT_FORMAT_VERSION,
+            json.dump({"label": "simple_conv", "format_version": cls.current_format_version(),
                        "architecture": simple}, handle)
         new_model("simple_conv", preset)
         new_model("fusion", "v4_5block_7x7_fusion")
 
     @classmethod
+    def current_format_version(cls):
+        """The format this build writes: a freshly minted file's, as the app reads it."""
+        return dcm_arch.describe(cls.paths["relu"])["format_version"]
+
+    @classmethod
     def path(cls, name):
-        cls.build()
+        if cls.build_error is None:
+            cls.build()
         if cls.skip_reason:
             raise unittest.SkipTest(cls.skip_reason)
+        if cls.build_error is not None:
+            raise RuntimeError(f"the test model files could not be built: {cls.build_error}")
         return cls.paths[name]
 
 
@@ -131,7 +147,7 @@ class DescribeTests(unittest.TestCase):
         path = Fixtures.path("relu")
         description = dcm_arch.describe(path)
         self.assertEqual(description["model_id"], dcm_arch.read_metadata(path)["model_id"])
-        self.assertEqual(description["format_version"], dcm_arch.CURRENT_FORMAT_VERSION)
+        self.assertEqual(description["format_version"], int(dcm_arch.read_metadata(path)["dcm_format_version"]))
         self.assertEqual(dcm_arch.architecture(path), description["architecture"])
         self.assertEqual(dcm_arch.architecture(path)["block_groups"][0]["activation_function"], "relu")
 
@@ -157,15 +173,46 @@ class DescribeTests(unittest.TestCase):
     def test_a_file_the_app_refuses_is_an_architecture_error_with_its_reason(self):
         source = Fixtures.path("relu")
         header, data_start = dcm_arch.read_header(source)
-        header["__metadata__"]["dcm_format_version"] = str(dcm_arch.CURRENT_FORMAT_VERSION + 1)
+        newer_version = Fixtures.current_format_version() + 1
+        header["__metadata__"]["dcm_format_version"] = str(newer_version)
         header["__metadata__"].pop("content_sha256", None)
         encoded = json.dumps(header).encode()
         newer = os.path.join(Fixtures.folder, "newer-format.safetensors")
         with open(source, "rb") as reader, open(newer, "wb") as writer:
             reader.seek(data_start)
             writer.write(struct.pack("<Q", len(encoded)) + encoded + reader.read())
-        with self.assertRaisesRegex(dcm_arch.ArchitectureError, re.escape(newer)):
+        with self.assertRaisesRegex(dcm_arch.ArchitectureError, re.escape(newer)) as caught:
             dcm_arch.describe(newer)
+        self.assertIn(f"v{newer_version}", str(caught.exception))
+
+    def test_a_changed_file_is_described_again(self):
+        source = Fixtures.path("relu")
+        copy_path = os.path.join(Fixtures.folder, "changing.safetensors")
+        shutil.copyfile(source, copy_path)
+        first = dcm_arch.describe(copy_path)["model_id"]
+        shutil.copyfile(Fixtures.path("simple_conv"), copy_path)
+        self.assertNotEqual(dcm_arch.describe(copy_path)["model_id"], first)
+
+    def test_a_same_size_rewrite_in_place_is_described_again(self):
+        """Protects: the description cache is keyed on the file's version, not its
+        size. Fails if: the key drops the modification / change times, so a file
+        rewritten in place at the same size (a rolling checkpoint) is answered
+        from the old description."""
+        source = Fixtures.path("relu")
+        copy_path = os.path.join(Fixtures.folder, "rewritten-in-place.safetensors")
+        shutil.copyfile(source, copy_path)
+        first = dcm_arch.describe(copy_path)["model_id"]
+        with open(copy_path, "rb") as handle:
+            raw = handle.read()
+        replacement = first[:-4] + ("ZZZZ" if not first.endswith("ZZZZ") else "YYYY")
+        # The header's own key, byte for byte: same length, so the file keeps its size.
+        stated = f'"model_id":"{first}"'.encode()
+        self.assertEqual(raw.count(stated), 1, "the header states its model_id once, compactly")
+        rewritten = raw.replace(stated, f'"model_id":"{replacement}"'.encode())
+        with open(copy_path, "r+b") as handle:
+            handle.write(rewritten)
+        self.assertEqual(os.path.getsize(copy_path), len(raw))
+        self.assertEqual(dcm_arch.describe(copy_path)["model_id"], replacement)
 
     def test_a_binary_that_cannot_run_is_an_architecture_error(self):
         path = Fixtures.path("relu")
@@ -294,53 +341,6 @@ class ForwardGuardTests(unittest.TestCase):
         # A file the guards accept fails only for want of tensors.
         with self.assertRaises(KeyError):
             fwd16.forward({}, arch, x, path=relu)
-
-
-class FormatVersionTextTests(unittest.TestCase):
-    """Protects: the format-version parsing `dcm_lineage` uses for a file's step
-    reading, which must read a version as the app does. Fails if: it accepts text
-    Swift's Int(String) refuses (whitespace, underscores, decimals, non-ASCII digits),
-    a non-positive version, or a version newer than the app's."""
-
-    def test_unknown_format_versions_are_refused(self):
-        for version in (str(dcm_arch.CURRENT_FORMAT_VERSION + 1), "0", "-1", "nine"):
-            with self.assertRaises(dcm_arch.ArchitectureError, msg=version):
-                dcm_arch.checked_format_version(version)
-        self.assertEqual(dcm_arch.checked_format_version(str(dcm_arch.CURRENT_FORMAT_VERSION)),
-                         dcm_arch.CURRENT_FORMAT_VERSION)
-        self.assertIsNone(dcm_arch.checked_format_version(None))
-
-    def test_format_version_text_is_what_swift_int_parses(self):
-        for value in ("1_0", " 9", "9\n", "9.0", "", "+", "-0", "٩", True, 9.0):
-            with self.assertRaises(dcm_arch.ArchitectureError, msg=repr(value)):
-                dcm_arch.checked_format_version(value)
-        for value, expected in (("+9", 9), ("09", 9), (9, 9)):
-            self.assertEqual(dcm_arch.checked_format_version(value), expected)
-
-    # Each Python constant that hand-copies an ArchitectureFormat constant, by its
-    # Swift name. A version that moves in Swift but not here would make dcm_lineage
-    # read a file's step differently from the app.
-    SWIFT_FORMAT_CONSTANTS = (
-        ("currentVersion", dcm_arch, "CURRENT_FORMAT_VERSION"),
-        ("lineageRequiredFromVersion", dcm_lineage, "LINEAGE_REQUIRED_FROM_VERSION"),
-        ("unversionedLegacyVersion", dcm_lineage, "UNVERSIONED_LEGACY_VERSION"),
-    )
-
-    def test_format_versions_match_the_swift_constants(self):
-        """Both sides are parsed, never written here as numbers, so a version bump
-        made in both places keeps this passing and one made in only one fails it."""
-        with open(os.path.join(REPO, "DrewsChessMachine", "DrewsChessMachine", "Network",
-                               "ArchitectureFormat.swift"), encoding="utf-8") as swift_file:
-            source = swift_file.read()
-        body = re.search(r"^enum ArchitectureFormat\b[^{]*\{(.*?)^\}", source, re.S | re.M).group(1)
-        swift = {}
-        for name, value in re.findall(r"^\s*static let (\w+) = (\d+)\s*$", body, re.M):
-            self.assertNotIn(name, swift, f"ArchitectureFormat.{name} is declared twice")
-            swift[name] = int(value)
-        for swift_name, module, python_name in self.SWIFT_FORMAT_CONSTANTS:
-            with self.subTest(swift_name=swift_name, python_name=f"{module.__name__}.{python_name}"):
-                self.assertIn(swift_name, swift, f"ArchitectureFormat.{swift_name} not found as an integer literal")
-                self.assertEqual(getattr(module, python_name), swift[swift_name])
 
 
 if __name__ == "__main__":

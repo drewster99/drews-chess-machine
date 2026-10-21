@@ -248,18 +248,13 @@ def file_facts(path):
     entry = dict(model_id=None, file=path, source_log=None, hparams_line=None, cycle_line=None)
     try:
         metadata = dcm_lineage.read_metadata(path)
+        description = dcm_lineage.describe(path)
     except (OSError, ValueError, struct.error) as error:
-        return None, dict(entry, status="unmatched", reason=f"header not readable: {error}")
-    entry["model_id"] = metadata.get("model_id")
-    if dcm_lineage.METADATA_KEY in metadata:
+        return None, dict(entry, status="unmatched", reason=f"header not readable or refused: {error}")
+    entry["model_id"] = description["model_id"]
+    if not isinstance(dcm_lineage.lineage_in(description), dcm_lineage.Unrecorded):
         return metadata, dict(entry, status="has_lineage",
-                              reason=f"carries {dcm_lineage.METADATA_KEY}; its own record holds its parameters")
-    try:
-        lineage = dcm_lineage.lineage_of(metadata, path)
-    except dcm_lineage.LineageError as error:
-        return metadata, dict(entry, status="unmatched", reason=f"header refused: {error}")
-    if not isinstance(lineage, dcm_lineage.Unrecorded):
-        raise AssertionError(f"{path}: a record without {dcm_lineage.METADATA_KEY} cannot exist")
+                              reason="has a lineage record; its own record holds its parameters")
     return metadata, None
 
 
@@ -487,6 +482,8 @@ def build_report(model_arguments, log_folder, zone_name, experiments_folder=None
         for event in facts.events:
             events_by_name.setdefault(event.name, []).append(event)
     entries = []
+    # One app call describes every file; file_facts then reads each from its cache.
+    dcm_lineage.describe_all(paths)
     for path in paths:
         metadata, settled = file_facts(path)
         entries.append(settled if settled is not None else match_file(path, metadata, events_by_name, logs))

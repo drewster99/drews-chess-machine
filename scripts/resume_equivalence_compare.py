@@ -32,7 +32,7 @@ import dcm_lineage  # noqa: E402
 
 def load(path):
     metadata = dcm_lineage.read_metadata(path)
-    record = dcm_lineage.lineage_of(metadata, path)
+    record = dcm_lineage.lineage_of(path)
     if not isinstance(record, dict):
         raise dcm_lineage.LineageError(f"{path}: written before lineage records; nothing to compare")
     if "content_sha256" not in metadata:

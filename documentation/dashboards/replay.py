@@ -27,7 +27,7 @@ Subcommands:
 
 Idempotent: track/migrate never duplicate a cum_step already present.
 """
-import os, re, sys, csv, json, glob, struct, math, bisect, argparse, collections, itertools, datetime
+import os, re, sys, json, glob, struct, bisect, argparse, collections, itertools, datetime
 import numpy as np
 from _schema import FIELDS  # single source of the CSV column order (shared with selfplay.py)
 from _schema import NON_FINITE_PELO_NOTE  # the non-finite-measurement marker (read by experiments/table_common.py)
@@ -49,7 +49,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # without forking the script. The script itself (and shared assets like the v5 doc)
 # still resolve against HERE.
 ROOT = os.path.abspath(os.environ.get("DCM_DASH_ROOT", HERE))
-REG = json.load(open(os.path.join(ROOT, "registry.json")))
+with open(os.path.join(ROOT, "registry.json")) as _registry_file:
+    REG = json.load(_registry_file)
 MODELS = os.path.expanduser(REG["models_dir"])
 LOGS = os.path.expanduser(REG["logs_dir"])
 DATA = os.path.join(ROOT, "data")
@@ -102,7 +103,7 @@ def meta_step_of(path):
     `training_step` is then the trainer step). A file whose segment step is unknown is
     an error naming it, never a guess."""
     name = os.path.basename(path)
-    reading = dcm_lineage.step_reading(dcm_lineage.read_metadata(path), name)
+    reading = dcm_lineage.step_reading(path)
     if reading.segment_step is None:
         raise dcm_lineage.LineageError(f"{name}: states no segment step (step basis {reading.basis})")
     return reading.segment_step
@@ -637,13 +638,13 @@ def lineage_checkpoints(cfg):
         if si is None:
             continue
         local = f.record["steps"]["segment_local_step"]
-        reading = dcm_lineage.step_reading(f.metadata, f.name)
+        reading = f.step_reading
         if reading.basis == dcm_lineage.BASIS_TRAINER_STEP:
             expected, what = f.record["steps"]["cum_trainer_step"], "cum_trainer_step"
         else:
             expected, what = local, "segment_local_step"
         if expected is not None and reading.stated_training_step != expected:
-            raise dcm_lineage.LineageError(f"{f.name}: training_step {f.metadata.get('training_step')} but its "
+            raise dcm_lineage.LineageError(f"{f.name}: training_step {reading.stated_training_step} but its "
                                            f"lineage record's {what} is {expected}")
         out.append((si, f.path, local))
     return sorted(out, key=lambda t: (t[0], t[2]))
@@ -737,20 +738,22 @@ def discover_enum_stems(cfg, run=None, verbose=True):
     out, refused, order, pool = {}, [], [], []
     for stem, paths in sorted(by_stem.items()):
         ids, times, steps = set(), [], []
+        described = dcm_arch.describe_files(paths)
         for p in paths:
             try:
-                with open(p, "rb") as f:
-                    n = struct.unpack("<Q", f.read(8))[0]
-                    m = json.loads(f.read(n)).get("__metadata__", {})
+                description = described[p]
+                if isinstance(description, dcm_arch.ArchitectureError):
+                    raise description
+                m = dcm_lineage.read_metadata(p)
                 # The segment step (`dcm_lineage.step_reading`): the name's step
                 # before format v11, the record's segment_local_step from v11.
-                segment_step = dcm_lineage.step_reading(m, os.path.basename(p)).segment_step
+                segment_step = dcm_lineage.step_reading_in(description).segment_step
                 if segment_step is None:
                     raise ValueError("no segment step")
-                ids.add(m.get("model_id")); steps.append(segment_step)
+                ids.add(description["model_id"]); steps.append(segment_step)
                 if m.get("created_at_unix"):
                     times.append(int(m["created_at_unix"]))
-            except (OSError, ValueError, KeyError, struct.error) as error:
+            except (OSError, ValueError, KeyError) as error:
                 print(f"  [warn] {os.path.basename(p)}: header unreadable ({error}); "
                       f"not used to place stem {stem}", file=sys.stderr)
         if len(ids) > 1:
@@ -882,7 +885,7 @@ def rolling_file_segment_refusal(cfg, src):
             return None
         return (f"the rolling file is lineage segment {facts['segment_id']}, but the latest registry segment "
                 f"is {sg['segment_id']}")
-    model_id = dcm_lineage.read_metadata(src).get("model_id")
+    model_id = dcm_lineage.describe(src)["model_id"]
     if sg.get("model_id"):
         if sg["model_id"] == model_id:
             return None
@@ -1044,19 +1047,19 @@ def probe_backfill(run, verbose=True):
         eprefix, esuffix = eg.split("*")
         ebase = cfg["segments"][si]["cumstep_base"]
         found = []
-        for f in sorted(glob.glob(os.path.join(MODELS, eg))):
+        globbed = sorted(glob.glob(os.path.join(MODELS, eg)))
+        described = dcm_arch.describe_files(globbed)
+        for f in globbed:
             name = os.path.basename(f)
             try:
                 n = int(name[len(eprefix):len(name) - len(esuffix)])
             except ValueError:
                 continue
-            try:
-                metadata = dcm_lineage.read_metadata(f)
-                reading = dcm_lineage.step_reading(metadata, name)
-            except (OSError, ValueError, struct.error) as error:
-                failures.append((name, f"cannot file: {error}"))
+            description = described[f]
+            if isinstance(description, dcm_arch.ArchitectureError):
+                failures.append((name, f"cannot file: {description}"))
                 continue
-            found.append((f, name, n, metadata.get("model_id"), reading))
+            found.append((f, name, n, description["model_id"], dcm_lineage.step_reading_in(description)))
         model_ids = {model_id for _, _, _, model_id, _ in found}
         segment_model_id = cfg["segments"][si].get("model_id")
         for f, name, n, model_id, reading in found:
@@ -1157,7 +1160,7 @@ def recompute_internals(run, verbose=True):
     """Re-derive bn1Mean / sae2 / eff_alpha from the checkpoints themselves.
 
     eff_alpha and sae2 depend on each block's ReZero cap (eff = cap·tanh(α/cap)),
-    which `internals` reads from the checkpoint's own metadata. Rows written while
+    which `internals` takes from the app's resolution of the file (`dcm_arch.rezero_blocks`, `--describe-model`). Rows written while
     the cap came from a hand-entered registry value carry that value's error; this
     rereads the weights and their caps. Only segments that declare a
     `model_id` take part: a checkpoint is found by (model_id, training_step) in its
@@ -1322,17 +1325,16 @@ def _ckpt_index(dirs):
     out = {}
     unreadable = []
     for d in dirs:
-        for p in sorted(glob.glob(os.path.join(os.path.expanduser(d), "*.safetensors"))):
-            try:
-                with open(p, "rb") as f:
-                    n = struct.unpack("<Q", f.read(8))[0]
-                    m = json.loads(f.read(n)).get("__metadata__", {})
-                mid = m.get("model_id")
-                segment_step = dcm_lineage.step_reading(m, os.path.basename(p)).segment_step
-                if mid and segment_step is not None:
-                    out.setdefault((mid, segment_step), p)
-            except (OSError, ValueError, KeyError, struct.error) as error:
-                unreadable.append((p, error))   # absent from the index, and reported below
+        paths = sorted(glob.glob(os.path.join(os.path.expanduser(d), "*.safetensors")))
+        described = dcm_arch.describe_files(paths)
+        for p in paths:
+            description = described[p]
+            if isinstance(description, dcm_arch.ArchitectureError):
+                unreadable.append((p, description))   # absent from the index, and reported below
+                continue
+            segment_step = dcm_lineage.step_reading_in(description).segment_step
+            if segment_step is not None:
+                out.setdefault((description["model_id"], segment_step), p)
     if unreadable:
         print(f"[warn] {len(unreadable)} checkpoint header(s) unreadable, left out of the "
               f"(model_id, training_step) index:", file=sys.stderr)
@@ -1343,12 +1345,12 @@ def _ckpt_index(dirs):
 
 def _named_file_is_v11(dirs, model):
     """(is_v11, refusal) for the file a probe record names (`model`, a path or a
-    name): whether it is found in one of `dirs` with a header at architecture
-    format v11 or later. A file not found there is not judged: (False, None). A
-    file found there whose header cannot be read, or whose format is newer than
-    these tools, cannot be judged either, and its record cannot be filed safely:
-    (False, the reason), which the caller reports as that record's rejection
-    rather than letting one bad header end the whole import."""
+    name): whether it is found in one of `dirs` and its `training_step` is the
+    trainer step (step basis `trainer_step`: architecture format v11 or later, as
+    the app reads it). A file not found there is not judged: (False, None). A file
+    found there that the app refuses cannot be judged either, and its record cannot
+    be filed safely: (False, the reason), which the caller reports as that record's
+    rejection rather than letting one bad header end the whole import."""
     name = os.path.basename(model)
     if not name:
         return False, None
@@ -1356,13 +1358,10 @@ def _named_file_is_v11(dirs, model):
         path = os.path.join(os.path.expanduser(d), name)
         if os.path.isfile(path):
             try:
-                version = dcm_arch.checked_format_version(
-                    dcm_lineage.read_metadata(path).get(dcm_lineage.FORMAT_VERSION_KEY))
-            # ArchitectureError and LineageError are ValueErrors.
-            except (OSError, ValueError, struct.error) as error:
-                return False, f"{name}: header cannot be read to tell its step basis ({error})"
-            return (version is not None and version >= dcm_lineage.TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION,
-                    None)
+                basis = dcm_lineage.step_reading(path).basis
+            except dcm_lineage.LineageError as error:
+                return False, f"{name}: the app cannot read the file to tell its step basis ({error})"
+            return basis == dcm_lineage.BASIS_TRAINER_STEP, None
     return False, None
 
 

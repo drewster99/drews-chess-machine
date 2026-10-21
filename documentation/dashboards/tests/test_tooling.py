@@ -3,7 +3,9 @@ ordering (scripts/dcm_session_logs.py), probe records (experiments/probe_record.
 replay-buffer game length (experiments/table_common.py).
 
 Run: python3 -m unittest discover -s documentation/dashboards/tests
-Every test works on synthetic files in a temporary folder.
+Every test works on files in a temporary folder: the header-reader tests on synthetic
+headers (that reader is Python's own), the probe tests on real model files
+(`app_files`), which the probe tools read through the app.
 """
 import csv
 import json
@@ -25,10 +27,11 @@ import dcm_session_logs  # noqa: E402
 import probe_record  # noqa: E402
 import table_common  # noqa: E402
 sys.path.insert(0, HERE)
-from test_lineage import v11_header  # noqa: E402
+from app_files import write_header  # noqa: E402
+from test_lineage import tearDownModule, v11_header  # noqa: E402,F401
 
 
-def write_header(path, metadata):
+def write_raw_header(path, metadata):
     header = json.dumps({"__metadata__": metadata}).encode()
     with open(path, "wb") as handle:
         handle.write(struct.pack("<Q", len(header)) + header)
@@ -77,11 +80,10 @@ class HeaderReadTests(unittest.TestCase):
 
     def test_lineage_reader_is_the_same_reader_with_its_own_error_type(self):
         import dcm_lineage
-        self.assertEqual(dcm_lineage.MAX_HEADER_BYTES, dcm_arch.MAX_HEADER_BYTES)
         self.write_raw(struct.pack("<Q", 2 ** 63) + b"{}")
         with self.assertRaises(dcm_lineage.LineageError):
             dcm_lineage.read_metadata(self.path)
-        write_header(self.path, {"model_id": "M1"})
+        write_raw_header(self.path, {"model_id": "M1"})
         self.assertEqual(dcm_lineage.read_metadata(self.path), dcm_arch.read_metadata(self.path))
 
 
@@ -169,10 +171,10 @@ class ProbeRecordTests(unittest.TestCase):
             handle.write(json.dumps(record) + "\n")
         self.assertEqual(sorted(probe_record.load_probe_points(self.probes, "M1")), [1000, 2000])
 
-    def test_a_header_the_tools_refuse_is_an_identity_failure(self):
+    def test_a_header_the_app_refuses_is_an_identity_failure(self):
         checkpoint = os.path.join(self.folder.name, "run-replay-step2000-bad.safetensors")
-        write_header(checkpoint, v11_header(local_step=487, cum=2000, model_id="M1", stated=487))
-        self.assertEqual(probe_record.build_record(checkpoint, 487, self.summary(), self.probes,
+        write_header(checkpoint, dict(v11_header(local_step=487, cum=2000, model_id="M1"), dcm_format_version="99"))
+        self.assertEqual(probe_record.build_record(checkpoint, 2000, self.summary(), self.probes,
                                                    "Test.app@sha256:000000000000")[0], 4)
 
     def test_load_probe_points_refusals(self):
@@ -284,7 +286,13 @@ class ProbeLoopScriptTests(unittest.TestCase):
         return path
 
     def run_loop(self, arguments, **environment):
-        env = dict(os.environ, HOME=self.home, **environment)
+        # The loop's Python reads headers through the app, whose binary it finds under
+        # $HOME: name it here, before HOME points at the temporary folder.
+        try:
+            binary = dcm_arch.app_binary()
+        except dcm_arch.ArchitectureError as error:
+            self.skipTest(str(error))
+        env = dict(os.environ, HOME=self.home, DCM_BINARY=binary, **environment)
         return subprocess.run(["/bin/zsh", os.path.join(REPO, "experiments", "probe_loop.sh")] + arguments,
                               capture_output=True, text=True, timeout=120, env=env)
 

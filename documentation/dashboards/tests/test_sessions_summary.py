@@ -2,13 +2,16 @@
 session.json (and, from format v2, its lineage record) the way the app does.
 
 Run: python3 -m unittest discover -s documentation/dashboards/tests
-Every test works on synthetic session folders in a temporary folder.
+Every test works on session folders in a temporary folder: a synthetic session.json
+and, where it records lineage, a real trainer.safetensors carrying that record
+(`app_files`), which the summary reads through the app.
 """
 import contextlib
 import io
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -17,8 +20,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 sys.path.insert(0, HERE)
+import app_files  # noqa: E402
 import sessions_summary  # noqa: E402
-from test_lineage import record_for  # noqa: E402
+from test_lineage import record_for, tearDownModule  # noqa: E402,F401
 
 SWIFT_SESSION_FILE = os.path.join(REPO, "DrewsChessMachine", "DrewsChessMachine", "Persistence",
                                   "SessionCheckpointFile.swift")
@@ -51,6 +55,7 @@ def vsuci_record():
 class SessionsSummaryTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
 
     def write(self, folder_name, body, extra_files=()):
         folder = os.path.join(self.dir, folder_name)
@@ -58,6 +63,11 @@ class SessionsSummaryTests(unittest.TestCase):
         if body is not None:
             with open(os.path.join(folder, "session.json"), "w") as handle:
                 handle.write(body if isinstance(body, str) else json.dumps(body))
+        if isinstance(body, dict) and body.get("lineage") is not None:
+            # The session's trainer file carries the run's record at the save, as
+            # session.json does; the summary reads it from there, through the app.
+            app_files.write_lineage_file(os.path.join(folder, "trainer.safetensors"), body["lineage"],
+                                         body["trainerID"])
         for name, size in extra_files:
             with open(os.path.join(folder, name), "wb") as handle:
                 handle.write(b"\0" * size)
@@ -82,14 +92,15 @@ class SessionsSummaryTests(unittest.TestCase):
         name = "20261003-010000-20261003-1-AAAA-promote.dcmsession"
         self.write(name, state("20261003-1-AAAA", lineage=record_for(1, 1000),
                                arena_promotions=(False, True, True), has_buffer=True),
-                   extra_files=[("replay_buffer.bin", 2048), ("trainer.safetensors", 1024)])
+                   extra_files=[("replay_buffer.bin", 2048)])
         row = self.rows()[name]
         self.assertNotIn("error", row)
         self.assertEqual((row["trigger"], row["session_id"], row["training_steps"]),
                          ("promote", "20261003-1-AAAA", 15901))
         self.assertEqual((row["arenas"], row["promotions"]), (3, 2))
         self.assertEqual((row["has_replay_buffer"], row["replay_buffer_file"]), (True, True))
-        self.assertGreaterEqual(row["size_bytes"], 2048 + 1024)
+        self.assertGreaterEqual(row["size_bytes"], 2048 + os.path.getsize(
+            os.path.join(self.dir, name, "trainer.safetensors")))
         self.assertEqual(row["lineage"]["path_kind"], "replay")
         self.assertEqual(row["lineage"]["segment_index"], 1)
         self.assertEqual(row["lineage"]["cum_trainer_step"], 2000)
@@ -131,7 +142,8 @@ class SessionsSummaryTests(unittest.TestCase):
                    state("20261003-1-AAAA", format_version=3, lineage=vsuci_record()))
         errors = {name: row.get("error") for name, row in self.rows().items()}
         self.assertIn("has no lineage", errors["20261003-030000-20261003-1-AAAA-manual.dcmsession"])
-        self.assertIn("lineage has no steps.cum_trainer_step", errors["20261003-040000-20261003-1-AAAA-manual.dcmsession"])
+        self.assertIn("trainer.safetensors: safetensors model: dcm_lineage does not decode",
+                      errors["20261003-040000-20261003-1-AAAA-manual.dcmsession"])
         self.assertIn("no session.json", errors["20261003-050000-20261003-1-AAAA-manual.dcmsession"])
         self.assertIn("is not JSON", errors["20261003-060000-20261003-1-AAAA-manual.dcmsession"])
         self.assertIn("has no trainingSteps", errors["20261003-070000-20261003-1-AAAA-manual.dcmsession"])
@@ -142,15 +154,14 @@ class SessionsSummaryTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(out.getvalue().count("ERROR:"), 6)
 
-    def test_lineage_without_not_exact_items_is_a_row_error(self):
+    def test_a_record_the_app_refuses_is_a_row_error_and_the_listing_continues(self):
         broken = vsuci_record()
         del broken["run"]["not_exact_items"]
         self.write("20261003-010000-20261003-1-AAAA-manual.dcmsession", state("20261003-1-AAAA", lineage=broken))
         self.write("20261003-020000-20261003-1-AAAA-manual.dcmsession",
                    state("20261003-1-AAAA", lineage=vsuci_record()))
         rows = self.rows()
-        self.assertIn("lineage has no run.not_exact_items",
-                      rows["20261003-010000-20261003-1-AAAA-manual.dcmsession"]["error"])
+        self.assertIn("not_exact_items", rows["20261003-010000-20261003-1-AAAA-manual.dcmsession"]["error"])
         self.assertNotIn("error", rows["20261003-020000-20261003-1-AAAA-manual.dcmsession"],
                          "one bad session.json does not stop the listing")
 

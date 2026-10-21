@@ -1,5 +1,5 @@
-"""A model file's lineage record, read the way the app reads it, and the run
-segments it implies.
+"""A model file's lineage record and step reading, as the app reads them, and the
+run segments they imply.
 
 Since architecture format v7 every DCM `.safetensors` file carries a
 `LineageRecord` (Persistence/LineageRecord.swift) as one JSON value under
@@ -10,21 +10,14 @@ registry used to carry as hand-entered per-segment bases (`cumstep_base`,
 `games_base`, `elapsed_base_sec`, `wall_base_sec`); this module derives them
 from the files instead.
 
-The rules mirror the app and CLAUDE.md "Run tracking: three axes":
+Every rule about reading a file is the app's: whether a file has a record (by
+format version), whether the record decodes at its schema (2 ... 5), what a
+header's `training_step` means (`ModelFileStepReading`), and how the puzzle
+test-set results read. This module asks the app (`dcm_arch.describe_files`,
+`--describe-model`, header-only and batched) and implements none of them; a file
+the app refuses is a LineageError carrying the app's reason. What stays here is
+analysis of the records the app has checked:
 
-- A file's format version comes from `dcm_format_version`; a file without one
-  is the unversioned legacy format (3), as `ArchitectureFormat` reads it.
-- A file older than `LINEAGE_REQUIRED_FROM_VERSION` has no record and is
-  reported as unrecorded — nothing is reconstructed for it.
-- A file at or after that version without a record, with a record that does
-  not parse, or with a record of a schema outside `OLDEST_SUPPORTED_SCHEMA` ...
-  `SUPPORTED_SCHEMA` (2 ... 5), is refused (the app refuses to load it too).
-  A schema-2 record (every file written before hyperparameter recording P4)
-  is read as written: it has no `configuration` / `run_seeds` / `ancestry`,
-  and its corpus position names one corpus as `corpus_id` / `corpus_path`
-  where schema 3 has `corpus_identity` (read both with `corpus_ids`).
-  Schema 4 adds `model_naming` (the model's name and starting preset; read it
-  with `model_naming`), required at 4 and refused before.
 - A record's `cum_*` totals are *this run's* totals: a branch restarts them,
   a derive continues its source's. The totals behind the weights themselves
   are `weights_totals`, which adds the runs a schema-3 `ancestry` names.
@@ -32,13 +25,11 @@ The rules mirror the app and CLAUDE.md "Run tracking: three axes":
   lineage existed) stays absent. A base is the record's total minus its own
   segment's contribution — arithmetic on two measured values — and is never
   filled from anywhere else.
-- The flat mirror keys (`lineage_run_id`, `cum_trainer_step`, ...) are never
-  read; the JSON value is the only source.
-- What a header's `training_step` means is read by `step_reading` only: from
-  format v11 the trainer step (the segment step is the record's
-  `segment_local_step`); before v11 what the file's writer (`creator`) wrote —
-  the segment's step for corpus replay and train-vs-UCI, the cumulative trainer
-  step for the GUI. Every in-repo tool that reads a step goes through it.
+- A record is given as stored, so each schema keeps its own layout: a schema-2
+  record has no `configuration` / `run_seeds` / `ancestry`, and its corpus
+  position names one corpus as `corpus_id` / `corpus_path` where schema 3 has
+  `corpus_identity` (read both with `corpus_ids`); schema 4 adds
+  `model_naming` (read it with `model_naming`).
 
 Import from anywhere in the repository with
 
@@ -46,33 +37,13 @@ Import from anywhere in the repository with
     import dcm_lineage
 
 No import-time side effects; needs only the standard library and `dcm_arch`
-(beside this file in scripts/), which reads the safetensors header.
+(beside this file in scripts/).
 """
 import datetime
 import json
 import os
-import struct
 
 import dcm_arch
-
-# ArchitectureFormat.lineageRequiredFromVersion: the first format whose files
-# must carry a lineage record.
-LINEAGE_REQUIRED_FROM_VERSION = 7
-# ArchitectureFormat.unversionedLegacyVersion: what a file with no
-# dcm_format_version is.
-UNVERSIONED_LEGACY_VERSION = 3
-# LineageRecord.currentSchema.
-# Schema 5 (LR keyframes) adds no field: its parameter snapshot may carry
-# `lr_cycle_keyframes` (a list) in place of the single-decay schedule's keys.
-SUPPORTED_SCHEMA = 5
-# LineageRecord.oldestDecodableSchema: the oldest schema the app still reads.
-OLDEST_SUPPORTED_SCHEMA = 2
-# LineageRecord.metadataKey.
-METADATA_KEY = "dcm_lineage"
-FORMAT_VERSION_KEY = "dcm_format_version"
-# The header-size bound of the one header reader (`dcm_arch.read_header`),
-# re-exported for callers that build a damaged header against it.
-MAX_HEADER_BYTES = dcm_arch.MAX_HEADER_BYTES
 
 # The registry segment fields this module derives, in the order they are shown.
 DERIVED_SEGMENT_FIELDS = ("lineage_run_id", "segment_id", "model_id", "date", "cumstep_base",
@@ -89,10 +60,20 @@ DERIVED_SEGMENT_FIELDS = ("lineage_run_id", "segment_id", "model_id", "date", "c
 # only replay and train-vs-UCI files).
 MULTIPLE_MODEL_ID_PATH_KINDS = frozenset({"gui"})
 
+# TrainingStepBasis raw values: the `basis` of a step reading.
+BASIS_TRAINER_STEP = "trainer_step"
+BASIS_LEGACY_SEGMENT_STEP = "legacy_segment_step"
+BASIS_LEGACY_GUI_TRAINER_STEP = "legacy_gui_trainer_step"
+BASIS_LEGACY_UNKNOWN_WRITER = "legacy_unknown_writer"
+# Every TrainingStepBasis raw value: what a stated basis (a probe record's
+# `step_basis`) must be one of.
+STEP_BASES = frozenset({BASIS_TRAINER_STEP, BASIS_LEGACY_SEGMENT_STEP, BASIS_LEGACY_GUI_TRAINER_STEP,
+                        BASIS_LEGACY_UNKNOWN_WRITER})
+
 
 class LineageError(ValueError):
-    """A header whose lineage the app would refuse, or files that contradict
-    each other about one segment."""
+    """A file the app refuses (its reason), or files that contradict each other
+    about one segment."""
 
 
 class Unrecorded:
@@ -109,158 +90,113 @@ class Unrecorded:
 
 
 def read_metadata(path):
-    """The `__metadata__` dict of a .safetensors file, reading only the header:
-    `dcm_arch.read_metadata`, whose refusals surface here as LineageError."""
+    """The `__metadata__` dict of a .safetensors file as stored (string values),
+    reading only the header: `dcm_arch.read_metadata`, whose refusals surface here
+    as LineageError. Raw header values; the app's reading of them is `describe`."""
     try:
         return dcm_arch.read_metadata(path)
     except dcm_arch.ArchitectureError as error:
         raise LineageError(str(error)) from error
 
 
-def format_version_of(metadata, source):
-    """The file's format version, read the way `ArchitectureFormat` reads it."""
-    value = metadata.get(FORMAT_VERSION_KEY)
-    if value is None:
-        return UNVERSIONED_LEGACY_VERSION
+def describe(path):
+    """The app's description of the model file at `path` (`dcm_arch.describe`);
+    LineageError when the app refuses the file."""
     try:
-        return dcm_arch.parsed_format_version(value)
-    except dcm_arch.ArchitectureError:
-        raise LineageError(f"{source}: unparseable {FORMAT_VERSION_KEY} {value!r}") from None
+        return dcm_arch.describe(path)
+    except dcm_arch.ArchitectureError as error:
+        raise LineageError(str(error)) from None
 
 
-# Keys of the record this module reads. Every key of the record is required by
-# the app's decoder; these are checked so a malformed record fails here with a
-# message rather than as a KeyError deep in the derivation.
-_REQUIRED = {
-    "": ("schema", "run", "parent", "steps", "fed", "time", "device", "invocation", "segments"),
-    "run": ("lineage_run_id", "segment_index", "segment_id", "segment_started_unix", "start",
-            "exact_resume", "not_exact_items", "continues_unrecorded_history", "recorded_unix"),
-    "steps": ("cum_trainer_step", "segment_start_trainer_step", "segment_local_step"),
-    "fed": ("cum_games", "cum_positions", "segment_games", "segment_positions", "corpus"),
-    "time": ("cum_train_step_sec", "cum_wall_sec", "segment_train_step_sec", "segment_wall_sec"),
-    "device": ("hw_model", "chip", "is_vm", "os_version", "gpu_name"),
-    "invocation": ("argv", "path_kind"),
-}
-_REQUIRED_SEGMENT_SUMMARY = ("segment_index", "segment_id", "start", "started_unix", "recorded_unix",
-                             "start_trainer_step", "end_trainer_step", "segment_local_step",
-                             "segment_games", "segment_positions", "segment_train_step_sec",
-                             "segment_wall_sec", "exact_resume", "build", "device")
-# What schema 3 added: required in a schema-3 record, refused in a schema-2 one
-# (the app's decoder does both).
-_SCHEMA_3_TOP = ("configuration", "run_seeds", "ancestry")
-_SCHEMA_3_BUILD = ("git_diff_sha256", "xcode_build", "sdk_build", "configuration")
-_SCHEMA_3_SEGMENT_SUMMARY = ("configuration", "parameters", "corpus_identity", "segment_start_corpus",
-                             "path_kind", "argv", "run_seeds")
-# What schema 4 added (model naming plan): required at 4, refused before.
-_SCHEMA_4_TOP = ("model_naming",)
+def describe_all(paths):
+    """The app's descriptions of many files in as few app calls as it takes
+    (`dcm_arch.describe_files`): {path: description | dcm_arch.ArchitectureError}.
+    Each is then cached, so a later `describe` of one of them starts no app.
+    LineageError when the app cannot be run at all."""
+    try:
+        return dcm_arch.describe_files(paths)
+    except dcm_arch.ArchitectureError as error:
+        raise LineageError(str(error)) from None
 
 
-def lineage_of(metadata, source):
+def lineage_in(description):
+    """A description's lineage: the record (a dict, as stored) or `Unrecorded`."""
+    lineage = description["lineage"]
+    if lineage["status"] == "unrecorded":
+        return Unrecorded(lineage["format_version"])
+    return lineage["record"]
+
+
+def lineage_of(path):
     """The file's lineage record (a dict), or `Unrecorded` for a file written
-    before records existed. Raises `LineageError` where the app would refuse."""
-    version = format_version_of(metadata, source)
-    if version < LINEAGE_REQUIRED_FROM_VERSION:
-        if METADATA_KEY in metadata:
-            raise LineageError(f"{source}: a format v{version} file carries {METADATA_KEY}, "
-                               f"which no writer of that format produced")
-        return Unrecorded(version)
-    text = metadata.get(METADATA_KEY)
-    if text is None:
-        raise LineageError(f"{source}: format v{version} file has no {METADATA_KEY}")
-    try:
-        record = json.loads(text)
-    except (TypeError, ValueError) as error:
-        raise LineageError(f"{source}: {METADATA_KEY} is not JSON ({error})") from None
-    return validated_record(record, source)
+    before records existed. LineageError where the app refuses the file."""
+    return lineage_in(describe(path))
 
 
-def validated_record(record, source, field=METADATA_KEY):
-    """`record` (a decoded lineage record) when it has every field the app
-    requires at the supported schema; raises `LineageError` otherwise. Shared
-    by model files (`lineage_of`, field `dcm_lineage`) and session.json (field
-    `lineage`); `field` names where the record was read, for the message."""
-    if not isinstance(record, dict):
-        raise LineageError(f"{source}: {field} is not a JSON object")
-    for section, keys in _REQUIRED.items():
-        holder = record if section == "" else record.get(section)
-        if not isinstance(holder, dict):
-            raise LineageError(f"{source}: {field}.{section} is missing or not an object")
-        for key in keys:
-            if key not in holder:
-                where = f"{section}.{key}" if section else key
-                raise LineageError(f"{source}: {field} has no {where}")
-    schema = record["schema"]
-    if not isinstance(schema, int) or isinstance(schema, bool) \
-            or not OLDEST_SUPPORTED_SCHEMA <= schema <= SUPPORTED_SCHEMA:
-        raise LineageError(f"{source}: {field} schema {schema!r} is not a supported schema "
-                           f"({OLDEST_SUPPORTED_SCHEMA}...{SUPPORTED_SCHEMA})")
-    if not isinstance(record["segments"], list):
-        raise LineageError(f"{source}: {field}.segments is not a list")
-    build = record.get("build")
-    if not isinstance(build, dict):
-        raise LineageError(f"{source}: {field}.build is missing or not an object")
-    _check_schema_keys(record, _SCHEMA_3_TOP, schema, source, field)
-    _check_schema_keys(record, _SCHEMA_4_TOP, schema, source, field, added_in=4)
-    _check_schema_keys(build, _SCHEMA_3_BUILD, schema, source, f"{field}.build")
-    for position, summary in enumerate(record["segments"]):
-        for key in _REQUIRED_SEGMENT_SUMMARY:
-            if key not in summary:
-                raise LineageError(f"{source}: {field}.segments[{position}] has no {key}")
-        _check_schema_keys(summary, _SCHEMA_3_SEGMENT_SUMMARY, schema, source, f"{field}.segments[{position}]")
-    _check_corpus_position(record["fed"]["corpus"], schema, source, f"{field}.fed.corpus")
-    _check_seed_origin(record, schema, source, field)
-    return record
+class StepReading:
+    """What one header says about its step, as the app reads it
+    (`ModelFileStepReading`). `stated_training_step` is the header value as
+    written (None when it states none), `trainer_step` the trainer step its
+    weights were taken at (None when never recorded — never reconstructed),
+    `segment_step` the steps its writing segment had trained (None when
+    unknown), `basis` one of the BASIS_* values, and `legacy_note` the one-line
+    flag for a pre-v11 file that states a step (None otherwise)."""
+
+    def __init__(self, basis, stated_training_step, trainer_step, segment_step, legacy_note):
+        self.basis = basis
+        self.stated_training_step = stated_training_step
+        self.trainer_step = trainer_step
+        self.segment_step = segment_step
+        self.legacy_note = legacy_note
+
+    @property
+    def trainer_step_or_stated_step(self):
+        """The trainer step where one is known, else the stated step: what
+        catalogs order and display by."""
+        return self.trainer_step if self.trainer_step is not None else self.stated_training_step
+
+    def __repr__(self):
+        return (f"StepReading({self.basis}, stated={self.stated_training_step}, "
+                f"trainer={self.trainer_step}, segment={self.segment_step})")
 
 
-# CorpusPosition's keys by schema (LineageRecord.swift, `CorpusPosition.init(from:schema:)`):
-# a schema-3 position names its corpora in `corpus_identity` and records its
-# `segment_start`; a schema-2 position named one corpus by `corpus_id` and
-# `corpus_path`. Each schema refuses the other's keys.
-_SCHEMA_3_CORPUS = ("corpus_identity", "segment_start")
-_SCHEMA_2_CORPUS = ("corpus_id", "corpus_path")
+def step_reading_in(description):
+    """A description's step reading."""
+    reading = description["step_reading"]
+    if reading["basis"] not in STEP_BASES:
+        raise LineageError(f"{description['source']}: step basis {reading['basis']!r} is not one this module knows")
+    return StepReading(reading["basis"], reading["stated_training_step"], reading["trainer_step"],
+                       reading["segment_step"], reading["legacy_note"])
 
 
-def _check_corpus_position(corpus, schema, source, where):
-    """A record's corpus position (`fed.corpus`; None when the run fed no
-    corpus) has its schema's keys and none of the other schema's."""
-    if corpus is None:
-        return
-    if not isinstance(corpus, dict):
-        raise LineageError(f"{source}: {where} is not an object")
-    _check_schema_keys(corpus, _SCHEMA_3_CORPUS, schema, source, where)
-    for key in _SCHEMA_2_CORPUS:
-        if schema >= 3 and key in corpus:
-            raise LineageError(f"{source}: {where} carries {key}, but a schema-{schema} corpus position names "
-                               f"its corpora in corpus_identity")
-        if schema < 3 and key not in corpus:
-            raise LineageError(f"{source}: {where} has no {key} (schema {schema})")
+def step_reading(path):
+    """The file's `StepReading`, as the app reads it."""
+    return step_reading_in(describe(path))
 
 
-# The schema-3 value of `rng.streams.seed_origin` a schema-2 record never wrote
-# (LineageRecord.swift: "seed_origin command_line is a schema-3 value").
-_SCHEMA_3_SEED_ORIGIN = "command_line"
+def test_set_results(path):
+    """The file's puzzle test-set results, as the app reads them
+    (`ModelTestSetResultsField.reading`). Returns one of:
 
+    - ("not_recorded", None): no `dcm_test_set_results` key (written before
+      test-set results);
+    - ("unreadable", reason): the value doesn't read; reported, never fatal
+      (the results are informational);
+    - ("failed", reason): the writer's evaluation failed and it said why;
+    - ("evaluated", record): the record as stored, with `sets` (each: id, title,
+      description, fingerprint_sha256, positions, top1_correct, top5_correct,
+      avg_correct_probability, avg_correct_rank, nll, pelo or pelo_bound,
+      themes [{id, title, correct, total}]).
 
-def _check_seed_origin(record, schema, source, field):
-    """A schema-2 record's run-seed streams do not name a seed origin only
-    schema 3 has."""
-    if schema >= 3:
-        return
-    rng = record.get("rng")
-    streams = rng.get("streams") if isinstance(rng, dict) else None
-    if isinstance(streams, dict) and streams.get("seed_origin") == _SCHEMA_3_SEED_ORIGIN:
-        raise LineageError(f"{source}: {field}.rng.streams.seed_origin {_SCHEMA_3_SEED_ORIGIN} is a schema-3 "
-                           f"value in a schema-{schema} record")
-
-
-def _check_schema_keys(holder, keys, schema, source, where, added_in=3):
-    """Each of `keys` (added in schema `added_in`) is present in `holder` from
-    that schema on and absent before it, as the app's decoder requires."""
-    for key in keys:
-        if schema >= added_in and key not in holder:
-            raise LineageError(f"{source}: {where} has no {key} (schema {schema})")
-        if schema < added_in and key in holder:
-            raise LineageError(f"{source}: {where} carries {key}, which schema {schema} never wrote")
+    Results are comparable between files only for sets with equal
+    `fingerprint_sha256`."""
+    results = describe(path)["test_set_results"]
+    status = results["status"]
+    if status == "evaluated":
+        return ("evaluated", results["record"])
+    if status in ("failed", "unreadable"):
+        return (status, results["reason"])
+    return ("not_recorded", None)
 
 
 def model_naming(record):
@@ -442,35 +378,41 @@ def model_paths(directory):
 
 
 class FileLineage:
-    """One file's header facts: its model ID, step and lineage record."""
+    """One file's facts as the app describes it: its model ID, step reading and
+    lineage record."""
 
-    def __init__(self, path, metadata, record):
+    def __init__(self, path, description, record):
         self.path = path
         self.name = display_name(path)
-        self.metadata = metadata
+        self.description = description
+        self.model_id = description["model_id"]
         self.record = record
+
+    @property
+    def step_reading(self):
+        return step_reading_in(self.description)
 
 
 def scan_files(paths):
-    """Read the lineage of each .safetensors path, header-only.
+    """Read the lineage of each .safetensors path through the app (header-only,
+    batched).
 
     Returns (recorded, unrecorded, errors): `recorded` is a list of
     FileLineage, `unrecorded` maps path -> format version, and `errors` maps
-    path -> message for files that could not be read or that the app would
-    refuse. Nothing is skipped silently: every path lands in one of the
-    three."""
+    path -> message for files that could not be read or that the app refuses.
+    Nothing is skipped silently: every path lands in one of the three."""
     recorded, unrecorded, errors = [], {}, {}
+    described = describe_all(paths)
     for path in paths:
-        try:
-            metadata = read_metadata(path)
-            lineage = lineage_of(metadata, display_name(path))
-        except (OSError, ValueError, struct.error) as error:
-            errors[path] = str(error)
+        description = described[path]
+        if isinstance(description, dcm_arch.ArchitectureError):
+            errors[path] = str(description)
             continue
+        lineage = lineage_in(description)
         if isinstance(lineage, Unrecorded):
             unrecorded[path] = lineage.format_version
         else:
-            recorded.append(FileLineage(path, metadata, lineage))
+            recorded.append(FileLineage(path, description, lineage))
     return recorded, unrecorded, errors
 
 
@@ -568,8 +510,9 @@ def derive_runs(recorded):
     Returns {lineage_run_id: DerivedRun}. Raises LineageError when files of one
     segment disagree about what they should share (segment index, path kind,
     the segment's bases, and — except on a path in MULTIPLE_MODEL_ID_PATH_KINDS,
-    whose segment reports its `model_ids` — model ID), or a file has no model ID:
-    a contradiction is reported, never resolved by picking one."""
+    whose segment reports its `model_ids` — model ID): a contradiction is
+    reported, never resolved by picking one. (Every described file has a model
+    ID: the app refuses one without.)"""
     by_run = {}
     for file in recorded:
         by_run.setdefault(file.record["run"]["lineage_run_id"], []).append(file)
@@ -590,9 +533,7 @@ def derive_runs(recorded):
             if len(path_kinds) != 1:
                 raise LineageError(f"lineage run {run_id} segment {segment_id}: files disagree on "
                                    f"path_kind {sorted(path_kinds)}")
-            model_ids = {f.metadata.get("model_id") for f in segment_files}
-            if None in model_ids:
-                raise LineageError(f"lineage run {run_id} segment {segment_id}: a file has no model_id")
+            model_ids = {f.model_id for f in segment_files}
             single_model = not (path_kinds & MULTIPLE_MODEL_ID_PATH_KINDS)
             if single_model and len(model_ids) != 1:
                 raise LineageError(f"lineage run {run_id} segment {segment_id}: files disagree on "
@@ -601,7 +542,7 @@ def derive_runs(recorded):
             for f in segment_files:
                 fields, unrecorded = _segment_fields(f.record, run_origin)
                 if single_model:
-                    fields["model_id"] = f.metadata["model_id"]
+                    fields["model_id"] = f.model_id
                 views.append((fields, tuple(sorted(unrecorded)), f))
             # The most progressed file's view is the one reported; every other
             # file must agree with it.
@@ -636,14 +577,14 @@ def derive_runs(recorded):
 def checkpoint_facts(path):
     """The per-row facts a tracker takes from one checkpoint's record: the
     measured cumulative games fed and trainer-step seconds, the record's own
-    step clock, and the file's step reading (`step_reading`: `trainer_step`,
-    `segment_step`, `step_basis`). Returns None for a file without a record.
-    Values the record holds as null are returned as None, never filled."""
-    metadata = read_metadata(path)
-    lineage = lineage_of(metadata, display_name(path))
+    step clock, and the file's step reading (`trainer_step`, `segment_step`,
+    `step_basis`). Returns None for a file without a record. Values the record
+    holds as null are returned as None, never filled."""
+    description = describe(path)
+    lineage = lineage_in(description)
     if isinstance(lineage, Unrecorded):
         return None
-    reading = step_reading(metadata, display_name(path))
+    reading = step_reading_in(description)
     return dict(lineage_run_id=lineage["run"]["lineage_run_id"],
                 segment_id=lineage["run"]["segment_id"],
                 segment_index=lineage["run"]["segment_index"],
@@ -659,170 +600,6 @@ def checkpoint_facts(path):
                 step_basis=reading.basis)
 
 
-# ---------- what a header's training_step means ----------
-#
-# Mirror of `SafetensorsModelIO.trainingStepReading` (Persistence/
-# ModelFileStepReading.swift): the same table, the same constants, the writer
-# taken from the file's `creator` only. From format v11 every writer states the
-# trainer step there (on a trainer-state file it equals trainer_completed_steps,
-# and a file where it does not is refused) and the segment step is the lineage
-# record's segment_local_step. Before v11 the value is what its writer wrote:
-# corpus replay and train-vs-UCI wrote the segment's own step, the GUI its
-# cumulative trainer step; any other writer keeps the reading every tool used
-# before v11 and is flagged.
-
-# ArchitectureFormat.trainingStepIsTrainerStepFromVersion.
-TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION = 11
-# ModelCheckpointMetadata.segmentStepCreators: the writers whose pre-v11
-# training_step is the writing segment's step.
-SEGMENT_STEP_CREATORS = frozenset({"replay", "train-vs-uci"})
-# ModelCheckpointMetadata.guiCreators: the GUI save tags, whose pre-v11
-# training_step is the GUI's cumulative trainer step.
-GUI_CREATORS = frozenset({"manual", "periodic", "promote", "sigusr2"})
-# The header keys the reading takes.
-CREATOR_KEY = "creator"
-TRAINING_STEP_KEY = "training_step"
-TRAINER_COMPLETED_STEPS_KEY = "trainer_completed_steps"
-
-# TrainingStepBasis raw values.
-BASIS_TRAINER_STEP = "trainer_step"
-BASIS_LEGACY_SEGMENT_STEP = "legacy_segment_step"
-BASIS_LEGACY_GUI_TRAINER_STEP = "legacy_gui_trainer_step"
-BASIS_LEGACY_UNKNOWN_WRITER = "legacy_unknown_writer"
-# Every TrainingStepBasis raw value: what a stated basis (a probe record's
-# `step_basis`) must be one of.
-STEP_BASES = frozenset({BASIS_TRAINER_STEP, BASIS_LEGACY_SEGMENT_STEP, BASIS_LEGACY_GUI_TRAINER_STEP,
-                        BASIS_LEGACY_UNKNOWN_WRITER})
-
-
-class StepReading:
-    """What one header says about its step. `stated_training_step` is the
-    header value as written (None when it states none), `trainer_step` the
-    trainer step its weights were taken at (None when never recorded — never
-    reconstructed), `segment_step` the steps its writing segment had trained
-    (None when unknown), `basis` one of the BASIS_* values, and `legacy_note`
-    the one-line flag for a pre-v11 file that states a step (None otherwise)."""
-
-    def __init__(self, basis, stated_training_step, trainer_step, segment_step, legacy_note):
-        self.basis = basis
-        self.stated_training_step = stated_training_step
-        self.trainer_step = trainer_step
-        self.segment_step = segment_step
-        self.legacy_note = legacy_note
-
-    @property
-    def trainer_step_or_stated_step(self):
-        """The trainer step where one is known, else the stated step: what
-        catalogs order and display by."""
-        return self.trainer_step if self.trainer_step is not None else self.stated_training_step
-
-    def __repr__(self):
-        return (f"StepReading({self.basis}, stated={self.stated_training_step}, "
-                f"trainer={self.trainer_step}, segment={self.segment_step})")
-
-
-def _header_int(metadata, key, source):
-    """An integer header value parsed as Swift's `Int(String)` parses it, None
-    when absent; anything else is refused."""
-    value = metadata.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str) or not dcm_arch.SWIFT_INT_TEXT.fullmatch(value):
-        raise LineageError(f"{source}: {key} {value!r} is not an integer")
-    return int(value)
-
-
-# TrainerScheduleState.MetadataKey.all (Training/TrainerResumeState.swift): the
-# trainer schedule keys, of which `trainer_completed_steps` is the clock.
-# `trainer_lr_schedule` (LR keyframes) is what every file written since LR
-# keyframes carries; the two `trainer_lr_momentum_cycle*` keys are the previous
-# form, still read (the app converts them).
-TRAINER_SCHEDULE_KEYS = (TRAINER_COMPLETED_STEPS_KEY, "trainer_lr_warmup_steps", "trainer_lr_schedule",
-                         "trainer_lr_momentum_cycle", "trainer_lr_momentum_cycle_envelope")
-
-
-def _trainer_clock(metadata, source):
-    """The header's `trainer_completed_steps`, None when the header carries no
-    trainer schedule. Refuses what `TrainerScheduleState.decode` refuses of the
-    clock: a header carrying schedule keys without it (half a schedule), and a
-    value below 0."""
-    clock = _header_int(metadata, TRAINER_COMPLETED_STEPS_KEY, source)
-    if clock is None:
-        present = [key for key in TRAINER_SCHEDULE_KEYS if key in metadata]
-        if present:
-            raise LineageError(f"{source}: trainer schedule metadata is incomplete: {TRAINER_COMPLETED_STEPS_KEY} "
-                               f"is missing beside {', '.join(present)}")
-        return None
-    if clock < 0:
-        raise LineageError(f"{source}: {TRAINER_COMPLETED_STEPS_KEY} {clock} is below 0")
-    return clock
-
-
-def step_reading(metadata, source):
-    """The `StepReading` of one header (see the table above). Reads the format
-    version through `dcm_arch.checked_format_version`, so a file newer than
-    these tools is refused rather than read under the v11 rules; refuses a v11
-    trainer-state header whose training_step is not its trainer_completed_steps,
-    as the app's decode does, and (any version) a negative trainer_completed_steps
-    or trainer schedule keys without it (`_trainer_clock`). The lineage record is
-    read only when the reading needs it."""
-    try:
-        checked = dcm_arch.checked_format_version(metadata.get(FORMAT_VERSION_KEY))
-    except dcm_arch.ArchitectureError as error:
-        raise LineageError(f"{source}: {error}") from None
-    version = UNVERSIONED_LEGACY_VERSION if checked is None else checked
-    stated = _header_int(metadata, TRAINING_STEP_KEY, source)
-    clock = _trainer_clock(metadata, source)
-    creator = metadata.get(CREATOR_KEY, "")
-
-    def record_steps():
-        lineage = lineage_of(metadata, source)
-        return None if isinstance(lineage, Unrecorded) else lineage["steps"]
-
-    if version >= TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION:
-        if clock is not None and stated != clock:
-            raise LineageError(f"{source}: format v{version} trainer-state file states training_step "
-                               f"{stated} but trainer_completed_steps {clock}; from format "
-                               f"v{TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION} the two are one value")
-        if stated is None:
-            return StepReading(BASIS_TRAINER_STEP, None, clock, None, None)
-        steps = record_steps()
-        return StepReading(BASIS_TRAINER_STEP, stated, stated,
-                           None if steps is None else steps["segment_local_step"], None)
-    if creator in SEGMENT_STEP_CREATORS:
-        basis = BASIS_LEGACY_SEGMENT_STEP
-    elif creator in GUI_CREATORS:
-        basis = BASIS_LEGACY_GUI_TRAINER_STEP
-    else:
-        basis = BASIS_LEGACY_UNKNOWN_WRITER
-    if stated is None:
-        return StepReading(basis, None, clock, None, None)
-    if basis == BASIS_LEGACY_SEGMENT_STEP:
-        steps = None if clock is not None else record_steps()
-        if clock is not None:
-            trainer, origin = clock, "trainer_completed_steps"
-        elif steps is not None and steps["cum_trainer_step"] is not None:
-            trainer, origin = steps["cum_trainer_step"], "lineage cum_trainer_step"
-        else:
-            trainer, origin = None, None
-        writer = "corpus replay" if creator == "replay" else "train-vs-UCI"
-        note = (f"training_step {stated} is the writing segment's step ({writer} before format "
-                f"v{TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION}); "
-                + (f"trainer step {trainer} ({origin})" if trainer is not None else "trainer step not recorded"))
-        return StepReading(basis, stated, trainer, stated, note)
-    steps = record_steps()
-    trainer = clock if clock is not None else stated
-    if basis == BASIS_LEGACY_GUI_TRAINER_STEP:
-        segment = None if steps is None else steps["segment_local_step"]
-        note = (f"training_step {stated} is the GUI's trainer step (written by '{creator}' before format "
-                f"v{TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION})")
-    else:
-        segment = stated if steps is None else steps["segment_local_step"]
-        note = (f"training_step {stated} was stated by writer '{creator}', read as the trainer step as "
-                f"before format v{TRAINING_STEP_IS_TRAINER_STEP_FROM_VERSION}")
-    return StepReading(basis, stated, trainer, segment, note)
-
-
 def segment_table(derived):
     """A JSON-serializable view of `derive_runs`' result."""
     out = {}
@@ -835,100 +612,6 @@ def segment_table(derived):
                            unrecorded=s.unrecorded, files=s.files)
                       for s in run.segments])
     return out
-
-
-TEST_SET_RESULTS_KEY = "dcm_test_set_results"
-TEST_SET_RESULTS_SCHEMA = 1
-
-
-def test_set_results(metadata):
-    """The file's puzzle test-set results, read as the app reads them
-    (`ModelTestSetResultsField.reading`, Persistence/ModelTestSetResults.swift):
-    the same required keys and types, the same refusals. Returns one of:
-
-    - ("not_recorded", None): no `dcm_test_set_results` key (written before
-      test-set results);
-    - ("unreadable", reason): the value doesn't parse, is a schema this
-      reader doesn't know, or lacks a required key; reported, never fatal
-      (the results are informational);
-    - ("failed", reason): the writer's evaluation failed and it said why;
-    - ("evaluated", record): the record, with `sets` (each: id, title,
-      description, fingerprint_sha256, positions, top1_correct, top5_correct,
-      avg_correct_probability, avg_correct_rank, nll, pelo or pelo_bound,
-      themes [{id, title, correct, total}]).
-
-    Results are comparable between files only for sets with equal
-    `fingerprint_sha256`."""
-    raw = metadata.get(TEST_SET_RESULTS_KEY)
-    if raw is None:
-        return ("not_recorded", None)
-    try:
-        value = json.loads(raw)
-    except ValueError as error:
-        return ("unreadable", f"{TEST_SET_RESULTS_KEY} does not parse: {error}")
-    try:
-        return _checked_test_set_results(value)
-    except _TestSetResultsError as error:
-        return ("unreadable", f"{TEST_SET_RESULTS_KEY}: {error}")
-
-
-class _TestSetResultsError(Exception):
-    pass
-
-
-def _field(holder, key, kind, where):
-    """`holder[key]`, required and of `kind` (bool is never an int here, as in
-    Swift's decoder)."""
-    if not isinstance(holder, dict) or key not in holder:
-        raise _TestSetResultsError(f"{where} lacks {key}")
-    value = holder[key]
-    kinds = kind if isinstance(kind, tuple) else (kind,)
-    if isinstance(value, bool) or not isinstance(value, kinds):
-        raise _TestSetResultsError(f"{where}.{key} is not {'/'.join(k.__name__ for k in kinds)}")
-    return value
-
-
-def _checked_test_set_results(value):
-    if not isinstance(value, dict):
-        raise _TestSetResultsError("not a JSON object")
-    schema = _field(value, "schema", int, "record")
-    if schema != TEST_SET_RESULTS_SCHEMA:
-        raise _TestSetResultsError(f"schema {schema} is not one this reader reads ({TEST_SET_RESULTS_SCHEMA})")
-    status = _field(value, "status", str, "record")
-    if status == "failed":
-        return ("failed", _field(value, "reason", str, "record"))
-    if status != "evaluated":
-        raise _TestSetResultsError(f"unknown status {status!r}")
-    _field(value, "evaluated_at_unix", int, "record")
-    _field(value, "build", int, "record")
-    _field(value, "policy_tail_precision", str, "record")
-    sets = _field(value, "sets", list, "record")
-    number = (int, float)
-    for index, entry in enumerate(sets):
-        where = f"sets[{index}]"
-        for key in ("id", "title", "description", "fingerprint_sha256"):
-            _field(entry, key, str, where)
-        for key in ("positions", "top1_correct", "top5_correct"):
-            _field(entry, key, int, where)
-        for key in ("avg_correct_probability", "avg_correct_rank", "nll"):
-            _field(entry, key, number, where)
-        if "pelo" not in entry or "pelo_bound" not in entry:
-            raise _TestSetResultsError(f"{where} lacks pelo or pelo_bound")
-        pelo, bound = entry["pelo"], entry["pelo_bound"]
-        if pelo is not None and bound is None:
-            if isinstance(pelo, bool) or not isinstance(pelo, number):
-                raise _TestSetResultsError(f"{where}.pelo is not a number")
-        elif pelo is None and bound in ("all_correct", "all_wrong"):
-            pass
-        else:
-            raise _TestSetResultsError(f"{where} must state exactly one of pelo and pelo_bound (all_correct/all_wrong)")
-        for theme_index, theme in enumerate(_field(entry, "themes", list, where)):
-            theme_where = f"{where}.themes[{theme_index}]"
-            _field(theme, "id", str, theme_where)
-            _field(theme, "title", str, theme_where)
-            _field(theme, "correct", int, theme_where)
-            _field(theme, "total", int, theme_where)
-    return ("evaluated", value)
 
 
 def main():

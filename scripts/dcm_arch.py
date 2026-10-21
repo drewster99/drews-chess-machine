@@ -7,13 +7,13 @@ holds none of them. `describe(path)` runs the app's `--describe-model` on the fi
 and returns what the loader resolved; every other architecture reader here reads
 that. A file the app refuses is an ArchitectureError naming the app's reason.
 
-The app binary is $DCM_BINARY, else the newest built DrewsChessMachine in
-DerivedData (`app_binary`). Each file is described once per process (cached by
-path, size and modification time).
+The app binary is $DCM_BINARY, else the newest build of this repository's project
+in DerivedData (`app_binary`). Descriptions are header-only and batched (one app
+launch reads many files) and cached per file version and binary.
 
-Also here, because they are not architecture rules: the safetensors header reader
-(`read_header`, `read_metadata`), shared by the Python tooling to read tensors, and
-the format-version text parsing `dcm_lineage` uses for a file's step reading.
+Also here, because it is not an architecture rule: the safetensors header reader
+(`read_header`, `read_metadata`), shared by the Python tooling to read raw header
+values and tensors.
 
 Import from anywhere in the repository with
 
@@ -27,7 +27,7 @@ import glob
 import json
 import math
 import os
-import re
+import plistlib
 import struct
 import subprocess
 
@@ -35,15 +35,6 @@ import subprocess
 # a few kilobytes); refusing it keeps a damaged length prefix from being read
 # as a request for gigabytes.
 MAX_HEADER_BYTES = 100 * 1024 * 1024
-# The text Swift's `Int(String)` parses: an optional sign, then one or more ASCII
-# digits, nothing else (no whitespace, underscores or non-ASCII digits, all of
-# which Python's int() accepts). Used with fullmatch: `$` would admit a trailing
-# newline. Shared with `dcm_lineage`'s integer header values.
-SWIFT_INT_TEXT = re.compile(r'[+-]?[0-9]+')
-# ArchitectureFormat.currentVersion: the newest format `dcm_lineage`'s step
-# reading understands. A newer (or non-positive) version is refused rather than
-# read under rules that may not hold for it.
-CURRENT_FORMAT_VERSION = 12
 # The value a site activation holds when the topology lacks the site.
 DOES_NOT_APPLY = 'does_not_apply'
 # Where Xcode leaves built binaries.
@@ -55,49 +46,173 @@ class ArchitectureError(ValueError):
     cannot be run, or a script's guard refuses what it holds."""
 
 
+# This repository's Xcode project: DerivedData folders are matched to it by the
+# `WorkspacePath` Xcode records in each folder's info.plist, so a build of another
+# checkout or worktree is never picked.
+PROJECT_PATH = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                             "DrewsChessMachine", "DrewsChessMachine.xcodeproj"))
+# A describe call reads headers only (kilobytes per file); a hung app is
+# reported, not waited on. Generous per file for a cold disk.
+DESCRIBE_TIMEOUT_SECONDS = 60
+DESCRIBE_TIMEOUT_PER_FILE_SECONDS = 2
+# Files per app launch: one launch reads many headers.
+DESCRIBE_BATCH = 500
+
+
+# The DerivedData binary this process found (`app_binary`): found once, since a
+# scan of DerivedData reads every project's info.plist; `describe_files` keys its
+# cache on the binary's identity, so a rebuilt binary is never answered from an
+# older one's results.
+_FOUND_BINARY = None
+
+
 def app_binary():
-    """The DrewsChessMachine binary that describes files: $DCM_BINARY, else the newest
-    built one (Debug or Release) in DerivedData, the rule of
-    scripts/dcm_launcher_common.sh `dcm_resolve_binary latest`."""
-    if os.environ.get("DCM_BINARY"):
-        return os.environ["DCM_BINARY"]
-    pattern = os.path.join(DERIVED_DATA, "DrewsChessMachine-*", "Build", "Products", "*",
-                           "DrewsChessMachine.app", "Contents", "MacOS", "DrewsChessMachine")
-    candidates = [p for p in glob.glob(pattern) if os.access(p, os.X_OK)]
+    """The DrewsChessMachine binary that describes files: $DCM_BINARY (refused when
+    set but empty), else the newest built one (Debug or Release) of this
+    repository's project in DerivedData, found once per process."""
+    global _FOUND_BINARY
+    if "DCM_BINARY" in os.environ:
+        binary = os.environ["DCM_BINARY"]
+        if not binary:
+            raise ArchitectureError("DCM_BINARY is set but empty")
+        return binary
+    if _FOUND_BINARY is None:
+        _FOUND_BINARY = _newest_derived_data_binary()
+    return _FOUND_BINARY
+
+
+def _newest_derived_data_binary():
+    candidates = []
+    for folder in glob.glob(os.path.join(DERIVED_DATA, "DrewsChessMachine-*")):
+        try:
+            with open(os.path.join(folder, "info.plist"), "rb") as handle:
+                workspace = plistlib.load(handle).get("WorkspacePath")
+        except (OSError, plistlib.InvalidFileException):
+            continue
+        if workspace is None or os.path.realpath(workspace) != PROJECT_PATH:
+            continue
+        candidates += [p for p in glob.glob(os.path.join(folder, "Build", "Products", "*", "DrewsChessMachine.app",
+                                                         "Contents", "MacOS", "DrewsChessMachine"))
+                       if os.access(p, os.X_OK)]
     if not candidates:
-        raise ArchitectureError(f"no built DrewsChessMachine binary under {DERIVED_DATA}; set DCM_BINARY")
+        raise ArchitectureError(f"no built DrewsChessMachine binary of {PROJECT_PATH} under {DERIVED_DATA}; "
+                                f"build it or set DCM_BINARY")
     return max(candidates, key=os.path.getmtime)
 
 
 _DESCRIPTIONS = {}
 
 
-def describe(path):
-    """The app's `--describe-model` JSON for the model file at `path`: `architecture`
-    (resolved, current form), `expanded_blocks`, `format_version`,
-    `legacy_resolutions`, `weight_plan`, `model_id`, ... Cached per file version; each
-    call returns its own copy, so a caller editing it changes no later answer."""
-    real = os.path.realpath(path)
+def _identity(path):
+    """What a cached description is valid for: the file's identity and version."""
+    stat = os.stat(path)
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _dependency_identity(real):
+    """The version of the other file a description depends on, or None. A
+    session's `champion.safetensors` is described with its sibling
+    `trainer.safetensors`'s policy tail when it records none itself (the app's
+    session-champion rule), so its description changes with that file too."""
+    folder, name = os.path.split(real)
+    if name != "champion.safetensors" or not folder.endswith(".dcmsession"):
+        return None
+    trainer = os.path.join(folder, "trainer.safetensors")
     try:
-        stat = os.stat(real)
-    except OSError as error:
-        raise ArchitectureError(f"{path}: {error}") from None
+        return _identity(trainer)
+    except FileNotFoundError:
+        return "absent"
+
+
+def describe_files(paths):
+    """The app's description of each model file in `paths`, as
+    {path: description or ArchitectureError}: one app launch per
+    DESCRIBE_BATCH files (`--describe-model`, header-only). A description holds
+    `architecture` (resolved, current form), `expanded_blocks`, `format_version`,
+    `legacy_resolutions`, `weight_plan`, `model_id`, `creator`, `lineage`,
+    `step_reading` and `test_set_results` (see `ModelDescription` in the app).
+    Cached per file version (and, for a session champion, its trainer file's) and
+    binary, refusals included; each result is the caller's own copy."""
+    if not paths:
+        return {}
     binary = app_binary()
-    key = (real, stat.st_size, stat.st_mtime_ns, binary)
-    if key not in _DESCRIPTIONS:
+    try:
+        binary_identity = _identity(binary)
+    except OSError as error:
+        raise ArchitectureError(f"cannot run {binary}: {error}") from None
+    results, pending = {}, []
+    for path in paths:
+        real = os.path.realpath(path)
         try:
-            result = subprocess.run([binary, "--describe-model", real], stdin=subprocess.DEVNULL,
-                                    capture_output=True, text=True)
+            key = (real, _identity(real), _dependency_identity(real), binary, binary_identity)
         except OSError as error:
-            raise ArchitectureError(f"{path}: cannot run {binary}: {error}") from None
-        if result.returncode != 0:
-            reason = result.stderr.strip() or f"exit status {result.returncode}"
-            raise ArchitectureError(f"{path}: {reason}")
+            results[path] = ArchitectureError(f"{path}: {error}")
+            continue
+        if key in _DESCRIPTIONS:
+            results[path] = _result(path, _DESCRIPTIONS[key])
+        else:
+            pending.append((path, real, key))
+    for start in range(0, len(pending), DESCRIBE_BATCH):
+        batch = pending[start:start + DESCRIBE_BATCH]
+        for (path, real, key), outcome in zip(batch, _run_describe(binary, [real for _, real, _ in batch])):
+            # Cached only when the file (and what it depends on) is still the
+            # version stat'ed before the read.
+            try:
+                unchanged = (_identity(real), _dependency_identity(real)) == (key[1], key[2])
+            except OSError:
+                unchanged = False
+            if unchanged:
+                _DESCRIPTIONS[key] = outcome
+            results[path] = _result(path, outcome)
+    return results
+
+
+def _result(path, outcome):
+    """The caller's own copy of a cached outcome, a refusal naming `path`."""
+    if isinstance(outcome, ArchitectureError):
+        return ArchitectureError(f"{path}: {outcome}")
+    return copy.deepcopy(outcome)
+
+
+def _run_describe(binary, reals):
+    """One `--describe-model` launch: a description or an ArchitectureError per
+    file, in order."""
+    timeout = DESCRIBE_TIMEOUT_SECONDS + DESCRIBE_TIMEOUT_PER_FILE_SECONDS * len(reals)
+    try:
+        result = subprocess.run([binary, "--describe-model", *reals], stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ArchitectureError(f"{binary} --describe-model did not finish in {timeout} s") from None
+    except OSError as error:
+        raise ArchitectureError(f"cannot run {binary}: {error}") from None
+    if result.returncode not in (0, 1):
+        reason = result.stderr.strip() or f"exit status {result.returncode}"
+        raise ArchitectureError(f"--describe-model failed: {reason}")
+    lines = result.stdout.splitlines()
+    if len(lines) != len(reals):
+        raise ArchitectureError(f"--describe-model printed {len(lines)} lines for {len(reals)} files")
+    outcomes = []
+    for real, line in zip(reals, lines):
         try:
-            _DESCRIPTIONS[key] = json.loads(result.stdout)
+            entry = json.loads(line)
         except ValueError as error:
-            raise ArchitectureError(f"{path}: --describe-model printed no JSON ({error})") from None
-    return copy.deepcopy(_DESCRIPTIONS[key])
+            raise ArchitectureError(f"--describe-model printed a line that is not JSON ({error})") from None
+        if entry.get("path") != real:
+            raise ArchitectureError(f"--describe-model answered for {entry.get('path')!r}, expected {real!r}")
+        if "error" in entry:
+            outcomes.append(ArchitectureError(entry["error"]))
+        else:
+            outcomes.append(entry["description"])
+    return outcomes
+
+
+def describe(path):
+    """The app's description of one model file (`describe_files`); raises
+    ArchitectureError when the app refuses it."""
+    outcome = describe_files([path])[path]
+    if isinstance(outcome, ArchitectureError):
+        raise outcome
+    return outcome
 
 
 def architecture(path):
@@ -192,38 +307,6 @@ def rezero_effective(raw_alpha, cap):
 def _require_valid_cap(cap):
     if not (math.isfinite(cap) and cap > 0):
         raise ArchitectureError(f"ReZero cap {cap!r} is not finite and positive")
-
-
-def parsed_format_version(format_version):
-    """A stated format version as a positive int, parsed as the app parses it
-    (ArchitectureFormat.safetensorsFormatVersion): text must be what Swift's
-    `Int(String)` accepts (`SWIFT_INT_TEXT`); an int (not a bool) is taken as is;
-    anything else, or a value of 0 or below, raises. No upper bound: that is
-    `checked_format_version`'s."""
-    if isinstance(format_version, str):
-        if not SWIFT_INT_TEXT.fullmatch(format_version):
-            raise ArchitectureError(f"format version {format_version!r} is not an integer")
-        version = int(format_version)
-    elif isinstance(format_version, int) and not isinstance(format_version, bool):
-        version = format_version
-    else:
-        raise ArchitectureError(f"format version {format_version!r} is not an integer")
-    if version <= 0:
-        raise ArchitectureError(f"format version {format_version!r} is not a positive integer")
-    return version
-
-
-def checked_format_version(format_version):
-    """The carrier's format version as an int, or None for an unversioned (legacy)
-    carrier. Refuses what `parsed_format_version` refuses, and a version newer than
-    CURRENT_FORMAT_VERSION."""
-    if format_version is None:
-        return None
-    version = parsed_format_version(format_version)
-    if version > CURRENT_FORMAT_VERSION:
-        raise ArchitectureError(
-            f"format v{version} is newer than this module understands (newest: v{CURRENT_FORMAT_VERSION})")
-    return version
 
 
 def read_header(path):

@@ -8,7 +8,9 @@ def sk(x):
 out=[]
 for mid,L in by.items():
     L.sort(key=sk); x=L[-1]
-    from archnorm import architecture; a=architecture(x['path']) if x['arch'] else None
+    from archnorm import architecture, ArchitectureError
+    try: a=architecture(x['path']) if x['arch'] else None
+    except ArchitectureError as e: a=None; print(f"{x['path']}: {e}")  # moved, deleted, or refused by the app
     if a:
         g=a['block_groups']
         tower='+'.join(f"{b['count']}x{b['channels']}c{b['conv1_kernel_size']}{'/'+str(b['conv2_kernel_size']) if b['conv2_kernel_size']!=b['conv1_kernel_size'] else ''}" for b in g)

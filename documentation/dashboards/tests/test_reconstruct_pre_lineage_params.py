@@ -9,7 +9,6 @@ import datetime
 import io
 import json
 import os
-import struct
 import sys
 import tempfile
 import unittest
@@ -18,6 +17,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 import reconstruct_pre_lineage_params as recon  # noqa: E402
+sys.path.insert(0, HERE)
+from app_files import write_header  # noqa: E402  real model files, read through the app
+from test_lineage import record_for, tearDownModule  # noqa: E402,F401
 
 UTC = datetime.timezone.utc
 RUN_ID = "20261001-3-AbCd"
@@ -31,12 +33,6 @@ CYCLE = "[REPLAY-CYCLE] lr=cosine(1.0..0.001 period=8000) mom=off origin=fresh"
 
 def unix(year, month, day, hour, minute, second):
     return int(datetime.datetime(year, month, day, hour, minute, second, tzinfo=UTC).timestamp())
-
-
-def write_header(path, metadata):
-    header = json.dumps({"__metadata__": metadata}).encode()
-    with open(path, "wb") as handle:
-        handle.write(struct.pack("<Q", len(header)) + header)
 
 
 def write_model(folder, name, created_at, training_step, model_id=RUN_ID, parent=PARENT_ID,
@@ -248,7 +244,7 @@ class HasLineageTests(ReportTestCase):
         write_log(self.logs, "dcm_log_20261001-120000.txt", replay_log_lines(
             [("12:10:01.500", 1000, "new-replay-latest.safetensors", None)]))
         write_model(self.models, "new-replay-latest.safetensors", unix(2026, 10, 1, 12, 10, 0), 1000,
-                    extra={"dcm_format_version": "7", "dcm_lineage": "{}"})
+                    extra={"dcm_format_version": "7", "dcm_lineage": json.dumps(record_for(0, 1000))})
         entries, report = self.run_report()
         entry = entries["new-replay-latest.safetensors"]
         self.assertEqual(entry["status"], "has_lineage")
@@ -256,6 +252,19 @@ class HasLineageTests(ReportTestCase):
         self.assertIsNone(entry["source_log"])
         self.assertIsNone(entry["hparams_line"])
         self.assertEqual(report["counts"], {"has_lineage": 1})
+
+    def test_a_pre_v7_file_carrying_a_record_key_is_pre_lineage_as_the_app_reads_it(self):
+        """Protects: a file is settled as has_lineage only when the app reads a
+        record from it. Fails if: the script goes back to checking for the
+        `dcm_lineage` key itself, which a pre-v7 file may carry but the app ignores
+        (its lineage is unrecorded), so the file would never be matched to its log."""
+        write_log(self.logs, "dcm_log_20261001-120000.txt", replay_log_lines(
+            [("12:10:01.500", 1000, "old-replay-latest.safetensors", None)]))
+        write_model(self.models, "old-replay-latest.safetensors", unix(2026, 10, 1, 12, 10, 0), 1000,
+                    extra={"dcm_lineage": json.dumps(record_for(0, 1000))})
+        entries, report = self.run_report()
+        self.assertEqual(entries["old-replay-latest.safetensors"]["status"], "reconstructed",
+                         entries["old-replay-latest.safetensors"])
 
 
 class LineParsingTests(unittest.TestCase):

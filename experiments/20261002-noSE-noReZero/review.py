@@ -25,7 +25,7 @@ import numpy as np
 import table
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
-import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, read from its own metadata
+import dcm_arch  # noqa: E402  each checkpoint's ReZero cap, as the app resolves it
 from dcm_probe_build import UNRECORDED  # noqa: E402
 
 MODELS = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")

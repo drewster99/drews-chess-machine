@@ -94,7 +94,7 @@ def build_record(checkpoint_path, expected_step, probe_stdout, probes_path, prob
             return EXIT_IDENTITY, f"{checkpoint_path}: header has no {key}"
     model_id = metadata["model_id"]
     try:
-        reading = dcm_lineage.step_reading(metadata, os.path.basename(checkpoint_path))
+        reading = dcm_lineage.step_reading(checkpoint_path)
     except dcm_lineage.LineageError as error:
         return EXIT_IDENTITY, f"{checkpoint_path}: {error}"
     training_step = reading.stated_training_step

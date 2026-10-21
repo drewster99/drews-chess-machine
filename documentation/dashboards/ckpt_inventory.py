@@ -38,7 +38,8 @@ returns in seconds.
 import os, sys, json, glob, struct, hashlib, argparse, datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
-import dcm_lineage  # noqa: E402  the file's lineage record, read the way the app reads it
+import dcm_arch  # noqa: E402  batches the app's descriptions of a folder
+import dcm_lineage  # noqa: E402  the file's lineage record, as the app reads it
 
 # Header fields worth carrying forward. `replay_next_game_index` and `replay_epoch`
 # are what distinguish an honest resume point from one whose corpus position was
@@ -55,12 +56,12 @@ def read_metadata(path):
         return json.loads(f.read(n)).get("__metadata__", {})
 
 
-def lineage_summary(meta, source):
+def lineage_summary(path):
     """The fields of a file's lineage record worth an inventory column: run,
     segment, cumulative totals and the corpus position. "unrecorded (format vN)"
     for a file written before records existed. Raises dcm_lineage.LineageError
-    where the app would refuse the file."""
-    record = dcm_lineage.lineage_of(meta, source)
+    where the app refuses the file."""
+    record = dcm_lineage.lineage_of(path)
     if isinstance(record, dcm_lineage.Unrecorded):
         return f"unrecorded (format v{record.format_version})"
     corpus = record["fed"]["corpus"]
@@ -93,7 +94,10 @@ def file_sha256(path, chunk=1 << 22):
 def scan(dirs, want_sha):
     entries = []
     for d in dirs:
-        for path in sorted(glob.glob(os.path.join(d, "*.safetensors"))):
+        paths = sorted(glob.glob(os.path.join(d, "*.safetensors")))
+        # One app launch describes the folder; the per-file reads below hit its cache.
+        dcm_arch.describe_files(paths)
+        for path in paths:
             try:
                 meta = read_metadata(path)
             except (OSError, ValueError, struct.error) as e:
@@ -108,8 +112,8 @@ def scan(dirs, want_sha):
                 if k in meta:
                     e[k] = meta[k]
             try:
-                e["lineage"] = lineage_summary(meta, os.path.basename(path))
-                reading = dcm_lineage.step_reading(meta, os.path.basename(path))
+                e["lineage"] = lineage_summary(path)
+                reading = dcm_lineage.step_reading(path)
                 e["step_basis"] = reading.basis
                 e["trainer_step"] = reading.trainer_step
                 e["segment_step"] = reading.segment_step

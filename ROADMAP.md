@@ -1708,15 +1708,54 @@ and the public surface. No behavior change. Lower priority than Part A.
     Owner decision: no metadata-from-stdin path in the app — tests test what the
     app does, on files. The ~30 consumers (experiments, research scripts,
     `replay.py`) pass the model file's path. The old resolver agreed with the app
-    on 5,306 of 5,308 model files; the 2 it accepted (`20260701-uni16-9x9stem-*`,
-    hand-made) the app refuses for a tensor shape mismatch. The dict-based Python
+    on 5,306 of 5,308 model files; the 2 it accepted
+    (`20260701-uni16-9x9stem-seed`, `20260702-9blk16se-9x9stem-seed`, both
+    `creator handcraft`) the app refuses for a tensor shape mismatch (a 2-D
+    tensor stored in the wrong orientation; refused by the loader since
+    `217aa4d0`, 2026-08-12). The dict-based Python
     resolver tests were removed after mapping each to a Swift test; the 7 rules
     with no Swift test got one (`ArchitectureFormatVersionTextTests`, five in
     `ArchitectureActivationSiteTests`, one in `PolicyTailArchitectureTests`). The
     script guards are tested on real files the app writes
     (`documentation/dashboards/tests/test_dcm_arch.py`). Still re-implemented in
     Python: `dcm_lineage`'s step reading (format-version gates), out of this
-    change's scope.
+    change's scope. (Done the next day; below.)
+  - **Core ML export review fixes (2026-10-21).** `weights.bin` holds the values
+    a reduced-precision variable holds (rounded to bf16 as `loadWeights` rounds
+    them; graph format v2 records each weight's data type); mirror gives every
+    op an explicit type (bf16 → fp16, fp32 stays fp32) and converts with
+    `compute_precision=FLOAT32`; coremltools' `fuse_elementwise_to_batchnorm`
+    pass is left out of the pipeline (it builds an invalid `batch_norm` from
+    fp16 constants). Writes stage beside the destination through `FileSafety`;
+    `--coreml-parity` checks every enumerated batch size and counts non-finite
+    outputs on both sides. Re-measured on `zlra-elitecyc`: mirror on the Neural
+    Engine 99.5% same top move (was 98.8%), fp16 99.5% (was 94.3%), fp32 99.7%;
+    an fp32 model's fp32 export matches to 6.0e-4.
+  - **`scripts/dcm_lineage.py` reads the app (2026-10-21,
+    `documentation/plans-active/LINEAGE_READER_APP_PLAN.md`).** The header
+    rules moved into one place in the app: `SafetensorsFile.readHeader` /
+    `parseHeader` and `SafetensorsModelIO.inspect` (architecture, tensor names
+    and shapes against the plan, trainer schedule, lineage record, model ID,
+    step reading), which `decode` now calls before its data work.
+    `--describe-model` is header-only through `inspect` and prints one JSON line
+    per file (lineage, step reading, test-set results, creator added): all 5,468
+    model and session files, 500 per call, in about 11 s; it refuses only the
+    2 hand-made seeds above, which the loader refuses through the same code.
+    On the other 5,466 the old Python reading and the app's are identical
+    (record, step reading including its note, test-set status).
+    `dcm_lineage` no longer validates records, reads steps or reads test-set
+    results itself; `lineage_of`, `step_reading`, `test_set_results`,
+    `checkpoint_facts` and `scan_files` read the app's description, and every
+    consumer passes paths. `sessions_summary.py` reads a session's record from
+    its `trainer.safetensors`. One behavior change: a file before format v7
+    that carries a `dcm_lineage` key is unrecorded (the app ignores the key),
+    so `reconstruct_pre_lineage_params.py` matches it to its log instead of
+    calling it `has_lineage`. Python rule tests were mapped to Swift (gaps
+    covered in `LineageSchema3Tests`, `TrainingStepBasisTests`,
+    `SafetensorsDecodeStrictnessTests`, `ModelTestSetResultsTests`) and removed;
+    the analysis and script tests run on real files
+    (`documentation/dashboards/tests/app_files.py`: one tiny minted model,
+    copies with rewritten headers, at any format version).
 
 - **Fast legal-move generation: make/unmake + pin-based (2026-06-24, `81ac884`,
   `d4becf6`).** Move-generation legality was a copy-make filter — for each

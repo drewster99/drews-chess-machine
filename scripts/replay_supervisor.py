@@ -168,21 +168,17 @@ class Checkpoint:
 def read_checkpoint(path: Path) -> Checkpoint:
     """A trainer file's identity from its header (CLAUDE.md: checkpoints are
     identified by `__metadata__`, never by name)."""
-    source = path.name
     try:
-        metadata = dcm_lineage.read_metadata(str(path))
-        reading = dcm_lineage.step_reading(metadata, source)
-        lineage = dcm_lineage.lineage_of(metadata, source)
+        description = dcm_lineage.describe(str(path))
+        reading = dcm_lineage.step_reading_in(description)
+        lineage = dcm_lineage.lineage_in(description)
     except dcm_lineage.LineageError as error:
         raise SupervisorError(f"{path}: {error}") from None
     if reading.basis != dcm_lineage.BASIS_TRAINER_STEP or reading.trainer_step is None:
         raise SupervisorError(f"{path}: no format-v11 trainer step ({reading!r}); only v11+ trainer files are continued")
     if isinstance(lineage, dcm_lineage.Unrecorded):
         raise SupervisorError(f"{path}: no lineage record")
-    model_id = metadata.get("model_id")
-    if not model_id:
-        raise SupervisorError(f"{path}: no model_id")
-    return Checkpoint(path=path, model_id=model_id, trainer_step=reading.trainer_step,
+    return Checkpoint(path=path, model_id=description["model_id"], trainer_step=reading.trainer_step,
                       run_id=lineage["run"]["lineage_run_id"], segment_id=lineage["run"]["segment_id"],
                       mtime=path.stat().st_mtime)
 

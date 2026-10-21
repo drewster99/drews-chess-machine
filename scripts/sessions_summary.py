@@ -78,9 +78,11 @@ def _required(state, key, source):
     return state[key]
 
 
-def lineage_summary(state, source):
-    """The lineage facts of `state`, or None for a format the record predates.
-    Raises where the app would refuse the session."""
+def lineage_summary(state, source, folder):
+    """The lineage facts of the session, or None for a session.json format the
+    record predates. The record is read by the app, from the session's
+    `trainer.safetensors` (it carries the run's record at the save, the same one
+    session.json holds); raises where the app refuses it."""
     version = _required(state, "formatVersion", source)
     if not isinstance(version, int) or not 1 <= version <= CURRENT_FORMAT_VERSION:
         raise SessionSummaryError(f"{source}: unsupported {STATE_FILENAME} formatVersion {version!r}")
@@ -89,7 +91,12 @@ def lineage_summary(state, source):
         if version >= LINEAGE_REQUIRED_FROM_FORMAT_VERSION:
             raise SessionSummaryError(f"{source}: format v{version} {STATE_FILENAME} has no lineage")
         return None
-    record = dcm_lineage.validated_record(record, source, field="lineage")
+    trainer = os.path.join(folder, dcm_lineage.SESSION_TRAINER_FILENAME)
+    record = dcm_lineage.lineage_of(trainer)
+    if isinstance(record, dcm_lineage.Unrecorded):
+        raise SessionSummaryError(f"{source}: {STATE_FILENAME} records lineage, but its "
+                                  f"{dcm_lineage.SESSION_TRAINER_FILENAME} is format v{record.format_version}, "
+                                  f"before lineage records")
     return dict(
         path_kind=record["invocation"]["path_kind"],
         lineage_run_id=record["run"]["lineage_run_id"],
@@ -146,7 +153,7 @@ def summarize(folder):
             # Optional in session.json: absent in sessions written before the field.
             has_replay_buffer=state.get("hasReplayBuffer"),
             replay_buffer_file=os.path.isfile(os.path.join(folder, REPLAY_BUFFER_FILENAME)),
-            lineage=lineage_summary(state, name),
+            lineage=lineage_summary(state, name, folder),
         )
     except (OSError, SessionSummaryError, dcm_lineage.LineageError) as error:
         row["error"] = str(error)
@@ -155,12 +162,13 @@ def summarize(folder):
 
 def collect(sessions_dir):
     """A row per `.dcmsession` folder directly in `sessions_dir`, by name."""
-    rows = []
-    for name in sorted(os.listdir(sessions_dir)):
-        full = os.path.join(sessions_dir, name)
-        if name.endswith(SESSION_FOLDER_SUFFIX) and os.path.isdir(full):
-            rows.append(summarize(full))
-    return rows
+    folders = [os.path.join(sessions_dir, name) for name in sorted(os.listdir(sessions_dir))
+               if name.endswith(SESSION_FOLDER_SUFFIX) and os.path.isdir(os.path.join(sessions_dir, name))]
+    # One app call describes every trainer file; each row then reads its own from
+    # the cache (a refusal or a missing file is that row's error, not a stop).
+    trainers = [os.path.join(folder, dcm_lineage.SESSION_TRAINER_FILENAME) for folder in folders]
+    dcm_lineage.describe_all([path for path in trainers if os.path.isfile(path)])
+    return [summarize(folder) for folder in folders]
 
 
 def binary_size(size_bytes):
@@ -249,7 +257,11 @@ def main(argv=None):
     if not os.path.isdir(sessions_dir):
         print(f"not a folder: {sessions_dir}", file=sys.stderr)
         return 2
-    rows = collect(sessions_dir)
+    try:
+        rows = collect(sessions_dir)
+    except dcm_lineage.LineageError as error:
+        print(f"cannot read the sessions' trainer files: {error}", file=sys.stderr)
+        return 2
     if not rows:
         print(f"no .dcmsession folders in {sessions_dir}", file=sys.stderr)
         return 1
