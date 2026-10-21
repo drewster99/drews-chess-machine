@@ -9,6 +9,16 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-21 02:41 — dcm_lineage.py reads the app; header-only --describe-model; Core ML export fixes `3333b8b5` `86ab8e36` `f4d31e31`
+
+- `SafetensorsModelIO.inspect` holds every header rule of a load; `decode` calls it before its data work. `--describe-model` reads headers only and prints one JSON line per file (lineage, step reading, test-set results, creator): 5,468 model and session files in about 11 s. Files are told apart by their first bytes, so a legacy `.dcmmodel` is described (all 21 on disk).
+- `scripts/dcm_lineage.py` no longer re-implements lineage, step or test-set rules: it reads the app's description, batched and cached. On every model and session file its reading is identical to the old Python one; Python rule tests were mapped to Swift and removed, and the script tests run on real files (`documentation/dashboards/tests/app_files.py`).
+- Behavior change: a pre-v7 file carrying a `dcm_lineage` key reads as unrecorded, as the app reads it, so `reconstruct_pre_lineage_params.py` matches it to its log.
+- `--export-inference-graph` / `--coreml-parity` read the file once and give a session's `champion.safetensors` its trainer file's policy tail, as the session load does. A damaged value-head marker is refused only by a decode that recenters.
+- Core ML export: `weights.bin` holds bf16-rounded values for a bf16 model; mirror types every op explicitly. Re-measured on `zlra-elitecyc`: 99.5% same top move on the Neural Engine (mirror and fp16), 99.7% fp32.
+- The two hand-made seed files the loader has refused since `217aa4d0` (`20260701-uni16-9x9stem-seed`, `20260702-9blk16se-9x9stem-seed`) were removed from `Models/` (owner decision).
+- Full Swift suite 3,811 passed, 0 failed; Python dashboards tests 209 passed.
+
 ## 2026-10-20 22:13 — dcm_arch.py reads the app; architecture rules only in Swift `2595c60b`
 
 - `scripts/dcm_arch.py` is a file-based wrapper over `--describe-model` (`describe`, `architecture`, `site_activations`, `require_relu`, `require_architecture_of`, `rezero_blocks`); no Python code resolves an architecture. About 30 consumer scripts pass the model file's path.
