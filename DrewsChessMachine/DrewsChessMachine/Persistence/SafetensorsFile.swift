@@ -150,13 +150,8 @@ enum SafetensorsFile {
     }
 
     static func decode(_ data: Data) throws -> (tensors: [SafetensorsTensor], metadata: [String: String]) {
-        guard data.count >= 8 else { throw SafetensorsError.truncated("header length prefix") }
-        let dataStart = try dataStartOffset(headerLength: data.withUnsafeBytes { raw -> UInt64 in
-            UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: 0, as: UInt64.self))
-        }, fileByteCount: data.count)
+        let (header, dataStart) = try headerAndDataStart(of: data)
         let dataRegion = data.subdata(in: dataStart..<data.count)
-        let header = try parseHeader(data.subdata(in: headerPrefixByteCount..<dataStart),
-                                     dataRegionByteCount: dataRegion.count)
 
         var tensors: [SafetensorsTensor] = []
         tensors.reserveCapacity(header.entries.count)
@@ -177,6 +172,24 @@ enum SafetensorsFile {
         }
 
         return (tensors, header.metadata)
+    }
+
+    /// The header of a whole file's bytes, without reading its tensor data or
+    /// checking its content hash: what `readHeader` gives for the file these
+    /// bytes were read from. For a caller that already holds the bytes and
+    /// must describe exactly the file it loads (`--export-inference-graph`).
+    static func header(of data: Data) throws -> Header {
+        try headerAndDataStart(of: data).header
+    }
+
+    private static func headerAndDataStart(of data: Data) throws -> (header: Header, dataStart: Int) {
+        guard data.count >= headerPrefixByteCount else { throw SafetensorsError.truncated("header length prefix") }
+        let dataStart = try dataStartOffset(headerLength: data.withUnsafeBytes { raw -> UInt64 in
+            UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: 0, as: UInt64.self))
+        }, fileByteCount: data.count)
+        let header = try parseHeader(data.subdata(in: headerPrefixByteCount..<dataStart),
+                                     dataRegionByteCount: data.count - dataStart)
+        return (header, dataStart)
     }
 
     /// The header of the file at `url`, read without its tensor data: the same

@@ -67,7 +67,11 @@ enum CoreMLParity {
         case outputSize(name: String, have: Int, want: Int)
         case networkOutputSize(have: Int, want: Int)
         case noBatchSizes
-        case compiledModelRemains(path: String, reason: String)
+        case unsupportedInputShape(String)
+        /// The compiled model was left on disk; `failure` is the error the
+        /// comparison itself ended with, when it ended with one, so a cleanup
+        /// problem never hides why the comparison failed.
+        case compiledModelRemains(path: String, reason: String, failure: String?)
 
         var errorDescription: String? {
             switch self {
@@ -79,8 +83,11 @@ enum CoreMLParity {
                 return "the network returned \(have) values; expected \(want)"
             case .noBatchSizes:
                 return "the Core ML model's input names no batch size this check can use (it needs batch size 1)"
-            case .compiledModelRemains(let path, let reason):
-                return "the compiled model at \(path) could not be removed: \(reason)"
+            case .unsupportedInputShape(let detail):
+                return "the Core ML model's input shape is not one this check reads: \(detail)"
+            case .compiledModelRemains(let path, let reason, let failure):
+                let removal = "the compiled model at \(path) could not be removed: \(reason)"
+                return failure.map { "\($0) (and \(removal))" } ?? removal
             }
         }
     }
@@ -119,19 +126,34 @@ enum CoreMLParity {
             return try await body(try await MLModel.load(contentsOf: url, configuration: configuration))
         }
         let compiled = try await MLModel.compileModel(at: url)
-        let identity = try FileSafety.existingItem(at: compiled)?.identity
+        // The compiled folder is this call's own: its identity is taken before
+        // anything else can fail, so it is removed (by identity) on every path.
+        let identity: FileSafety.FileIdentity
+        do {
+            guard let item = try FileSafety.existingItem(at: compiled) else {
+                throw ParityError.compiledModelRemains(path: compiled.path,
+                                                       reason: "Core ML returned a path with nothing at it",
+                                                       failure: nil)
+            }
+            identity = item.identity
+        } catch let error as ParityError {
+            throw error
+        } catch {
+            throw ParityError.compiledModelRemains(path: compiled.path, reason: error.localizedDescription, failure: nil)
+        }
         let result: Result<T, Error>
         do {
             result = .success(try await body(try await MLModel.load(contentsOf: compiled, configuration: configuration)))
         } catch {
             result = .failure(error)
         }
-        if let identity {
-            do {
-                try FileSafety.removeOwnedItem(at: compiled, identity: identity)
-            } catch {
-                throw ParityError.compiledModelRemains(path: compiled.path, reason: error.localizedDescription)
-            }
+        do {
+            try FileSafety.removeOwnedItem(at: compiled, identity: identity)
+        } catch {
+            let failure: String?
+            if case .failure(let bodyError) = result { failure = bodyError.localizedDescription } else { failure = nil }
+            throw ParityError.compiledModelRemains(path: compiled.path, reason: error.localizedDescription,
+                                                   failure: failure)
         }
         return try result.get()
     }
@@ -142,8 +164,21 @@ enum CoreMLParity {
         guard let constraint = model.modelDescription.inputDescriptionsByName[inputName]?.multiArrayConstraint else {
             throw ParityError.noBatchSizes
         }
-        let shapes = constraint.shapeConstraint.enumeratedShapes
-        let sizes = shapes.isEmpty ? [constraint.shape[0].intValue] : shapes.map { $0[0].intValue }
+        let shapeConstraint = constraint.shapeConstraint
+        // A range-flexible input would be tested at its default shape only,
+        // which is not what the comparison claims to check; the exporter writes
+        // enumerated shapes, so anything else is refused, never guessed at.
+        guard shapeConstraint.type != .range else {
+            throw ParityError.unsupportedInputShape("a range of shapes (the exporter writes enumerated batch sizes)")
+        }
+        let shapes = shapeConstraint.type == .enumerated ? shapeConstraint.enumeratedShapes : [constraint.shape]
+        var sizes: [Int] = []
+        for shape in shapes {
+            guard shape.count == 4 else {
+                throw ParityError.unsupportedInputShape("\(shape.map(\.intValue)) is not [batch, planes, 8, 8]")
+            }
+            sizes.append(shape[0].intValue)
+        }
         let sorted = Array(Set(sizes)).sorted()
         guard sorted.contains(1) else { throw ParityError.noBatchSizes }
         return sorted

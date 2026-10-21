@@ -1712,7 +1712,8 @@ and the public surface. No behavior change. Lower priority than Part A.
     (`20260701-uni16-9x9stem-seed`, `20260702-9blk16se-9x9stem-seed`, both
     `creator handcraft`) the app refuses for a tensor shape mismatch (a 2-D
     tensor stored in the wrong orientation; refused by the loader since
-    `217aa4d0`, 2026-08-12). The dict-based Python
+    `217aa4d0`, 2026-08-12; both removed from `Models/` 2026-10-21 by the
+    owner's decision). The dict-based Python
     resolver tests were removed after mapping each to a Swift test; the 7 rules
     with no Swift test got one (`ArchitectureFormatVersionTextTests`, five in
     `ArchitectureActivationSiteTests`, one in `PolicyTailArchitectureTests`). The

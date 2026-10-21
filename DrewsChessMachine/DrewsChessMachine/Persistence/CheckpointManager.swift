@@ -1896,10 +1896,29 @@ enum CheckpointManager {
     /// file name that format-version errors and the legacy-resolution log
     /// line report.
     static func decodeAnyModelFile(_ data: Data, valueHead: ValueHeadDecoding, source: String) throws -> ModelCheckpointFile {
-        if data.count >= 8, Array(data.prefix(8)) == ModelCheckpointFile.magic {
+        try decodeAnyModelFile(data, valueHead: valueHead, source: source, sessionTrainerPolicyTail: nil)
+    }
+
+    /// `decodeAnyModelFile(_:valueHead:source:)` for a session's
+    /// `champion.safetensors`, given the tail its trainer file lends it
+    /// (PT-D3 rule 4; nil: none). A legacy `.dcmmodel` rebuilds its preset as
+    /// always.
+    static func decodeAnyModelFile(
+        _ data: Data, valueHead: ValueHeadDecoding, source: String,
+        sessionTrainerPolicyTail: ArchitectureFormat.RecordedPolicyTailPrecision?
+    ) throws -> ModelCheckpointFile {
+        if isLegacyModelFile(data) {
             return try ModelCheckpointFile.decode(data, valueHead: valueHead)
         }
-        return try SafetensorsModelIO.decode(data, valueHead: valueHead, source: source).file
+        return try SafetensorsModelIO.decode(data, valueHead: valueHead, source: source,
+                                             sessionTrainerPolicyTail: sessionTrainerPolicyTail).file
+    }
+
+    /// Whether `data` starts like a legacy `.dcmmodel` file. Model files are
+    /// told apart by their first bytes, never by their extension.
+    static func isLegacyModelFile(_ data: Data) -> Bool {
+        data.count >= ModelCheckpointFile.magic.count
+            && Array(data.prefix(ModelCheckpointFile.magic.count)) == ModelCheckpointFile.magic
     }
 
     /// A session's `champion.safetensors`, decoded with PT-D3 rule 4: a
@@ -1915,14 +1934,33 @@ enum CheckpointManager {
     static func decodeSessionChampionFile(
         _ data: Data, source: String, trainerFile: ModelCheckpointFile
     ) throws -> ModelCheckpointFile {
-        if data.count >= 8, Array(data.prefix(8)) == ModelCheckpointFile.magic {
-            return try ModelCheckpointFile.decode(data, valueHead: .recenterUnlessMarked)
-        }
-        return try SafetensorsModelIO.decode(
+        try decodeAnyModelFile(
             data, valueHead: .recenterUnlessMarked, source: source,
             sessionTrainerPolicyTail: sessionTrainerPolicyTail(
                 trainerArchitecture: trainerFile.architecture,
-                trainerTailOrigin: trainerFile.architectureFormat?.legacyLog.policyTailPrecisionOrigin)).file
+                trainerTailOrigin: trainerFile.architectureFormat?.legacyLog.policyTailPrecisionOrigin))
+    }
+
+    /// The tail the file at `url` takes from its session's trainer file when it
+    /// is a session's `champion.safetensors` (PT-D3 rule 4, the same rule as
+    /// `decodeSessionChampionFile`), read from the trainer file's header; nil
+    /// for any other file. For the tools handed a bare file path —
+    /// `--describe-model`, `--export-inference-graph`, `--coreml-parity` — so
+    /// a champion they describe, export or compare is the network the session
+    /// load builds from it.
+    static func sessionTrainerPolicyTail(
+        forFileAt url: URL
+    ) throws -> ArchitectureFormat.RecordedPolicyTailPrecision? {
+        let folder = url.deletingLastPathComponent()
+        guard url.lastPathComponent == SessionCheckpointLayout.championFilename,
+              folder.pathExtension == "dcmsession" else { return nil }
+        let trainerURL = folder.appendingPathComponent(SessionCheckpointLayout.trainerFilename)
+        let trainer = try SafetensorsModelIO.inspect(
+            header: try SafetensorsFile.readHeader(at: trainerURL), source: trainerURL.lastPathComponent,
+            sessionTrainerPolicyTail: nil)
+        return sessionTrainerPolicyTail(
+            trainerArchitecture: trainer.architecture,
+            trainerTailOrigin: trainer.architectureFormat.legacyLog.policyTailPrecisionOrigin)
     }
 
     /// The tail a session's trainer file lends its champion (PT-D3 rule 4):
@@ -2018,7 +2056,17 @@ enum CheckpointManager {
     /// needs the bytes (to hash exactly what was decoded) reads the file
     /// once. `source` names the file in errors and log lines.
     static func loadModelFile(fromBytes data: Data, source: String) throws -> ModelCheckpointFile {
-        let file = try decodeAnyModelFile(data, valueHead: .recenterUnlessMarked, source: source)
+        try loadModelFile(fromBytes: data, source: source, sessionTrainerPolicyTail: nil)
+    }
+
+    /// `loadModelFile(fromBytes:source:)` for a file that takes a session
+    /// trainer file's tail (`sessionTrainerPolicyTail(forFileAt:)`).
+    static func loadModelFile(
+        fromBytes data: Data, source: String,
+        sessionTrainerPolicyTail: ArchitectureFormat.RecordedPolicyTailPrecision?
+    ) throws -> ModelCheckpointFile {
+        let file = try decodeAnyModelFile(data, valueHead: .recenterUnlessMarked, source: source,
+                                          sessionTrainerPolicyTail: sessionTrainerPolicyTail)
         logLegacyFileFacts(file, source: source)
         logValueHeadCentering(file, source: source)
         return file

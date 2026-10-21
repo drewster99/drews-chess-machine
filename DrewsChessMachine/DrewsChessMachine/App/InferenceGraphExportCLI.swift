@@ -133,12 +133,26 @@ enum InferenceGraphExportCLI {
         guard let out = options["--out"] else { throw UsageError(errorDescription: "\(exportFlag) needs --out <new folder>") }
         let url = fileURL(paths[0])
         let folder = fileURL(out)
-        let description = try ModelDescription.describe(fileAt: url)
-        let file = try CheckpointManager.loadModelFile(at: url)
+        let (description, file) = try describeAndLoad(url)
         let graph = try InferenceGraphExport.record(architecture: file.architecture)
         try InferenceGraphExport.write(graph: graph, weights: file.networkWeights, description: description, to: folder)
         FileHandle.standardOutput.write(Data(
             "wrote \(folder.path): \(graph.operations.count) operations, \(graph.weights.count) weights\n".utf8))
+    }
+
+    /// The model file at `url`, read once, as its description and its load: the
+    /// two can't pair one file's description with another's weights (a rolling
+    /// save renamed over the path between two reads), and a session's
+    /// `champion.safetensors` takes its trainer file's tail in both, as the
+    /// session load gives it (`CheckpointManager.sessionTrainerPolicyTail(forFileAt:)`).
+    private static func describeAndLoad(_ url: URL) throws -> (ModelDescription, ModelCheckpointFile) {
+        let data = try CheckpointManager.readModelFileBytes(at: url)
+        let source = url.lastPathComponent
+        let tail = CheckpointManager.isLegacyModelFile(data)
+            ? nil : try CheckpointManager.sessionTrainerPolicyTail(forFileAt: url)
+        let description = try ModelDescription.describe(bytes: data, source: source, sessionTrainerPolicyTail: tail)
+        let file = try CheckpointManager.loadModelFile(fromBytes: data, source: source, sessionTrainerPolicyTail: tail)
+        return (description, file)
     }
 
     struct ParityOutcome {
@@ -173,7 +187,7 @@ enum InferenceGraphExportCLI {
         let computeUnits = units
         // The file read and the graph build are long synchronous work: done
         // here, on the launching thread, never inside the task below.
-        let file = try CheckpointManager.loadModelFile(at: fileURL(paths[0]))
+        let (_, file) = try describeAndLoad(fileURL(paths[0]))
         let network = try ChessNetwork(arch: file.architecture, bnMode: .inference,
                                        initialization: .overwrittenByLoad)
         let weights = file.networkWeights

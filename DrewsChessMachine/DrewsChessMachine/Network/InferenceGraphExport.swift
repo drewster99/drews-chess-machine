@@ -1,7 +1,7 @@
 import Foundation
 import MetalPerformanceShadersGraph
 
-/// A model file as this build reads it, from its header alone: every rule a
+/// A model file as this build reads it: for a safetensors file, every rule a
 /// load applies to a header (`SafetensorsModelIO.inspect`) — the architecture
 /// after every format-version gate and legacy resolution, the tensors against
 /// the plan, the trainer schedule, the lineage record, the step reading — plus
@@ -10,26 +10,33 @@ import MetalPerformanceShadersGraph
 /// (`--describe-model`, `scripts/dcm_arch.py` / `dcm_lineage.py`, and
 /// `model.json` in every `--export-inference-graph` folder).
 ///
-/// Header-only, so a scan of thousands of files reads kilobytes per file: a
-/// description refuses exactly what a load refuses except a damaged tensor
-/// data region (content hash), which needs the data.
+/// A safetensors file is described from its header alone, so a scan of
+/// thousands of files reads kilobytes per file: a description refuses exactly
+/// what a load refuses except a damaged tensor data region (content hash),
+/// which needs the data. A legacy `.dcmmodel` has no header to read apart from
+/// its weights, so it is described from a full decode (its architecture is a
+/// compiled-in preset; it records no lineage and no test-set results). Files
+/// are told apart by their first bytes, as every load tells them apart.
 struct ModelDescription {
     let source: String
-    let metadata: [String: String]
-    let inspected: SafetensorsModelIO.InspectedHeader
+    let modelID: String
+    let creator: String
+    let architecture: NetworkArchitecture
+    let formatVersion: Int
+    let legacyResolutions: [String]
+    let includesOptimizerVelocity: Bool
+    let stepReading: ModelFileStepReading
+    let lineage: LineageRecord.Presence
     let testSetResults: ModelTestSetResultsInFile
+    /// The header's `__metadata__`, from which a recorded lineage record and
+    /// test-set results are given as stored; empty for a `.dcmmodel`.
+    let storedMetadata: [String: String]
 
     enum DescriptionError: LocalizedError {
-        case notSafetensors(String)
-        case duplicateTensor(String)
         case missingDecodedValue(String)
 
         var errorDescription: String? {
             switch self {
-            case .notSafetensors(let name):
-                return "\(name): a description reads .safetensors files"
-            case .duplicateTensor(let name):
-                return "the header names tensor '\(name)' twice"
             case .missingDecodedValue(let key):
                 return "the header has no \(key), though it was decoded from it"
             }
@@ -38,53 +45,91 @@ struct ModelDescription {
 
     /// The description of the model file at `url`. A session's
     /// `champion.safetensors` takes the policy tail its trainer file lends it,
-    /// as the session load does (`CheckpointManager.sessionTrainerPolicyTail`).
+    /// as the session load does (`CheckpointManager.sessionTrainerPolicyTail(forFileAt:)`).
     static func describe(fileAt url: URL) throws -> ModelDescription {
-        guard url.pathExtension == "safetensors" else { throw DescriptionError.notSafetensors(url.lastPathComponent) }
-        var trainerTail: ArchitectureFormat.RecordedPolicyTailPrecision?
-        let folder = url.deletingLastPathComponent()
-        if url.lastPathComponent == SessionCheckpointLayout.championFilename,
-           folder.pathExtension == "dcmsession" {
-            let trainer = try describe(headerAt: folder.appendingPathComponent(SessionCheckpointLayout.trainerFilename),
-                                       sessionTrainerPolicyTail: nil)
-            trainerTail = CheckpointManager.sessionTrainerPolicyTail(
-                trainerArchitecture: trainer.inspected.architecture,
-                trainerTailOrigin: trainer.inspected.architectureFormat.legacyLog.policyTailPrecisionOrigin)
+        let source = url.lastPathComponent
+        if try startsLikeLegacyModelFile(url) {
+            return try describe(bytes: try CheckpointManager.readModelFileBytes(at: url), source: source,
+                                sessionTrainerPolicyTail: nil)
         }
-        return try describe(headerAt: url, sessionTrainerPolicyTail: trainerTail)
+        let tail = try CheckpointManager.sessionTrainerPolicyTail(forFileAt: url)
+        return try describe(header: try SafetensorsFile.readHeader(at: url), source: source,
+                            sessionTrainerPolicyTail: tail)
+    }
+
+    /// The description of a whole model file's bytes: for a caller that loads
+    /// these same bytes and must describe exactly the file it loaded.
+    static func describe(
+        bytes data: Data, source: String,
+        sessionTrainerPolicyTail: ArchitectureFormat.RecordedPolicyTailPrecision?
+    ) throws -> ModelDescription {
+        if CheckpointManager.isLegacyModelFile(data) {
+            let file = try CheckpointManager.decodeAnyModelFile(data, valueHead: .recenterUnlessMarked, source: source)
+            return ModelDescription(
+                source: source, modelID: file.modelID, creator: file.metadata.creator,
+                architecture: file.architecture, formatVersion: ArchitectureFormat.unversionedLegacyVersion,
+                legacyResolutions: file.trainingStepReading.legacyResolution.map { [$0] } ?? [],
+                includesOptimizerVelocity: file.includesOptimizerVelocity, stepReading: file.trainingStepReading,
+                lineage: .unrecorded(formatVersion: ArchitectureFormat.unversionedLegacyVersion),
+                testSetResults: .notRecorded, storedMetadata: [:])
+        }
+        return try describe(header: try SafetensorsFile.header(of: data), source: source,
+                            sessionTrainerPolicyTail: sessionTrainerPolicyTail)
     }
 
     private static func describe(
-        headerAt url: URL, sessionTrainerPolicyTail: ArchitectureFormat.RecordedPolicyTailPrecision?
+        header: SafetensorsFile.Header, source: String,
+        sessionTrainerPolicyTail: ArchitectureFormat.RecordedPolicyTailPrecision?
     ) throws -> ModelDescription {
-        let header = try SafetensorsFile.readHeader(at: url)
-        var shapes: [String: [Int]] = [:]
-        for entry in header.entries {
-            guard shapes.updateValue(entry.shape, forKey: entry.name) == nil else {
-                throw DescriptionError.duplicateTensor(entry.name)
+        let inspected = try SafetensorsModelIO.inspect(header: header, source: source,
+                                                       sessionTrainerPolicyTail: sessionTrainerPolicyTail)
+        return ModelDescription(
+            source: source, modelID: inspected.modelID, creator: inspected.metadata.creator,
+            architecture: inspected.architecture, formatVersion: inspected.architectureFormat.formatVersion,
+            legacyResolutions: inspected.architectureFormat.legacyLog.resolutions,
+            includesOptimizerVelocity: inspected.hasVelocity, stepReading: inspected.stepReading,
+            lineage: inspected.provenance.lineage,
+            testSetResults: ModelTestSetResultsField.reading(fromMetadata: header.metadata),
+            storedMetadata: header.metadata)
+    }
+
+    /// Whether the file at `url` starts with the legacy `.dcmmodel` magic:
+    /// only its first bytes are read.
+    private static func startsLikeLegacyModelFile(_ url: URL) throws -> Bool {
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: url)
+        } catch {
+            throw CheckpointManagerError.readFailed(url, error)
+        }
+        defer {
+            do { try handle.close() } catch {
+                SessionLogger.shared.log("[DESCRIBE] closing \(url.lastPathComponent) after reading its first bytes failed: \(error)")
             }
         }
-        let inspected = try SafetensorsModelIO.inspect(
-            tensorShapes: shapes, metadata: header.metadata, source: url.lastPathComponent,
-            sessionTrainerPolicyTail: sessionTrainerPolicyTail)
-        return ModelDescription(source: url.lastPathComponent, metadata: header.metadata, inspected: inspected,
-                                testSetResults: ModelTestSetResultsField.reading(fromMetadata: header.metadata))
+        let prefix: Data
+        do {
+            prefix = try handle.read(upToCount: ModelCheckpointFile.magic.count) ?? Data()
+        } catch {
+            throw CheckpointManagerError.readFailed(url, error)
+        }
+        return CheckpointManager.isLegacyModelFile(prefix)
     }
 
     /// The description as a JSON object. The lineage record and the test-set
     /// results are given as stored (the app has decoded and checked them), so
     /// a reader sees each schema's own field layout.
     func jsonObject() throws -> [String: Any] {
-        let arch = inspected.architecture
+        let arch = architecture
         let architectureObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(arch))
         let blocksObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(arch.expandedBlocks))
-        let reading = inspected.stepReading
+        let reading = stepReading
         var object: [String: Any] = [
             "source": source,
-            "model_id": inspected.modelID,
-            "creator": inspected.metadata.creator,
-            "format_version": inspected.architectureFormat.formatVersion,
-            "legacy_resolutions": inspected.architectureFormat.legacyLog.resolutions,
+            "model_id": modelID,
+            "creator": creator,
+            "format_version": formatVersion,
+            "legacy_resolutions": legacyResolutions,
             "architecture": architectureObject,
             "expanded_blocks": blocksObject,
             "input_planes": arch.inputPlanes,
@@ -92,7 +137,7 @@ struct ModelDescription {
             "value_head_classes": arch.valueHeadClasses,
             "parameter_count": arch.parameterCount,
             "weight_plan": arch.weightTensorPlan().map { ["name": $0.name, "shape": $0.shape, "kind": $0.kind.rawValue] },
-            "includes_optimizer_velocity": inspected.hasVelocity,
+            "includes_optimizer_velocity": includesOptimizerVelocity,
             "step_reading": [
                 "basis": reading.basis.rawValue,
                 "stated_training_step": Self.json(reading.statedTrainingStep),
@@ -101,7 +146,7 @@ struct ModelDescription {
                 "legacy_note": Self.json(reading.legacyResolution),
             ] as [String: Any],
         ]
-        switch inspected.provenance.lineage {
+        switch lineage {
         case .unrecorded(let formatVersion):
             object["lineage"] = ["status": "unrecorded", "format_version": formatVersion] as [String: Any]
         case .recorded:
@@ -124,7 +169,7 @@ struct ModelDescription {
 
     /// The header value under `key` (one the inspection decoded) as JSON.
     private func storedJSON(_ key: String) throws -> Any {
-        guard let text = metadata[key] else { throw DescriptionError.missingDecodedValue(key) }
+        guard let text = storedMetadata[key] else { throw DescriptionError.missingDecodedValue(key) }
         return try JSONSerialization.jsonObject(with: Data(text.utf8))
     }
 
