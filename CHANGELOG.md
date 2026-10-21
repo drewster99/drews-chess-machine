@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-20 22:13 — dcm_arch.py reads the app; architecture rules only in Swift `2595c60b`
+
+- `scripts/dcm_arch.py` is a file-based wrapper over `--describe-model` (`describe`, `architecture`, `site_activations`, `require_relu`, `require_architecture_of`, `rezero_blocks`); no Python code resolves an architecture. About 30 consumer scripts pass the model file's path.
+- Checked on all 5,308 model files: the old Python resolver and the app agree on 5,306; the app refuses the other 2 (hand-made seed files with a tensor shape mismatch).
+- Dict-based Python resolver tests removed after mapping each rule to Swift; uncovered rules gained Swift tests. The scripts' guards are tested on real files the app writes (`test_dcm_arch.py`).
+
 ## 2026-10-20 19:45 — Challenge-log reconstruction reads paused matchmaking sends; two stale test expectations `86b96f32` `11143488`
 
 - "matchmaking send to <name> paused: …" (DCM at its own daily bot-game limit) is now a failure companion like "failed:" / "stopped:", so the refused attempt before it is attributed to matchmaking instead of the operator. Found by the real-data reconstruction test on the 2026-10-15 log.
