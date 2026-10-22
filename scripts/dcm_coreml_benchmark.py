@@ -2,13 +2,19 @@
 """Benchmark Core ML exports against the app's MPSGraph network, per model.
 
 For each model file:
-  1. a float32 copy (`--derive-model --set-compute-dtype float32`) when the
-     model isn't float32 already, for the same-math pair;
-  2. three Core ML packages via scripts/dcm_coreml_export.py: fp32 (from the
-     float32 copy), mirror and fp16 (from the model itself);
-  3. a `--coreml-benchmark` config with the plan's seven arms (five for a
-     float32 model, whose native arm is already the same-math one);
+  1. a float32 and a float16 copy (`--derive-model --set-compute-dtype ...`)
+     where the model isn't that type already, for the same-math pairs;
+  2. four Core ML packages via scripts/dcm_coreml_export.py: fp32 (from the
+     float32 copy), mirror and fp16 (from the model itself), and mirror of the
+     float16 copy (exactly the ops the float16 MPSGraph runs in fp16);
+  3. a `--coreml-benchmark` config with eight arms: the model, float32 and
+     float16 MPSGraph networks; Core ML fp32, mirror, fp16 and float16-mirror
+     on cpu-gpu; Core ML fp16 on cpu-ne. A copy the model already is (its own
+     type) is not repeated;
   4. the run: the app's table (`<stem>.txt`) and report (`<stem>.json`) in --out.
+
+The packages are reused from --work by name, and a package's batch sizes are
+fixed at export: use a fresh --work folder for a different --batch-sizes.
 
 Before anything runs, it refuses while any other DrewsChessMachine process
 except the Lichess bot is up (a trainer would share the GPU), and records each
@@ -98,40 +104,50 @@ def run(command, log=True):
 
 
 def prepare(model, app, python, work, batch_sizes):
-    """The model's arms, creating the float32 copy and the packages it needs."""
+    """The model's arms, creating the float32 / float16 copies and the packages it needs."""
+    # The app resolves a config's relative paths against the config's own folder.
+    model = os.path.abspath(model)
+    work = os.path.abspath(work)
     stem = os.path.splitext(os.path.basename(model))[0]
     folder = os.path.join(work, stem)
     os.makedirs(folder, exist_ok=True)
     architecture = dcm_arch.architecture(model)
     native = architecture["compute_data_type"]
-    if native == "float32":
-        fp32_model = model
-    else:
-        fp32_model = os.path.join(folder, f"{stem}-fp32.safetensors")
-        if not os.path.exists(fp32_model):
-            run([app, "--derive-model", "--from", model, "--set-compute-dtype", "float32", "--out", fp32_model])
+    copies = {}
+    for dtype in ("float32", "float16"):
+        if native == dtype:
+            copies[dtype] = model
+        else:
+            copies[dtype] = os.path.join(folder, f"{stem}-{dtype}.safetensors")
+            if not os.path.exists(copies[dtype]):
+                run([app, "--derive-model", "--from", model, "--set-compute-dtype", dtype, "--out", copies[dtype]])
     packages = {}
-    for precision, source in (("fp32", fp32_model), ("mirror", model), ("fp16", model)):
-        package = os.path.join(folder, f"{stem}-{precision}.mlpackage")
+    for name, precision, source in (("fp32", "fp32", copies["float32"]), ("mirror", "mirror", model),
+                                    ("fp16", "fp16", model), ("float16-mirror", "mirror", copies["float16"])):
+        if name == "float16-mirror" and native == "float16":
+            continue
+        package = os.path.join(folder, f"{stem}-{name}.mlpackage")
         if not os.path.exists(package):
             run([python, EXPORTER, source, "--out", package, "--app", app, "--precision", precision,
                  "--batch-sizes", ",".join(map(str, batch_sizes))])
-        packages[precision] = package
+        packages[name] = package
     arms = [{"label": f"mps-{native}", "engine": "mpsgraph", "model": model}]
-    if native != "float32":
-        arms.append({"label": "mps-float32", "engine": "mpsgraph", "model": fp32_model})
+    arms += [{"label": f"mps-{dtype}", "engine": "mpsgraph", "model": copies[dtype]}
+             for dtype in ("float32", "float16") if dtype != native]
     arms += [
-        {"label": "coreml-fp32-gpu", "engine": "coreml", "model": fp32_model, "coreml": packages["fp32"],
+        {"label": "coreml-fp32-gpu", "engine": "coreml", "model": copies["float32"], "coreml": packages["fp32"],
          "compute_units": "cpu-gpu"},
         {"label": "coreml-mirror-gpu", "engine": "coreml", "model": model, "coreml": packages["mirror"],
          "compute_units": "cpu-gpu"},
+        {"label": "coreml-fp16-gpu", "engine": "coreml", "model": model, "coreml": packages["fp16"],
+         "compute_units": "cpu-gpu"},
         {"label": "coreml-fp16-ne", "engine": "coreml", "model": model, "coreml": packages["fp16"],
          "compute_units": "cpu-ne"},
-        {"label": "coreml-fp16-all", "engine": "coreml", "model": model, "coreml": packages["fp16"],
-         "compute_units": "all"},
-        {"label": "coreml-fp32-cpu", "engine": "coreml", "model": fp32_model, "coreml": packages["fp32"],
-         "compute_units": "cpu"},
     ]
+    if native != "float16":
+        # A float16 model's own mirror arm is already this pair.
+        arms.insert(-1, {"label": "coreml-float16-mirror-gpu", "engine": "coreml", "model": copies["float16"],
+                         "coreml": packages["float16-mirror"], "compute_units": "cpu-gpu"})
     return stem, folder, arms
 
 

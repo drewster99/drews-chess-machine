@@ -8,7 +8,7 @@
 <meta name="dcm-title" content="Core ML vs MPSGraph inference speed">
 <meta name="dcm-status" content="complete">
 <meta name="dcm-tags" content="inference, coreml, performance">
-<meta name="dcm-takeaway" content="Keep MPSGraph bf16 for self-play: it is the fastest engine at batch 128 and up on every real-size model (Core ML at most 0.79× at batch 256), the Neural Engine only wins at batch 1 (0.42–0.54 ms vs 1.38–2.40 ms, irrelevant per chess move), and four overlapping MPSGraph streams gain more (+36–52% at batch 64) than any engine swap.">
+<meta name="dcm-takeaway" content="Keep MPSGraph bf16 for self-play, but not because it is much faster: at the batch sizes self-play and the arena use (100–250) Core ML ties it on 8M-parameter nets (0.86–1.02×) and loses where it puts a net on the CPU (0.35–0.47× on 10 × 256). fp16 against fp16 on the GPU, Core ML is level or ahead (0.96–1.23×); MPSGraph's only edge is bf16. Core ML is faster below batch 64, and the Neural Engine at batch 1.">
 <meta name="dcm-related" content="E-0010, E-0011">
 <meta name="dcm-superseded-by" content="">
 <title>E-0028 · Core ML vs MPSGraph inference speed</title>
@@ -25,7 +25,13 @@
 
 <section>
 <h2>Question</h2>
-<p>The owner asked for a fair test of Core ML inference against our MPSGraph forward pass: same weights, same positions, each Core ML compute unit, at batch 1 (Lichess bot, <code>--uci</code>), 64–256 (self-play and arena ticks) and up to 1024.</p>
+<p>The owner asked for a fair test of Core ML inference against our MPSGraph forward pass: same weights, same positions, each Core ML compute unit. The batch sizes that matter:</p>
+<ul>
+<li>1: the Lichess bot and <code>--uci</code>.</li>
+<li>About 100, two in flight: the arena.</li>
+<li>180–250: self-play, which evaluates every game in one call per tick.</li>
+</ul>
+<p>Run 1 compared MPSGraph bf16 against Core ML fp16 and summarized at batch 256 only. Run 2 adds fp16 against fp16, and the actual batch sizes.</p>
 </section>
 
 <section>
@@ -38,7 +44,7 @@
 <li><code>20261022-9-Hhuy</code>: the <code>v4_5block_7x7</code> preset, 8.45M.</li>
 <li><code>20261022-2-PswQ</code>: 10 × 256, 3×3, 12.9M.</li>
 </ul>
-The last three are untrained, because timing doesn't depend on weights. Each model also has a float32 copy, and fp32, mirror and fp16 Core ML exports.</dd>
+The last three are untrained, because timing doesn't depend on weights. Each model also has float32 and float16 copies.</dd>
 <dt>Build</dt><dd>2607 Release (git <code>a74e2c8f</code> plus the benchmark code), Apple M5 Max, macOS 27.2.</dd>
 <dt>Data</dt><dd>The 4,635 bundled test-set positions (lichess-200 + lichess-wide).</dd>
 <dt>Method</dt><dd><code>--coreml-benchmark</code>:
@@ -46,7 +52,8 @@ The last three are untrained, because timing doesn't depend on weights. Each mod
 <li>One process times from encoded boards to every output copied into the caller's buffers.</li>
 <li>Every Core ML arm passes a parity check first.</li>
 <li>Each cell gets an untimed warm-up, then 5 rotated rounds of 1.5 s.</li>
-<li>Grid: batch sizes 1–1024 × in-flight 1 and 4.</li>
+<li>Run 2 grid: 8 arms × batch sizes 1, 8, 32, 64, 100, 128, 180, 250, 512, 1024 × in-flight 1 and 4.</li>
+<li>The fp16 pair is MPSGraph on the float16 copy against that copy's Core ML mirror export: the same ops in fp16.</li>
 <li>Core ML's planned device for each op is recorded (<code>MLComputePlan</code>).</li>
 </ul></dd>
 </dl>
@@ -55,49 +62,50 @@ The last three are untrained, because timing doesn't depend on weights. Each mod
 <section>
 <h2>Findings</h2>
 <div class="tablebox"><table>
-<caption>Throughput at batch 256, in flight 1, millions of positions per hour (median of 5 rounds)</caption>
-<thead><tr><th>model</th><th class="n">mps-bfloat16</th><th class="n">mps-float32</th><th class="n">coreml-fp32-gpu</th><th class="n">coreml-mirror-gpu</th><th class="n">coreml-fp16-ne</th></tr></thead>
+<caption>Run 2, in flight 1: best Core ML arm ÷ MPSGraph bf16 at each batch size</caption>
+<thead><tr><th>model</th><th class="n">1</th><th class="n">8</th><th class="n">32</th><th class="n">64</th><th class="n">100</th><th class="n">128</th><th class="n">180</th><th class="n">250</th><th class="n">512</th><th class="n">1024</th></tr></thead>
 <tbody>
-<tr><td>mini 0.24M</td><td class="n">509.4</td><td class="n">499.1</td><td class="n">119.6 (CPU)</td><td class="n">260.8 (CPU)</td><td class="n">247.2 (CPU)</td></tr>
-<tr><td>zlra 8.27M (9×9)</td><td class="n">145.2</td><td class="n">39.7</td><td class="n">37.3</td><td class="n">115.4</td><td class="n">14.5</td></tr>
-<tr><td>v4 preset 8.45M</td><td class="n">130.3</td><td class="n">33.8</td><td class="n">29.2</td><td class="n">92.2</td><td class="n">51.5</td></tr>
-<tr><td>10 × 256 12.9M</td><td class="n">73.9</td><td class="n">34.9</td><td class="n">2.6 (CPU)</td><td class="n">7.8 (CPU)</td><td class="n">26.0</td></tr>
+<tr><td>zlra 8.27M</td><td class="n">2.49</td><td class="n">1.23</td><td class="n">1.16</td><td class="n">1.03</td><td class="n">0.95</td><td class="n">0.94</td><td class="n">0.93</td><td class="n">0.95</td><td class="n">0.89</td><td class="n">0.99</td></tr>
+<tr><td>v4 preset 8.45M</td><td class="n">3.39</td><td class="n">1.78</td><td class="n">1.17</td><td class="n">1.08</td><td class="n">1.01</td><td class="n">1.02</td><td class="n">0.99</td><td class="n">0.86</td><td class="n">0.92</td><td class="n">0.92</td></tr>
+<tr><td>10 × 256 12.9M</td><td class="n">5.17</td><td class="n">2.20</td><td class="n">0.84</td><td class="n">0.55</td><td class="n">0.47</td><td class="n">0.40</td><td class="n">0.39</td><td class="n">0.35</td><td class="n">0.30</td><td class="n">0.32</td></tr>
+<tr><td>mini 0.24M</td><td class="n">6.75</td><td class="n">5.94</td><td class="n">1.70</td><td class="n">1.04</td><td class="n">0.83</td><td class="n">0.73</td><td class="n">0.64</td><td class="n">0.56</td><td class="n">0.49</td><td class="n">0.48</td></tr>
 </tbody>
 </table></div>
 <div class="tablebox"><table>
-<caption>Batch-1 median latency, ms</caption>
-<thead><tr><th>model</th><th class="n">mps-bfloat16</th><th class="n">coreml-mirror-gpu</th><th class="n">coreml-fp16-ne</th></tr></thead>
+<caption>Run 2, fp16 against fp16: Core ML ÷ MPSGraph, same ops</caption>
+<thead><tr><th>model</th><th class="n">1</th><th class="n">8</th><th class="n">32</th><th class="n">64</th><th class="n">100</th><th class="n">128</th><th class="n">180</th><th class="n">250</th><th class="n">512</th><th class="n">1024</th></tr></thead>
 <tbody>
-<tr><td>mini 0.24M</td><td class="n">0.670</td><td class="n">0.106</td><td class="n">0.122</td></tr>
-<tr><td>zlra 8.27M</td><td class="n">1.381</td><td class="n">1.207</td><td class="n">0.544</td></tr>
-<tr><td>v4 preset 8.45M</td><td class="n">1.389</td><td class="n">1.369</td><td class="n">0.424</td></tr>
-<tr><td>10 × 256 12.9M</td><td class="n">2.400</td><td class="n">0.745</td><td class="n">0.467</td></tr>
+<tr><td>zlra 8.27M (GPU)</td><td class="n">1.14</td><td class="n">1.23</td><td class="n">1.21</td><td class="n">1.15</td><td class="n">1.04</td><td class="n">1.00</td><td class="n">1.06</td><td class="n">0.96</td><td class="n">1.03</td><td class="n">0.99</td></tr>
+<tr><td>v4 preset 8.45M (GPU)</td><td class="n">1.02</td><td class="n">1.12</td><td class="n">1.15</td><td class="n">1.11</td><td class="n">1.11</td><td class="n">1.08</td><td class="n">1.11</td><td class="n">1.09</td><td class="n">0.97</td><td class="n">1.01</td></tr>
 </tbody>
 </table></div>
 <ul>
-<li>Placement: under <code>cpu-gpu</code>, Core ML ran the mini and 10 × 256 nets on the CPU. The fp16 exports went 95–98% to the Neural Engine on the three larger nets.</li>
-<li>Parity: the fp32 exports matched exactly (100% same top move). Mirror and fp16 matched 96.4–99.6%.</li>
-<li>Four overlapping streams: MPSGraph bf16 gained +36–52% at batch 64 and +7–20% at batch 256.</li>
+<li>bf16 against fp16 inside MPSGraph, 8M nets: 1.05–1.27× from batch 64 up, 0.97–1.06× below.</li>
+<li>Batch 1: Neural Engine 0.41–0.54 ms against MPSGraph bf16's 1.36–2.42 ms.</li>
+<li>Placement: under <code>cpu-gpu</code>, Core ML ran the mini and 10 × 256 nets on the CPU in both runs. The fp16 exports went 95–98% to the Neural Engine on the three larger nets.</li>
+<li>Parity: the fp32 exports matched exactly (100% same top move); every fp16 export 96.4–99.9%.</li>
+<li>Four overlapping MPSGraph streams: +35% to +51% at batch 100, +20% to +26% at 250.</li>
+<li>Run 1 (bf16 against Core ML, batch 256): Core ML 0.71–0.79× on the 8M nets. On shared cells, run 2's Core ML arms on the v4 preset ran 1.2–1.3× faster than in run 1; every other arm and model was within 0.94–1.06×.</li>
 </ul>
 </section>
 
 <section>
 <h2>Interpretation</h2>
-<p>MPSGraph's lead at self-play sizes comes from bf16. At equal fp32 math, Core ML on the GPU runs at 0.86–0.99× of MPSGraph. Core ML's fp16 is the nearest substitute for bf16, and it is slower.</p>
-<p>The Neural Engine saturates early, at 14.5–51M positions/hour depending on the shape; 9×9 kernels suit it worst. It wins only at batch 1, where it saves 1–2 ms per chess move.</p>
-<p>Core ML's device placement isn't guaranteed: <code>cpu-gpu</code> put a 12.9M-parameter net on the CPU, 28× slower than MPSGraph.</p>
-<p>This was one run per model on one machine, with thermal state "fair" in most cells. Up to 30% of a model's cells varied by more than 1.25× between rounds, so only gaps of 1.26× or more are claimed. Power was not measured.</p>
+<p>Run 1's claims that MPSGraph is clearly faster at self-play sizes and that Core ML's fp16 is slower did not hold. Run 1 compared Core ML fp16 with MPSGraph bf16. Its 256-only summary hid that Core ML is faster below batch 64. Its gap at 256 did not repeat in run 2 (0.86–0.95× at 250), so it was within the run-to-run variation.</p>
+<p>At equal fp16 math on the GPU, Core ML is as fast as MPSGraph or faster. MPSGraph's only advantage is bf16, worth up to 1.27× at large batches. At self-play and arena batch sizes the two cancel out on the 8M nets. Core ML also chooses its own device, and it put the 12.9M net on the CPU.</p>
+<p>Below batch 64 Core ML is faster, and the Neural Engine wins at batch 1, but that saves only 1–2 ms per bot move.</p>
+<p>This was one machine with "fair" thermal state in most cells. The Lichess bot played four games during run 2, at about one forward pass per 15 s. Gaps under about 1.3× may not repeat. Power was not measured.</p>
 </section>
 
 <section>
 <h2>Takeaway</h2>
-<p class="takeaway">Keep MPSGraph bf16 for self-play: it is the fastest engine at batch 128 and up on every real-size model (Core ML at most 0.79× at batch 256), the Neural Engine only wins at batch 1 (0.42–0.54 ms vs 1.38–2.40 ms, irrelevant per chess move), and four overlapping MPSGraph streams gain more (+36–52% at batch 64) than any engine swap.</p>
+<p class="takeaway">Keep MPSGraph bf16 for self-play, but not because it is much faster: at the batch sizes self-play and the arena use (100–250) Core ML ties it on 8M-parameter nets (0.86–1.02×) and loses where it puts a net on the CPU (0.35–0.47× on 10 × 256). fp16 against fp16 on the GPU, Core ML is level or ahead (0.96–1.23×); MPSGraph's only edge is bf16. Core ML is faster below batch 64, and the Neural Engine at batch 1.</p>
 </section>
 
 <section>
 <h2>Artifacts</h2>
 <ul class="artifacts">
-<li><a href="../20261022-coreml-benchmark/README.md">experiments/20261022-coreml-benchmark/</a> — full write-up, every cell (<code>summary.md</code>, <code>results/</code>), models, Reproduce section.</li>
+<li><a href="../20261022-coreml-benchmark/README.md">experiments/20261022-coreml-benchmark/</a> — full write-up, every cell of both runs (<code>summary.md</code>, <code>summary-run2.md</code>, <code>results/</code>, <code>results-run2/</code>), models, Reproduce section.</li>
 </ul>
 </section>
 

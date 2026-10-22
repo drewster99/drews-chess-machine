@@ -310,7 +310,9 @@ extension InferenceGraphExportCLI {
         lines.append("Core ML vs MPSGraph — build \(report.build) (\(report.configuration)), \(report.chip ?? "unknown chip"), "
             + "\(report.osVersion), \(report.positions) positions, \(report.rounds) × \(report.roundSeconds) s rounds")
         lines.append("")
-        lines.append(pad("arm", 22) + pad("load s", 9, right: true) + pad("parity top-1", 14, right: true)
+        // Sized to the longest label so a long one doesn't shift its row's columns.
+        let labelWidth = max(22, (report.arms.map(\.label.count).max() ?? 0) + 2)
+        lines.append(pad("arm", labelWidth) + pad("load s", 9, right: true) + pad("parity top-1", 14, right: true)
             + "  planned placement (share of estimated cost)")
         for arm in report.arms {
             let agreement = arm.parity.map { reports -> String in
@@ -324,7 +326,7 @@ extension InferenceGraphExportCLI {
                 return placement.estimatedCost.sorted { $0.value > $1.value }
                     .map { "\($0.key) " + String(format: "%.0f%%", $0.value / total * 100) }.joined(separator: ", ")
             } ?? "MPSGraph (GPU)"
-            lines.append(pad(arm.label, 22) + pad(String(format: "%.2f", arm.loadSeconds), 9, right: true)
+            lines.append(pad(arm.label, labelWidth) + pad(String(format: "%.2f", arm.loadSeconds), 9, right: true)
                 + pad(agreement, 14, right: true) + "  " + placement)
         }
         let baseline = report.arms.first?.label
@@ -340,13 +342,13 @@ extension InferenceGraphExportCLI {
             let baselineRate = cells.first { $0.arm == baseline }?.positionsPerSecondMedian
             lines.append("")
             lines.append(key)
-            lines.append(pad("arm", 22) + pad("median ms", 11, right: true) + pad("p10 ms", 10, right: true)
+            lines.append(pad("arm", labelWidth) + pad("median ms", 11, right: true) + pad("p10 ms", 10, right: true)
                 + pad("p90 ms", 10, right: true) + pad("positions/h", 15, right: true)
                 + pad("vs \(baseline ?? "-")", 20, right: true) + pad("spread", 8, right: true)
                 + pad("thermal", 10, right: true))
             for cell in cells {
                 let relative = baselineRate.map { $0 > 0 ? String(format: "%.2f×", cell.positionsPerSecondMedian / $0) : "-" } ?? "-"
-                lines.append(pad(cell.arm, 22)
+                lines.append(pad(cell.arm, labelWidth)
                     + pad(String(format: "%.3f", cell.latencyMedianMs), 11, right: true)
                     + pad(String(format: "%.3f", cell.latencyP10Ms), 10, right: true)
                     + pad(String(format: "%.3f", cell.latencyP90Ms), 10, right: true)

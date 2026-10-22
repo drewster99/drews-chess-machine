@@ -532,7 +532,7 @@ window.DCM_EXPERIMENTS = [
    "coreml",
    "performance"
   ],
-  "takeaway": "Keep MPSGraph bf16 for self-play: it is the fastest engine at batch 128 and up on every real-size model (Core ML at most 0.79× at batch 256), the Neural Engine only wins at batch 1 (0.42–0.54 ms vs 1.38–2.40 ms, irrelevant per chess move), and four overlapping MPSGraph streams gain more (+36–52% at batch 64) than any engine swap.",
+  "takeaway": "Keep MPSGraph bf16 for self-play, but not because it is much faster: at the batch sizes self-play and the arena use (100–250) Core ML ties it on 8M-parameter nets (0.86–1.02×) and loses where it puts a net on the CPU (0.35–0.47× on 10 × 256). fp16 against fp16 on the GPU, Core ML is level or ahead (0.96–1.23×); MPSGraph's only edge is bf16. Core ML is faster below batch 64, and the Neural Engine at batch 1.",
   "related": [
    "E-0010",
    "E-0011"

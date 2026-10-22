@@ -1,0 +1,141 @@
+== 20260630-mini-YkKk-resume2-replay-step250803
+[coreml-benchmark] loading 20260630-mini-YkKk-resume2-replay-step250803.safetensors
+[coreml-benchmark] loading 20260630-mini-YkKk-resume2-replay-step250803-float32.safetensors
+[coreml-benchmark] loading 20260630-mini-YkKk-resume2-replay-step250803-float16.safetensors
+[coreml-benchmark] compiling and loading coreml-fp32-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-mirror-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-fp16-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-float16-mirror-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-fp16-ne (cpu-ne)
+[coreml-benchmark] parity coreml-fp32-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-mirror-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-fp16-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-float16-mirror-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-fp16-ne at 10 batch sizes
+[coreml-benchmark] batch 1 in-flight 1 done
+[coreml-benchmark] batch 1 in-flight 4 done
+[coreml-benchmark] batch 8 in-flight 1 done
+[coreml-benchmark] batch 8 in-flight 4 done
+[coreml-benchmark] batch 32 in-flight 1 done
+[coreml-benchmark] batch 32 in-flight 4 done
+[coreml-benchmark] batch 64 in-flight 1 done
+[coreml-benchmark] batch 64 in-flight 4 done
+[coreml-benchmark] batch 100 in-flight 1 done
+[coreml-benchmark] batch 100 in-flight 4 done
+[coreml-benchmark] batch 128 in-flight 1 done
+[coreml-benchmark] batch 128 in-flight 4 done
+[coreml-benchmark] batch 180 in-flight 1 done
+[coreml-benchmark] batch 180 in-flight 4 done
+[coreml-benchmark] batch 250 in-flight 1 done
+[coreml-benchmark] batch 250 in-flight 4 done
+[coreml-benchmark] batch 512 in-flight 1 done
+[coreml-benchmark] batch 512 in-flight 4 done
+[coreml-benchmark] batch 1024 in-flight 1 done
+[coreml-benchmark] batch 1024 in-flight 4 done
+[coreml-benchmark] wrote /Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/results-run2/20260630-mini-YkKk-resume2-replay-step250803.json
+== 20261008-zlra-ab-fresh
+[coreml-benchmark] loading 20261008-zlra-ab-fresh.safetensors
+[coreml-benchmark] loading 20261008-zlra-ab-fresh-float32.safetensors
+[coreml-benchmark] loading 20261008-zlra-ab-fresh-float16.safetensors
+[coreml-benchmark] compiling and loading coreml-fp32-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-mirror-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-fp16-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-float16-mirror-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-fp16-ne (cpu-ne)
+[coreml-benchmark] parity coreml-fp32-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-mirror-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-fp16-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-float16-mirror-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-fp16-ne at 10 batch sizes
+[coreml-benchmark] batch 1 in-flight 1 done
+[coreml-benchmark] batch 1 in-flight 4 done
+[coreml-benchmark] batch 8 in-flight 1 done
+[coreml-benchmark] batch 8 in-flight 4 done
+[coreml-benchmark] batch 32 in-flight 1 done
+[coreml-benchmark] batch 32 in-flight 4 done
+[coreml-benchmark] batch 64 in-flight 1 done
+[coreml-benchmark] batch 64 in-flight 4 done
+[coreml-benchmark] batch 100 in-flight 1 done
+[coreml-benchmark] batch 100 in-flight 4 done
+[coreml-benchmark] batch 128 in-flight 1 done
+[coreml-benchmark] batch 128 in-flight 4 done
+[coreml-benchmark] batch 180 in-flight 1 done
+[coreml-benchmark] batch 180 in-flight 4 done
+[coreml-benchmark] batch 250 in-flight 1 done
+[coreml-benchmark] batch 250 in-flight 4 done
+[coreml-benchmark] batch 512 in-flight 1 done
+[coreml-benchmark] batch 512 in-flight 4 done
+[coreml-benchmark] batch 1024 in-flight 1 done
+[coreml-benchmark] batch 1024 in-flight 4 done
+[coreml-benchmark] wrote /Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/results-run2/20261008-zlra-ab-fresh.json
+== bench-v4_5block_7x7-untrained
+[coreml-benchmark] loading bench-v4_5block_7x7-untrained.safetensors
+[coreml-benchmark] loading bench-v4_5block_7x7-untrained-float32.safetensors
+[coreml-benchmark] loading bench-v4_5block_7x7-untrained-float16.safetensors
+[coreml-benchmark] compiling and loading coreml-fp32-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-mirror-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-fp16-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-float16-mirror-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-fp16-ne (cpu-ne)
+[coreml-benchmark] parity coreml-fp32-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-mirror-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-fp16-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-float16-mirror-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-fp16-ne at 10 batch sizes
+[coreml-benchmark] batch 1 in-flight 1 done
+[coreml-benchmark] batch 1 in-flight 4 done
+[coreml-benchmark] batch 8 in-flight 1 done
+[coreml-benchmark] batch 8 in-flight 4 done
+[coreml-benchmark] batch 32 in-flight 1 done
+[coreml-benchmark] batch 32 in-flight 4 done
+[coreml-benchmark] batch 64 in-flight 1 done
+[coreml-benchmark] batch 64 in-flight 4 done
+[coreml-benchmark] batch 100 in-flight 1 done
+[coreml-benchmark] batch 100 in-flight 4 done
+[coreml-benchmark] batch 128 in-flight 1 done
+[coreml-benchmark] batch 128 in-flight 4 done
+[coreml-benchmark] batch 180 in-flight 1 done
+[coreml-benchmark] batch 180 in-flight 4 done
+[coreml-benchmark] batch 250 in-flight 1 done
+[coreml-benchmark] batch 250 in-flight 4 done
+[coreml-benchmark] batch 512 in-flight 1 done
+[coreml-benchmark] batch 512 in-flight 4 done
+[coreml-benchmark] batch 1024 in-flight 1 done
+[coreml-benchmark] batch 1024 in-flight 4 done
+[coreml-benchmark] wrote /Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/results-run2/bench-v4_5block_7x7-untrained.json
+== bench-10x256-untrained
+[coreml-benchmark] loading bench-10x256-untrained.safetensors
+[coreml-benchmark] loading bench-10x256-untrained-float32.safetensors
+[coreml-benchmark] loading bench-10x256-untrained-float16.safetensors
+[coreml-benchmark] compiling and loading coreml-fp32-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-mirror-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-fp16-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-float16-mirror-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-fp16-ne (cpu-ne)
+[coreml-benchmark] parity coreml-fp32-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-mirror-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-fp16-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-float16-mirror-gpu at 10 batch sizes
+[coreml-benchmark] parity coreml-fp16-ne at 10 batch sizes
+[coreml-benchmark] batch 1 in-flight 1 done
+[coreml-benchmark] batch 1 in-flight 4 done
+[coreml-benchmark] batch 8 in-flight 1 done
+[coreml-benchmark] batch 8 in-flight 4 done
+[coreml-benchmark] batch 32 in-flight 1 done
+[coreml-benchmark] batch 32 in-flight 4 done
+[coreml-benchmark] batch 64 in-flight 1 done
+[coreml-benchmark] batch 64 in-flight 4 done
+[coreml-benchmark] batch 100 in-flight 1 done
+[coreml-benchmark] batch 100 in-flight 4 done
+[coreml-benchmark] batch 128 in-flight 1 done
+[coreml-benchmark] batch 128 in-flight 4 done
+[coreml-benchmark] batch 180 in-flight 1 done
+[coreml-benchmark] batch 180 in-flight 4 done
+[coreml-benchmark] batch 250 in-flight 1 done
+[coreml-benchmark] batch 250 in-flight 4 done
+[coreml-benchmark] batch 512 in-flight 1 done
+[coreml-benchmark] batch 512 in-flight 4 done
+[coreml-benchmark] batch 1024 in-flight 1 done
+[coreml-benchmark] batch 1024 in-flight 4 done
+[coreml-benchmark] wrote /Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/results-run2/bench-10x256-untrained.json
+script exit=0

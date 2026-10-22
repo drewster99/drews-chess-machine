@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Markdown tables from the --coreml-benchmark reports in results/ (positions/hour,
-millions, median of the rounds; batch-1 latency). Prints to stdout."""
+"""Markdown tables from the --coreml-benchmark reports in a results folder
+(positions/hour, millions, median of the rounds; batch-1 latency). Prints to stdout.
+
+  python3 summarize.py [results folder, default results/]"""
 import json
 import os
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODELS = [
@@ -14,8 +17,9 @@ MODELS = [
 
 
 def main():
+    folder = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "results")
     for stem, title in MODELS:
-        report = json.load(open(os.path.join(HERE, "results", f"{stem}.json")))
+        report = json.load(open(os.path.join(folder, f"{stem}.json")))
         arms = [a["label"] for a in report["arms"]]
         cells = {(c["arm"], c["batch_size"], c["in_flight"]): c for c in report["cells"]}
         print(f"### {title}\n")

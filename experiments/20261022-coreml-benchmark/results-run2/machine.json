@@ -1,0 +1,337 @@
+{
+  "runs": [
+    {
+      "app": "/Users/andrew/Library/Developer/Xcode/DerivedData/DrewsChessMachine-eyigcdvyyrcsakaqcybzcfgsurbr/Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine",
+      "version": "DrewsChessMachine build 2607 git=a74e2c8f* branch=main configuration=Release built=2026-10-22T00:30:59-0500 xcode=27A9275 sdk=26A425",
+      "bots_at_start": [
+        {
+          "pid": 37366,
+          "cpu_seconds": 26795.11,
+          "command": "/Users/andrew/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2590-e42bfe04.app/Contents/MacOS/DrewsChessMachine --lichess-bot"
+        }
+      ],
+      "models": [
+        {
+          "stem": "20260630-mini-YkKk-resume2-replay-step250803",
+          "seconds": 1355.9,
+          "config": {
+            "batch_sizes": [
+              1,
+              8,
+              32,
+              64,
+              100,
+              128,
+              180,
+              250,
+              512,
+              1024
+            ],
+            "in_flight": [
+              1,
+              4
+            ],
+            "rounds": 5,
+            "round_seconds": 1.5,
+            "min_top_move_agreement": 0.9,
+            "arms": [
+              {
+                "label": "mps-bfloat16",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/20260630-mini-YkKk-resume2-replay-step250803.safetensors"
+              },
+              {
+                "label": "mps-float32",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20260630-mini-YkKk-resume2-replay-step250803/20260630-mini-YkKk-resume2-replay-step250803-float32.safetensors"
+              },
+              {
+                "label": "mps-float16",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20260630-mini-YkKk-resume2-replay-step250803/20260630-mini-YkKk-resume2-replay-step250803-float16.safetensors"
+              },
+              {
+                "label": "coreml-fp32-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20260630-mini-YkKk-resume2-replay-step250803/20260630-mini-YkKk-resume2-replay-step250803-float32.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20260630-mini-YkKk-resume2-replay-step250803/20260630-mini-YkKk-resume2-replay-step250803-fp32.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-mirror-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/20260630-mini-YkKk-resume2-replay-step250803.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20260630-mini-YkKk-resume2-replay-step250803/20260630-mini-YkKk-resume2-replay-step250803-mirror.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-fp16-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/20260630-mini-YkKk-resume2-replay-step250803.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20260630-mini-YkKk-resume2-replay-step250803/20260630-mini-YkKk-resume2-replay-step250803-fp16.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-float16-mirror-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20260630-mini-YkKk-resume2-replay-step250803/20260630-mini-YkKk-resume2-replay-step250803-float16.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20260630-mini-YkKk-resume2-replay-step250803/20260630-mini-YkKk-resume2-replay-step250803-float16-mirror.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-fp16-ne",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/20260630-mini-YkKk-resume2-replay-step250803.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20260630-mini-YkKk-resume2-replay-step250803/20260630-mini-YkKk-resume2-replay-step250803-fp16.mlpackage",
+                "compute_units": "cpu-ne"
+              }
+            ]
+          },
+          "bot_cpu_seconds_during": {
+            "37366": 8.74
+          }
+        },
+        {
+          "stem": "20261008-zlra-ab-fresh",
+          "seconds": 1439.1,
+          "config": {
+            "batch_sizes": [
+              1,
+              8,
+              32,
+              64,
+              100,
+              128,
+              180,
+              250,
+              512,
+              1024
+            ],
+            "in_flight": [
+              1,
+              4
+            ],
+            "rounds": 5,
+            "round_seconds": 1.5,
+            "min_top_move_agreement": 0.9,
+            "arms": [
+              {
+                "label": "mps-bfloat16",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/20261008-zlra-ab-fresh.safetensors"
+              },
+              {
+                "label": "mps-float32",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20261008-zlra-ab-fresh/20261008-zlra-ab-fresh-float32.safetensors"
+              },
+              {
+                "label": "mps-float16",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20261008-zlra-ab-fresh/20261008-zlra-ab-fresh-float16.safetensors"
+              },
+              {
+                "label": "coreml-fp32-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20261008-zlra-ab-fresh/20261008-zlra-ab-fresh-float32.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20261008-zlra-ab-fresh/20261008-zlra-ab-fresh-fp32.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-mirror-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/20261008-zlra-ab-fresh.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20261008-zlra-ab-fresh/20261008-zlra-ab-fresh-mirror.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-fp16-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/20261008-zlra-ab-fresh.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20261008-zlra-ab-fresh/20261008-zlra-ab-fresh-fp16.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-float16-mirror-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20261008-zlra-ab-fresh/20261008-zlra-ab-fresh-float16.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20261008-zlra-ab-fresh/20261008-zlra-ab-fresh-float16-mirror.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-fp16-ne",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/20261008-zlra-ab-fresh.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/20261008-zlra-ab-fresh/20261008-zlra-ab-fresh-fp16.mlpackage",
+                "compute_units": "cpu-ne"
+              }
+            ]
+          },
+          "bot_cpu_seconds_during": {
+            "37366": 211.87
+          }
+        },
+        {
+          "stem": "bench-v4_5block_7x7-untrained",
+          "seconds": 1431.6,
+          "config": {
+            "batch_sizes": [
+              1,
+              8,
+              32,
+              64,
+              100,
+              128,
+              180,
+              250,
+              512,
+              1024
+            ],
+            "in_flight": [
+              1,
+              4
+            ],
+            "rounds": 5,
+            "round_seconds": 1.5,
+            "min_top_move_agreement": 0.9,
+            "arms": [
+              {
+                "label": "mps-bfloat16",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/bench-v4_5block_7x7-untrained.safetensors"
+              },
+              {
+                "label": "mps-float32",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-float32.safetensors"
+              },
+              {
+                "label": "mps-float16",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-float16.safetensors"
+              },
+              {
+                "label": "coreml-fp32-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-float32.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-fp32.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-mirror-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/bench-v4_5block_7x7-untrained.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-mirror.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-fp16-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/bench-v4_5block_7x7-untrained.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-fp16.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-float16-mirror-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-float16.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-float16-mirror.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-fp16-ne",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/bench-v4_5block_7x7-untrained.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-fp16.mlpackage",
+                "compute_units": "cpu-ne"
+              }
+            ]
+          },
+          "bot_cpu_seconds_during": {
+            "37366": 146.43
+          }
+        },
+        {
+          "stem": "bench-10x256-untrained",
+          "seconds": 1676.3,
+          "config": {
+            "batch_sizes": [
+              1,
+              8,
+              32,
+              64,
+              100,
+              128,
+              180,
+              250,
+              512,
+              1024
+            ],
+            "in_flight": [
+              1,
+              4
+            ],
+            "rounds": 5,
+            "round_seconds": 1.5,
+            "min_top_move_agreement": 0.9,
+            "arms": [
+              {
+                "label": "mps-bfloat16",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/bench-10x256-untrained.safetensors"
+              },
+              {
+                "label": "mps-float32",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-10x256-untrained/bench-10x256-untrained-float32.safetensors"
+              },
+              {
+                "label": "mps-float16",
+                "engine": "mpsgraph",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-10x256-untrained/bench-10x256-untrained-float16.safetensors"
+              },
+              {
+                "label": "coreml-fp32-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-10x256-untrained/bench-10x256-untrained-float32.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-10x256-untrained/bench-10x256-untrained-fp32.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-mirror-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/bench-10x256-untrained.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-10x256-untrained/bench-10x256-untrained-mirror.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-fp16-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/bench-10x256-untrained.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-10x256-untrained/bench-10x256-untrained-fp16.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-float16-mirror-gpu",
+                "engine": "coreml",
+                "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-10x256-untrained/bench-10x256-untrained-float16.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-10x256-untrained/bench-10x256-untrained-float16-mirror.mlpackage",
+                "compute_units": "cpu-gpu"
+              },
+              {
+                "label": "coreml-fp16-ne",
+                "engine": "coreml",
+                "model": "/Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/models/bench-10x256-untrained.safetensors",
+                "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark-run2/bench-10x256-untrained/bench-10x256-untrained-fp16.mlpackage",
+                "compute_units": "cpu-ne"
+              }
+            ]
+          },
+          "bot_cpu_seconds_during": {
+            "37366": 441.54
+          }
+        }
+      ]
+    }
+  ]
+}

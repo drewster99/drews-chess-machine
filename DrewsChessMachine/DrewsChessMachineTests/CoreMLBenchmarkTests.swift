@@ -243,4 +243,31 @@ final class CoreMLBenchmarkTests: XCTestCase {
         XCTAssertThrowsError(try InferenceGraphExportCLI.runBenchmark(
             [InferenceGraphExportCLI.benchmarkFlag, configURL.path, "--json-out", out.path]))
     }
+
+    /// Protects: the text table keeps every cell row's columns under its
+    /// header, whatever the arm labels' lengths.
+    /// Fails if: the label column goes back to a fixed width a long label
+    /// (`coreml-float16-mirror-gpu`, 25 characters) overflows, shifting that
+    /// row's numbers right of the others'.
+    func testTheTableAlignsRowsWithLongArmLabels() {
+        let labels = ["mps", "coreml-float16-mirror-gpu"]
+        let round = CoreMLBenchmark.RoundMeasurement(latencies: [0.001], positions: 64, wallSeconds: 1,
+                                                     thermalState: .nominal)
+        let report = InferenceGraphExportCLI.BenchmarkReport(
+            build: "1", configuration: "Release", hardwareModel: nil, chip: nil, gpu: nil, gpuCores: nil,
+            memoryBytes: nil, osVersion: "test", lowPowerMode: false, startedAt: "test", positions: 64,
+            batchSizes: [64], inFlight: [1], rounds: 1, roundSeconds: 1, warmUpSeconds: 0,
+            arms: labels.map {
+                .init(label: $0, engine: "mpsgraph", model: "m", coreml: nil, computeUnits: nil, loadSeconds: 0,
+                      firstCallMs: [:], outputConversions: 0, parity: nil, placement: nil)
+            },
+            cells: labels.map { CoreMLBenchmark.CellResult(arm: $0, batchSize: 64, inFlight: 1, rounds: [round]) })
+
+        let lines = InferenceGraphExportCLI.table(report).split(separator: "\n", omittingEmptySubsequences: false)
+        let blockStart = lines.firstIndex { $0 == "batch 64, in flight 1" }
+        XCTAssertNotNil(blockStart)
+        guard let blockStart else { return }
+        let block = lines[(blockStart + 1)...(blockStart + 1 + labels.count)]
+        XCTAssertEqual(Set(block.map(\.count)).count, 1, "header and rows differ in width:\n" + block.joined(separator: "\n"))
+    }
 }

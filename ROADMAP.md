@@ -1693,11 +1693,12 @@ and the public surface. No behavior change. Lower priority than Part A.
     - Warm-up is untimed, and arm order rotates each round.
     - Core ML's `MLComputePlan` placement is reported.
     - A Debug build is refused.
-  - **Driver:** `scripts/dcm_coreml_benchmark.py` prepares the float32 copy, the three exports and the config for each model.
+  - **Driver:** `scripts/dcm_coreml_benchmark.py` prepares the float32 copy, the three exports and the config for each model. Since run 2 it also prepares a float16 copy and its mirror export.
   - **Plan:** `documentation/plans-completed/COREML_BENCHMARK_PLAN.md`. Results: `experiments/20261022-coreml-benchmark/` (E-0028).
   - **Deviations from the plan:**
     - Three of the four models are untrained nets of the planned shapes, since the trained ones are trainer-state files that `--derive-model` refuses.
     - The v5cont model was refused by the parity check, because its pre-fix bf16 head has near-tied logits.
+    - **Run 2 (same day, owner question):** run 1 compared MPSGraph bf16 with Core ML fp16 and summarized at batch 256 only. Run 2 added an MPSGraph float16 arm, Core ML fp16 and float16-mirror arms on the GPU, and batches 100 / 180 / 250 (the arena's call, default self-play, the owner's self-play). It replaced run 1's conclusion: fp16 vs fp16 Core ML is level or ahead (0.96–1.23×), MPSGraph's edge is bf16, and at self-play batches the engines tie on 8M nets.
     - The parity floor was 0.90, not 0.95.
     - The planned-placement report was added after the smoke run showed Core ML putting "GPU" arms on the CPU.
   - **Findings:**
