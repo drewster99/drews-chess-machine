@@ -89,7 +89,7 @@ extension SessionController {
         // disable the Run Arena button and adjust the busy label.
         arenaFlag.set()
         isArenaRunning = true
-        let (steps, totalGames, startTime, arenaStartTrainingSnapshot) = await beginArenaRun(
+        let (steps, totalGames, startTime) = await beginArenaRun(
             trainer: trainer, champion: champion, tBox: tBox, arenaFlag: arenaFlag
         )
 
@@ -154,6 +154,16 @@ extension SessionController {
             cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
             return
         }
+        // The stats box at this same paused instant, for a promotion to
+        // rewind the session's counters to, as the trainer is rewound to
+        // the clock captured below. The worker records each step before it
+        // parks at the gate, so this count and that clock describe the same
+        // weights. The arena-begin snapshot (`beginArenaRun`) is read before
+        // the pause: rewinding to it dropped the steps that landed in
+        // between from the session's count while the trainer kept them —
+        // session.json's `trainingSteps` (and `trainingPositionsSeen`, built
+        // from it) trailed the trainer clock by about one step per promotion.
+        let pausedTrainingSnapshot = await trainingBox?.snapshot()
         // The arena-start configuration cut (review N2), in this main-actor
         // turn under the training pause, before the detached export below:
         // its clock is the one that export reads. A promotion's record and
@@ -518,9 +528,9 @@ extension SessionController {
                     )
                     promoted = true
                     promotedID = candidateInference.identifier
-                    if let arenaStartTrainingSnapshot {
-                        trainingBox?.seed(arenaStartTrainingSnapshot.stats)
-                        trainingStats = arenaStartTrainingSnapshot.stats
+                    if let pausedTrainingSnapshot {
+                        trainingBox?.seed(pausedTrainingSnapshot.stats)
+                        trainingStats = pausedTrainingSnapshot.stats
                     } else {
                         trainingBox?.setStepCount(steps)
                         if var stats = trainingStats {
@@ -1127,7 +1137,7 @@ extension SessionController {
         champion: ChessMPSNetwork,
         tBox: TournamentLiveBox,
         arenaFlag: ArenaActiveFlag
-    ) async -> (steps: Int, totalGames: Int, startTime: Date, startSnapshot: TrainingLiveStatsBox.Snapshot?) {
+    ) async -> (steps: Int, totalGames: Int, startTime: Date) {
         let arenaStartTrainingSnapshot = await trainingBox?.snapshot()
         let steps = arenaStartTrainingSnapshot?.stats.steps ?? trainingStats?.steps ?? 0
         if let arenaStartTrainingSnapshot {
@@ -1170,7 +1180,7 @@ extension SessionController {
             startTime: startTime
         ))
         tournamentProgress = tBox.snapshot()
-        return (steps, totalGames, startTime, arenaStartTrainingSnapshot)
+        return (steps, totalGames, startTime)
     }
 
     /// Emit the `[ARENA] start` line and (if a trainer snapshot is

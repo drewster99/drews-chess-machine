@@ -140,7 +140,7 @@ struct SessionPickerSheet: View {
                         ("Trainer trained by", model.trainingHistories[m.id]?.trainer?.displayText),
                         ("Steps", m.trainingSteps.map { $0.formatted() }),
                         ("Active training", m.elapsedTrainingSec.map(Self.formatHMS)),
-                        ("Games emitted", m.emittedGames.map { $0.formatted() }),
+                        ("Games emitted (current champion)", m.emittedGames.map { $0.formatted() }),
                         ("Buffer", bufferDescribe(m)),
                         ("Build", buildDescribe(m))
                     ])

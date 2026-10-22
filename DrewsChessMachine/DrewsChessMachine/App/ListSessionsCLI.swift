@@ -12,11 +12,13 @@ import Foundation
 ///
 /// The table shows, per save: folder, size, save time (local), trigger,
 /// trainer and champion IDs, `session.json`'s training-step count beside the
-/// trainer file's trainer step (`cum`), training hours, self-play games,
-/// (`selfPlayGames`), arenas, promotions, the champion's puzzle pElo (largest test set), the
-/// replay buffer (`yes` / `no`, or `MISSING` / `UNLISTED` when session.json
-/// and the folder disagree) and the lineage (path, segment, gaps). `--json`
-/// prints the rows instead, each with the whole manifest.
+/// trainer file's trainer step (`cum`), training hours, the games the run
+/// has fed its replay buffer (the record's `cum_games`; session.json's game
+/// counters start over at each promotion), arenas, promotions, the
+/// champion's puzzle pElo (largest test set), the replay buffer (`yes` /
+/// `no`, or `MISSING` / `UNLISTED` when session.json and the folder
+/// disagree) and the lineage (path, segment, gaps). `--json` prints the rows
+/// instead, each with the whole manifest.
 ///
 /// Exits 0 when every listed row was read, 1 when any listed row carries an
 /// error (it is listed with it, never skipped), 2 on a usage error or an
@@ -231,9 +233,9 @@ enum ListSessionsCLI {
     }()
 
     static let columns = ["folder", "size", "saved (local)", "trigger", "trainer -> champion", "steps", "cum",
-                          "train h", "games", "arenas", "promotions", "pElo", "buffer", "lineage"]
+                          "train h", "games fed", "arenas", "promotions", "pElo", "buffer", "lineage"]
     /// Columns aligned right (numbers).
-    private static let numericColumns: Set<String> = ["size", "steps", "cum", "train h", "games", "arenas",
+    private static let numericColumns: Set<String> = ["size", "steps", "cum", "train h", "games fed", "arenas",
                                                       "promotions", "pElo"]
 
     /// The table's lines: a header, then one line per row. A row with an
@@ -268,10 +270,13 @@ enum ListSessionsCLI {
     static func cells(of row: Row) -> [String] {
         let m = row.manifest
         let cum: String
+        let gamesFed: String
         if case .recorded(let record, _) = row.lineage {
             cum = record.steps.cumTrainerStep.map(String.init) ?? "—"
+            gamesFed = record.fed.cumGames.map(String.init) ?? "—"
         } else {
             cum = "—"
+            gamesFed = "—"
         }
         return [
             m.folderName,
@@ -282,7 +287,7 @@ enum ListSessionsCLI {
             m.trainingSteps.map(String.init) ?? "—",
             cum,
             m.elapsedTrainingSec.map { String(format: "%.1f", $0 / 3600) } ?? "—",
-            m.selfPlayGames.map(String.init) ?? "—",
+            gamesFed,
             m.arenaCount.map(String.init) ?? "—",
             m.promotionCount.map(String.init) ?? "—",
             m.championTestSets?.pEloText ?? "—",

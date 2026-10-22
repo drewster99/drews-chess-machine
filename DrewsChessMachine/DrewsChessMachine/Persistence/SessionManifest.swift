@@ -74,9 +74,12 @@ struct SessionManifest: Codable, Hashable, Sendable, Identifiable {
     let trainingSteps: Int?
     let elapsedTrainingSec: Double?
     let emittedGames: Int?
-    /// `session.json`'s `selfPlayGames`: every self-play game played, kept in
-    /// the buffer or not (`emittedGames` counts only the kept ones). Nil in a
-    /// manifest written before this field.
+    /// `session.json`'s `selfPlayGames`: the self-play games played, kept in
+    /// the buffer or not (`emittedGames` counts only the kept ones), since
+    /// the current champion was promoted — both start over at each promotion
+    /// (`resetSelfPlayGameStatsForNewChampion`); the run's lifetime count is
+    /// its lineage record's `fed.cum_games`. Nil in a manifest written
+    /// before this field.
     var selfPlayGames: Int? = nil
     let emittedPositions: Int?
     let bufferStored: Int?

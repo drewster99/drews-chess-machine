@@ -1771,6 +1771,23 @@ and the public surface. No behavior change. Lower priority than Part A.
     `manifest.json` is relabeled for the folder's current name, so a renamed
     session opens from the picker; the picker shows a folder-listing failure
     instead of "0 saves".
+  - **Promotion rewound the session step counter to the wrong instant
+    (fixed 2026-10-21, found through `--list-sessions`).** A promotion
+    rewinds the trainer to its clock captured under the arena's training
+    pause, but rewound the session's step counter (`trainingBox`) to a
+    snapshot read in `beginArenaRun`, before that pause; the step in flight
+    between them stayed in the trainer and left the count, so session.json's
+    `trainingSteps` and `trainingPositionsSeen` trailed the trainer clock by
+    about one step per promotion (the peGM run: 30 after 30 promotions,
+    32 after 32). The counter is now snapshotted under the same pause.
+    Training itself, the trainer clock and lineage records were unaffected;
+    saved sessions keep their counts. Not unit-tested: the ordering lives in
+    `runArenaParallel`, which no test drives; the next GUI run's
+    `--list-sessions` should show `steps` equal to `cum`. Also from that
+    listing: session.json's game counters (`selfPlayGames`, `emittedGames`)
+    count games since the current champion's promotion by design
+    (`resetSelfPlayGameStatsForNewChampion`), so a `-promote` save records 0;
+    `--list-sessions` shows the record's lifetime `fed.cum_games` instead.
 
 - **Fast legal-move generation: make/unmake + pin-based (2026-06-24, `81ac884`,
   `d4becf6`).** Move-generation legality was a copy-make filter — for each
