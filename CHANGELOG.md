@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-21 19:40 — `--list-sessions` replaces sessions_summary.py; session-folder reading fixes `51a9ee2e`
+
+- `--list-sessions [--sessions-dir <folder>] [--tail N | --all] [--json]` lists saves oldest first from the Load Session picker's reading, with each trainer file's lineage record and a buffer check (`MISSING` / `UNLISTED`). `scripts/sessions_summary.py` removed.
+- Shared reading fixed: hyphenated triggers read whole, renamed folders state no trigger and group by their recorded session ID, stored manifests are versioned and relabeled for the folder's current name, promotions count from a complete arena history, the picker shows a folder-listing failure.
+- On the 84 real sessions: none unreadable; 2 declare a replay buffer whose file is gone (`…-sjIy-promote-keep`, `…-MNTv-sigusr2`).
+
 ## 2026-10-21 02:41 — dcm_lineage.py reads the app; header-only --describe-model; Core ML export fixes `3333b8b5` `86ab8e36` `f4d31e31`
 
 - `SafetensorsModelIO.inspect` holds every header rule of a load; `decode` calls it before its data work. `--describe-model` reads headers only and prints one JSON line per file (lineage, step reading, test-set results, creator): 5,468 model and session files in about 11 s. Files are told apart by their first bytes, so a legacy `.dcmmodel` is described (all 21 on disk).
