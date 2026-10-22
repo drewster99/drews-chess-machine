@@ -9,6 +9,11 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-21 20:40 — Promotion rewinds the session step counter at the trainer's instant `bb6c50bd`
+
+- A promotion rewound the session's step counter to a snapshot taken before the arena's training pause while the trainer rewound to its clock under the pause, so `session.json`'s `trainingSteps` and `trainingPositionsSeen` trailed the trainer clock by about one step per promotion. Now both come from the same paused instant. Training and lineage records were unaffected.
+- `--list-sessions` shows the record's lifetime games fed; `session.json`'s game counters start over at each promotion by design.
+
 ## 2026-10-21 19:40 — `--list-sessions` replaces sessions_summary.py; session-folder reading fixes `51a9ee2e`
 
 - `--list-sessions [--sessions-dir <folder>] [--tail N | --all] [--json]` lists saves oldest first from the Load Session picker's reading, with each trainer file's lineage record and a buffer check (`MISSING` / `UNLISTED`). `scripts/sessions_summary.py` removed.
