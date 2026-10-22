@@ -47,9 +47,10 @@ struct SessionPickerSheet: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             } else {
-                Text("\(model.manifests.count) saves · \(model.groups.count) runs")
+                Text(model.scanError.map { "Can't list the sessions folder: \($0)" }
+                     ?? "\(model.manifests.count) saves · \(model.groups.count) runs")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(model.scanError == nil ? .secondary : .primary)
                     .monospacedDigit()
             }
         }

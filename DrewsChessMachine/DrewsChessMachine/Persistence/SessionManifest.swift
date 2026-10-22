@@ -20,20 +20,35 @@ struct SessionManifest: Codable, Hashable, Sendable, Identifiable {
 
     var id: String { folderName }
 
+    /// What a manifest holds and how it was read. Bumped whenever a field is
+    /// added or a reading changes; `resolve` uses a stored manifest (a
+    /// session's `manifest.json`, an index-cache entry) only at this version
+    /// and extracts again from `session.json` otherwise, so a manifest stored
+    /// by another build never answers for this one.
+    static let currentSchema = 2
+    /// The schema this manifest was made at; nil in one made before the field.
+    var schema: Int? = nil
+
     // MARK: Identity
 
-    let folderName: String
-    /// Save trigger parsed from the folder name (`manual`, `periodic`,
-    /// `promote`, `sigusr2`, …) — whatever suffix the save used; the
-    /// picker badges known values and shows the raw string otherwise.
-    let trigger: String?
+    /// The folder's name as it is now (`resolve` sets it from the folder,
+    /// whatever name a stored manifest was written under).
+    private(set) var folderName: String
+    /// The session ID `session.json` records; nil for a session.json without one.
+    var sessionID: String? = nil
+    /// Save trigger from the folder name (`manual`, `periodic`, `promote`,
+    /// `sigusr2`, `vsuci-final`, …) — whatever tag the save used; the picker
+    /// badges known values and shows the raw string otherwise. Nil when the
+    /// name is not `<timestamp>-<sessionID>-<trigger>` for this session's own
+    /// ID (a renamed folder). Recomputed by `resolve` from the current name.
+    private(set) var trigger: String?
     /// Save instant. Folder-name timestamps are UTC by convention;
     /// `savedAtUnix` from `session.json` wins when available (exact).
     let savedAt: Date?
     /// The 4-char ModelID suffix of the SAVED lineage (e.g. `5K7Z`) —
     /// the picker's grouping key, per the "runs are the mental model"
-    /// design decision.
-    let lineageTag: String?
+    /// design decision. Recomputed by `resolve`.
+    private(set) var lineageTag: String?
 
     // MARK: A — Architecture
 
@@ -59,9 +74,17 @@ struct SessionManifest: Codable, Hashable, Sendable, Identifiable {
     let trainingSteps: Int?
     let elapsedTrainingSec: Double?
     let emittedGames: Int?
+    /// `session.json`'s `selfPlayGames`: every self-play game played, kept in
+    /// the buffer or not (`emittedGames` counts only the kept ones). Nil in a
+    /// manifest written before this field.
+    var selfPlayGames: Int? = nil
     let emittedPositions: Int?
     let bufferStored: Int?
     let bufferCapacity: Int?
+    /// Whether `session.json` says this save wrote `replay_buffer.bin`
+    /// (`hasReplayBuffer`). Nil for a save from before the field, and in a
+    /// manifest written before this one carried it.
+    var replayBufferDeclared: Bool? = nil
     let buildNumber: Int?
     let buildGitHash: String?
     let buildGitDirty: Bool?
@@ -112,41 +135,87 @@ struct SessionManifest: Codable, Hashable, Sendable, Identifiable {
 
 extension SessionManifest {
 
-    /// Parses `<yyyyMMdd>-<HHmmss>-<yyyymmdd>-<N>-<XXXX>-<trigger>.dcmsession`.
-    /// Returns nil components for names that don't match (foreign folders
-    /// still get listed, just unannotated).
+    /// Parses `<yyyyMMdd>-<HHmmss>-<sessionID>-<trigger>.dcmsession`, the
+    /// name `CheckpointManager.makeSessionDirectoryName` writes, where the
+    /// session ID is a ModelID (`yyyymmdd-N-XXXX`) and the trigger is
+    /// everything after it: a save tag may itself hold hyphens
+    /// (`vsuci-periodic`, `promote-keep` after a hand rename). The lineage
+    /// tag is the session ID's 4-character suffix.
+    ///
+    /// A name not of that shape (a folder renamed by hand) gets a nil
+    /// lineage tag and trigger, and a save time only when its first two
+    /// components are one: it is still listed, unannotated, instead of
+    /// having a trigger and tag read out of arbitrary words.
     static func parseFolderName(
         _ name: String
     ) -> (savedAt: Date?, lineageTag: String?, trigger: String?) {
         guard name.hasSuffix(".dcmsession") else { return (nil, nil, nil) }
         let stem = String(name.dropLast(".dcmsession".count))
-        let parts = stem.split(separator: "-").map(String.init)
-        guard parts.count >= 6 else { return (nil, nil, nil) }
-        let dateStr = parts[0], timeStr = parts[1]
-        var savedAt: Date? = nil
-        if dateStr.count == 8, timeStr.count == 6,
-           dateStr.allSatisfy(\.isNumber), timeStr.allSatisfy(\.isNumber) {
-            var comps = DateComponents()
-            comps.year = Int(dateStr.prefix(4))
-            comps.month = Int(dateStr.dropFirst(4).prefix(2))
-            comps.day = Int(dateStr.dropFirst(6))
-            comps.hour = Int(timeStr.prefix(2))
-            comps.minute = Int(timeStr.dropFirst(2).prefix(2))
-            comps.second = Int(timeStr.dropFirst(4))
-            var cal = Calendar(identifier: .gregorian)
-            // Session folder timestamps are UTC (established empirically;
-            // see ARCH_EXPERIMENTS Exp 4 §2 note "Session filenames are
-            // UTC-stamped").
-            cal.timeZone = TimeZone(identifier: "UTC") ?? .current
-            savedAt = cal.date(from: comps)
+        let parts = stem.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 2 else { return (nil, nil, nil) }
+        let savedAt = timestamp(date: parts[0], time: parts[1])
+        guard savedAt != nil, parts.count >= 6,
+              let tag = modelIDTag(parts[2], parts[3], parts[4]) else {
+            return (savedAt, nil, nil)
         }
-        // The trigger is the LAST hyphen component; the lineage tag is the
-        // one before it (ModelID = yyyymmdd-N-XXXX occupies parts 2..4 of
-        // a conforming name, but counting from the end tolerates future
-        // extra middle segments).
-        let trigger = parts[parts.count - 1]
-        let lineage = parts[parts.count - 2]
-        return (savedAt, lineage, trigger)
+        let trigger = parts[5...].joined(separator: "-")
+        guard !trigger.isEmpty else { return (savedAt, tag, nil) }
+        return (savedAt, tag, trigger)
+    }
+
+    /// The UTC instant a folder name's `yyyyMMdd` / `HHmmss` components state
+    /// (`CheckpointManager.filenameTimestampFormatter` writes them in UTC), or
+    /// nil when they are not that.
+    private static func timestamp(date dateStr: String, time timeStr: String) -> Date? {
+        guard dateStr.count == 8, timeStr.count == 6,
+              isDigits(dateStr), isDigits(timeStr),
+              let utc = TimeZone(identifier: "UTC") else { return nil }
+        var comps = DateComponents()
+        comps.year = Int(dateStr.prefix(4))
+        comps.month = Int(dateStr.dropFirst(4).prefix(2))
+        comps.day = Int(dateStr.dropFirst(6))
+        comps.hour = Int(timeStr.prefix(2))
+        comps.minute = Int(timeStr.dropFirst(2).prefix(2))
+        comps.second = Int(timeStr.dropFirst(4))
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = utc
+        return cal.date(from: comps)
+    }
+
+    /// The 4-character tag of a ModelID's three components
+    /// (`yyyymmdd`, counter, tag), or nil when they are not a ModelID.
+    private static func modelIDTag(_ date: String, _ counter: String, _ tag: String) -> String? {
+        guard date.count == 8, isDigits(date), isDigits(counter),
+              !tag.isEmpty, tag.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { return nil }
+        return tag
+    }
+
+    /// Non-empty and only ASCII digits.
+    private static func isDigits(_ text: String) -> Bool {
+        !text.isEmpty && text.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+
+    /// The lineage tag of a session ID (a ModelID), or nil when it is not one.
+    static func lineageTag(ofSessionID sessionID: String) -> String? {
+        let parts = sessionID.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3 else { return nil }
+        return modelIDTag(parts[0], parts[1], parts[2])
+    }
+
+    /// The trigger and lineage tag of `folderName` checked against the
+    /// session ID `session.json` records: a folder whose name does not carry
+    /// its own session's ID was renamed (or holds another session's files),
+    /// so its name states no trigger; its lineage tag is the recorded
+    /// session's, so a renamed save still groups with its run.
+    static func identity(
+        folderName: String, recordedSessionID: String?
+    ) -> (savedAt: Date?, lineageTag: String?, trigger: String?) {
+        let parsed = parseFolderName(folderName)
+        guard let recordedSessionID else { return parsed }
+        let named = parsed.trigger != nil
+            && folderName.dropFirst("yyyyMMdd-HHmmss-".count).hasPrefix(recordedSessionID + "-")
+        return (parsed.savedAt, lineageTag(ofSessionID: recordedSessionID) ?? parsed.lineageTag,
+                named ? parsed.trigger : nil)
     }
 }
 
@@ -238,12 +307,12 @@ extension SessionManifest {
         srcBytes: Int64?,
         srcMTime: Double?
     ) -> SessionManifest {
-        let parsed = parseFolderName(folderName)
-
         func int(_ k: String) -> Int? { (dict[k] as? NSNumber)?.intValue }
         func dbl(_ k: String) -> Double? { (dict[k] as? NSNumber)?.doubleValue }
         func str(_ k: String) -> String? { dict[k] as? String }
         func bool(_ k: String) -> Bool? { (dict[k] as? NSNumber)?.boolValue }
+
+        let parsed = identity(folderName: folderName, recordedSessionID: str("sessionID"))
 
         // Architecture: runtime-config saves embed the snake_case
         // NetworkArchitecture (decode it for the canonical summary);
@@ -309,19 +378,29 @@ extension SessionManifest {
         let pWide = probeFields("lichessProbeWideHistory")
         pElo200 = p200.pElo
         pEloWide = pWide.pElo
-        promotionCount = p200.promos ?? pWide.promos
+        // Promotions: the arena history records each one as it happens, but an
+        // older session's history may hold only its latest arenas, while the
+        // probe history's counter is lifetime but updated only at probe ticks
+        // (one promotion behind on a save made right after a promotion). So
+        // the history's count wins when the history holds every arena the
+        // probe counted; the probe's otherwise; the history's when there is
+        // no probe counter.
+        let arenaEntries = dict["arenaHistory"] as? [Any]
+        // Tolerate a non-`[[String:Any]]` arenaHistory shape (legacy /
+        // heterogeneous): count only the entries that parse as promoted.
+        let historyPromotions = arenaEntries.map { entries in
+            entries.reduce(0) { acc, e in
+                acc + (((e as? [String: Any])?["promoted"] as? NSNumber)?.boolValue == true ? 1 : 0)
+            }
+        }
+        let probePromotions = p200.promos ?? pWide.promos
+        let historyIsComplete = (arenaEntries?.count ?? 0) > 0
+            && (arenaEntries?.count ?? 0) >= (p200.arenas ?? pWide.arenas ?? 0)
+        promotionCount = historyIsComplete ? historyPromotions : (probePromotions ?? historyPromotions)
         // An empty arenaHistory array yields count 0 (non-nil) and would
         // mask the probe-history fallback; treat 0 as "no arena data here"
         // and prefer the probe's count when it has one.
         if (arenaCount ?? 0) == 0 { arenaCount = p200.arenas ?? arenaCount }
-        // Tolerate a non-`[[String:Any]]` arenaHistory shape (legacy /
-        // heterogeneous): count only the entries that parse as promoted,
-        // rather than failing the whole cast and leaving promotionCount nil.
-        if promotionCount == nil, let arenas = dict["arenaHistory"] as? [Any] {
-            promotionCount = arenas.reduce(0) { acc, e in
-                acc + (((e as? [String: Any])?["promoted"] as? NSNumber)?.boolValue == true ? 1 : 0)
-            }
-        }
 
         // Draw counters are written as one atomic block, so a partial subset
         // means an unexpected/hand-edited schema — report nil ("—") rather
@@ -331,7 +410,7 @@ extension SessionManifest {
         let draws: [Int] = drawParts.contains(where: { $0 == nil }) ? [] : drawParts.compactMap { $0 }
         let savedAt = dbl("savedAtUnix").map { Date(timeIntervalSince1970: $0) } ?? parsed.savedAt
 
-        return SessionManifest(
+        var manifest = SessionManifest(
             folderName: folderName,
             trigger: parsed.trigger,
             savedAt: savedAt,
@@ -373,6 +452,11 @@ extension SessionManifest {
             sourceJSONMTime: srcMTime,
             loadError: nil
         )
+        manifest.replayBufferDeclared = bool("hasReplayBuffer")
+        manifest.schema = currentSchema
+        manifest.sessionID = str("sessionID")
+        manifest.selfPlayGames = int("selfPlayGames")
+        return manifest
     }
 
     private static func unreadable(
@@ -480,12 +564,16 @@ extension SessionManifest {
     /// 2. a valid index-cache entry (size+mtime of `session.json` match),
     /// 3. full extraction from `session.json` (then cached).
     /// Heavy in case 3 — call off the main actor.
+    ///
+    /// A stored manifest is used only at `currentSchema`, and its
+    /// folder-name fields are recomputed from the folder's current name
+    /// (`relabeled(forFolder:)`): they were parsed when it was written, under
+    /// the name the folder had then and by the parser of that build.
     static func resolve(sessionFolder url: URL) -> SessionManifest {
         let fm = FileManager.default
         let embedded = url.appendingPathComponent("manifest.json")
-        if let data = try? Data(contentsOf: embedded),
-           let m = try? JSONDecoder().decode(SessionManifest.self, from: data) {
-            return m
+        if let m = storedManifest(at: embedded), m.schema == currentSchema {
+            return m.relabeled(forFolder: url)
         }
 
         let jsonURL = url.appendingPathComponent("session.json")
@@ -497,11 +585,10 @@ extension SessionManifest {
         }
         let cacheURL = indexCacheDirectory()
             .appendingPathComponent(url.lastPathComponent + ".json")
-        if let data = try? Data(contentsOf: cacheURL),
-           let m = try? JSONDecoder().decode(SessionManifest.self, from: data),
+        if let m = storedManifest(at: cacheURL), m.schema == currentSchema,
            m.sourceJSONBytes == curBytes, m.sourceJSONMTime == curMTime,
            m.loadError == nil {
-            return m
+            return m.relabeled(forFolder: url)
         }
 
         let extracted = extract(fromSessionFolder: url)
@@ -517,6 +604,31 @@ extension SessionManifest {
             }
         }
         return extracted
+    }
+
+    /// A stored manifest (`manifest.json` in a session folder, or an index-cache
+    /// entry), or nil when there is none. One that is present but does not
+    /// read is logged and treated as absent: the manifest is then extracted
+    /// from `session.json` again, which is what it summarizes.
+    private static func storedManifest(at url: URL) -> SessionManifest? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        do {
+            return try JSONDecoder().decode(SessionManifest.self, from: Data(contentsOf: url))
+        } catch {
+            SessionLogger.shared.log("[SESSION-INDEX] \(url.path) does not read (\(error.localizedDescription)); extracting from session.json")
+            return nil
+        }
+    }
+
+    /// This manifest for the folder at `url`: its current name, and the
+    /// trigger and lineage tag that name states for this session's ID.
+    func relabeled(forFolder url: URL) -> SessionManifest {
+        var copy = self
+        copy.folderName = url.lastPathComponent
+        let identity = Self.identity(folderName: copy.folderName, recordedSessionID: sessionID)
+        copy.trigger = identity.trigger
+        copy.lineageTag = identity.lineageTag
+        return copy
     }
 
     /// Delete index-cache entries whose session folder no longer exists.

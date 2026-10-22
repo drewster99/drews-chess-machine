@@ -145,9 +145,17 @@ enum CommandLineHelp {
                                       --set-rezero-alpha-cap <float > 0> (ReZero groups; no tensors);
                                       --group <0-based index>, repeatable, narrows them. Full list, with
                                       what each rewrites: --derive-model --help.
-      --describe-model <file>         Print a model file as this build reads it, as JSON: the resolved
-                                      architecture (format-version rules and legacy resolutions applied),
-                                      expanded blocks, weight plan, parameter count; then exit.
+      --describe-model <file> [<file> ...]
+                                      Print each model file as this build reads it, one JSON line per
+                                      file (header only): the resolved architecture (format-version rules
+                                      and legacy resolutions applied), expanded blocks, weight plan,
+                                      parameter count, lineage record, step reading, test-set results; or
+                                      the reason a load would refuse it. Exit 1 when any is refused.
+      --list-sessions [--sessions-dir <folder>] [--tail <n> | --all] [--json]
+                                      List the saved sessions, oldest first (default: the last 20), as the
+                                      Load Session picker reads them, with each trainer file's lineage
+                                      record and whether the replay buffer is in the folder; then exit.
+                                      Exit 1 when a listed session can't be read (it is listed with why).
       --export-inference-graph <file> --out <new folder>
                                       Write the model's inference forward pass as recorded from the graph
                                       builders (graph.json), its weights in graph layout (weights.bin) and

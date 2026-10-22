@@ -152,6 +152,10 @@ struct DrewsChessMachineApp: App {
         // or print their result and exit; no GUI.
         InferenceGraphExportCLI.handleIfRequested(rawArgs: rawArgs)
 
+        // Pre-flight: --list-sessions prints the saved sessions as the Load
+        // Session picker reads them and exits; no GUI, no GPU.
+        ListSessionsCLI.handleIfRequested(rawArgs: rawArgs)
+
         // Pre-flight: offline training-health replay (--replay-health-log).
         // Parses saved session logs and runs the real training-health
         // evaluator over them, synchronously on the launching thread; no

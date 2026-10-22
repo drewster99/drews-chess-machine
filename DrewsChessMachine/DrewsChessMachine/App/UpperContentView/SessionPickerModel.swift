@@ -20,6 +20,9 @@ final class SessionPickerModel {
     /// Never cached with the manifest: the files are the source.
     private(set) var trainingHistories: [String: SessionTrainingHistories] = [:]
     private(set) var isScanning = false
+    /// Why the sessions folder could not be listed, when it could not (shown
+    /// in place of the save count, so a failure never looks like "no saves").
+    private(set) var scanError: String?
     private(set) var scannedCount = 0
     private(set) var totalCount = 0
     var selectedID: String?
@@ -98,6 +101,7 @@ final class SessionPickerModel {
         scanGeneration += 1
         let generation = scanGeneration
         isScanning = true
+        scanError = nil
         manifests = []
         trainingHistories = [:]
         scannedCount = 0
@@ -106,13 +110,28 @@ final class SessionPickerModel {
 
         Self.indexQueue.async { [weak self] in
             let fm = FileManager.default
-            let folders = ((try? fm.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            )) ?? [])
-            .filter { $0.pathExtension == "dcmsession" }
-            .sorted { $0.lastPathComponent > $1.lastPathComponent }  // newest names first
+            let listed: [URL]
+            do {
+                listed = try fm.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )
+            } catch CocoaError.fileReadNoSuchFile {
+                // No Sessions folder yet: nothing has been saved.
+                listed = []
+            } catch {
+                SessionLogger.shared.log("[SESSIONS] cannot list \(directory.path): \(error.localizedDescription)")
+                Task { @MainActor in
+                    guard let self, self.scanGeneration == generation else { return }
+                    self.scanError = error.localizedDescription
+                    self.isScanning = false
+                }
+                return
+            }
+            let folders = listed
+                .filter { $0.pathExtension == "dcmsession" }
+                .sorted { $0.lastPathComponent > $1.lastPathComponent }  // newest names first
 
             // Reclaim index-cache entries for sessions deleted since the last
             // scan, so the cache directory can't grow without bound.

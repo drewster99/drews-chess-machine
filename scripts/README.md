@@ -52,25 +52,15 @@ W/D/L/score/elo plus a 5-arena rolling score average.
 python3 scripts/arena_summary.py
 ```
 
-## sessions_summary.py
+## Listing sessions (moved into the app)
 
-Lists the `.dcmsession` saves under `~/Library/Application Support/DrewsChessMachine/Sessions/`
-(or `--sessions-dir`), read-only, from each folder's `session.json`: save time,
-trigger (from the folder name, checked against the session ID; `(renamed)`
-otherwise — includes the train-vs-UCI `vsuci-*` triggers), trainer → champion,
-trainer steps, training hours, self-play games, arenas and promotions, size
-(base-2), the replay buffer (`MISSING` when `session.json` says it was saved but
-`replay_buffer.bin` is gone, `UNLISTED` for the reverse), and — from
-`session.json` format v2 — the lineage record (path kind, segment, cumulative
-trainer step, exact / not-exact / fresh). A folder it cannot read, or whose
-lineage record the app would refuse, is listed with the reason and makes the
-exit status 1. Tests: `documentation/dashboards/tests/test_sessions_summary.py`.
+`sessions_summary.py` was removed on 2026-10-21; the app lists sessions itself,
+from the same reading the Load Session picker uses:
 
 ```sh
-python3 scripts/sessions_summary.py
-python3 scripts/sessions_summary.py --tail 50
-python3 scripts/sessions_summary.py --sessions-dir <folder>
-python3 scripts/sessions_summary.py --json
+DrewsChessMachine --list-sessions                      # the last 20 saves, oldest first
+DrewsChessMachine --list-sessions --all --json
+DrewsChessMachine --list-sessions --sessions-dir <folder>
 ```
 
 ## analyze_session_log.py

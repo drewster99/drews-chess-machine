@@ -33,10 +33,10 @@ final class SessionManifestTests: XCTestCase {
         XCTAssertNil(SessionManifest.parseFolderName("not-a-session").trigger)
         XCTAssertNil(SessionManifest.parseFolderName("short.dcmsession").trigger)
         let weird = SessionManifest.parseFolderName("a-b-c-d-e-f.dcmsession")
-        // Conforms structurally (6 components) — fields come back even if
-        // the date is unparseable.
-        XCTAssertEqual(weird.trigger, "f")
-        XCTAssertEqual(weird.lineageTag, "e")
+        // Six components but no timestamp or session ID: nothing is read out
+        // of arbitrary words.
+        XCTAssertNil(weird.trigger)
+        XCTAssertNil(weird.lineageTag)
         XCTAssertNil(weird.savedAt)
     }
 

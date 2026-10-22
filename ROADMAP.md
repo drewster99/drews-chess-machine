@@ -1757,6 +1757,20 @@ and the public surface. No behavior change. Lower priority than Part A.
     the analysis and script tests run on real files
     (`documentation/dashboards/tests/app_files.py`: one tiny minted model,
     copies with rewritten headers, at any format version).
+  - **`--list-sessions` replaces `scripts/sessions_summary.py` (2026-10-21,
+    owner request).** The app lists the saved sessions from the Load Session
+    picker's own reading (`SessionManifest.resolve`) plus each trainer file's
+    lineage record (header-only `inspect`) and whether `replay_buffer.bin` is
+    in the folder: oldest save first (`--tail N`, default 20, or `--all`),
+    a table or `--json`, a folder it can't read listed with why (exit 1). The
+    Python script (used by nothing) and its tests were removed. Fixed in the
+    shared reading on the way: folder names are parsed as
+    `<timestamp>-<sessionID>-<trigger>`, so a hyphenated tag (`vsuci-final`)
+    is read whole and a hand-renamed folder states no trigger or lineage tag
+    (it groups by the session ID `session.json` records); a stored
+    `manifest.json` is relabeled for the folder's current name, so a renamed
+    session opens from the picker; the picker shows a folder-listing failure
+    instead of "0 saves".
 
 - **Fast legal-move generation: make/unmake + pin-based (2026-06-24, `81ac884`,
   `d4becf6`).** Move-generation legality was a copy-make filter — for each
