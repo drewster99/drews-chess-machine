@@ -9,6 +9,11 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-22 15:36 — Core ML benchmark run 2: fp16 vs fp16 and self-play batch sizes `dc97683c`
+
+- `scripts/dcm_coreml_benchmark.py` also derives a float16 copy and runs `mps-float16`, `coreml-fp16-gpu` and `coreml-float16-mirror-gpu` (the exact fp16-vs-fp16 pair); it drops `coreml-fp16-all` and `coreml-fp32-cpu`, and writes absolute paths into the config. `--coreml-benchmark`'s text table sizes its label column to the longest arm label.
+- (FINDING) E-0028 run 2 replaces run 1's conclusion. fp16 vs fp16 on the GPU, Core ML is 0.96–1.23× MPSGraph; MPSGraph's edge is bf16 (1.05–1.27× its own fp16 from batch 64). At the batches self-play and the arena use (100–250), the best Core ML arm is 0.86–1.02× MPSGraph bf16 on the 8M nets (a tie within run-to-run variation) and 0.35–0.47× on 10 × 256, which Core ML runs on the CPU. Core ML is faster below batch 64.
+
 ## 2026-10-22 02:58 — Core ML vs MPSGraph inference benchmark `1e4969f1`
 
 - `--coreml-benchmark <config.json> [--json-out <new file>]` times Core ML exports against `evaluateBatched` on the same weights and test-set positions: one clock, boards-in to outputs-out on both sides, parity before timing, untimed warm-up, rotated rounds, in-flight 1 and N, Core ML's planned device per op (`MLComputePlan`); Debug builds refused. `scripts/dcm_coreml_benchmark.py` prepares the float32 copy, exports and config per model.
