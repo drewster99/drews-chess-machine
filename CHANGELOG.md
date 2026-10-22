@@ -9,6 +9,11 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-22 02:58 — Core ML vs MPSGraph inference benchmark `1e4969f1`
+
+- `--coreml-benchmark <config.json> [--json-out <new file>]` times Core ML exports against `evaluateBatched` on the same weights and test-set positions: one clock, boards-in to outputs-out on both sides, parity before timing, untimed warm-up, rotated rounds, in-flight 1 and N, Core ML's planned device per op (`MLComputePlan`); Debug builds refused. `scripts/dcm_coreml_benchmark.py` prepares the float32 copy, exports and config per model.
+- (FINDING) E-0028 (`experiments/20261022-coreml-benchmark/`): MPSGraph bf16 is fastest from batch 128 up on every real-size model (Core ML at most 0.79× at batch 256); at equal fp32 math Core ML on the GPU is 0.86–0.99×; the Neural Engine wins only at batch 1 (0.42–0.54 ms vs 1.38–2.40 ms); `cpu-gpu` put a 12.9M net on the CPU; four overlapping MPSGraph streams gain +36–52% at batch 64.
+
 ## 2026-10-21 20:40 — Promotion rewinds the session step counter at the trainer's instant `bb6c50bd`
 
 - A promotion rewound the session's step counter to a snapshot taken before the arena's training pause while the trainer rewound to its clock under the pause, so `session.json`'s `trainingSteps` and `trainingPositionsSeen` trailed the trainer clock by about one step per promotion. Now both come from the same paused instant. Training and lineage records were unaffected.

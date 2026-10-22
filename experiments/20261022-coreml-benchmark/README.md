@@ -145,7 +145,7 @@ The worst fp32 difference was below 0.0005 on every model: the export reproduces
 
 **Status: full.** Every model file is in [`models/`](models/) (Git LFS). The two minted ones can also be recreated bit-identically from their seeds.
 
-- **Commit and build:** run at build 2607 (Release), git `a74e2c8f` plus the uncommitted benchmark code, committed right after as the commit that adds this folder.
+- **Commit and build:** run at build 2607 (Release), git `a74e2c8f` plus the benchmark code, committed as `1e4969f1` (after the run only the plan path in comments and help text changed).
 - **Corpus:** none (bundled test-set positions).
 - **Fresh nets:**
   ```sh
