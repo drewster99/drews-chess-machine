@@ -1685,6 +1685,27 @@ and the public surface. No behavior change. Lower priority than Part A.
 
 ## Completed
 
+- **Core ML vs MPSGraph inference benchmark (2026-10-22, owner request).**
+  - **Command:** `--coreml-benchmark <config.json> [--json-out <new file>]` (`Network/CoreMLBenchmark.swift`, `App/InferenceGraphExportCLI+Benchmark.swift`) times Core ML exports against `ChessNetwork.evaluateBatched` on the same weights and positions, in one process and with one clock.
+  - **Fairness rules:**
+    - Both engines are timed from encoded boards to every output copied out.
+    - Each Core ML arm must pass parity first.
+    - Warm-up is untimed, and arm order rotates each round.
+    - Core ML's `MLComputePlan` placement is reported.
+    - A Debug build is refused.
+  - **Driver:** `scripts/dcm_coreml_benchmark.py` prepares the float32 copy, the three exports and the config for each model.
+  - **Plan:** `documentation/plans-completed/COREML_BENCHMARK_PLAN.md`. Results: `experiments/20261022-coreml-benchmark/` (E-0028).
+  - **Deviations from the plan:**
+    - Three of the four models are untrained nets of the planned shapes, since the trained ones are trainer-state files that `--derive-model` refuses.
+    - The v5cont model was refused by the parity check, because its pre-fix bf16 head has near-tied logits.
+    - The parity floor was 0.90, not 0.95.
+    - The planned-placement report was added after the smoke run showed Core ML putting "GPU" arms on the CPU.
+  - **Findings:**
+    - MPSGraph bf16 is fastest from batch 128 up on every real-size model; Core ML reaches at most 0.79× at batch 256.
+    - At equal fp32 math, Core ML on the GPU runs at 0.86–0.99× of MPSGraph.
+    - The Neural Engine wins only at batch 1: 0.42–0.54 ms against 1.38–2.40 ms.
+    - Four overlapping MPSGraph streams gain +36–52% at batch 64.
+
 - **Core ML export from the recorded inference graph (2026-10-20).** The
   network is still defined once, by `ChessNetwork`'s graph builders: every
   forward-pass op goes through `ForwardGraphOps`, which builds it into the

@@ -120,10 +120,17 @@ enum CoreMLParity {
     /// is loaded as it is.
     static func withModel<T: Sendable>(at url: URL, computeUnits: ComputeUnits,
                                        _ body: (MLModel) async throws -> T) async throws -> T {
+        try await withCompiledModel(at: url, computeUnits: computeUnits) { model, _ in try await body(model) }
+    }
+
+    /// `withModel`, also handing `body` the compiled model's folder (for what
+    /// reads it again, such as `MLComputePlan`); valid only inside `body`.
+    static func withCompiledModel<T: Sendable>(at url: URL, computeUnits: ComputeUnits,
+                                               _ body: (MLModel, URL) async throws -> T) async throws -> T {
         let configuration = MLModelConfiguration()
         configuration.computeUnits = computeUnits.mlComputeUnits
         guard url.pathExtension != "mlmodelc" else {
-            return try await body(try await MLModel.load(contentsOf: url, configuration: configuration))
+            return try await body(try await MLModel.load(contentsOf: url, configuration: configuration), url)
         }
         let compiled = try await MLModel.compileModel(at: url)
         // The compiled folder is this call's own: its identity is taken before
@@ -143,7 +150,8 @@ enum CoreMLParity {
         }
         let result: Result<T, Error>
         do {
-            result = .success(try await body(try await MLModel.load(contentsOf: compiled, configuration: configuration)))
+            result = .success(try await body(try await MLModel.load(contentsOf: compiled, configuration: configuration),
+                                             compiled))
         } catch {
             result = .failure(error)
         }
@@ -235,6 +243,15 @@ enum CoreMLParity {
     /// model accepts.
     static func compare(network: ChessNetwork, model: MLModel, states: [GameState],
                         computeUnits: ComputeUnits) async throws -> [CoreMLParityReport] {
+        try await compare(network: network, model: model, states: states, computeUnits: computeUnits,
+                          batchSizes: try batchSizes(of: model))
+    }
+
+    /// Compares `model` with `network` on `states` at each of `batchSizes`
+    /// (sizes the model accepts; `--coreml-benchmark` checks exactly the sizes
+    /// it times).
+    static func compare(network: ChessNetwork, model: MLModel, states: [GameState],
+                        computeUnits: ComputeUnits, batchSizes: [Int]) async throws -> [CoreMLParityReport] {
         let arch = network.arch
         let boards = await onWorkQueue {
             var boards: [Float] = []
@@ -244,7 +261,7 @@ enum CoreMLParity {
         }
         let reference = try await networkOutputs(network: network, boards: boards, count: states.count)
         var reports: [CoreMLParityReport] = []
-        for batchSize in try batchSizes(of: model) {
+        for batchSize in batchSizes {
             let candidate = try await predict(model: model, boards: boards, count: states.count,
                                               planes: arch.inputPlanes, valueClasses: arch.valueHeadClasses,
                                               batchSize: batchSize)

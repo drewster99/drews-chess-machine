@@ -17,6 +17,8 @@ import Foundation
 ///   positions, at every batch size the Core ML model accepts, and prints the
 ///   `CoreMLParityReport`s as JSON. With `--tolerance`, exits 3 when a raw-output
 ///   difference exceeds it or an output on either side is non-finite.
+/// - `--coreml-benchmark <config.json> [--json-out <new file>]` times Core ML
+///   exports against the MPSGraph network (`InferenceGraphExportCLI+Benchmark`).
 ///
 /// Usage and file errors exit 2.
 enum InferenceGraphExportCLI {
@@ -30,7 +32,7 @@ enum InferenceGraphExportCLI {
 
     /// Runs and exits when one of the flags is present; returns otherwise.
     static func handleIfRequested(rawArgs: [String]) {
-        let present = [describeFlag, exportFlag, parityFlag].filter(rawArgs.contains)
+        let present = [describeFlag, exportFlag, parityFlag, benchmarkFlag].filter(rawArgs.contains)
         guard let flag = present.first else { return }
         do {
             guard present.count == 1 else {
@@ -41,6 +43,8 @@ enum InferenceGraphExportCLI {
                 Darwin.exit(try runDescribe(rawArgs) ? 0 : 1)
             case exportFlag:
                 try runExport(rawArgs)
+            case benchmarkFlag:
+                try runBenchmark(rawArgs)
             default:
                 let outcome = try runParity(rawArgs)
                 FileHandle.standardOutput.write(outcome.json)
@@ -105,7 +109,7 @@ enum InferenceGraphExportCLI {
         return (paths, options)
     }
 
-    private static func fileURL(_ path: String) -> URL {
+    static func fileURL(_ path: String) -> URL {
         URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
     }
 
@@ -145,7 +149,7 @@ enum InferenceGraphExportCLI {
     /// save renamed over the path between two reads), and a session's
     /// `champion.safetensors` takes its trainer file's tail in both, as the
     /// session load gives it (`CheckpointManager.sessionTrainerPolicyTail(forFileAt:)`).
-    private static func describeAndLoad(_ url: URL) throws -> (ModelDescription, ModelCheckpointFile) {
+    static func describeAndLoad(_ url: URL) throws -> (ModelDescription, ModelCheckpointFile) {
         let data = try CheckpointManager.readModelFileBytes(at: url)
         let source = url.lastPathComponent
         let tail = CheckpointManager.isLegacyModelFile(data)

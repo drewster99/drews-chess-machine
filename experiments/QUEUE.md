@@ -36,6 +36,9 @@ R-replay stopped at trainer step 86,398 (2026-10-11, SIGINT save; branched to R-
 
 ## Finished
 
+- 2026-10-22 00:34 → 01:52 — Core ML vs MPSGraph inference benchmark (`20261022-coreml-benchmark/`, E-0028): 4 models × 7 arms
+  × batch 1–1024 × in-flight 1/4 on build 2607 Release. MPSGraph bf16 fastest from batch 128 up on every real-size model (Core ML at most
+  0.79× at batch 256); Neural Engine wins only at batch 1 (0.42–0.54 ms vs 1.38–2.40 ms); four overlapping MPSGraph streams +36–52% at batch 64.
 - 2026-10-08 12:57 → 2026-10-15 13:08 — B-siluall: B-silu's net with SiLU in the heads too, relative gradient cap (clip, k = 3), B's
   0.001–1.0 LR cycle, corpus `w3aA5b`, to trainer step 100,000 (`20261005-lr-schedule-ab/` "Arm B-siluall: result", E-0027);
   seven segments, all joins exact (segment 1 halted on a NaN gradient at ~45,975, segment 3 on a GPU fault at 74,378; each resumed from its last save).

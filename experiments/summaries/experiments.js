@@ -520,5 +520,23 @@ window.DCM_EXPERIMENTS = [
    "E-0026"
   ],
   "supersededBy": null
+ },
+ {
+  "id": "E-0028",
+  "date": "2026-10-22",
+  "file": "E-0028_2026-10-22_coreml-vs-mpsgraph-inference.html",
+  "title": "Core ML vs MPSGraph inference speed",
+  "status": "complete",
+  "tags": [
+   "inference",
+   "coreml",
+   "performance"
+  ],
+  "takeaway": "Keep MPSGraph bf16 for self-play: it is the fastest engine at batch 128 and up on every real-size model (Core ML at most 0.79× at batch 256), the Neural Engine only wins at batch 1 (0.42–0.54 ms vs 1.38–2.40 ms, irrelevant per chess move), and four overlapping MPSGraph streams gain more (+36–52% at batch 64) than any engine swap.",
+  "related": [
+   "E-0010",
+   "E-0011"
+  ],
+  "supersededBy": null
  }
 ];

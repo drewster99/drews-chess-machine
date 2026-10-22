@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0028">
+<meta name="dcm-date" content="2026-10-22">
+<meta name="dcm-title" content="Core ML vs MPSGraph inference speed">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="inference, coreml, performance">
+<meta name="dcm-takeaway" content="Keep MPSGraph bf16 for self-play: it is the fastest engine at batch 128 and up on every real-size model (Core ML at most 0.79× at batch 256), the Neural Engine only wins at batch 1 (0.42–0.54 ms vs 1.38–2.40 ms, irrelevant per chess move), and four overlapping MPSGraph streams gain more (+36–52% at batch 64) than any engine swap.">
+<meta name="dcm-related" content="E-0010, E-0011">
+<meta name="dcm-superseded-by" content="">
+<title>E-0028 · Core ML vs MPSGraph inference speed</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0028</span><span>2026-10-22</span><span class="status complete">complete</span></div>
+<h1>Core ML vs MPSGraph inference speed</h1>
+<div class="tags"><span class="tag">inference</span><span class="tag">coreml</span><span class="tag">performance</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>The owner asked for a fair test of Core ML inference against our MPSGraph forward pass: same weights, same positions, each Core ML compute unit, at batch 1 (Lichess bot, <code>--uci</code>), 64–256 (self-play and arena ticks) and up to 1024.</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup">
+<dt>Runs / models</dt><dd>Four bf16 models:
+<ul>
+<li><code>20260710-1-amlg</code>: mini, 0.24M parameters, trained.</li>
+<li><code>20261008-4-Ew5t</code>: zlra shape, 3 × 128, 9×9, 8.27M.</li>
+<li><code>20261022-9-Hhuy</code>: the <code>v4_5block_7x7</code> preset, 8.45M.</li>
+<li><code>20261022-2-PswQ</code>: 10 × 256, 3×3, 12.9M.</li>
+</ul>
+The last three are untrained, because timing doesn't depend on weights. Each model also has a float32 copy, and fp32, mirror and fp16 Core ML exports.</dd>
+<dt>Build</dt><dd>2607 Release (git <code>a74e2c8f</code> plus the benchmark code), Apple M5 Max, macOS 27.2.</dd>
+<dt>Data</dt><dd>The 4,635 bundled test-set positions (lichess-200 + lichess-wide).</dd>
+<dt>Method</dt><dd><code>--coreml-benchmark</code>:
+<ul>
+<li>One process times from encoded boards to every output copied into the caller's buffers.</li>
+<li>Every Core ML arm passes a parity check first.</li>
+<li>Each cell gets an untimed warm-up, then 5 rotated rounds of 1.5 s.</li>
+<li>Grid: batch sizes 1–1024 × in-flight 1 and 4.</li>
+<li>Core ML's planned device for each op is recorded (<code>MLComputePlan</code>).</li>
+</ul></dd>
+</dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<div class="tablebox"><table>
+<caption>Throughput at batch 256, in flight 1, millions of positions per hour (median of 5 rounds)</caption>
+<thead><tr><th>model</th><th class="n">mps-bfloat16</th><th class="n">mps-float32</th><th class="n">coreml-fp32-gpu</th><th class="n">coreml-mirror-gpu</th><th class="n">coreml-fp16-ne</th></tr></thead>
+<tbody>
+<tr><td>mini 0.24M</td><td class="n">509.4</td><td class="n">499.1</td><td class="n">119.6 (CPU)</td><td class="n">260.8 (CPU)</td><td class="n">247.2 (CPU)</td></tr>
+<tr><td>zlra 8.27M (9×9)</td><td class="n">145.2</td><td class="n">39.7</td><td class="n">37.3</td><td class="n">115.4</td><td class="n">14.5</td></tr>
+<tr><td>v4 preset 8.45M</td><td class="n">130.3</td><td class="n">33.8</td><td class="n">29.2</td><td class="n">92.2</td><td class="n">51.5</td></tr>
+<tr><td>10 × 256 12.9M</td><td class="n">73.9</td><td class="n">34.9</td><td class="n">2.6 (CPU)</td><td class="n">7.8 (CPU)</td><td class="n">26.0</td></tr>
+</tbody>
+</table></div>
+<div class="tablebox"><table>
+<caption>Batch-1 median latency, ms</caption>
+<thead><tr><th>model</th><th class="n">mps-bfloat16</th><th class="n">coreml-mirror-gpu</th><th class="n">coreml-fp16-ne</th></tr></thead>
+<tbody>
+<tr><td>mini 0.24M</td><td class="n">0.670</td><td class="n">0.106</td><td class="n">0.122</td></tr>
+<tr><td>zlra 8.27M</td><td class="n">1.381</td><td class="n">1.207</td><td class="n">0.544</td></tr>
+<tr><td>v4 preset 8.45M</td><td class="n">1.389</td><td class="n">1.369</td><td class="n">0.424</td></tr>
+<tr><td>10 × 256 12.9M</td><td class="n">2.400</td><td class="n">0.745</td><td class="n">0.467</td></tr>
+</tbody>
+</table></div>
+<ul>
+<li>Placement: under <code>cpu-gpu</code>, Core ML ran the mini and 10 × 256 nets on the CPU. The fp16 exports went 95–98% to the Neural Engine on the three larger nets.</li>
+<li>Parity: the fp32 exports matched exactly (100% same top move). Mirror and fp16 matched 96.4–99.6%.</li>
+<li>Four overlapping streams: MPSGraph bf16 gained +36–52% at batch 64 and +7–20% at batch 256.</li>
+</ul>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>MPSGraph's lead at self-play sizes comes from bf16. At equal fp32 math, Core ML on the GPU runs at 0.86–0.99× of MPSGraph. Core ML's fp16 is the nearest substitute for bf16, and it is slower.</p>
+<p>The Neural Engine saturates early, at 14.5–51M positions/hour depending on the shape; 9×9 kernels suit it worst. It wins only at batch 1, where it saves 1–2 ms per chess move.</p>
+<p>Core ML's device placement isn't guaranteed: <code>cpu-gpu</code> put a 12.9M-parameter net on the CPU, 28× slower than MPSGraph.</p>
+<p>This was one run per model on one machine, with thermal state "fair" in most cells. Up to 30% of a model's cells varied by more than 1.25× between rounds, so only gaps of 1.26× or more are claimed. Power was not measured.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">Keep MPSGraph bf16 for self-play: it is the fastest engine at batch 128 and up on every real-size model (Core ML at most 0.79× at batch 256), the Neural Engine only wins at batch 1 (0.42–0.54 ms vs 1.38–2.40 ms, irrelevant per chess move), and four overlapping MPSGraph streams gain more (+36–52% at batch 64) than any engine swap.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts">
+<li><a href="../20261022-coreml-benchmark/README.md">experiments/20261022-coreml-benchmark/</a> — full write-up, every cell (<code>summary.md</code>, <code>results/</code>), models, Reproduce section.</li>
+</ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

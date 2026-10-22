@@ -1,0 +1,64 @@
+$ /Users/andrew/Library/Developer/Xcode/DerivedData/DrewsChessMachine-eyigcdvyyrcsakaqcybzcfgsurbr/Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine --derive-model --from /Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-v4_5block_7x7-untrained.safetensors --set-compute-dtype float32 --out /Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-fp32.safetensors
+$ /Users/andrew/.venvs/dcm-coreml/bin/python /Users/andrew/cursor/drews-chess-machine/scripts/dcm_coreml_export.py /Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-fp32.safetensors --out /Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-fp32.mlpackage --app /Users/andrew/Library/Developer/Xcode/DerivedData/DrewsChessMachine-eyigcdvyyrcsakaqcybzcfgsurbr/Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine --precision fp32 --batch-sizes 1,8,32,64,128,256,512,1024
+$ /Users/andrew/.venvs/dcm-coreml/bin/python /Users/andrew/cursor/drews-chess-machine/scripts/dcm_coreml_export.py /Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-v4_5block_7x7-untrained.safetensors --out /Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-mirror.mlpackage --app /Users/andrew/Library/Developer/Xcode/DerivedData/DrewsChessMachine-eyigcdvyyrcsakaqcybzcfgsurbr/Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine --precision mirror --batch-sizes 1,8,32,64,128,256,512,1024
+$ /Users/andrew/.venvs/dcm-coreml/bin/python /Users/andrew/cursor/drews-chess-machine/scripts/dcm_coreml_export.py /Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-v4_5block_7x7-untrained.safetensors --out /Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-v4_5block_7x7-untrained/bench-v4_5block_7x7-untrained-fp16.mlpackage --app /Users/andrew/Library/Developer/Xcode/DerivedData/DrewsChessMachine-eyigcdvyyrcsakaqcybzcfgsurbr/Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine --precision fp16 --batch-sizes 1,8,32,64,128,256,512,1024
+== bench-v4_5block_7x7-untrained
+[coreml-benchmark] loading bench-v4_5block_7x7-untrained.safetensors
+[coreml-benchmark] loading bench-v4_5block_7x7-untrained-fp32.safetensors
+[coreml-benchmark] compiling and loading coreml-fp32-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-mirror-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-fp16-ne (cpu-ne)
+[coreml-benchmark] compiling and loading coreml-fp16-all (all)
+[coreml-benchmark] compiling and loading coreml-fp32-cpu (cpu)
+[coreml-benchmark] parity coreml-fp32-gpu at 8 batch sizes
+[coreml-benchmark] parity coreml-mirror-gpu at 8 batch sizes
+[coreml-benchmark] parity coreml-fp16-ne at 8 batch sizes
+[coreml-benchmark] parity coreml-fp16-all at 8 batch sizes
+[coreml-benchmark] parity coreml-fp32-cpu at 8 batch sizes
+[coreml-benchmark] batch 1 in-flight 1 done
+[coreml-benchmark] batch 1 in-flight 4 done
+[coreml-benchmark] batch 8 in-flight 1 done
+[coreml-benchmark] batch 8 in-flight 4 done
+[coreml-benchmark] batch 32 in-flight 1 done
+[coreml-benchmark] batch 32 in-flight 4 done
+[coreml-benchmark] batch 64 in-flight 1 done
+[coreml-benchmark] batch 64 in-flight 4 done
+[coreml-benchmark] batch 128 in-flight 1 done
+[coreml-benchmark] batch 128 in-flight 4 done
+[coreml-benchmark] batch 256 in-flight 1 done
+[coreml-benchmark] batch 256 in-flight 4 done
+[coreml-benchmark] batch 512 in-flight 1 done
+[coreml-benchmark] batch 512 in-flight 4 done
+[coreml-benchmark] batch 1024 in-flight 1 done
+[coreml-benchmark] batch 1024 in-flight 4 done
+[coreml-benchmark] wrote /Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/results/bench-v4_5block_7x7-untrained.json
+== bench-10x256-untrained
+[coreml-benchmark] loading bench-10x256-untrained.safetensors
+[coreml-benchmark] loading bench-10x256-untrained-fp32.safetensors
+[coreml-benchmark] compiling and loading coreml-fp32-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-mirror-gpu (cpu-gpu)
+[coreml-benchmark] compiling and loading coreml-fp16-ne (cpu-ne)
+[coreml-benchmark] compiling and loading coreml-fp16-all (all)
+[coreml-benchmark] compiling and loading coreml-fp32-cpu (cpu)
+[coreml-benchmark] parity coreml-fp32-gpu at 8 batch sizes
+[coreml-benchmark] parity coreml-mirror-gpu at 8 batch sizes
+[coreml-benchmark] parity coreml-fp16-ne at 8 batch sizes
+[coreml-benchmark] parity coreml-fp16-all at 8 batch sizes
+[coreml-benchmark] parity coreml-fp32-cpu at 8 batch sizes
+[coreml-benchmark] batch 1 in-flight 1 done
+[coreml-benchmark] batch 1 in-flight 4 done
+[coreml-benchmark] batch 8 in-flight 1 done
+[coreml-benchmark] batch 8 in-flight 4 done
+[coreml-benchmark] batch 32 in-flight 1 done
+[coreml-benchmark] batch 32 in-flight 4 done
+[coreml-benchmark] batch 64 in-flight 1 done
+[coreml-benchmark] batch 64 in-flight 4 done
+[coreml-benchmark] batch 128 in-flight 1 done
+[coreml-benchmark] batch 128 in-flight 4 done
+[coreml-benchmark] batch 256 in-flight 1 done
+[coreml-benchmark] batch 256 in-flight 4 done
+[coreml-benchmark] batch 512 in-flight 1 done
+[coreml-benchmark] batch 512 in-flight 4 done
+[coreml-benchmark] batch 1024 in-flight 1 done
+[coreml-benchmark] batch 1024 in-flight 4 done
+[coreml-benchmark] wrote /Users/andrew/cursor/drews-chess-machine/experiments/20261022-coreml-benchmark/results/bench-10x256-untrained.json

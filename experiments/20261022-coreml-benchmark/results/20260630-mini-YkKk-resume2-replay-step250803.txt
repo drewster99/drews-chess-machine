@@ -1,0 +1,170 @@
+Core ML vs MPSGraph — build 2607 git=a74e2c8f* (Release), Apple M5 Max, Version 27.2 (Build 26B5112a), 4635 positions, 5 × 1.5 s rounds
+
+arm                      load s  parity top-1  planned placement (share of estimated cost)
+mps-bfloat16               0.02     reference  MPSGraph (GPU)
+mps-float32                0.01     reference  MPSGraph (GPU)
+coreml-fp32-gpu            0.07       100.00%  cpu 100%
+coreml-mirror-gpu          0.05        96.38%  cpu 100%
+coreml-fp16-ne             0.22        96.42%  cpu 100%
+coreml-fp16-all            0.25        96.42%  cpu 100%
+coreml-fp32-cpu            0.04       100.00%  cpu 100%
+
+batch 1, in flight 1
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                0.670     0.643     0.911        4943561               1.00×    1.05   nominal
+mps-float32                 0.764     0.685     1.057        4446968               0.90×    1.08   nominal
+coreml-fp32-gpu             0.123     0.115     0.163       26501974               5.36×    1.14   nominal
+coreml-mirror-gpu           0.106     0.098     0.141       30350076               6.14×    1.07   nominal
+coreml-fp16-ne              0.122     0.115     0.167       26537806               5.37×    1.06   nominal
+coreml-fp16-all             0.122     0.115     0.160       26343545               5.33×    1.09   nominal
+coreml-fp32-cpu             0.123     0.115     0.161       26110190               5.28×    1.05   nominal
+
+batch 1, in flight 4
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                0.766     0.680     1.149       16676578               1.00×    1.26      fair
+mps-float32                 0.792     0.711     1.086       17151650               1.03×    1.15      fair
+coreml-fp32-gpu             0.169     0.142     0.242       78348464               4.70×    1.05      fair
+coreml-mirror-gpu           0.151     0.128     0.227       85671382               5.14×    1.15      fair
+coreml-fp16-ne              0.180     0.154     0.285       71099079               4.26×    1.08      fair
+coreml-fp16-all             0.180     0.153     0.280       72698070               4.36×    1.20      fair
+coreml-fp32-cpu             0.172     0.143     0.271       76189600               4.57×    1.17      fair
+
+batch 8, in flight 1
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                0.699     0.680     1.003       36397200               1.00×    1.08      fair
+mps-float32                 0.795     0.743     1.086       33040310               0.91×    1.10      fair
+coreml-fp32-gpu             0.338     0.325     0.414       79323638               2.18×    1.04      fair
+coreml-mirror-gpu           0.210     0.198     0.265      125723572               3.45×    1.06      fair
+coreml-fp16-ne              0.229     0.218     0.286      114909440               3.16×    1.06      fair
+coreml-fp16-all             0.230     0.218     0.285      116940223               3.21×    1.03      fair
+coreml-fp32-cpu             0.337     0.325     0.411       79951532               2.20×    1.05      fair
+
+batch 8, in flight 4
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                0.899     0.768     1.342      119342010               1.00×    1.33      fair
+mps-float32                 0.797     0.716     1.182      130091728               1.09×    1.12      fair
+coreml-fp32-gpu             0.583     0.521     0.715      191388471               1.60×    1.04      fair
+coreml-mirror-gpu           0.269     0.231     0.393      388593174               3.26×    1.04      fair
+coreml-fp16-ne              0.295     0.254     0.414      355774719               2.98×    1.05      fair
+coreml-fp16-all             0.291     0.252     0.413      367477332               3.08×    1.07      fair
+coreml-fp32-cpu             0.581     0.520     0.710      189503038               1.59×    1.03      fair
+
+batch 32, in flight 1
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                0.874     0.821     1.247      120587743               1.00×    1.07      fair
+mps-float32                 0.842     0.801     1.110      127354556               1.06×    1.10      fair
+coreml-fp32-gpu             1.051     1.016     1.254      104010175               0.86×    1.03      fair
+coreml-mirror-gpu           0.545     0.520     0.647      197270881               1.64×    1.09      fair
+coreml-fp16-ne              0.590     0.557     0.732      183023873               1.52×    1.07      fair
+coreml-fp16-all             0.583     0.554     0.682      184263283               1.53×    1.07      fair
+coreml-fp32-cpu             1.049     1.016     1.246      104430812               0.87×    1.03      fair
+
+batch 32, in flight 4
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                1.093     0.914     1.457      402665216               1.00×    1.21      fair
+mps-float32                 1.141     1.020     1.558      370909547               0.92×    1.19      fair
+coreml-fp32-gpu             2.299     2.109     2.625      201521045               0.50×    1.10      fair
+coreml-mirror-gpu           0.845     0.761     1.041      527347729               1.31×    1.17      fair
+coreml-fp16-ne              0.834     0.756     1.054      502764804               1.25×    1.15      fair
+coreml-fp16-all             0.841     0.757     1.059      511738220               1.27×    1.12      fair
+coreml-fp32-cpu             2.209     1.996     2.392      208559302               0.52×    1.03      fair
+
+batch 64, in flight 1
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                0.848     0.807     1.182      245314000               1.00×    1.08      fair
+mps-float32                 0.826     0.787     1.110      258383283               1.05×    1.05      fair
+coreml-fp32-gpu             1.898     1.855     2.202      115726496               0.47×    1.05      fair
+coreml-mirror-gpu           0.926     0.903     1.102      234998685               0.96×    1.04      fair
+coreml-fp16-ne              0.979     0.956     1.196      223671336               0.91×    1.09      fair
+coreml-fp16-all             0.983     0.951     1.210      219739395               0.90×    1.07      fair
+coreml-fp32-cpu             1.902     1.854     2.305      113886737               0.46×    1.05      fair
+
+batch 64, in flight 4
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                1.014     0.950     1.298      847057225               1.00×    1.07      fair
+mps-float32                 1.186     1.051     1.497      732087505               0.86×    1.13      fair
+coreml-fp32-gpu             4.541     3.959     5.075      194936434               0.23×    1.13      fair
+coreml-mirror-gpu           1.580     1.450     1.884      554712631               0.65×    1.11      fair
+coreml-fp16-ne              1.590     1.462     1.914      554604077               0.65×    1.10      fair
+coreml-fp16-all             1.596     1.452     1.934      543156938               0.64×    1.10      fair
+coreml-fp32-cpu             4.388     3.885     4.662      210396441               0.25×    1.05      fair
+
+batch 128, in flight 1
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                1.112     1.054     1.477      380313454               1.00×    1.08      fair
+mps-float32                 1.133     1.075     1.607      374193442               0.98×    1.07      fair
+coreml-fp32-gpu             3.754     3.654     4.433      116552123               0.31×    1.07      fair
+coreml-mirror-gpu           1.748     1.695     2.018      253087786               0.67×    1.04      fair
+coreml-fp16-ne              1.786     1.730     2.155      238878650               0.63×    1.09      fair
+coreml-fp16-all             1.801     1.734     2.202      243134583               0.64×    1.10      fair
+coreml-fp32-cpu             3.733     3.637     4.268      119480860               0.31×    1.08      fair
+
+batch 128, in flight 4
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                1.404     1.272     1.902     1196349128               1.00×    1.13      fair
+mps-float32                 1.695     1.296     2.338      978821597               0.82×    1.31      fair
+coreml-fp32-gpu             9.190     8.142    10.338      195794842               0.16×    1.11      fair
+coreml-mirror-gpu           3.278     2.893     3.772      552457282               0.46×    1.03      fair
+coreml-fp16-ne              3.237     2.902     3.811      549375874               0.46×    1.08      fair
+coreml-fp16-all             3.227     2.893     3.775      558167163               0.47×    1.09      fair
+coreml-fp32-cpu             8.749     7.394     9.327      210544343               0.18×    1.10      fair
+
+batch 256, in flight 1
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                1.675     1.566     2.219      509406072               1.00×    1.06      fair
+mps-float32                 1.702     1.616     2.286      499147855               0.98×    1.13      fair
+coreml-fp32-gpu             7.382     7.180     8.616      119578784               0.23×    1.05      fair
+coreml-mirror-gpu           3.456     3.324     3.938      260834596               0.51×    1.06      fair
+coreml-fp16-ne              3.572     3.367     4.155      247232996               0.49×    1.11      fair
+coreml-fp16-all             3.537     3.354     4.031      252009076               0.49×    1.08      fair
+coreml-fp32-cpu             7.352     7.161     8.452      120855413               0.24×    1.04      fair
+
+batch 256, in flight 4
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                2.169     1.971     2.860     1612013694               1.00×    1.14      fair
+mps-float32                 2.779     2.208     3.639     1354068884               0.84×    1.22      fair
+coreml-fp32-gpu            18.046    16.540    20.110      202333438               0.13×    1.10      fair
+coreml-mirror-gpu           6.749     5.885     7.702      540406608               0.34×    1.02      fair
+coreml-fp16-ne              6.696     5.755     7.678      540281974               0.34×    1.10      fair
+coreml-fp16-all             6.728     5.724     7.579      548398063               0.34×    1.02      fair
+coreml-fp32-cpu            17.518    15.608    18.396      212738882               0.13×    1.04      fair
+
+batch 512, in flight 1
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                3.000     2.492     3.770      608314134               1.00×    1.07      fair
+mps-float32                 3.333     2.712     3.930      545557270               0.90×    1.03      fair
+coreml-fp32-gpu            14.079    13.666    16.020      127199753               0.21×    1.02      fair
+coreml-mirror-gpu           6.383     6.137     7.577      277962415               0.46×    1.04      fair
+coreml-fp16-ne              6.713     6.491     7.787      264987545               0.44×    1.02      fair
+coreml-fp16-all             6.725     6.502     7.779      264794172               0.44×    1.02      fair
+coreml-fp32-cpu            13.990    13.664    16.061      127260814               0.21×    1.03      fair
+
+batch 512, in flight 4
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                4.647     4.368     5.506     1535509558               1.00×    1.06      fair
+mps-float32                 6.938     6.460     7.773     1062299069               0.69×    1.12      fair
+coreml-fp32-gpu            35.791    31.269    37.864      208286688               0.14×    1.14      fair
+coreml-mirror-gpu          13.108    11.988    14.662      560470101               0.37×    1.06      fair
+coreml-fp16-ne             13.026    11.746    14.880      554038475               0.36×    1.02      fair
+coreml-fp16-all            13.055    11.766    14.925      551819309               0.36×    1.03      fair
+coreml-fp32-cpu            35.743    32.234    37.339      208410871               0.14×    1.02      fair
+
+batch 1024, in flight 1
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                5.416     4.940     6.888      633858300               1.00×    1.08      fair
+mps-float32                 5.945     5.656     7.310      580720797               0.92×    1.06      fair
+coreml-fp32-gpu            27.262    26.271    30.351      130046409               0.21×    1.05      fair
+coreml-mirror-gpu          12.042    11.437    13.751      295360533               0.47×    1.04      fair
+coreml-fp16-ne             12.814    12.260    14.465      280485493               0.44×    1.06      fair
+coreml-fp16-all            12.757    12.243    14.427      279198326               0.44×    1.05      fair
+coreml-fp32-cpu            27.084    26.300    29.865      131678701               0.21×    1.04      fair
+
+batch 1024, in flight 4
+arm                     median ms    p10 ms    p90 ms    positions/h     vs mps-bfloat16  spread   thermal
+mps-bfloat16                8.719     8.039    10.104     1655921971               1.00×    1.11      fair
+mps-float32                13.767    12.782    15.896     1057968906               0.64×    1.12      fair
+coreml-fp32-gpu            72.481    65.714    79.221      205089063               0.12×    1.12      fair
+coreml-mirror-gpu          26.108    24.115    29.849      554754567               0.34×    1.09      fair
+coreml-fp16-ne             26.751    23.836    30.888      538154096               0.32×    1.06      fair
+coreml-fp16-all            26.970    24.152    30.472      542827081               0.33×    1.04      fair
+coreml-fp32-cpu            71.405    65.757    73.717      208505810               0.13×    1.02      fair

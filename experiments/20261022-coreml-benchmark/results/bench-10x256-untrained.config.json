@@ -1,0 +1,66 @@
+{
+  "batch_sizes": [
+    1,
+    8,
+    32,
+    64,
+    128,
+    256,
+    512,
+    1024
+  ],
+  "in_flight": [
+    1,
+    4
+  ],
+  "rounds": 5,
+  "round_seconds": 1.5,
+  "min_top_move_agreement": 0.9,
+  "arms": [
+    {
+      "label": "mps-bfloat16",
+      "engine": "mpsgraph",
+      "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained.safetensors"
+    },
+    {
+      "label": "mps-float32",
+      "engine": "mpsgraph",
+      "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained/bench-10x256-untrained-fp32.safetensors"
+    },
+    {
+      "label": "coreml-fp32-gpu",
+      "engine": "coreml",
+      "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained/bench-10x256-untrained-fp32.safetensors",
+      "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained/bench-10x256-untrained-fp32.mlpackage",
+      "compute_units": "cpu-gpu"
+    },
+    {
+      "label": "coreml-mirror-gpu",
+      "engine": "coreml",
+      "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained.safetensors",
+      "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained/bench-10x256-untrained-mirror.mlpackage",
+      "compute_units": "cpu-gpu"
+    },
+    {
+      "label": "coreml-fp16-ne",
+      "engine": "coreml",
+      "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained.safetensors",
+      "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained/bench-10x256-untrained-fp16.mlpackage",
+      "compute_units": "cpu-ne"
+    },
+    {
+      "label": "coreml-fp16-all",
+      "engine": "coreml",
+      "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained.safetensors",
+      "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained/bench-10x256-untrained-fp16.mlpackage",
+      "compute_units": "all"
+    },
+    {
+      "label": "coreml-fp32-cpu",
+      "engine": "coreml",
+      "model": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained/bench-10x256-untrained-fp32.safetensors",
+      "coreml": "/Users/andrew/Library/Caches/DrewsChessMachine/coreml-benchmark/bench-10x256-untrained/bench-10x256-untrained-fp32.mlpackage",
+      "compute_units": "cpu"
+    }
+  ]
+}

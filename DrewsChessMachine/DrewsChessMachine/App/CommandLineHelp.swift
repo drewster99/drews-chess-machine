@@ -166,6 +166,13 @@ enum CommandLineHelp {
                                       bundled test-set positions (max/mean |diff| of policy logits, value,
                                       W/D/L; legal top-move agreement) and print JSON. --tolerance: exit 3
                                       when a difference exceeds it or an output is non-finite.
+      --coreml-benchmark <config.json> [--json-out <new file>]
+                                      Time Core ML exports against the MPSGraph network on the same weights
+                                      and test-set positions: each config arm (mpsgraph, or coreml with
+                                      compute units) at each batch size and in-flight count, warm-up untimed,
+                                      rotated rounds; latency percentiles and positions/hour. Core ML arms
+                                      must pass parity first. Refuses a Debug build unless the config sets
+                                      allow_debug_build. Config: documentation/plans-completed/COREML_BENCHMARK_PLAN.md.
       --show-default-parameters       Print every default training parameter as JSON and exit.
       --show-lr-schedule [--parameters <file>] [--from <step>] [--to <step>] [--buckets <n>] [--csv <path>]
                                       Print the LR and momentum a run would be fed, per step bucket (peak,
