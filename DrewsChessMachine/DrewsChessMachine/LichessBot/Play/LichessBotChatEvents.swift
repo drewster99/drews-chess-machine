@@ -10,7 +10,7 @@ import Foundation
 enum LichessBotChatEventTrigger: String, Sendable, Codable, CaseIterable, Identifiable, Hashable {
     /// Our queen left the board (we lost it, or traded it).
     case weLostQueen
-    /// The opponent's queen left the board in our favor.
+    /// The opponent's queen left the board (we took it, or traded for it).
     case weWonQueen
     /// A check appears on the board within the opening (given or received).
     case earlyCheck
@@ -27,17 +27,44 @@ enum LichessBotChatEventTrigger: String, Sendable, Codable, CaseIterable, Identi
 
     var id: String { rawValue }
 
-    /// A short label for the Settings row.
+    /// A short label for the Settings row. Each names whose event it is
+    /// (ours, the opponent's, or either side's), because a bare "a check" or
+    /// "a promotion" left the owner unsure which side fires it.
     var title: String {
         switch self {
-        case .weLostQueen: return "We lose our queen"
-        case .weWonQueen: return "We win their queen"
-        case .earlyCheck: return "An early check"
-        case .winningBig: return "We're winning big"
-        case .losingBig: return "We're losing badly"
-        case .bigSwing: return "A big swing in our favor or against"
-        case .promotion: return "A promotion"
-        case .passedMove: return "The game runs long"
+        case .weLostQueen: return "Our queen is captured"
+        case .weWonQueen: return "We capture their queen"
+        case .earlyCheck: return "An early check by either side"
+        case .winningBig: return "Our win chance rises to a level"
+        case .losingBig: return "Our win chance falls to a level"
+        case .bigSwing: return "Our win chance swings, either way"
+        case .promotion: return "A promotion by either side"
+        case .passedMove: return "The game reaches a move number"
+        }
+    }
+
+    /// One line under the title saying exactly when the rule fires, matching
+    /// `LichessBotChatEventEvaluator`'s condition for the trigger. Keep the
+    /// two in step: this is the only place a user learns, for example, that
+    /// a queen trade fires both queen rules.
+    var firingDescription: String {
+        switch self {
+        case .weLostQueen:
+            return "Fires when the opponent takes our queen, trades included."
+        case .weWonQueen:
+            return "Fires when we take the opponent's queen, trades included, whether or not we come out ahead."
+        case .earlyCheck:
+            return "Fires when either side gives check within the first plies set here."
+        case .winningBig:
+            return "Fires on our move whose win-chance reading crosses up to this level (the network's own estimate)."
+        case .losingBig:
+            return "Fires on our move whose win-chance reading crosses down to this level (the network's own estimate)."
+        case .bigSwing:
+            return "Fires when our win-chance reading moves by at least this many points from our previous move, up or down."
+        case .promotion:
+            return "Fires when either side promotes a pawn, to any piece."
+        case .passedMove:
+            return "Fires when the game reaches this full-move number."
         }
     }
 
@@ -93,7 +120,7 @@ enum LichessBotChatEventTrigger: String, Sendable, Codable, CaseIterable, Identi
     var defaultTemplates: [String] {
         switch self {
         case .weLostQueen: return ["Ouch, there goes my queen.", "Lost my queen — this just got harder."]
-        case .weWonQueen: return ["The queens have come off in my favor.", "A queen to the good now."]
+        case .weWonQueen: return ["Their queen is off the board.", "No more queen on that side."]
         case .earlyCheck: return ["A check already, on move {move}.", "Checks this early — lively game."]
         case .winningBig: return ["Feeling good about this one ({winPct}% by my read).", "Things are looking up for me here."]
         case .losingBig: return ["This is slipping away from me.", "I'm in real trouble here, {opponent}."]

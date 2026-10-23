@@ -8,7 +8,7 @@ Implementation issue: [#23](https://github.com/drewster99/drews-chess-machine/is
 
 - **In isolation, four overlapping MPSGraph streams beat one.** On the 8M and 12.9M models, in-flight 4 beats in-flight 1 by +35% to +52% at batch 100 and +20% to +26% at batch 250 (run 2, `mps-bfloat16`). Below batch 64 the gain is +73% to +154%; on the 0.24M model it is +147% to +385% at every batch size.
 - **Most of that gain needs four times as many positions in flight.** In-flight 4 at batch 250 is 1,000 positions in flight. Splitting today's 250 games into four streams of about 64 gives 0.98–1.06× on the 8M+ models in run 2, and 0.85–0.98× in run 1: nothing. Four streams of 250 against one batch of 1,024 gives 1.15–1.25× (run 2) and 1.05–1.17× (run 1).
-- **Real self-play is nowhere near the GPU-only rate.** The owner's 250-game zlra run ran at a median of 11.9M positions/hour, a 75.7 ms tick. The same model's forward pass at batch 250 took 6.67 ms in isolation (131.5M positions/hour). The other ~69 ms of each tick is CPU work, waiting behind the trainer on the shared GPU, or both; nothing logged today says which.
+- **Real self-play is nowhere near the GPU-only rate.** The owner's 250-game zlra run ran at a median of 11.9M positions/hour, a 75.7 ms tick. The same model's forward pass at batch 250 took 6.67 ms in isolation (131.5M positions/hour). The other ~69 ms of each tick is CPU work or waiting on the shared GPU, which also carried the session's trainer and a second corpus-replay trainer, both at batch 4096. Nothing logged today says how it splits.
 - **So the measured gain is not a forecast for self-play.** What overlap can do depends on where those ~69 ms go. The first step of the issue is to measure that.
 
 ## What the benchmark measured
@@ -130,7 +130,12 @@ Source: `~/Library/Logs/DrewsChessMachine/dcm_log_20261010-224411.txt`.
   - **The trainer's GPU work.** The trainer ran about 1,400 steps/hour at batch 4096 beside self-play. Over the run, the medians of its `[ENCODE-COST]` / `[LEGAL-COST]` lines are 1.28 s of GPU wait per step against 2.55 s between steps (two sample lines' p50s): the trainer kept the GPU busy about half the time. A self-play call submitted behind a training step waits for it.
   - **CPU phases.** These are encoding 250 boards, legal-move masks and sampling over 4,864 logits for 250 games, and the game-end pass. They run on 18 parallel tasks (`P=18`) while the GPU sits idle for self-play.
   - **Arenas** ran in some intervals and add their own GPU calls and CPU work.
-  - **Other processes** on the machine that day are not recorded in the log.
+  - **A second trainer ran on the same GPU the whole time.** Corpus-replay runs at batch 4096 (`--replay-corpus`) overlapped the entire self-play span:
+    - `dcm_log_20261010-211714.txt`, 10-10 21:17 to 10-11 13:05;
+    - `dcm_log_20261011-130546.txt`, 10-11 13:05 to 21:34;
+    - `dcm_log_20261011-213940.txt`, from 10-11 21:39.
+
+    Self-play shared the GPU with two batch-4096 trainers, its own and that one. The owner pointed this out on 2026-10-22, and it is the most likely main cause of the gap. A self-play-only measurement (the issue's first step) separates it from CPU time.
 - **What follows for overlap:**
   - **If the trainer dominates,** more self-play streams mostly buy self-play a bigger share of the GPU, at the trainer's expense. That changes the replay ratio, and `ReplayRatioController` would then throttle one side or the other.
   - **If CPU phases dominate,** two pipelined groups (one group's CPU work during the other's GPU call) could approach the CPU-bound rate. The benchmark doesn't measure that case at all.
@@ -140,7 +145,7 @@ Source: `~/Library/Logs/DrewsChessMachine/dcm_log_20261010-224411.txt`.
 
 - One machine (M5 Max, 64 GB, macOS 27.2), two runs. Gaps under about 1.3× may not repeat (README, "Run 2 against run 1").
 - **The benchmark overlapped four networks.** Self-play overlap would use either several copies of the champion (each copy is the weights again: about 16 MB for an 8M-parameter bf16 model) or one network that accepts concurrent calls, which `ChessNetwork` does not today.
-- **The self-play figure comes from one run on an older build (2501), with arenas included.** It shows the size of the gap, not its cause.
+- **The self-play figure comes from one run on an older build (2501), with arenas and a second corpus-replay trainer running.** It shows the size of the gap under that load, not its cause.
 
 ## Reproduce
 

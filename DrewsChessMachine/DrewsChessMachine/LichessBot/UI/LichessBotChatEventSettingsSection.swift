@@ -17,7 +17,7 @@ struct LichessBotChatEventSettingsSection: View {
             ForEach($settings.rules) { $rule in
                 LichessBotChatEventRuleRow(rule: $rule)
             }
-            Text("Placeholders: {opponent} {winPct} {move} {ply}")
+            Text("Each rule sends at most one message a game. Placeholders: {opponent} {winPct} {move} {ply}")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -33,6 +33,10 @@ struct LichessBotChatEventRuleRow: View {
     var body: some View {
         GroupBox(rule.trigger.title) {
             VStack(alignment: .leading, spacing: 6) {
+                Text(rule.trigger.firingDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Toggle("Enabled", isOn: $rule.enabled)
                 LichessBotChatEventRuleControls(rule: $rule)
                 TextField("Messages (one per line)", text: variantsText, axis: .vertical)
