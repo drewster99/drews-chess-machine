@@ -777,8 +777,33 @@ struct LayerHealthDigest: Sendable, Equatable {
     }
 
     struct RunningVarianceRunaway: Sendable, Equatable {
+        /// The levels behind a ratio: the largest channel's running variance
+        /// and the site median it is divided by. The ratio alone can't say
+        /// which one moved; a ratio climbing because the median shrinks (most
+        /// channels going quiet) reads very differently from one channel's
+        /// variance growing, so the alarm line shows both.
+        struct Levels: Sendable, Equatable {
+            let channel: Int
+            let largestVariance: Double
+            let medianVariance: Double
+        }
+
         let maxOverMedian: Double
         let site: String
+        /// nil from an offline log: the `[LAYER-HEALTH]` line carries only
+        /// the ratio.
+        let levels: Levels?
+
+        /// The offline digest, from a log line's ratio.
+        init(maxOverMedian: Double, site: String) {
+            self.init(maxOverMedian: maxOverMedian, site: site, levels: nil)
+        }
+
+        init(maxOverMedian: Double, site: String, levels: Levels?) {
+            self.maxOverMedian = maxOverMedian
+            self.site = site
+            self.levels = levels
+        }
     }
 
     struct ValueFC1Velocity: Sendable, Equatable {
@@ -888,7 +913,15 @@ struct LayerHealthDigest: Sendable, Equatable {
             coversEveryActivation: true)
         nonFiniteValueCount = summary.nonFiniteValueCount
         if let site = summary.worstRunningVarianceSite, let ratio = site.runningVarianceMaxOverMedian {
-            runningVariance = RunningVarianceRunaway(maxOverMedian: ratio, site: site.site)
+            // A ratio implies a finite largest channel and a positive median
+            // (`LayerHealth.runningVarianceRatios`), so all three are present.
+            guard let channel = site.runningVarianceMaxChannel, let largest = site.runningVarianceMax,
+                  let median = site.runningVarianceMedian else {
+                preconditionFailure("\(site.site): a running-variance ratio without its largest channel and median")
+            }
+            runningVariance = RunningVarianceRunaway(
+                maxOverMedian: ratio, site: site.site,
+                levels: RunningVarianceRunaway.Levels(channel: channel, largestVariance: largest, medianVariance: median))
         } else {
             runningVariance = nil
         }
@@ -2036,7 +2069,10 @@ struct TrainingHealthEvaluator: Sendable {
     private func assessRunningVariance(_ digest: LayerHealthDigest?) -> Assessment {
         guard let runaway = digest?.runningVariance else { return .noData }
         let value = "rvMaxOverMedian=\(Self.fixed(runaway.maxOverMedian, 1))"
-        let detail = "site=\(runaway.site)"
+        var detail = "site=\(runaway.site)"
+        if let levels = runaway.levels {
+            detail += " channel=\(levels.channel) var=\(Self.significant(levels.largestVariance)) median=\(Self.significant(levels.medianVariance))"
+        }
         if runaway.maxOverMedian >= TrainingHealthThresholds.batchNormRunningVarianceRunawayRaise {
             return .raise(
                 severity: .warning, value: value,
@@ -2206,6 +2242,12 @@ struct TrainingHealthEvaluator: Sendable {
 
     static func fixed(_ value: Double, _ digits: Int) -> String {
         String(format: "%.\(digits)f", value)
+    }
+
+    /// Four significant digits, for values spanning many orders of magnitude
+    /// (running variances from 1e-5 to 1e3).
+    static func significant(_ value: Double) -> String {
+        String(format: "%.4g", value)
     }
 }
 

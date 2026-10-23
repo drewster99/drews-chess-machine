@@ -740,3 +740,47 @@ final class TrainingHealthEvaluatorTests: XCTestCase {
         XCTAssertTrue(TrainingHealthCadence.isLiveEvaluationStep(trainerStep: 550))
     }
 }
+
+// MARK: - Running-variance runaway: the levels behind the ratio
+
+extension TrainingHealthEvaluatorTests {
+
+    /// Protects: the runaway alarm names the largest channel, its running
+    /// variance and the site median, so a reader can tell a growing channel
+    /// from a shrinking median (R-elitefresh: channel 13 steady near 80 while
+    /// the median fell from 0.26 to 0.04).
+    /// Fails if: the detail drops any of the three, or reports another
+    /// channel's variance or another site's median.
+    func testRunawayDetailNamesTheLargestChannelItsVarianceAndTheSiteMedian() throws {
+        let quiet = LayerHealth.batchNormSiteHealth(
+            site: LayerHealth.BatchNormSite(name: "blocks.1.bn1", channels: 4, activation: .relu),
+            gamma: [1, 1, 1, 1], beta: [0, 0, 0, 0], runningVariance: [0.04, 85.4, 0.04, 0.0004])
+        let ordinary = LayerHealth.batchNormSiteHealth(
+            site: LayerHealth.BatchNormSite(name: "blocks.2.bn1", channels: 3, activation: .relu),
+            gamma: [1, 1, 1], beta: [0, 0, 0], runningVariance: [1, 2, 3])
+        let summary = LayerHealthSummary(
+            scope: .batchNormStateOnly, batchNormSites: [ordinary, quiet], squeezeExcitationFC1: nil, valueFC1: nil,
+            velocityNotIncludedReason: "live", reZero: [], examinedTensorCount: 0, examinedValueCount: 0,
+            nonFiniteValueCount: 0, nonFiniteTensorCount: 0, nonFiniteTensorNames: [], largestMagnitudeTensors: nil)
+        var e = TrainingHealthEvaluator(valueFC1Applicability: .applies)
+        let result = e.evaluate(
+            S.liveObservation(step: 1000, digest: LayerHealthDigest(summary: summary)), config: try S.config())
+        let raise = try XCTUnwrap(result.events.first { $0.rule == .batchNormRunningVarianceRunaway && $0.kind == .raise })
+        XCTAssertEqual(raise.detail, "site=blocks.1.bn1 channel=1 var=85.4 median=0.04")
+        XCTAssertEqual(e.activeAlarms.first { $0.rule == .batchNormRunningVarianceRunaway }?.detail, raise.detail)
+    }
+
+    /// Protects: an offline log line carries only the ratio, so the replayed
+    /// alarm names the site and invents no levels.
+    /// Fails if: the offline detail gains a channel, variance or median.
+    func testOfflineRunawayDetailNamesOnlyTheSite() throws {
+        let digest = LayerHealthDigest(
+            tier: .live, deadChannels: nil, nonFiniteValueCount: 0,
+            runningVariance: LayerHealthDigest.RunningVarianceRunaway(maxOverMedian: 1969.4, site: "blocks.1.bn1"),
+            valueFC1: nil)
+        var e = TrainingHealthEvaluator(valueFC1Applicability: .applies)
+        let result = e.evaluate(S.liveObservation(step: 1000, digest: digest), config: try S.config())
+        let raise = try XCTUnwrap(result.events.first { $0.rule == .batchNormRunningVarianceRunaway && $0.kind == .raise })
+        XCTAssertEqual(raise.detail, "site=blocks.1.bn1")
+    }
+}
