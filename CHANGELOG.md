@@ -9,6 +9,20 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-23 06:57 — E-0028 review fixes `89ca9b6b`
+
+- From a three-way review of the past day (own pass, Codex, a fresh Claude). The benchmark's arm-order rotation continues across cells (it restarted every cell, leaving arms' average places 2.0–5.0 in run 2); `first_call_ms` is cold only for MPSGraph arms; the non-contiguous-input error names arm and stream; `dcm_coreml_benchmark.py` refuses to reuse a copy or package whose `.source.json` provenance doesn't match; `summarize.py` bolds the winner by the measured rate.
+- (FINDING corrections) Core ML is faster at batches 1–8 on every model and at 32–64 on all but 10 × 256 (0.84×, 0.55×), not "below batch 64" everywhere; mini ANE load 0.2 s; overlap +35–52% at batch 100, +20–26% at 250. ROADMAP carries run 2's findings and labels run 1's.
+
+## 2026-10-23 06:57 — Lichess bot: Lichess's daily bot-game limit is advisory; chat move numbers `145e0d04`
+
+- Owner decision: DCM never stops bot games on its own count, only after Lichess refuses (until Lichess's time). The lila replay (`LichessBotBotGameWindow`), per-sender allowances, prospective-game counting and the two reserve settings are removed (old saves still load, the keys reported ignored). DCM's count is bot games started today (`LichessBotAccountGameCounts.botGamesToday`), shown on the Challenge sheet. Prompted by 118 bot games on 2026-10-22 while the replay had estimated 41/100 at Lichess's refusal: lila restarts reset Lichess's in-memory count, which DCM won't track.
+- Chat events: `{move}` and the passed-move rule use the number of the move just played (half the plies was one low after White's moves); the passed-move rule fires on the crossing step even when plies were skipped.
+
+## 2026-10-22 23:43 — Lichess bot event-message labels `b6e4bc16`
+
+- Rule titles say whose event fires them (ours, theirs, either side); each rule shows a one-line "fires when" matching the evaluator. The "We capture their queen" defaults no longer say "in my favor" (a trade fires it too). `OVERLAP.md` notes the second trainer sharing the GPU.
+
 ## 2026-10-22 23:11 — E-0028 overlap analysis and issue #23 `bdcfcab9` (FINDING)
 
 - `experiments/20261022-coreml-benchmark/OVERLAP.md` (tables from `overlap.py`): four overlapping MPSGraph streams beat one by +35% to +52% at batch 100 and +20% to +26% at 250 in isolation, but at equal positions in flight the gain is 0.85–1.06× at about 250 and 1.05–1.25× at about 1,000. The owner's 250-game zlra self-play run ran at 11.9M positions/hour (75.7 ms tick) against the same model's 6.67 ms forward pass (131.5M/hour), so the forward pass is not self-play's bottleneck.
