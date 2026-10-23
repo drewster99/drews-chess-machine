@@ -2267,7 +2267,7 @@ enum CorpusReplayRunner {
                     + String(format: " loss=%.4f pLoss=%.4f vLoss=%.4f", timing.loss, timing.policyLoss, timing.valueLoss)
                     + " pEnt=\(dg(timing.policyEntropy, 3)) pIllM=\(dg(timing.illegalMassPenalty, 4))"
                     + " playedP=\(dg(timing.playedMoveProb, 3))"
-                    + " pW=\(dg(timing.valueProbWin, 2)) pD=\(dg(timing.valueProbDraw, 2)) pL=\(dg(timing.valueProbLoss, 2)) vAbs=\(dg(timing.valueAbsMean, 3))"
+                    + " pW=\(dg(timing.valueProbWin, 3)) pD=\(dg(timing.valueProbDraw, 3)) pL=\(dg(timing.valueProbLoss, 3)) vAbs=\(dg(timing.valueAbsMean, 3))"
                     + " pLogitMean=\(dg(timing.policyLogitMean, 4)) vLogitMean=\(dg(timing.valueLogitMean, 4))"
                     + String(format: " gNorm=%.3f lr=%.3g ms=%.1f", timing.gradGlobalNorm, liveLR, timing.totalMs)
                     + " buf=\(buffer.count) plies=\(feedTally.positions) games=\(feedTally.games)\(feedTally.countsSuffix) epoch=\(epochsCompleted)"
