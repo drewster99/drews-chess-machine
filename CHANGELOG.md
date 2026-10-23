@@ -9,6 +9,10 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-23 09:48 — Corpus replay step line: pW / pD / pL at three decimals `5dec3a7f`
+
+- `[REPLAY]` step lines print pW, pD and pL to three decimals (was two), as the GUI's `[STATS]` line does. Running trainers show it after their next restart on a new build.
+
 ## 2026-10-23 09:27 — Running-variance alarm shows the levels behind the ratio `6fc1f9db`
 
 - `bn_running_variance_runaway`'s detail adds the largest channel, its running variance and the site median (`site=blocks.1.bn1 channel=13 var=85.39 median=0.04331`), so a line shows whether the channel grew or the median shrank. Offline replays keep `site=` alone.
