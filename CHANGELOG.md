@@ -9,6 +9,11 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-23 09:27 — Running-variance alarm shows the levels behind the ratio `6fc1f9db`
+
+- `bn_running_variance_runaway`'s detail adds the largest channel, its running variance and the site median (`site=blocks.1.bn1 channel=13 var=85.39 median=0.04331`), so a line shows whether the channel grew or the median shrank. Offline replays keep `site=` alone.
+- (FINDING) R-elitefresh's 1,970× at `blocks.1.bn1` is a shrinking median, not a growing channel: channel 13 at 76.4 → 85.4 from trainer step 80,000 to 198,000 while the median fell 0.255 → 0.043 (`blocks.2.bn1` likewise: largest 16–20, median 0.100 → 0.013).
+
 ## 2026-10-23 06:57 — E-0028 review fixes `89ca9b6b`
 
 - From a three-way review of the past day (own pass, Codex, a fresh Claude). The benchmark's arm-order rotation continues across cells (it restarted every cell, leaving arms' average places 2.0–5.0 in run 2); `first_call_ms` is cold only for MPSGraph arms; the non-contiguous-input error names arm and stream; `dcm_coreml_benchmark.py` refuses to reuse a copy or package whose `.source.json` provenance doesn't match; `summarize.py` bolds the winner by the measured rate.
