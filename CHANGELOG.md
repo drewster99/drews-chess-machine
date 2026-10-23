@@ -9,6 +9,11 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-22 23:11 — E-0028 overlap analysis and issue #23 `bdcfcab9` (FINDING)
+
+- `experiments/20261022-coreml-benchmark/OVERLAP.md` (tables from `overlap.py`): four overlapping MPSGraph streams beat one by +35% to +52% at batch 100 and +20% to +26% at 250 in isolation, but at equal positions in flight the gain is 0.85–1.06× at about 250 and 1.05–1.25× at about 1,000. The owner's 250-game zlra self-play run ran at 11.9M positions/hour (75.7 ms tick) against the same model's 6.67 ms forward pass (131.5M/hour), so the forward pass is not self-play's bottleneck.
+- GitHub issue #23: measure a self-play tick's phases first, then choose between pipelined game groups, more streams, or no change.
+
 ## 2026-10-22 15:36 — Core ML benchmark run 2: fp16 vs fp16 and self-play batch sizes `dc97683c`
 
 - `scripts/dcm_coreml_benchmark.py` also derives a float16 copy and runs `mps-float16`, `coreml-fp16-gpu` and `coreml-float16-mirror-gpu` (the exact fp16-vs-fp16 pair); it drops `coreml-fp16-all` and `coreml-fp32-cpu`, and writes absolute paths into the config. `--coreml-benchmark`'s text table sizes its label column to the longest arm label.
