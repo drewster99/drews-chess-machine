@@ -84,7 +84,7 @@ The last three are untrained, because timing doesn't depend on weights. Each mod
 <li>Batch 1: Neural Engine 0.41–0.54 ms against MPSGraph bf16's 1.36–2.42 ms.</li>
 <li>Placement: under <code>cpu-gpu</code>, Core ML ran the mini and 10 × 256 nets on the CPU in both runs. The fp16 exports went 95–98% to the Neural Engine on the three larger nets.</li>
 <li>Parity: the fp32 exports matched exactly (100% same top move); every fp16 export 96.4–99.9%.</li>
-<li>Four overlapping MPSGraph streams: +35% to +51% at batch 100, +20% to +26% at 250.</li>
+<li>Four overlapping MPSGraph streams: +35% to +52% at batch 100, +20% to +26% at 250. At equal positions in flight the gain is 0.85–1.06× at about 250 and 1.05–1.25× at about 1,000, and real self-play runs at 9% of the GPU-only rate (<a href="../20261022-coreml-benchmark/OVERLAP.md">OVERLAP.md</a>, issue <a href="https://github.com/drewster99/drews-chess-machine/issues/23">#23</a>).</li>
 <li>Run 1 (bf16 against Core ML, batch 256): Core ML 0.71–0.79× on the 8M nets. On shared cells, run 2's Core ML arms on the v4 preset ran 1.2–1.3× faster than in run 1; every other arm and model was within 0.94–1.06×.</li>
 </ul>
 </section>
@@ -106,6 +106,7 @@ The last three are untrained, because timing doesn't depend on weights. Each mod
 <h2>Artifacts</h2>
 <ul class="artifacts">
 <li><a href="../20261022-coreml-benchmark/README.md">experiments/20261022-coreml-benchmark/</a> — full write-up, every cell of both runs (<code>summary.md</code>, <code>summary-run2.md</code>, <code>results/</code>, <code>results-run2/</code>), models, Reproduce section.</li>
+<li><a href="../20261022-coreml-benchmark/OVERLAP.md">OVERLAP.md</a> — overlapping MPSGraph forward passes: every in-flight cell, equal-positions comparisons, real self-play against the benchmark.</li>
 </ul>
 </section>
 

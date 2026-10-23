@@ -136,7 +136,7 @@ Arm abbreviations: ne = `coreml-fp16-ne`, fp16 = `coreml-fp16-gpu`, mir = `corem
 | | 250 | **157.3** | +20% | 125.2 | 128.2 | 14.7 |
 | v4 preset 8.45M | 100 | **117.7** | +39% | 110.6 | 113.5 | 54.7 |
 | | 250 | **151.4*** | +25% | 119.6 | 131.4 | 57.2 |
-| 10 × 256 12.9M | 100 | 84.2 | +51% | **84.6*** | 9.2 | 27.7 |
+| 10 × 256 12.9M | 100 | 84.2 | +52% | **84.6*** | 9.2 | 27.7 |
 | | 250 | **92.0** | +26% | 76.1* | 10.9 | 27.3 |
 
 ### Run 2 against run 1
@@ -152,7 +152,7 @@ On the cells both runs measured (same arm, batch and in-flight), run 2 ÷ run 1 
 - **Below batch 64, Core ML is faster.** On the GPU, 1.03–1.23× at batches 8–64 on the 8M models. The ANE is 1.8–2.2× at batch 8 on the v4 and 10 × 256 nets, and 2.5–5.2× at batch 1 (0.41–0.54 ms against 1.36–2.42 ms). For the Lichess bot and `--uci` that saves 1–2 ms per move, which no time control notices.
 - **The ANE saturates early**, at 14–53M positions/hour depending on the shape. 9×9 kernels suit it worst.
 - **Tiny networks (0.24M) run on the CPU under Core ML,** 5.9–6.8× faster than MPSGraph at batches 1–8: most of MPSGraph's 0.7 ms per call is fixed cost. MPSGraph leads from batch 100.
-- **Overlap helps MPSGraph more than any engine swap.** Four overlapping streams gain +35% to +51% at batch 100 and +20% to +26% at 250 on the 8M and 12.9M models (run 2; run 1: +36% to +52% at 64, +7% to +20% at 256). Self-play runs one batch per tick on one network. This is an observation, not a plan.
+- **In isolation, overlap helps MPSGraph more than any engine swap.** Four overlapping streams gain +35% to +52% at batch 100 and +20% to +26% at 250 on the 8M and 12.9M models (run 2; run 1: +36% to +52% at 64, +7% to +20% at 256). Most of that gain needs four times the positions in flight: at equal positions in flight it is 0.85–1.06× at about 250 and 1.05–1.25× at about 1,000. Real self-play runs at 9% of the GPU-only rate, so the forward pass is not its bottleneck. Full analysis: [`OVERLAP.md`](OVERLAP.md); implementation issue [#23](https://github.com/drewster99/drews-chess-machine/issues/23).
 
 ## Caveats
 
@@ -221,7 +221,7 @@ At equal fp32 math on the GPU (`coreml-fp32-gpu` vs `mps-float32`), run 1 measur
 
 ## Follow-ups (not planned; owner's call)
 
-- Overlap self-play's MPSGraph batches: two networks, or a pipelined tick. The in-flight-4 gain above is the upper bound.
+- Overlap self-play's MPSGraph batches: [#23](https://github.com/drewster99/drews-chess-machine/issues/23), analysis in [`OVERLAP.md`](OVERLAP.md). Measure a tick's phases first.
 - If bot latency or energy ever matters: an fp16 Core ML model on the ANE for `--lichess-bot` / `--uci`.
 - A benchmark with the trainer running, to measure self-play under production GPU contention.
 
