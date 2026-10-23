@@ -206,77 +206,33 @@ final class LichessBotOwnBotGameLimitTests: XCTestCase {
         guard case .skipped = LichessBotController.queueOutcome(for: LichessBotAPIError.ownBotGameLimit(refusal)) else {
             return XCTFail("a human further down the queue can still be challenged")
         }
-        let block = LichessBotBotGameBudget.Block.lichessReportedLimit(until: Date(), reason: "paused")
+        let block = LichessBotBotGameBudget.Block(until: Date(), reason: "paused")
         XCTAssertEqual(LichessBotController.queueOutcome(for: LichessBotControllerError.botGameBudget(block)), .skipped(reason: "paused"))
     }
 
-    // MARK: - The window takes Lichess's word
+    // MARK: - Lichess's word is the only stop
 
-    /// The incident: DCM's replay counted 67 when Lichess said 100.
-    private func incidentWindow(reportedUntil: Date?) -> LichessBotBotGameWindow {
-        let starts = (0..<67).map { respondedAt.addingTimeInterval(-15 * hour + Double($0) * 60) }
-        return LichessBotBotGameWindow(botGameStarts: starts, lichessReportedLimitUntil: reportedUntil)
-    }
-
-    func testLichessReportReplacesALowerReplayedCountUntilItsEnd() {
-        let until = respondedAt.addingTimeInterval(6312)
-        let replayed = incidentWindow(reportedUntil: nil)
-        XCTAssertEqual(replayed.count(asOf: respondedAt)?.games, 67)
-        let reported = incidentWindow(reportedUntil: until)
-        XCTAssertEqual(reported.count(asOf: respondedAt), LichessBotBotGameWindow.Count(games: 100, clearsAt: until))
-        XCTAssertEqual(reported.lichessReportedLimit(asOf: respondedAt), until)
-        XCTAssertEqual(reported.lichessReportedLimit(asOf: until - 1), until)
-        XCTAssertNil(reported.lichessReportedLimit(asOf: until), "the limit is over at its end")
-        XCTAssertNil(reported.count(asOf: until + 1), "past its clear time the reported count limits nothing")
-    }
-
-    func testTheFirstBotGameAfterTheReportedEndStartsANewCount() {
-        let until = respondedAt.addingTimeInterval(6312)
-        var starts = (0..<67).map { respondedAt.addingTimeInterval(-15 * hour + Double($0) * 60) }
-        starts.append(until + 60)
-        let window = LichessBotBotGameWindow(botGameStarts: starts, lichessReportedLimitUntil: until)
-        XCTAssertEqual(window.entry, LichessBotBotGameWindow.Entry(count: 1, clearAt: until + 60 + LichessBotBotGameWindow.length, lastWrittenAt: until + 60))
-    }
-
-    func testAReportWithNoRecordedGamesStillLimits() {
-        let until = respondedAt.addingTimeInterval(600)
-        let window = LichessBotBotGameWindow(botGameStarts: [], lichessReportedLimitUntil: until)
-        XCTAssertEqual(window.count(asOf: respondedAt), LichessBotBotGameWindow.Count(games: 100, clearsAt: until))
-    }
-
-    // MARK: - Budget and matchmaking
-
-    func testReportedLimitBlocksEverySenderUntilItsEnd() {
+    func testReportedLimitBlocksUntilItsEndAndNotAfter() {
         let until = respondedAt.addingTimeInterval(2 * hour)
-        let window = LichessBotBotGameWindow(botGameStarts: [], lichessReportedLimitUntil: until)
-        for sender: LichessBotBotGameBudget.Sender in [.matchmaking, .challengeQueue, .operatorChallenge] {
-            let block = LichessBotBotGameBudget.block(window: window, prospectiveBotGames: 0, sender: sender, settings: LichessBotChallengeSettings(), now: respondedAt, calendar: utc)
-            guard case .lichessReportedLimit(let blockedUntil, let reason)? = block else {
-                return XCTFail("\(sender) must stop at Lichess's limit")
-            }
-            XCTAssertEqual(blockedUntil, until)
-            XCTAssertEqual(reason, LichessBotOwnBotGameLimit.pausedText(until: until, now: respondedAt, calendar: utc))
-            XCTAssertTrue(reason.hasPrefix("Bot games paused: Lichess daily limit until "))
-            // `until` already lies a rounding margin past lila's clear time,
-            // which lila itself still counts; a moment later all is clear.
-            XCTAssertNil(LichessBotBotGameBudget.block(window: window, prospectiveBotGames: 0, sender: sender, settings: LichessBotChallengeSettings(), now: until + 1, calendar: utc), "\(sender) resumes at the end")
-        }
-        XCTAssertNotNil(LichessBotBotGameBudget.lichessReportedBlock(window: window, now: respondedAt, calendar: utc))
-        XCTAssertNil(LichessBotBotGameBudget.lichessReportedBlock(window: window, now: until, calendar: utc))
-        XCTAssertEqual(LichessBotBotGameBudget.statusText(window: window, now: respondedAt, calendar: utc), "DCM: 100/100 bot games (Lichess) · clears \(LichessBotBotGameBudget.clearTimeText(until, now: respondedAt, calendar: utc))")
+        let block = LichessBotBotGameBudget.block(ownLimitUntil: until, now: respondedAt, calendar: utc)
+        XCTAssertEqual(block?.until, until)
+        XCTAssertEqual(block?.reason, LichessBotOwnBotGameLimit.pausedText(until: until, now: respondedAt, calendar: utc))
+        XCTAssertTrue(block?.reason.hasPrefix("Bot games paused: Lichess daily limit until ") == true)
+        XCTAssertNotNil(LichessBotBotGameBudget.block(ownLimitUntil: until, now: until - 1, calendar: utc))
+        // `until` already lies a rounding margin past lila's clear time.
+        XCTAssertNil(LichessBotBotGameBudget.block(ownLimitUntil: until, now: until, calendar: utc), "the pause is over at its end")
+        XCTAssertNil(LichessBotBotGameBudget.block(ownLimitUntil: nil, now: respondedAt, calendar: utc), "no report, no pause")
     }
 
-    private func passConditions(window: LichessBotBotGameWindow, now: Date) -> LichessBotMatchmaking.PassConditions {
-        LichessBotMatchmaking.PassConditions(isOnline: true, rateLimitHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, botGameWindow: window, prospectiveBotGames: 0, now: now, challengeSettings: LichessBotChallengeSettings())
+    private func passConditions(ownLimitUntil: Date?, now: Date) -> LichessBotMatchmaking.PassConditions {
+        LichessBotMatchmaking.PassConditions(isOnline: true, rateLimitHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, ownBotGameLimitUntil: ownLimitUntil, now: now)
     }
 
     func testMatchmakingSkipsBotsWhileLimitedAndResumesAfter() {
         let until = respondedAt.addingTimeInterval(2 * hour)
-        let window = incidentWindow(reportedUntil: until)
-        XCTAssertNotNil(LichessBotMatchmaking.passBlockedReason(passConditions(window: window, now: respondedAt)))
-        XCTAssertNotNil(LichessBotMatchmaking.passBlockedReason(passConditions(window: window, now: until - 1)))
-        XCTAssertNil(LichessBotMatchmaking.passBlockedReason(passConditions(window: window, now: until + 1)), "the reported limit is over, and with it the count it set")
-        XCTAssertNil(LichessBotMatchmaking.passBlockedReason(passConditions(window: incidentWindow(reportedUntil: nil), now: respondedAt)), "without Lichess's report the estimate allowed it: the incident")
+        XCTAssertNotNil(LichessBotMatchmaking.passBlockedReason(passConditions(ownLimitUntil: until, now: respondedAt)))
+        XCTAssertNotNil(LichessBotMatchmaking.passBlockedReason(passConditions(ownLimitUntil: until, now: until - 1)))
+        XCTAssertNil(LichessBotMatchmaking.passBlockedReason(passConditions(ownLimitUntil: until, now: until + 1)))
     }
 
     func testNextPassAfterTheOwnLimitIsTheUnproductiveRetry() {

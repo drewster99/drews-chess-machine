@@ -97,12 +97,11 @@ struct LichessBotOwnBotGameLimit: Sendable, Equatable {
     static let roundingMargin: TimeInterval = 1
 
     /// How long DCM waits before asking Lichess again when a refusal gives
-    /// no end time. Not the replayed window's clear time: that replay is
-    /// exactly what Lichess just contradicted (lila restarts reset its
-    /// count; see `LichessBotBotGameWindow`), so its clear time is no
-    /// better than a guess. Asking again costs one refused challenge, which
-    /// no longer affects the request gate; an hour bounds both that cost
-    /// and how long bot games wait past a limit that has already lifted.
+    /// no end time. DCM keeps no copy of Lichess's count to guess the end
+    /// from (`LichessBotBotGameBudget`). Asking again costs one refused
+    /// challenge, which no longer affects the request gate; an hour bounds
+    /// both that cost and how long bot games wait past a limit that has
+    /// already lifted.
     static let recheckInterval: TimeInterval = 3600
 
     init(until: Date, endSource: EndSource) {

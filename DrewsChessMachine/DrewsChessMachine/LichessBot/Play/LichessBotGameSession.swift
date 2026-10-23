@@ -1509,7 +1509,8 @@ actor LichessBotGameSession {
 
         let context = LichessBotChatEventContext(
             ply: tracker.ply,
-            moveNumber: tracker.ply / 2,
+            moveNumber: LichessBotChatEventContext.moveNumber(afterPly: tracker.ply),
+            previousMoveNumber: LichessBotChatEventContext.moveNumber(afterPly: lastChatEventPly),
             ourQueensBefore: lastOurQueenCount ?? ourQueens,
             ourQueensNow: ourQueens,
             theirQueensBefore: lastTheirQueenCount ?? theirQueens,

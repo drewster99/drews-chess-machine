@@ -56,15 +56,15 @@ enum LichessBotChatEventTrigger: String, Sendable, Codable, CaseIterable, Identi
         case .earlyCheck:
             return "Fires when either side gives check within the first plies set here."
         case .winningBig:
-            return "Fires on our move whose win-chance reading crosses up to this level (the network's own estimate)."
+            return "Fires on our move whose win-chance reading rises to this level, or on our first reading if it starts there (the network's own estimate)."
         case .losingBig:
-            return "Fires on our move whose win-chance reading crosses down to this level (the network's own estimate)."
+            return "Fires on our move whose win-chance reading falls to this level, or on our first reading if it starts there (the network's own estimate)."
         case .bigSwing:
             return "Fires when our win-chance reading moves by at least this many points from our previous move, up or down."
         case .promotion:
             return "Fires when either side promotes a pawn, to any piece."
         case .passedMove:
-            return "Fires when the game reaches this full-move number."
+            return "Fires when this move is played (the move number in the game score)."
         }
     }
 

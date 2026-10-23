@@ -12,6 +12,7 @@ final class LichessBotChatEventTests: XCTestCase {
     private func context(
         ply: Int = 10,
         moveNumber: Int = 5,
+        previousMoveNumber: Int? = nil,
         ourQueensBefore: Int = 1,
         ourQueensNow: Int = 1,
         theirQueensBefore: Int = 1,
@@ -24,7 +25,7 @@ final class LichessBotChatEventTests: XCTestCase {
         opponentName: String? = "Opp"
     ) -> LichessBotChatEventContext {
         LichessBotChatEventContext(
-            ply: ply, moveNumber: moveNumber,
+            ply: ply, moveNumber: moveNumber, previousMoveNumber: previousMoveNumber ?? moveNumber - 1,
             ourQueensBefore: ourQueensBefore, ourQueensNow: ourQueensNow,
             theirQueensBefore: theirQueensBefore, theirQueensNow: theirQueensNow,
             inCheckNow: inCheckNow, promotionJustPlayed: promotionJustPlayed,
@@ -74,9 +75,23 @@ final class LichessBotChatEventTests: XCTestCase {
     func testPromotionAndPassedMove() {
         XCTAssertTrue(matches(context(promotionJustPlayed: true)).contains(.promotion))
         // Default passed-move threshold 80: fires only on the crossing move.
-        XCTAssertTrue(matches(context(moveNumber: 80)).contains(.passedMove))
-        XCTAssertFalse(matches(context(moveNumber: 81)).contains(.passedMove))
-        XCTAssertFalse(matches(context(moveNumber: 79)).contains(.passedMove))
+        XCTAssertTrue(matches(context(moveNumber: 80, previousMoveNumber: 79)).contains(.passedMove))
+        XCTAssertFalse(matches(context(moveNumber: 80, previousMoveNumber: 80)).contains(.passedMove), "Black's move 80: already crossed")
+        XCTAssertFalse(matches(context(moveNumber: 81, previousMoveNumber: 80)).contains(.passedMove))
+        XCTAssertFalse(matches(context(moveNumber: 79, previousMoveNumber: 78)).contains(.passedMove))
+        XCTAssertTrue(matches(context(moveNumber: 81, previousMoveNumber: 79)).contains(.passedMove), "an update that skipped move 80 still crosses it")
+    }
+
+    /// Protects: `{move}` and the passed-move rule use the game score's move
+    /// number. Fails if: it is computed as half the plies, which is one low
+    /// after every White move ("on move 2" for a check given on move 3).
+    func testMoveNumberIsTheNumberOfTheMoveJustPlayed() {
+        XCTAssertEqual(LichessBotChatEventContext.moveNumber(afterPly: 0), 0, "before any move")
+        XCTAssertEqual(LichessBotChatEventContext.moveNumber(afterPly: 1), 1, "1. e4")
+        XCTAssertEqual(LichessBotChatEventContext.moveNumber(afterPly: 2), 1, "1... e5")
+        XCTAssertEqual(LichessBotChatEventContext.moveNumber(afterPly: 5), 3, "White's third move")
+        XCTAssertEqual(LichessBotChatEventContext.moveNumber(afterPly: 6), 3, "Black's third move")
+        XCTAssertEqual(LichessBotChatEventContext.moveNumber(afterPly: 159), 80, "White's 80th move reaches move 80")
     }
 
     func testMatchesAreSortedByPriority() {

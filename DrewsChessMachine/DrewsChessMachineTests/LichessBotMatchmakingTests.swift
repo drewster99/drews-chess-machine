@@ -263,12 +263,7 @@ final class LichessBotMatchmakingTests: XCTestCase {
     // MARK: - When a pass runs
 
     private func conditions() -> LichessBotMatchmaking.PassConditions {
-        LichessBotMatchmaking.PassConditions(isOnline: true, rateLimitHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, botGameWindow: window(games: 10), prospectiveBotGames: 0, now: now, challengeSettings: LichessBotChallengeSettings())
-    }
-
-    /// `games` bot games from an hour before `now`, a second apart.
-    private func window(games: Int) -> LichessBotBotGameWindow {
-        LichessBotBotGameWindow(botGameStarts: (0..<games).map { now.addingTimeInterval(-3600 + Double($0)) })
+        LichessBotMatchmaking.PassConditions(isOnline: true, rateLimitHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, ownBotGameLimitUntil: nil, now: now)
     }
 
     func testAPassRunsOnlyWhileOnlineWithNoHoldAndAnEmptyQueue() {
@@ -293,42 +288,19 @@ final class LichessBotMatchmakingTests: XCTestCase {
         XCTAssertEqual(LichessBotMatchmaking.passBlockedReason(queued), "the challenge queue goes first")
     }
 
-    func testAPassStopsAtDCMsBotGameBudget() {
-        var unloaded = conditions()
-        unloaded.botGameWindow = nil
-        XCTAssertNotNil(LichessBotMatchmaking.passBlockedReason(unloaded))
-        var spent = conditions()
-        spent.botGameWindow = window(games: LichessBotLimits.botGamesPerDay)
-        XCTAssertNotNil(LichessBotMatchmaking.passBlockedReason(spent))
-        var almost = conditions()
-        almost.botGameWindow = window(games: LichessBotLimits.botGamesPerDay - 1)
-        XCTAssertNil(LichessBotMatchmaking.passBlockedReason(almost))
-    }
-
-    /// Matchmaking stops short of the limit by both reserves, and says when
-    /// the window clears.
-    func testAPassLeavesTheReservedBotGames() throws {
-        var reserving = conditions()
-        reserving.challengeSettings.botGamesReservedForIncoming = 10
-        reserving.challengeSettings.botGamesReservedForChallengeQueue = 5
-        reserving.botGameWindow = window(games: LichessBotLimits.botGamesPerDay - 16)
-        XCTAssertNil(LichessBotMatchmaking.passBlockedReason(reserving))
-        reserving.botGameWindow = window(games: LichessBotLimits.botGamesPerDay - 15)
-        let reason = try XCTUnwrap(LichessBotMatchmaking.passBlockedReason(reserving))
-        XCTAssertTrue(reason.contains("85 of Lichess' 100 daily bot games (10 held for incoming challenges, 5 for the challenge queue)"), reason)
-        XCTAssertTrue(reason.contains("; resumes about "), reason)
-    }
-
-    func testAPassCountsGamesThatMayStart() throws {
-        var reserving = conditions()
-        reserving.challengeSettings.botGamesReservedForIncoming = 10
-        reserving.challengeSettings.botGamesReservedForChallengeQueue = 5
-        reserving.botGameWindow = window(games: 83)
-        reserving.prospectiveBotGames = 1
-        XCTAssertNil(LichessBotMatchmaking.passBlockedReason(reserving))
-        reserving.prospectiveBotGames = 2
-        let reason = try XCTUnwrap(LichessBotMatchmaking.passBlockedReason(reserving))
-        XCTAssertTrue(reason.contains("83 of Lichess' 100 daily bot games and 2 more may start"), reason)
+    /// Protects: only Lichess's refusal stops matchmaking's bot games
+    /// (owner decision 2026-10-23); DCM's own count of them never does.
+    /// Fails if: a pass is blocked with no limit reported, or still blocked
+    /// once the reported time has passed.
+    func testAPassStopsOnlyWhileLichessReportsDCMAtItsLimit() throws {
+        XCTAssertNil(LichessBotMatchmaking.passBlockedReason(conditions()), "no report: no stop, whatever DCM has played")
+        var limited = conditions()
+        limited.ownBotGameLimitUntil = now.addingTimeInterval(3600)
+        let reason = try XCTUnwrap(LichessBotMatchmaking.passBlockedReason(limited))
+        XCTAssertTrue(reason.hasPrefix("Bot games paused: Lichess daily limit until "), reason)
+        var ended = conditions()
+        ended.ownBotGameLimitUntil = now
+        XCTAssertNil(LichessBotMatchmaking.passBlockedReason(ended), "the pause ends at the time Lichess gave")
     }
 
     func testThePickLineNamesThePoolTheBotWasDrawnFrom() {

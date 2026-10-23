@@ -47,14 +47,6 @@ struct LichessBotChallengeSettings: Sendable, Equatable, Codable {
     /// (`LichessBotSettingsStore`).
     var maxGamesPerHumanOpponentPerDay = 5
     var maxGamesPerBotOpponentPerDay = 5
-    /// Of Lichess' daily bot-vs-bot games (`LichessBotLimits.botGamesPerDay`),
-    /// how many DCM's own challenges leave for bots that challenge DCM:
-    /// matchmaking and the challenge queue stop this many short of the
-    /// limit (`LichessBotBotGameBudget`). Games against humans never count
-    /// toward that limit, so none are reserved for them.
-    var botGamesReservedForIncoming = 0
-    /// How many more matchmaking leaves for the operator's challenge queue.
-    var botGamesReservedForChallengeQueue = 0
     /// Withdraw an outgoing challenge nobody has answered after this long.
     /// Zero waits indefinitely. Busy bots often leave challenges unanswered
     /// rather than declining them.
@@ -392,10 +384,8 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(c.maxSimultaneousGamesPerOpponent >= 1, "Allow at least one game per opponent")
         require(c.maxGamesPerDay >= 1 && c.maxGamesPerHumanOpponentPerDay >= 1 && c.maxGamesPerBotOpponentPerDay >= 1,
                 "Daily limits must be at least one")
-        require(c.botGamesReservedForIncoming >= 0 && c.botGamesReservedForChallengeQueue >= 0, "Reserved bot games cannot be negative")
         require(matchmaking.noBotDeclineBlockDays >= 0 && matchmaking.specificDeclineBlockDays >= 0 && matchmaking.ratedCasualDeclineBlockDays >= 0, "Decline block days cannot be negative")
         require(matchmaking.recentContactHours >= 0, "Recent-contact hours cannot be negative")
-        require(c.botGamesReservedForIncoming + c.botGamesReservedForChallengeQueue <= LichessBotLimits.botGamesPerDay, "Reserved bot games cannot exceed Lichess' \(LichessBotLimits.botGamesPerDay) per day")
         require(c.outgoingChallengeTimeoutSeconds >= 0, "The unanswered-challenge timeout cannot be negative")
         require(c.challengeResponseBudgetPerMinute >= 1, "The challenge-response budget must be at least one per minute")
 
@@ -515,8 +505,9 @@ enum LichessBotLimits {
     /// The most ids `GET /api/users/status` accepts in one request.
     static let userStatusMaximumIDs = 100
     /// Lichess' limit on a BOT account's games against other bots until a
-    /// day after the first one counted (lila `BotLimit`;
-    /// `LichessBotBotGameWindow` models it).
+    /// day after the first one counted (lila `BotLimit`). Lichess enforces
+    /// it; DCM only names it in text and never blocks on its own count
+    /// (`LichessBotBotGameBudget`).
     static let botGamesPerDay = 100
     /// The stuck-game grace's allowed range. At least a minute, so lag or a
     /// slow Lichess never makes the watchdog act on a game that is merely

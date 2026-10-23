@@ -265,10 +265,6 @@ struct LichessBotChallengeSettingsSection: View {
             LichessBotIntegerField(label: "Games per day", value: $settings.maxGamesPerDay)
             LichessBotIntegerField(label: "Games per human opponent per day", value: $settings.maxGamesPerHumanOpponentPerDay)
             LichessBotIntegerField(label: "Games per bot opponent per day", value: $settings.maxGamesPerBotOpponentPerDay)
-            LichessBotIntegerField(label: "Of Lichess' \(LichessBotLimits.botGamesPerDay) daily bot games, keep for incoming", value: $settings.botGamesReservedForIncoming)
-                .help("Matchmaking and the challenge queue stop this many short of Lichess' daily limit on games between bots, leaving them for bots that challenge DCM. Games against humans don't count toward that limit.")
-            LichessBotIntegerField(label: "  … and for the challenge queue", value: $settings.botGamesReservedForChallengeQueue)
-                .help("Matchmaking stops this many more short of the limit, leaving them for challenges you queue. A challenge you send by hand may use the whole limit.")
             LichessBotIntegerField(label: "Withdraw unanswered challenges after", value: $settings.outgoingChallengeTimeoutSeconds, unit: "s (0 = never)")
             LichessBotIntegerField(label: "Challenge responses at most", value: $settings.challengeResponseBudgetPerMinute, unit: "/min")
             LabeledContent("Blocked players") {

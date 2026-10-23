@@ -375,7 +375,7 @@ struct LichessBotBotListHeader: View {
                     .lineLimit(1)
                 Text(ageText(now: context.date))
                 Text(ownLimitText(now: context.date))
-                    .help("Lichess limits a BOT account to \(LichessBotLimits.botGamesPerDay) games against other bots until a day after the first one it counts; shown is the count that can still limit DCM, from DCM's own records")
+                    .help("DCM's own count of today's games against bots. Lichess limits a BOT account to about \(LichessBotLimits.botGamesPerDay) games against other bots a day and counts them its own way; DCM keeps challenging bots until Lichess refuses, then pauses bot games until the time Lichess gives")
                 Spacer()
                 Button("Refresh") {
                     Task {
@@ -412,7 +412,7 @@ struct LichessBotBotListHeader: View {
     }
 
     private func ownLimitText(now: Date) -> String {
-        LichessBotBotGameBudget.statusText(window: controller.botGameWindow, now: now)
+        LichessBotBotGameBudget.statusText(counts: controller.accountGameCounts(now: now, calendar: .current), ownLimitUntil: controller.ownBotGameLimitEnds(now: now), now: now)
     }
 }
 

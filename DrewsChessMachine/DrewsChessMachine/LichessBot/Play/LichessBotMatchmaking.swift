@@ -44,16 +44,13 @@ enum LichessBotMatchmaking {
         /// The operator's challenge queue still has entries to send; its
         /// picks go first.
         var queueHasEntriesToSend: Bool
-        /// Lichess' bot-game count as DCM's records show it; nil until
-        /// those records have loaded.
-        var botGameWindow: LichessBotBotGameWindow?
-        /// Games that may still start against bots and count
-        /// (`LichessBotBotGameBudget.block`).
-        var prospectiveBotGames: Int
-        /// The instant the count is read at.
+        /// When Lichess's refusal for DCM's daily bot-game limit ends, if
+        /// it reported one (`LichessBotController.ownBotGameLimitEnds`). The
+        /// only bot-game limit matchmaking honors: DCM's own count of bot
+        /// games never stops a pass (`LichessBotBotGameBudget`).
+        var ownBotGameLimitUntil: Date?
+        /// The instant the conditions are read at.
         var now: Date
-        /// The reserves matchmaking leaves short of Lichess' bot-game limit.
-        var challengeSettings: LichessBotChallengeSettings
     }
 
     /// Why no pass may run now, or nil if one may.
@@ -76,7 +73,7 @@ enum LichessBotMatchmaking {
         if conditions.queueHasEntriesToSend {
             return "the challenge queue goes first"
         }
-        return LichessBotBotGameBudget.block(window: conditions.botGameWindow, prospectiveBotGames: conditions.prospectiveBotGames, sender: .matchmaking, settings: conditions.challengeSettings, now: conditions.now)?.reason
+        return LichessBotBotGameBudget.block(ownLimitUntil: conditions.ownBotGameLimitUntil, now: conditions.now)?.reason
     }
 
     // MARK: - Slots

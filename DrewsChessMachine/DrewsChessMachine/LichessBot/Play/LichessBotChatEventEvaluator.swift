@@ -13,8 +13,21 @@ import Foundation
 struct LichessBotChatEventContext: Sendable, Equatable {
     /// Game-total plies played so far (the position just reached).
     let ply: Int
-    /// The full-move number the game has reached.
+    /// The number of the move just played (`moveNumber(afterPly:)`).
     let moveNumber: Int
+    /// The move number at the position the previous evaluation saw, so the
+    /// passed-move rule fires on the step that crosses its number even when
+    /// a stream update skips plies, and on that step only.
+    let previousMoveNumber: Int
+
+    /// The number of the move just played after `ply` plies: White's move N
+    /// and Black's reply are both move N, as in the game score, so a message
+    /// saying "on move {move}" names the move a reader sees. 0 before any
+    /// move. (Half the plies, rounded down, was one low after every White
+    /// move.)
+    static func moveNumber(afterPly ply: Int) -> Int {
+        (ply + 1) / 2
+    }
 
     let ourQueensBefore: Int
     let ourQueensNow: Int
@@ -83,14 +96,15 @@ enum LichessBotChatEventEvaluator {
         case .promotion:
             return c.promotionJustPlayed
         case .passedMove:
-            // The move the game just reached is past the number: fire on the
-            // crossing move only.
-            return c.moveNumber >= threshold && (c.moveNumber - 1) < threshold
+            // The step whose span crosses the number: White's move T, or the
+            // first step past it when an update skipped plies. Black's reply
+            // to move T has the same number and doesn't match again.
+            return c.moveNumber >= threshold && c.previousMoveNumber < threshold
         }
     }
 
     /// Placeholder values for an event message. `{winPct}` is our current win
-    /// chance; `{move}` the full-move number; `{ply}` the ply; `{opponent}`
+    /// chance; `{move}` the number of the move just played; `{ply}` the ply; `{opponent}`
     /// the opponent's display name when known.
     static func templateValues(_ context: LichessBotChatEventContext) -> [String: String] {
         var values = [

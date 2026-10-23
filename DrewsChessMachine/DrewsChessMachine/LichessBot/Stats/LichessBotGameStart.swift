@@ -3,9 +3,9 @@ import Foundation
 /// One game DCM played or is playing, reduced to its start and what the
 /// per-day counts read. Filed games come from the games index; live games
 /// not yet filed come from the controller's list. This is the one place the
-/// two are merged, so the account grid's Today / Last 24 h columns, Lichess'
-/// bot-game window and matchmaking's latest-contact memory all see the same
-/// games.
+/// two are merged, so the account grid's Today / Last 24 h columns, DCM's
+/// count of today's bot games and matchmaking's latest-contact memory all
+/// see the same games.
 struct LichessBotGameStart: Sendable, Equatable {
     let startedAt: Date
     /// The game's speed ("blitz", …); nil for a live game whose `gameFull`

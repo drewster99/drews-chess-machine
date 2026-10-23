@@ -3,15 +3,22 @@ import Foundation
 /// DCM's own games per speed, for the account grid's columns Lichess
 /// doesn't report per speed: unrated games in DCM's game records, and games
 /// started today (the Record card's Today, `LichessBotStatsPeriods`) and in
-/// the 24 hours before now, live games included.
+/// the 24 hours before now, live games included. Also DCM's own count of
+/// today's games against bots, for the Challenge sheet.
 struct LichessBotAccountGameCounts: Equatable, Sendable {
     let unrated: [String: Int]
     let today: [String: Int]
     let lastDay: [String: Int]
+    /// Games against BOT accounts started today (the same Today), whatever
+    /// their speed. DCM's own count, nothing more: Lichess counts its daily
+    /// bot-game limit its own way (`LichessBotBotGameBudget`), and nothing
+    /// is blocked on this number. A live game is counted once its opponent
+    /// is known.
+    let botGamesToday: Int
 
     static let lastDaySeconds: TimeInterval = 24 * 3600
 
-    /// Unrated from `filedRows`; Today and Last 24 h from `gameStarts`
+    /// Unrated from `filedRows`; Today, Last 24 h and `botGamesToday` from `gameStarts`
     /// (`LichessBotGameStart.all`). A live game whose speed isn't known yet
     /// fits no row; it is counted once its `gameFull` arrives, moments after
     /// it starts.
@@ -27,7 +34,9 @@ struct LichessBotAccountGameCounts: Equatable, Sendable {
         }
         var today: [String: Int] = [:]
         var lastDay: [String: Int] = [:]
+        var botGamesToday = 0
         for start in gameStarts {
+            if start.opponentIsBot == true, periods.contains(start.startedAt, in: .today) { botGamesToday += 1 }
             guard let speed = start.speed else { continue }
             if periods.contains(start.startedAt, in: .today) { today[speed, default: 0] += 1 }
             if start.startedAt >= dayAgo { lastDay[speed, default: 0] += 1 }
@@ -35,6 +44,7 @@ struct LichessBotAccountGameCounts: Equatable, Sendable {
         self.unrated = unrated
         self.today = today
         self.lastDay = lastDay
+        self.botGamesToday = botGamesToday
     }
 
     /// What the grid shows for the counts at one moment.

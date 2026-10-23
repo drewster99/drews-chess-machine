@@ -26,7 +26,6 @@ final class LichessBotFollowLineageSettingsTests: XCTestCase {
         XCTAssertEqual(result.filledFromDefaults, [
             // Added 2026-10-13 by the game-start alerts (LichessBotGameStartAlert).
             "alerts.humanAcceptedOurChallengeSound", "alerts.weAcceptedHumanChallengeSound",
-            "challenge.botGamesReservedForChallengeQueue", "challenge.botGamesReservedForIncoming",
             // Added 2026-10-17 by per-room greetings and event-triggered chat messages
             // (LichessBotChatEvents): absent from this save, so from their defaults.
             "chat.events", "chat.goodbyeSpectatorEnabled", "chat.goodbyeSpectatorTemplate",

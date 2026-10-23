@@ -64,3 +64,18 @@ See the investigation report in the hand-off; summary: DCM's records are complet
 - Off-peak cap: any rate above 0% sends at least one challenge an hour (`scaledCap`); only 0% stops off-peak sends. Found by `LichessBotCasualFallbackTests`, whose 1/h cap rounded to 0 off-peak.
 - `testClientStillTreatsAPlain429AsARequestRate` reads the gate's events, not its phase: the virtual clock's sleep ends the cooldown at once.
 - Fail-first: with the gate's own-limit branch disabled, `LichessBotOwnBotGameLimitRegressionTests` failed (`rateLimited(cooldown: 60.0 seconds)`); with it, all 993 Lichess bot tests pass.
+
+## Owner decision 2026-10-23: the 100 is advisory; DCM never blocks on its own count
+
+What prompted it: on 2026-10-22 DCM played 118 bot games in one calendar day, while on 2026-10-21 23:52 its replay estimated 41/100 when Lichess refused it at 100. The replay was wrong both ways because lila restarts (2026-10-21 01:46 and 02:26, 2026-10-22 01:53 and 04:06 CDT) empty Lichess's in-memory count. Replaying with a reset at each restart reproduces Lichess exactly: count 100 at the refusal, clearing 2026-10-22 02:27:00, and no recorded game that Lichess "should" have refused (69 without the resets). DCM's own records are complete: all 1,427 recorded games exist on Lichess.
+
+Owner's rules:
+- **Lichess's limit is soft on DCM's side** until Lichess pushes back. DCM keeps challenging bots, a little oversubscribed, so it plays as many as Lichess allows. It never hard-stops because its own count says it should.
+- **Don't track Lichess's server behavior** (restarts, its window): out of scope.
+- **DCM's count is DCM's count**: the bot games DCM started today (local calendar day, the Record card's Today), nothing more.
+
+Implemented:
+- `LichessBotBotGameWindow` (the lila replay) removed. `LichessBotBotGameBudget` keeps only Lichess's refusal: `block(ownLimitUntil:now:)` from `botLimitUntil[accountID]` (step 3 above, unchanged), the one thing that stops bot challenges, matchmaking passes and the queue's bot entries, and declines incoming bot challenges (unchanged).
+- Removed with it: the per-sender allowances, `prospectiveBotGames` / `botChallengeSendsInFlight`, the "records not loaded" and "games that may start" waits, and the two reserve settings (`botGamesReservedForIncoming`, `botGamesReservedForChallengeQueue`; a save holding them loads, reported as ignored keys). They existed only to stop DCM short of a limit it counted itself.
+- `LichessBotAccountGameCounts.botGamesToday`: DCM's count, from the same game starts and Today as the account grid. The Challenge sheet shows "DCM: N bot games today", plus "· paused by Lichess until HH:MM" while a refusal is in force. The refusal's log line reports "DCM's own count: N bot games today" in place of the replayed estimate.
+- Tests: `LichessBotBotGameBudgetTests` (replaces `LichessBotBotGameWindowTests`): today's count (150+ bot games, humans, unknown opponents, yesterday, midnight), no block without a report, status text, an old save with the reserve keys. Matchmaking, own-limit and queue tests now assert that only the reported limit stops a pass or skips a bot.
