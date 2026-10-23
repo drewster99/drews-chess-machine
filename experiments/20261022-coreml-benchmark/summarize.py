@@ -49,7 +49,8 @@ def main():
                     cell = cells[(arm, batch, in_flight)]
                     mark = "*" if cell["round_spread"] > 1.25 else ""
                     row.append(f"{cell['positions_per_second_median'] * 3600 / 1e6:.1f}{mark}")
-                best = max(range(len(arms)), key=lambda i: float(row[i].rstrip("*")))
+                # The winner by the measured rate, not the rounded text: two arms can round alike.
+                best = max(range(len(arms)), key=lambda i: cells[(arms[i], batch, in_flight)]["positions_per_second_median"])
                 row[best] = f"**{row[best]}**"
                 print(f"| {batch} | " + " | ".join(row) + " |")
             print()

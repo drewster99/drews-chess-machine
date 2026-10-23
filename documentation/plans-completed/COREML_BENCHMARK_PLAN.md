@@ -101,3 +101,8 @@ Timing doesn't depend on weight values, so one untrained model covers a size no 
 - **Changed: parity floor.** It was run at 0.90, not 0.95, because fp16 flips some of an untrained net's near-tied top moves. Every arm's measured agreement is reported.
 - **Added after run 1: fp16 vs fp16 and real batch sizes (run 2).** The owner asked whether fp16 had been compared with fp16, and why only batch 256 was reported. The script now also derives a float16 copy and runs `mps-float16`, `coreml-fp16-gpu` and `coreml-float16-mirror-gpu` (the float16 copy's mirror export, the exact fp16-vs-fp16 pair), and drops `coreml-fp16-all` and `coreml-fp32-cpu`. Run 2 used batches 100, 180 and 250 (the arena's call, default and owner self-play). It writes absolute paths into the config.
 - **Changed: models can be added.** `scripts/dcm_coreml_benchmark.py` adds a model to an existing results folder and refuses one already there.
+- **Added after the 2026-10-23 review.**
+  - The arm-order rotation continues from cell to cell (`armOrder(armCount:cell:round:roundsPerCell:)`). Restarting it in every cell left the arms' average places unequal in both runs; the README's caveats say so. Over a run the bias is now spread across the arms (exactly balanced when cells × rounds is a multiple of the arm count); one cell is balanced only when its rounds are.
+  - `first_call_ms` is documented as cold only for MPSGraph arms; a Core ML arm's parity check has already run every batch size.
+  - The non-contiguous-input error names the arm and the stream.
+  - The script reuses a derived copy or a package only when its `<artifact>.source.json` (source SHA-256, operation and settings, app version) matches what it would make, and refuses otherwise.

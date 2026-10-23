@@ -143,6 +143,26 @@ final class CoreMLBenchmarkTests: XCTestCase {
         XCTAssertEqual(CoreMLBenchmark.armOrder(armCount: 1, round: 7), [0])
     }
 
+    /// Protects: over a run, every arm holds every place in the order equally
+    /// often. Fails if: the rotation restarts in each cell, which with 8 arms
+    /// and 5 rounds put arms 0–4 first in every cell and arms 5–7 never.
+    func testTheRotationContinuesAcrossCellsSoEveryArmLeadsEquallyOften() {
+        let arms = 8, rounds = 5, cells = 8
+        var placeCounts = Array(repeating: Array(repeating: 0, count: arms), count: arms)
+        for cell in 0..<cells {
+            for round in 0..<rounds {
+                for (place, arm) in CoreMLBenchmark.armOrder(armCount: arms, cell: cell, round: round, roundsPerCell: rounds).enumerated() {
+                    placeCounts[arm][place] += 1
+                }
+            }
+        }
+        for arm in 0..<arms {
+            XCTAssertEqual(placeCounts[arm], Array(repeating: cells * rounds / arms, count: arms), "arm \(arm)")
+        }
+        XCTAssertEqual(CoreMLBenchmark.armOrder(armCount: 3, cell: 1, round: 0, roundsPerCell: 2), [2, 0, 1],
+                       "cell 1's first round follows cell 0's last")
+    }
+
     /// Protects: a cell's summary over its rounds.
     /// Fails if: latencies stop pooling across rounds, the throughput median
     /// or spread is computed from the wrong rounds, or the worst thermal state

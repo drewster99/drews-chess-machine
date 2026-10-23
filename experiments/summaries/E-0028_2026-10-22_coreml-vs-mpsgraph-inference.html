@@ -8,7 +8,7 @@
 <meta name="dcm-title" content="Core ML vs MPSGraph inference speed">
 <meta name="dcm-status" content="complete">
 <meta name="dcm-tags" content="inference, coreml, performance">
-<meta name="dcm-takeaway" content="Keep MPSGraph bf16 for self-play, but not because it is much faster: at the batch sizes self-play and the arena use (100–250) Core ML ties it on 8M-parameter nets (0.86–1.02×) and loses where it puts a net on the CPU (0.35–0.47× on 10 × 256). fp16 against fp16 on the GPU, Core ML is level or ahead (0.96–1.23×); MPSGraph's only edge is bf16. Core ML is faster below batch 64, and the Neural Engine at batch 1.">
+<meta name="dcm-takeaway" content="Keep MPSGraph bf16 for self-play, but not because it is much faster: at the batch sizes self-play and the arena use (100–250) Core ML ties it on 8M-parameter nets (0.86–1.02×) and loses where it puts a net on the CPU (0.35–0.47× on 10 × 256). fp16 against fp16 on the GPU, Core ML is level or ahead (0.96–1.23×); MPSGraph's only edge is bf16. Core ML is faster at small batches (1–8 on every model, 32–64 on all but 10 × 256), and the Neural Engine at batch 1.">
 <meta name="dcm-related" content="E-0010, E-0011">
 <meta name="dcm-superseded-by" content="">
 <title>E-0028 · Core ML vs MPSGraph inference speed</title>
@@ -91,15 +91,15 @@ The last three are untrained, because timing doesn't depend on weights. Each mod
 
 <section>
 <h2>Interpretation</h2>
-<p>Run 1's claims that MPSGraph is clearly faster at self-play sizes and that Core ML's fp16 is slower did not hold. Run 1 compared Core ML fp16 with MPSGraph bf16. Its 256-only summary hid that Core ML is faster below batch 64. Its gap at 256 did not repeat in run 2 (0.86–0.95× at 250), so it was within the run-to-run variation.</p>
+<p>Run 1's claims that MPSGraph is clearly faster at self-play sizes and that Core ML's fp16 is slower did not hold. Run 1 compared Core ML fp16 with MPSGraph bf16. Its 256-only summary hid that Core ML is faster at small batches. Its gap at 256 did not repeat in run 2 (0.86–0.95× at 250), so it was within the run-to-run variation.</p>
 <p>At equal fp16 math on the GPU, Core ML is as fast as MPSGraph or faster. MPSGraph's only advantage is bf16, worth up to 1.27× at large batches. At self-play and arena batch sizes the two cancel out on the 8M nets. Core ML also chooses its own device, and it put the 12.9M net on the CPU.</p>
-<p>Below batch 64 Core ML is faster, and the Neural Engine wins at batch 1, but that saves only 1–2 ms per bot move.</p>
+<p>At small batches Core ML is faster (batches 1–8 on every model; 32–64 on all but 10 × 256, at 0.84× and 0.55× there), and the Neural Engine wins at batch 1, but that saves only 1–2 ms per bot move.</p>
 <p>This was one machine with "fair" thermal state in most cells. The Lichess bot played four games during run 2, at about one forward pass per 15 s. Gaps under about 1.3× may not repeat. Power was not measured.</p>
 </section>
 
 <section>
 <h2>Takeaway</h2>
-<p class="takeaway">Keep MPSGraph bf16 for self-play, but not because it is much faster: at the batch sizes self-play and the arena use (100–250) Core ML ties it on 8M-parameter nets (0.86–1.02×) and loses where it puts a net on the CPU (0.35–0.47× on 10 × 256). fp16 against fp16 on the GPU, Core ML is level or ahead (0.96–1.23×); MPSGraph's only edge is bf16. Core ML is faster below batch 64, and the Neural Engine at batch 1.</p>
+<p class="takeaway">Keep MPSGraph bf16 for self-play, but not because it is much faster: at the batch sizes self-play and the arena use (100–250) Core ML ties it on 8M-parameter nets (0.86–1.02×) and loses where it puts a net on the CPU (0.35–0.47× on 10 × 256). fp16 against fp16 on the GPU, Core ML is level or ahead (0.96–1.23×); MPSGraph's only edge is bf16. Core ML is faster at small batches (1–8 on every model, 32–64 on all but 10 × 256), and the Neural Engine at batch 1.</p>
 </section>
 
 <section>

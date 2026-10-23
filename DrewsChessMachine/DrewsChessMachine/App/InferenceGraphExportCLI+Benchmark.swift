@@ -22,7 +22,10 @@ extension InferenceGraphExportCLI {
             /// MPSGraph: graph build plus weight load of its first network.
             /// Core ML: compile plus load.
             let loadSeconds: Double
-            /// The first call at each batch size (cold shape), ms, keyed by size.
+            /// The first call at each batch size, ms, keyed by size. Cold for
+            /// an MPSGraph arm (its timed network's first run of that shape).
+            /// Not cold for a Core ML arm: its parity check has already run
+            /// every batch size on the same model.
             var firstCallMs: [String: Double]
             /// Core ML outputs that couldn't be copied by `memcpy` (not float32
             /// or not contiguous) and were converted.
@@ -249,18 +252,23 @@ extension InferenceGraphExportCLI {
             }
 
             let positionCount = states.count
+            var cell = 0
             for batchSize in config.batchSizes {
                 for (inFlightIndex, inFlight) in config.inFlight.enumerated() {
+                    defer { cell += 1 }
                     for (index, arm) in prepared.enumerated() {
-                        let first = try await CoreMLBenchmark.warmUp(arm, batchSize: batchSize, inFlight: inFlight,
+                        let first = try await CoreMLBenchmark.warmUp(arm, label: report.arms[index].label,
+                                                                     batchSize: batchSize, inFlight: inFlight,
                                                                      warmUpSeconds: benchmarkWarmUpSeconds)
                         if inFlightIndex == 0 { report.arms[index].firstCallMs[String(batchSize)] = first * 1000 }
                     }
                     var rounds = Array(repeating: [CoreMLBenchmark.RoundMeasurement](), count: prepared.count)
                     for round in 0..<config.rounds {
-                        for index in CoreMLBenchmark.armOrder(armCount: prepared.count, round: round) {
+                        for index in CoreMLBenchmark.armOrder(armCount: prepared.count, cell: cell, round: round,
+                                                              roundsPerCell: config.rounds) {
                             let (measurement, conversions) = try await CoreMLBenchmark.measureRound(
-                                prepared[index], batchSize: batchSize, inFlight: inFlight, round: round,
+                                prepared[index], label: report.arms[index].label, batchSize: batchSize,
+                                inFlight: inFlight, round: round,
                                 seconds: config.roundSeconds, positionCount: positionCount)
                             rounds[index].append(measurement)
                             report.arms[index].outputConversions += conversions

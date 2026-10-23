@@ -1701,7 +1701,9 @@ and the public surface. No behavior change. Lower priority than Part A.
     - **Run 2 (same day, owner question):** run 1 compared MPSGraph bf16 with Core ML fp16 and summarized at batch 256 only. Run 2 added an MPSGraph float16 arm, Core ML fp16 and float16-mirror arms on the GPU, and batches 100 / 180 / 250 (the arena's call, default self-play, the owner's self-play). It replaced run 1's conclusion: fp16 vs fp16 Core ML is level or ahead (0.96–1.23×), MPSGraph's edge is bf16, and at self-play batches the engines tie on 8M nets.
     - The parity floor was 0.90, not 0.95.
     - The planned-placement report was added after the smoke run showed Core ML putting "GPU" arms on the CPU.
-  - **Findings:**
+  - **Findings (run 2, replacing run 1's):** at self-play and arena batches (100–250) best Core ML is 0.86–1.02× MPSGraph bf16 on 8M nets and 0.35–0.47× on 10 × 256 (run on the CPU/ANE); fp16 vs fp16 Core ML is 0.96–1.23×; Core ML is faster at batches 1–8 on every model. Overlapping four MPSGraph streams gains 5–25% (two runs) only at about 1,000 positions in flight, nothing at today's 250 (`OVERLAP.md`, issue #23).
+  - **After the 2026-10-23 review:** the rotation continues across cells; `first_call_ms` is cold only for MPSGraph arms; the script checks a provenance file before reusing a copy or package.
+  - **Findings (run 1; superseded by run 2's above, kept as recorded):**
     - MPSGraph bf16 is fastest from batch 128 up on every real-size model; Core ML reaches at most 0.79× at batch 256.
     - At equal fp32 math, Core ML on the GPU runs at 0.86–0.99× of MPSGraph.
     - The Neural Engine wins only at batch 1: 0.42–0.54 ms against 1.38–2.40 ms.

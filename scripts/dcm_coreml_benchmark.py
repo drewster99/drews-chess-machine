@@ -13,8 +13,13 @@ For each model file:
      type) is not repeated;
   4. the run: the app's table (`<stem>.txt`) and report (`<stem>.json`) in --out.
 
-The packages are reused from --work by name, and a package's batch sizes are
-fixed at export: use a fresh --work folder for a different --batch-sizes.
+Copies and packages are reused from --work only when the provenance file written
+beside each (`<artifact>.source.json`: the source file's SHA-256, the operation
+and its settings, the app's --version, and for a package the exporter's SHA-256
+and Python) matches what this run would make; anything else is refused, never
+silently reused or replaced. The app's version carries its build number, so a
+rebuilt app needs a fresh --work too. A package's batch
+sizes are fixed at export, so a different --batch-sizes needs a fresh --work.
 
 Before anything runs, it refuses while any other DrewsChessMachine process
 except the Lichess bot is up (a trainer would share the GPU), and records each
@@ -30,6 +35,7 @@ prepares files and runs it. Plan: documentation/plans-completed/COREML_BENCHMARK
 """
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -103,7 +109,48 @@ def run(command, log=True):
     return completed
 
 
-def prepare(model, app, python, work, batch_sizes):
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def provenance_path(artifact):
+    return artifact + ".source.json"
+
+
+def reuse_or_make(artifact, provenance, make):
+    """`artifact` made by `make()` from what `provenance` describes. An existing
+    artifact is reused only when its provenance file matches exactly; one with a
+    missing or different record is refused, since a copy or package made from
+    another file, setting or build would mix checkpoints in one comparison. The
+    record is written only after `make()` succeeded, so a partial artifact left by
+    a failed run has none and is refused too."""
+    record_path = provenance_path(artifact)
+    if os.path.exists(artifact):
+        recorded = None
+        if os.path.exists(record_path):
+            try:
+                with open(record_path) as handle:
+                    recorded = json.load(handle)
+            except (OSError, json.JSONDecodeError) as error:
+                raise BenchmarkError(f"{record_path} is unreadable ({error}); use a fresh --work folder") from error
+        if recorded != provenance:
+            raise BenchmarkError(f"{artifact} exists but was not made from {provenance['source']} with these settings "
+                                 f"and this app (provenance {'differs' if recorded else 'missing'}); "
+                                 "use a fresh --work folder")
+        return
+    make()
+    # Written whole then renamed, so an interrupted write leaves no record.
+    staging = record_path + ".partial"
+    with open(staging, "w") as handle:
+        json.dump(provenance, handle, indent=2)
+    os.replace(staging, record_path)
+
+
+def prepare(model, app, python, work, batch_sizes, version):
     """The model's arms, creating the float32 / float16 copies and the packages it needs."""
     # The app resolves a config's relative paths against the config's own folder.
     model = os.path.abspath(model)
@@ -113,23 +160,31 @@ def prepare(model, app, python, work, batch_sizes):
     os.makedirs(folder, exist_ok=True)
     architecture = dcm_arch.architecture(model)
     native = architecture["compute_data_type"]
+    model_sha = sha256(model)
+    exporter_sha = sha256(EXPORTER)
     copies = {}
     for dtype in ("float32", "float16"):
         if native == dtype:
             copies[dtype] = model
         else:
-            copies[dtype] = os.path.join(folder, f"{stem}-{dtype}.safetensors")
-            if not os.path.exists(copies[dtype]):
-                run([app, "--derive-model", "--from", model, "--set-compute-dtype", dtype, "--out", copies[dtype]])
+            copy = os.path.join(folder, f"{stem}-{dtype}.safetensors")
+            reuse_or_make(copy, {"source": model, "source_sha256": model_sha, "operation": "derive-model",
+                                 "compute_dtype": dtype, "app_version": version},
+                          lambda copy=copy, dtype=dtype: run([app, "--derive-model", "--from", model,
+                                                              "--set-compute-dtype", dtype, "--out", copy]))
+            copies[dtype] = copy
     packages = {}
     for name, precision, source in (("fp32", "fp32", copies["float32"]), ("mirror", "mirror", model),
                                     ("fp16", "fp16", model), ("float16-mirror", "mirror", copies["float16"])):
         if name == "float16-mirror" and native == "float16":
             continue
         package = os.path.join(folder, f"{stem}-{name}.mlpackage")
-        if not os.path.exists(package):
-            run([python, EXPORTER, source, "--out", package, "--app", app, "--precision", precision,
-                 "--batch-sizes", ",".join(map(str, batch_sizes))])
+        reuse_or_make(package, {"source": source, "source_sha256": sha256(source), "operation": "coreml-export",
+                                "precision": precision, "batch_sizes": batch_sizes, "app_version": version,
+                                "exporter_sha256": exporter_sha, "python": python},
+                      lambda package=package, source=source, precision=precision: run(
+                          [python, EXPORTER, source, "--out", package, "--app", app, "--precision", precision,
+                           "--batch-sizes", ",".join(map(str, batch_sizes))]))
         packages[name] = package
     arms = [{"label": f"mps-{native}", "engine": "mpsgraph", "model": model}]
     arms += [{"label": f"mps-{dtype}", "engine": "mpsgraph", "model": copies[dtype]}
@@ -186,7 +241,7 @@ def main(argv=None):
                 machine = json.load(handle)
         machine["runs"].append({"app": args.app, "version": version, "bots_at_start": bots, "models": []})
         current = machine["runs"][-1]
-        prepared = [prepare(m, args.app, args.python, args.work, batch_sizes) for m in args.models]
+        prepared = [prepare(m, args.app, args.python, args.work, batch_sizes, version) for m in args.models]
         for stem, folder, arms in prepared:
             config = {"batch_sizes": batch_sizes, "in_flight": in_flight, "rounds": args.rounds,
                       "round_seconds": args.round_seconds, "min_top_move_agreement": args.min_top_move_agreement,

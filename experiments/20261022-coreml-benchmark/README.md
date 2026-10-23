@@ -67,13 +67,13 @@ Rules and method are in [the plan](../../documentation/plans-completed/COREML_BE
 
 ## Results (run 2)
 
-Every cell, with p10/p90 and minimum latency and first-call times, is in `results-run2/<model>.txt` and `.json`; [`summary-run2.md`](summary-run2.md) has every throughput cell (`summarize.py results-run2`). Throughput is in **millions of positions per hour**, in flight 1 unless stated; * marks a round spread above 1.25.
+Every cell, with p10/p90 and minimum latency and first-call times (a Core ML arm's first call comes after its parity check has already run every batch size, so it is not a cold call; an MPSGraph arm's is its own network's first run of that shape), is in `results-run2/<model>.txt` and `.json`; [`summary-run2.md`](summary-run2.md) has every throughput cell (`summarize.py results-run2`). Throughput is in **millions of positions per hour**, in flight 1 unless stated; * marks a round spread above 1.25.
 
 ### Where Core ML put the work, and parity
 
 | Model | `coreml-*-gpu` arms planned on | `fp16-ne` planned on | ANE compile + load | Top-1 agreement: fp32 / mirror / fp16 / float16-mirror |
 |---|---|---|---|---|
-| mini 0.24M | CPU 100% | CPU 100% | 0.3 s | 100% / 96.38% / 96.42% / 97.52% |
+| mini 0.24M | CPU 100% | CPU 100% | 0.2 s | 100% / 96.38% / 96.42% / 97.52% |
 | zlra 8.27M (9×9) | GPU 100% | ANE 95%, CPU 5% | 6.0 s | 100% / 99.01% / 98.99% / 99.74% |
 | v4 preset 8.45M | GPU 100% | ANE 96%, CPU 4% | 3.1 s | 100% / 99.53% / 99.48% / 99.89% |
 | 10 × 256 12.9M | **CPU 100%** | ANE 98%, CPU 2% | 24.0 s | 100% / 98.19% / 98.19% / 99.14% |
@@ -149,7 +149,7 @@ On the cells both runs measured (same arm, batch and in-flight), run 2 ÷ run 1 
 - **MPSGraph's edge is bf16, which Core ML lacks.** On the 8M models, MPSGraph bf16 is 1.05–1.27× its own fp16 from batch 64 up, and 0.97–1.06× below.
 - **At the batch sizes self-play and the arena use, no engine wins meaningfully on the 8M models.** At batches 100–250, the best Core ML arm is 0.86–1.02× MPSGraph bf16 in run 2; run 1 measured 0.71–0.79× at 256 on the same models. Both are within the run-to-run variation above. Moving self-play to Core ML would gain nothing and would likely lose 5–15%.
 - **Core ML's device placement decides the rest.** Under `cpu-gpu` it ran the 12.9M-parameter 10 × 256 net on the CPU, in both runs. There, the best Core ML option (the ANE) is 0.35–0.47× MPSGraph at batches 100–250.
-- **Below batch 64, Core ML is faster.** On the GPU, 1.03–1.23× at batches 8–64 on the 8M models. The ANE is 1.8–2.2× at batch 8 on the v4 and 10 × 256 nets, and 2.5–5.2× at batch 1 (0.41–0.54 ms against 1.36–2.42 ms). For the Lichess bot and `--uci` that saves 1–2 ms per move, which no time control notices.
+- **At small batches Core ML is faster, except on 10 × 256.** Best Core ML arm ÷ MPSGraph bf16: faster on every model at batches 1 and 8; at 32 and 64 faster on the 8M and 0.24M models (1.03–1.70×) but not on 10 × 256 (0.84× at 32, 0.55× at 64), which Core ML runs on the ANE or CPU. On the GPU, 1.03–1.23× at batches 8–64 on the 8M models. The ANE is 1.8–2.2× at batch 8 on the v4 and 10 × 256 nets, and 2.5–5.2× at batch 1 (0.41–0.54 ms against 1.36–2.42 ms). For the Lichess bot and `--uci` that saves 1–2 ms per move, which no time control notices.
 - **The ANE saturates early**, at 14–53M positions/hour depending on the shape. 9×9 kernels suit it worst.
 - **Tiny networks (0.24M) run on the CPU under Core ML,** 5.9–6.8× faster than MPSGraph at batches 1–8: most of MPSGraph's 0.7 ms per call is fixed cost. MPSGraph leads from batch 100.
 - **In isolation, overlap helps MPSGraph more than any engine swap.** Four overlapping streams gain +35% to +52% at batch 100 and +20% to +26% at 250 on the 8M and 12.9M models (run 2; run 1: +36% to +52% at 64, +7% to +20% at 256). Most of that gain needs four times the positions in flight: at equal positions in flight it is 0.85–1.06× at about 250 and 1.05–1.25× at about 1,000. Real self-play runs at 9% of the GPU-only rate, so the forward pass is not its bottleneck. Full analysis: [`OVERLAP.md`](OVERLAP.md); implementation issue [#23](https://github.com/drewster99/drews-chess-machine/issues/23).
@@ -159,9 +159,10 @@ On the cells both runs measured (same arm, batch and in-flight), run 2 ÷ run 1 
 - **One machine, two runs.** Run-to-run variation reached 1.3× on one model (see "Run 2 against run 1").
   - Round spread above 1.25: run 1, 3, 19, 19 and 33 of the four models' 112 cells; run 2, 28, 12, 22 and 35 of 160.
   - Only gaps of about 1.3× or more should be read as real. The fp16-vs-fp16 ratios and the self-play-batch ratios on the 8M models are all smaller: they say "about equal", not which is faster.
-- **The Lichess bot played four games during run 2,** during the zlra, v4 and 10 × 256 models (Setup). Arm order rotated within each cell, so every arm saw the same conditions on average. Its GPU use was about one forward pass per 15 s.
+- **The Lichess bot played four games during run 2,** during the zlra, v4 and 10 × 256 models (Setup). Arm order rotated within each cell (see "The rotation was not balanced" below). Its GPU use was about one forward pass per 15 s.
 - **Production runs self-play beside the trainer on the same GPU.** Neither run measured that contention.
-- **Thermal state was "fair" for most cells.** Every arm saw the same conditions, through the rotated order.
+- **Thermal state was "fair" for most cells.**
+- **The rotation was not balanced.** Each round rotated the arm order by one, but with 7 (run 1) or 8 (run 2) arms and 5 rounds, restarted in every cell, the arms' average place in the order differs: in run 2 (places 0–7, 0 = first) from 2.0 (`coreml-mirror-gpu`) to 5.0 (`coreml-fp16-ne`), with `mps-bfloat16` at 4.4; in run 1 (places 0–6) from 2.0 (`coreml-fp16-ne`) to 4.0 (`coreml-fp32-cpu`). A drift within a cell (heat, a background burst) would favor some arms slightly. Changed after run 2: the rotation now continues from cell to cell, which spreads that bias across the arms over a run (exactly balanced when cells × rounds is a multiple of the arm count); a single cell is balanced only when its rounds are a multiple of the arm count. Another reason to trust only gaps of about 1.3× or more.
 - **`MLComputePlan` is Core ML's plan for the default input shape,** not a trace of each timed prediction.
 - **Power was not measured.** The ANE may win on energy; that would need `sudo powermetrics`.
 - **Three of the four models are untrained.** Timing doesn't depend on weight values, but parity agreement does: untrained nets have near-tied logits, which is why the floor was lowered to 0.90.

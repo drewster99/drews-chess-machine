@@ -19,9 +19,13 @@ import Foundation
 ///   before it is timed: a fast wrong model measures nothing.
 /// - **Warm, and drift spread evenly.** Each cell (batch size × in-flight
 ///   count) warms every arm untimed, then runs `rounds` rounds whose arm order
-///   rotates by one each round, so heat or a background burst lands on every
-///   arm alike. No random draws: the order and each stream's starting position
-///   follow from the round and stream indices.
+///   rotates by one each round, continuing from cell to cell
+///   (`armOrder(armCount:cell:round:roundsPerCell:)`), so over a run heat or a
+///   background burst is spread across the arms (exactly evenly when cells ×
+///   rounds is a multiple of the arm count; within one cell only when its
+///   rounds are). No random draws: the order and
+///   each stream's starting position follow from the cell, round and stream
+///   indices.
 /// - **Concurrency reported apart.** In-flight N runs N concurrent streams:
 ///   N `ChessNetwork`s for MPSGraph (a network serializes its own calls on its
 ///   queue), N concurrent predictions on one `MLModel` for Core ML (Core ML's
@@ -280,6 +284,19 @@ enum CoreMLBenchmark {
         return (0..<armCount).map { ($0 + round) % armCount }
     }
 
+    /// The order of round `round` in cell `cell`, every cell running
+    /// `roundsPerCell` rounds: the rotation carries on across cells instead of
+    /// restarting, so whenever a run's cells × rounds is a multiple of the arm
+    /// count every arm holds every place equally often. Restarting in each
+    /// cell (E-0028's two runs) left the arms' average places unequal when the
+    /// rounds weren't a multiple of the arm count: 8 arms over 5 rounds put
+    /// one arm at 2.0 on average and another at 5.0.
+    static func armOrder(armCount: Int, cell: Int, round: Int, roundsPerCell: Int) -> [Int] {
+        precondition(cell >= 0 && roundsPerCell >= 1 && (0..<roundsPerCell).contains(round),
+                     "a round inside its cell")
+        return armOrder(armCount: armCount, round: cell * roundsPerCell + round)
+    }
+
     /// One timed round of one arm in one cell.
     struct RoundMeasurement: Sendable, Equatable {
         /// Every timed call's latency, seconds.
@@ -438,7 +455,7 @@ enum CoreMLBenchmark {
         case debugBuild
         case batchSizeNotAccepted(arm: String, size: Int, accepted: [Int])
         case parityFailed(arm: String, detail: String)
-        case inputNotContiguous(arm: String)
+        case inputNotContiguous(arm: String, stream: Int)
 
         var errorDescription: String? {
             switch self {
@@ -449,8 +466,8 @@ enum CoreMLBenchmark {
                 return "arm \(arm): the Core ML model doesn't accept batch size \(size) (it accepts \(accepted))"
             case .parityFailed(let arm, let detail):
                 return "arm \(arm) failed the parity check: \(detail)"
-            case .inputNotContiguous(let arm):
-                return "arm \(arm): Core ML allocated a non-contiguous float32 input array"
+            case .inputNotContiguous(let arm, let stream):
+                return "arm \(arm), stream \(stream): Core ML allocated a non-contiguous float32 input array"
             }
         }
     }
@@ -472,7 +489,7 @@ enum CoreMLBenchmark {
 
     /// Calls the arm back to back from `startPosition` until `deadline`
     /// (at least `minimumCalls` calls), timing each call.
-    static func runStream(_ arm: PreparedArm, stream: Int, batchSize: Int, startPosition: Int,
+    static func runStream(_ arm: PreparedArm, label: String, stream: Int, batchSize: Int, startPosition: Int,
                           deadline: ContinuousClock.Instant, minimumCalls: Int) async throws -> StreamMeasurement {
         let clock = ContinuousClock()
         var measurement = StreamMeasurement(end: clock.now)
@@ -496,7 +513,7 @@ enum CoreMLBenchmark {
             let input = try MLMultiArray(shape: [NSNumber(value: batchSize), NSNumber(value: planes), 8, 8],
                                          dataType: .float32)
             guard isContiguous(shape: input.shape, strides: input.strides) else {
-                throw BenchmarkError.inputNotContiguous(arm: "stream \(stream)")
+                throw BenchmarkError.inputNotContiguous(arm: label, stream: stream)
             }
             let features = try MLDictionaryFeatureProvider(
                 dictionary: [CoreMLParity.inputName: MLFeatureValue(multiArray: input)])
@@ -573,7 +590,7 @@ enum CoreMLBenchmark {
     /// Runs `inFlight` streams of `arm` together for one round. Each stream
     /// starts at its own position, offset by stream and round so consecutive
     /// rounds see different batches.
-    static func measureRound(_ arm: PreparedArm, batchSize: Int, inFlight: Int, round: Int, seconds roundSeconds: Double,
+    static func measureRound(_ arm: PreparedArm, label: String, batchSize: Int, inFlight: Int, round: Int, seconds roundSeconds: Double,
                              positionCount: Int) async throws -> (RoundMeasurement, outputConversions: Int) {
         let clock = ContinuousClock()
         let start = clock.now
@@ -582,7 +599,7 @@ enum CoreMLBenchmark {
             for stream in 0..<inFlight {
                 let startPosition = (stream * 1009 + round * 331) % positionCount
                 group.addTask {
-                    try await runStream(arm, stream: stream, batchSize: batchSize, startPosition: startPosition,
+                    try await runStream(arm, label: label, stream: stream, batchSize: batchSize, startPosition: startPosition,
                                         deadline: deadline, minimumCalls: 1)
                 }
             }
@@ -600,13 +617,13 @@ enum CoreMLBenchmark {
     /// and for `warmUpSeconds`, so compilation (MPSGraph's per-shape executable,
     /// Core ML's per-shape plan) and caches are behind it. Returns stream 0's
     /// first call, seconds.
-    static func warmUp(_ arm: PreparedArm, batchSize: Int, inFlight: Int, warmUpSeconds: Double) async throws -> Double {
+    static func warmUp(_ arm: PreparedArm, label: String, batchSize: Int, inFlight: Int, warmUpSeconds: Double) async throws -> Double {
         let clock = ContinuousClock()
         let deadline = clock.now + .milliseconds(Int64((warmUpSeconds * 1000).rounded()))
         let streams = try await withThrowingTaskGroup(of: (Int, StreamMeasurement).self) { group in
             for stream in 0..<inFlight {
                 group.addTask {
-                    (stream, try await runStream(arm, stream: stream, batchSize: batchSize, startPosition: 0,
+                    (stream, try await runStream(arm, label: label, stream: stream, batchSize: batchSize, startPosition: 0,
                                                  deadline: deadline, minimumCalls: 2))
                 }
             }
