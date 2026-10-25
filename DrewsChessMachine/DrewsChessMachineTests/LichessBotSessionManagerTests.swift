@@ -19,6 +19,10 @@ actor LichessBotFakeAccountAPI: LichessBotAccountAPI {
     private(set) var opens = 0
     private(set) var accepted: [String] = []
     private(set) var declined: [(id: String, reason: LichessBotDeclineReason)] = []
+    /// Challenges whose acceptance Lichess refuses, with the error the
+    /// client throws for it. Still listed in `accepted`: the request was
+    /// sent.
+    private var acceptRefusals: [String: LichessBotAPIError] = [:]
 
     init(script: [Connection]) {
         self.script = script
@@ -69,8 +73,15 @@ actor LichessBotFakeAccountAPI: LichessBotAccountAPI {
         continuation = nil
     }
 
+    func refuseAcceptance(of id: String, with error: LichessBotAPIError) {
+        acceptRefusals[id] = error
+    }
+
     func acceptChallenge(id: String) async throws {
         accepted.append(id)
+        if let refusal = acceptRefusals[id] {
+            throw refusal
+        }
     }
 
     func declineChallenge(id: String, reason: LichessBotDeclineReason) async throws {

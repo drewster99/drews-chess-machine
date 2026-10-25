@@ -26,7 +26,7 @@
 5. **While limited** (`now < T`):
    - `LichessBotBotGameWindow` treats Lichess's report as truth: the replayed entry becomes count 100 clearing at T; games after T replay on top (the first resets it, as in lila). Its `count(asOf:)` and the Challenge sheet's status line therefore show 100/100 until T.
    - `LichessBotBotGameBudget.block` returns `.lichessReportedLimit(until:)` first, for every sender, including the operator's own challenges (Lichess would refuse them). Matchmaking passes are blocked with "Bot games paused: Lichess daily limit until HH:MM"; the queue skips bot entries (humans still go); operator challenges to bots fail at once with the same text.
-   - Incoming bot challenges are declined with `later` (`LichessBotChallengePolicy`, context field `ownBotGameLimitUntil` from the controller through a manager provider). Human challenges are unaffected.
+   - Incoming bot challenges are declined with `later` (`LichessBotChallengePolicy`, context field `ownBotGameLimitUntil` from the controller through a manager provider). Human challenges are unaffected. **Superseded 2026-10-25** (see "Incoming bot challenges" below): incoming bot challenges are no longer declined on the recorded limit.
    - The Overview's matchmaking line shows "Bot games paused: Lichess daily limit until HH:MM".
 6. **Resume at T**: nothing to schedule. Every check compares with `now`; matchmaking's retry after a blocked pass (`retryAfterUnproductivePass`) runs again after T.
 7. A relaunch keeps the limit (player notes); the notes' load-time merge keeps the later end.
@@ -39,7 +39,7 @@
 - Window: the report overrides a lower replayed count until T; a game after T resets it.
 - Budget: `.lichessReportedLimit` blocks matchmaking, queue and operator senders until T, none after.
 - Matchmaking `passBlockedReason` skips while limited, resumes after T.
-- Policy: incoming bot challenge declined `later` while limited; human challenge accepted; bot accepted after T.
+- Policy: incoming bot challenge declined `later` while limited; human challenge accepted; bot accepted after T. **Superseded 2026-10-25** by the manager test below.
 
 ## Task 2 finding (why DCM's estimate said ~67, Lichess 100)
 
@@ -79,3 +79,14 @@ Implemented:
 - Removed with it: the per-sender allowances, `prospectiveBotGames` / `botChallengeSendsInFlight`, the "records not loaded" and "games that may start" waits, and the two reserve settings (`botGamesReservedForIncoming`, `botGamesReservedForChallengeQueue`; a save holding them loads, reported as ignored keys). They existed only to stop DCM short of a limit it counted itself.
 - `LichessBotAccountGameCounts.botGamesToday`: DCM's count, from the same game starts and Today as the account grid. The Challenge sheet shows "DCM: N bot games today", plus "· paused by Lichess until HH:MM" while a refusal is in force. The refusal's log line reports "DCM's own count: N bot games today" in place of the replayed estimate.
 - Tests: `LichessBotBotGameBudgetTests` (replaces `LichessBotBotGameWindowTests`): today's count (150+ bot games, humans, unknown opponents, yesterday, midnight), no block without a report, status text, an old save with the reserve keys. Matchmaking, own-limit and queue tests now assert that only the reported limit stops a pass or skips a bot.
+
+## Incoming bot challenges (owner decision 2026-10-25)
+
+What prompted it: from 2026-10-24 09:06 to 2026-10-25 01:57 CDT, DCM declined every bot's challenge `later` on the limit Lichess had reported for DCM's own outgoing challenge, without ever asking Lichess about the acceptance. Lichess had let those challenges through to DCM (lila checks both bots' limits when a challenge is created through the API, `Challenge.apiCreate` → `BotLimit.challengeLimitError`), and Lichess's count is in lila's memory and resets on a restart (Task 2), so whether accepting would have worked was never tested.
+
+Owner's rule: **the recorded limit stops only DCM's own outgoing bot challenges.** A challenge DCM receives goes through the ordinary accept/decline rules; if Lichess refuses the acceptance, fine, but DCM doesn't decline it out of hand.
+
+Implemented:
+- `LichessBotChallengePolicy` has no limit rule; `LichessBotChallengeContext.ownBotGameLimitUntil` and the session manager's `ownBotGameLimitProvider` are removed.
+- When Lichess refuses an acceptance with the own-limit 429 (`LichessBotAPIError.ownBotGameLimit`), the session manager declines that challenge `later`, so it doesn't stay open on the challenger's side. The gate has already reported the refusal, so the controller records Lichess's end time as for an outgoing refusal (matchmaking, the queue and operator challenges stay paused until then).
+- Test: `LichessBotOwnBotGameLimitTests.testManagerAcceptsBotChallengeAndDeclinesLaterOnlyWhenLichessRefuses` (a bot's challenge is accepted, refused by Lichess, then declined `later`; a human's accepted). The fake account API can refuse an acceptance (`refuseAcceptance(of:with:)`).

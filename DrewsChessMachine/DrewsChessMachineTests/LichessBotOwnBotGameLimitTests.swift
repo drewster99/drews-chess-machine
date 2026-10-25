@@ -242,43 +242,15 @@ final class LichessBotOwnBotGameLimitTests: XCTestCase {
 
     // MARK: - Incoming challenges
 
-    private func challenge(id: String, title: String?) -> LichessBotChallenge {
-        LichessBotChallenge(
-            id: id,
-            url: nil,
-            status: LichessBotOpenValue(.created),
-            challenger: LichessBotChallengeUser(id: "\(id)-player", name: "\(id)-player", rating: 1500, title: title, provisional: nil, online: true, lag: nil),
-            destUser: nil,
-            variant: LichessBotVariant(key: LichessBotOpenValue(.standard), name: nil, short: nil),
-            rated: false,
-            speed: LichessBotOpenValue(.blitz),
-            timeControl: LichessBotTimeControl(type: LichessBotOpenValue(.clock), limit: LichessBotSeconds(300), increment: LichessBotSeconds(3), daysPerTurn: nil, show: nil),
-            color: LichessBotOpenValue(.random),
-            finalColor: nil,
-            perf: nil,
-            direction: LichessBotOpenValue(.incoming),
-            initialFen: nil,
-            rematchOf: nil
-        )
-    }
-
-    private func context(ownLimitUntil: Date?) -> LichessBotChallengeContext {
-        LichessBotChallengeContext(acceptingNewGames: true, activeGames: 0, activeGamesByOpponent: [:], gamesToday: 0, gamesTodayByOpponent: [:], challengeResponsesInLastMinute: 0, ownBotGameLimitUntil: ownLimitUntil)
-    }
-
-    func testBotChallengeDeclinedLaterWhileLimitedHumanUnaffected() {
-        let settings = LichessBotChallengeSettings.testBaseline()
-        let until = respondedAt.addingTimeInterval(hour)
-        guard case .decline(.later, _) = LichessBotChallengePolicy.decide(challenge(id: "bot", title: "BOT"), compat: nil, settings: settings, context: context(ownLimitUntil: until)) else {
-            return XCTFail("a bot's challenge is declined while Lichess holds DCM at its limit")
-        }
-        XCTAssertEqual(LichessBotChallengePolicy.decide(challenge(id: "human", title: nil), compat: nil, settings: settings, context: context(ownLimitUntil: until)), .accept)
-        XCTAssertEqual(LichessBotChallengePolicy.decide(challenge(id: "bot", title: "BOT"), compat: nil, settings: settings, context: context(ownLimitUntil: nil)), .accept, "no limit reported: bots are accepted")
-    }
-
-    /// Through the session manager: its provider is read for each incoming
-    /// challenge, so the bot is declined and the human accepted.
-    func testManagerDeclinesBotsAndAcceptsHumansWhileLimited() async throws {
+    /// Protects: a bot's challenge to DCM is accepted under the ordinary
+    /// rules whatever limit Lichess reported on DCM's own challenges (owner
+    /// decision 2026-10-25), and one Lichess refuses for DCM's daily
+    /// bot-game limit is then declined `later`, while a human's is accepted.
+    /// Fails if: the policy or manager declines bot challenges on the
+    /// recorded limit again (no acceptance is sent for `cbot`), or the
+    /// decline after Lichess's refusal is dropped (the challenge is left
+    /// open on the challenger's side).
+    func testManagerAcceptsBotChallengeAndDeclinesLaterOnlyWhenLichessRefuses() async throws {
         let botLine = #"{"type":"challenge","challenge":{"id":"cbot","status":"created","challenger":{"id":"somebot","name":"SomeBot","rating":1500,"title":"BOT"},"variant":{"key":"standard","name":"x","short":"x"},"rated":false,"speed":"blitz","timeControl":{"type":"clock","limit":300,"increment":3,"show":"5+3"},"color":"random","direction":"in"},"compat":{"bot":true,"board":true}}"#
         let humanLine = #"{"type":"challenge","challenge":{"id":"chuman","status":"created","challenger":{"id":"alice","name":"alice","rating":1500},"variant":{"key":"standard","name":"x","short":"x"},"rated":false,"speed":"blitz","timeControl":{"type":"clock","limit":300,"increment":3,"show":"5+3"},"color":"random","direction":"in"},"compat":{"bot":true,"board":true}}"#
         var settings = LichessBotSettings.testBaseline()
@@ -286,10 +258,11 @@ final class LichessBotOwnBotGameLimitTests: XCTestCase {
         let frozen = settings
         let time = LichessBotManualTime()
         let account = LichessBotFakeAccountAPI(script: [.openThenClose(lines: [botLine, humanLine])])
+        let refusal = LichessBotOwnBotGameLimitRefusal(message: Self.ownMessage, secondsUntilClear: 6311, respondedAt: respondedAt)
+        await account.refuseAcceptance(of: "cbot", with: .ownBotGameLimit(refusal))
         let gate = LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in }
         let slots = try await LichessBotModelSlots.prepare(for: settings.model, provider: try await LichessBotFakeModelProvider.randomChampion(), time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in })
         let events = SyncBox<[LichessBotManagerEvent]>([])
-        let until = Date().addingTimeInterval(hour)
         let manager = LichessBotSessionManager(
             accountAPI: account,
             gameAPI: try LichessBotFakeGameServer(),
@@ -300,8 +273,7 @@ final class LichessBotOwnBotGameLimitTests: XCTestCase {
             settingsProvider: { frozen },
             gameObserver: LichessBotRecordingGameObserver(),
             onEvent: { event in events.modify { $0.append(event) } },
-            journalReader: LichessBotTestJournalReaders.none,
-            ownBotGameLimitProvider: { until }
+            journalReader: LichessBotTestJournalReaders.none
         )
         let run = Task { await manager.run() }
         for _ in 0..<4000 {
@@ -313,8 +285,8 @@ final class LichessBotOwnBotGameLimitTests: XCTestCase {
         await run.value
         let declined = await account.declined
         let accepted = await account.accepted
-        XCTAssertEqual(declined.map(\.id), ["cbot"])
+        XCTAssertEqual(accepted, ["cbot", "chuman"], "both challenges are accepted under the ordinary rules")
+        XCTAssertEqual(declined.map(\.id), ["cbot"], "only the challenge whose acceptance Lichess refused is declined")
         XCTAssertEqual(declined.map(\.reason), [.later])
-        XCTAssertEqual(accepted, ["chuman"])
     }
 }

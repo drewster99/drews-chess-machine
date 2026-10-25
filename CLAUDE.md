@@ -97,7 +97,7 @@ Every training run (GUI Play-and-Train, `--replay-corpus`, `--train-vs-uci`) res
 
 ## Lichess bot: Lichess's daily bot-game limit (owner decision 2026-10-23)
 
-Lichess's 100-games-against-bots limit is advisory on DCM's side: DCM never stops seeking or accepting bot games because of its own count, only after Lichess refuses it (`botLimitUntil` under DCM's own id, until the time Lichess gave; `LichessBotBotGameBudget`). DCM's count is its own count of bot games started today (`LichessBotAccountGameCounts.botGamesToday`), never a model of Lichess's window. Don't track Lichess's server behavior (its window, restarts). History: `documentation/plans-active/LICHESS_BOT_OWN_BOT_LIMIT_PLAN.md`.
+Lichess's 100-games-against-bots limit is advisory on DCM's side: DCM never stops seeking or accepting bot games because of its own count, only after Lichess refuses it (`botLimitUntil` under DCM's own id, until the time Lichess gave; `LichessBotBotGameBudget`). That recorded limit stops only DCM's own outgoing bot challenges (owner decision 2026-10-25): a challenge DCM receives goes through the ordinary accept/decline rules, and is declined `later` only after Lichess refuses the acceptance. DCM's count is its own count of bot games started today (`LichessBotAccountGameCounts.botGamesToday`), never a model of Lichess's window. Don't track Lichess's server behavior (its window, restarts). History: `documentation/plans-active/LICHESS_BOT_OWN_BOT_LIMIT_PLAN.md`.
 
 ## Saved model state
 

@@ -15,11 +15,13 @@ import Foundation
 /// the operator, never used to block a send.
 ///
 /// What remains here is Lichess's own word: once it refuses DCM for being
-/// at its limit (`LichessBotOwnBotGameLimit`), no bot game is sought or
-/// accepted until the time it gave.
+/// at its limit (`LichessBotOwnBotGameLimit`), DCM sends no bot challenge
+/// until the time it gave. A bot's challenge to DCM is still accepted under
+/// the ordinary rules (owner decision 2026-10-25): Lichess answers that
+/// acceptance itself, and only its refusal stops the game.
 enum LichessBotBotGameBudget {
-    /// Lichess refused DCM for being at its daily bot-game limit: no bot
-    /// game may start until `until`, whoever sends.
+    /// Lichess refused DCM for being at its daily bot-game limit: DCM sends
+    /// no bot challenge until `until`, whoever asks it to.
     struct Block: Sendable, Equatable {
         let until: Date
         let reason: String

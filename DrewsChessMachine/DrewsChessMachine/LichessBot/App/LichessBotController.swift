@@ -1955,10 +1955,11 @@ final class LichessBotController {
     /// When DCM's own daily bot-game limit ends, if Lichess reported one
     /// still in force at `now`. Kept in `botLimitUntil` under DCM's own id —
     /// DCM is a bot like the others there — so the player notes persist it
-    /// across a relaunch and there is one record of it. Every bot-game
-    /// decision reads it here (`LichessBotBotGameBudget.block`), and the
-    /// session manager through its provider for incoming challenges. It is
-    /// the only thing that stops bot games: DCM's own count never does.
+    /// across a relaunch and there is one record of it. Every bot game DCM
+    /// would send reads it here (`LichessBotBotGameBudget.block`); incoming
+    /// challenges don't, since Lichess answers each acceptance itself. It is
+    /// the only thing that stops DCM's bot challenges: DCM's own count never
+    /// does.
     func ownBotGameLimitEnds(now: Date) -> Date? {
         botLimitEnds(accountID, now: now)
     }
@@ -3371,13 +3372,6 @@ final class LichessBotController {
             },
             journalReader: { gameID in
                 try await recordStore.resumedJournal(gameID: gameID)
-            },
-            // `self` is held strongly, as `hasLiveFilingOwner` below holds
-            // it: a weak reference would need a made-up answer for a missing
-            // controller. Teardown drops the runtime and ends the manager's
-            // run, which releases this closure.
-            ownBotGameLimitProvider: { [self] in
-                await self.ownBotGameLimitEnds(now: Date())
             }
         )
         let reconciler = LichessBotReconciler(
