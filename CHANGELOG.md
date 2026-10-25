@@ -9,6 +9,11 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-25 12:57 — Lichess bot: bots' challenges accepted under the ordinary rules while DCM is at Lichess's limit `8aaf500e`
+
+- Owner decision: Lichess's recorded daily bot-game limit stops only DCM's own outgoing bot challenges. A received challenge goes through the ordinary accept/decline rules; when Lichess refuses the acceptance (429, DCM's limit), DCM declines it `later`. Prompted by bots' challenges declined on DCM's record of the limit without ever asking Lichess.
+- The policy's own-limit rule and its two tests are replaced by one session-manager test: a bot's and a human's challenge are both accepted, and only the one Lichess refused is declined.
+
 ## 2026-10-23 09:48 — Corpus replay step line: pW / pD / pL at three decimals `5dec3a7f`
 
 - `[REPLAY]` step lines print pW, pD and pL to three decimals (was two), as the GUI's `[STATS]` line does. Running trainers show it after their next restart on a new build.
