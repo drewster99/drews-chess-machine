@@ -68,6 +68,7 @@ sched_rows = [
     ["B-siluall", "same as R-replay", "0.001", "1.0", "10,000", "peaks 1k, 11k, 21k …; lows 6k, 16k, 26k …", "peak → 0.0001, low → 1e-5 over 10,000,000 steps", "follows LR: 0.85 at peak, 0.95 at low", "on (×1 at batch 4096)", "1,000"],
     ["R-elite", "fixed", "0.002", "0.002", "—", "—", "none", "fixed 0.90", "off", "1,000"],
     ["R-elitecyc", "cosine cycle, geometric, not inverted (starts at low)", "0.002", "0.02", "10,000", "lows 1k, 11k, 21k, 31k …; peaks 6k, 16k, 26k, 36k …", "none", "fixed 0.90", "off", "1,000 (0 → 0.002)"],
+    ["R-elitecyc-anneal", "keyframes, no cycle (peak = trough at each keyframe): geometric fall, then held", "0.0002", "0.002", "—", "0.002 at 0 (after warmup at 1k) → 0.0002 at 20k, held to 30k; never cycles back", "built into the fall", "fixed 0.90", "off", "1,000 (0 → 0.002)"],
     ["R-elitefresh", "same as R-replay", "0.001", "1.0", "10,000", "peaks 1k, 11k, 21k …; lows 6k, 16k, 26k …", "peak → 0.001, low → 1e-6 over 1,000,000 steps", "follows LR: 0.85 at peak, 0.95 at low", "on (×1 at batch 4096)", "1,000"],
     ["R-fixedlr", "fixed", "0.01", "0.01", "—", "—", "none", "fixed 0.90", "off", "1,000"],
 ]
