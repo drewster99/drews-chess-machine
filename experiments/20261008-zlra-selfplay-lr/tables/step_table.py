@@ -8,10 +8,14 @@ def f(x,d=3):
 def wide(fn):
     r=json.loads(dcm_arch.read_header(fn)[0]["__metadata__"]["dcm_test_set_results"])
     w=[s for s in r["sets"] if s["id"]=="lichess-wide"][0]; return w["pelo"],w["nll"]
+def overwrite(out,step):
+    # A pass that goes back to `step` overwrites what earlier passes logged from `step` on: keep only the latest.
+    while out and out[-1][0]>=step: out.pop()
 def rvs(lines):
     out=[]
     for l in lines:
-        if "[LAYER-HEALTH] live" in l: out.append((int(kv(l,"trainerStep")),kv(l,"rvMaxOverMedian").split("@")[0]))
+        if "[LAYER-HEALTH] live" in l:
+            s=int(kv(l,"trainerStep")); overwrite(out,s); out.append((s,kv(l,"rvMaxOverMedian").split("@")[0]))
     return out
 def near(rv,s): return min(rv,key=lambda t:abs(t[0]-s))[1] if rv else ""
 def dated(log,lines):
@@ -37,6 +41,7 @@ def replay(logs,glob_):
     for i,l in enumerate(lines):
         if "[REPLAY] step=" not in l: continue
         ts=kv(l,"trainerStep"); s=int(ts) if ts else int(kv(l,"step"))
+        for k in [k for k in rows if k>s]: del rows[k]; seg.pop(k,None)
         if s%1000==0 or int(kv(l,"step"))==1:
             rows[s]=(stamps[i],l); seg[s]=sum(1 for b in segstart if b<=i)-1
     print("| step | time | wide pElo | NLL | pLoss | vLoss | pEnt | pD | gNorm | LR | mom | ms/step | rv max/med | buffer avg plies/game |")
@@ -56,12 +61,14 @@ def gui(logs,runid):
         ls=open(L+log,errors="replace").read().splitlines(); lines+=ls; stamps+=dated(log,ls)
     rv=rvs(lines); ticks=[]; stats=[]; promos=[]
     for idx,l in enumerate(lines):
-        if "[TACTICAL-LICHESS] tick set=wide" in l: ticks.append((int(kv(l,"step")),float(kv(l,"pElo")),float(kv(l,"NLL"))))
+        if "[TACTICAL-LICHESS] tick set=wide" in l:
+            ts=int(kv(l,"step")); overwrite(ticks,ts); ticks.append((ts,float(kv(l,"pElo")),float(kv(l,"NLL"))))
         elif "[STATS]" in l and kv(l,"steps") and "ratio=(" in l: stats.append((int(kv(l,"steps")),(idx,l)))
         elif "Verdict: PROMOTED" in l: promos.append(idx)
     # last crossing of each 1000 (trainer rewinds on promotion)
     rows={}
     for i,(s,l) in enumerate(stats):
+        for r in [r for r in rows if r>s]: del rows[r]
         k=s//1000
         if i and stats[i-1][0]//1000<k: rows[k*1000]=l
     def promos_by(i): return sum(1 for p in promos if p<i)
