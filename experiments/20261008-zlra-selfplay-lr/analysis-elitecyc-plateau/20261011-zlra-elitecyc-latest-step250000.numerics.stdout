@@ -1,0 +1,59 @@
+[NUMERICS] 1 checkpoint(s), bf16/fp16 under both policy tails, no corpus shard
+[NUMERICS] /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261011-zlra-elitecyc-latest-step250000.safetensors
+model file:20261011-zlra-elitecyc-latest-step250000.safetensors id 20261018-2-lEdz step 250000, compute bfloat16, policy tail fp32_from_pre_bn
+overall: degraded
+value fc2 shared offset: mean-row ratio 0.005368 = 0.007592x init, bias mean 0.6063 (init 0.5964) -> fine
+policy final shared offset: mean-row ratio 0.5291 = 4.582x init, bias mean 3.607e-04 -> degraded
+batch-norm stats: worst |mean|/std 48.64 at block2_bn1 channel 48 -> degraded
+masters vs working: not compared (a saved model file holds one set of weights)
+layer health: scope=all_tensors reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=446.2@blocks.2.bn1[13] rvOver10xMedian=39 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=30.72@blocks.1.bn1.running_var
+  batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+    site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]  rv≥10x
+    stem.bn         -             128    n/a    n/a    n/a      0      0     -1.63 [59]         +1.45 [96]            4.6 [23]           0
+    blocks.0.bn1    silu          128    n/a    n/a    n/a      0      0     -2.43 [16]         +0.07 [41]           15.2 [13]           4
+    blocks.0.bn2    silu          128    n/a    n/a    n/a      0      0     -1.28 [21]        +12.71 [116]           9.4 [81]           0
+    blocks.1.bn1    silu          128    n/a    n/a    n/a      0      0     -2.16 [46]         -0.37 [23]          225.2 [13]          14
+    blocks.1.bn2    silu          128    n/a    n/a    n/a      0      0     -1.70 [49]         -0.48 [58]            9.9 [37]           0
+    blocks.2.bn1    silu          128    n/a    n/a    n/a      0      0     -2.28 [83]         +0.70 [8]           446.2 [13]          18
+    blocks.2.bn2    silu          128    n/a    n/a    n/a      0      0     -2.02 [20]         +0.10 [97]            2.5 [44]           0
+    tower_final_bn  silu          128    n/a    n/a    n/a      0      0     -0.82 [73]         +1.56 [88]           35.7 [13]           3
+    policy.pre_bn   silu          128    n/a    n/a    n/a      0      0     -1.20 [32]         +2.00 [65]            7.6 [40]           0
+    value.bn        silu           24    n/a    n/a    n/a      0      0     -1.53 [23]         +0.66 [2]             2.5 [16]           0
+  parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < 0.00135 of the range (Φ(-3)), mostly off < 0.02275 (Φ(-2)); equals dead / off for relu/leaky_relu
+    site            act            ch parked    off       min P   median P
+    blocks.0.bn1    silu          128      0      0    0.124555   0.337843
+    blocks.0.bn2    silu          128      0      0    0.155935   0.318081
+    blocks.1.bn1    silu          128      0      0    0.095803   0.220772
+    blocks.1.bn2    silu          128      0      0    0.092668   0.239060
+    blocks.2.bn1    silu          128      0      0    0.060630   0.201766
+    blocks.2.bn2    silu          128      0      0    0.069178   0.285114
+    tower_final_bn  silu          128      0      0    0.253626   0.516622
+    policy.pre_bn   silu          128      0      0    0.186972   0.588925
+    value.bn        silu           24      0      0    0.126637   0.158873
+  FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+    value.fc1.weight  silu  units 128  zero 0  low 3  median unit norm 0.00758
+    (no SE blocks)
+  ReZero: none
+  non-finite: 0 values in 0 of 102 tensors (16540206 values examined)
+  largest |value|: blocks.1.bn1.running_var 30.72, blocks.2.bn1.running_var 25.87, blocks.0.bn1.running_var 10.57, tower_final_bn.running_var 8.797, blocks.1.bn1.running_mean 7.456
+positions: 4097 (start 1, corpus 0, Lichess 4096 from 63 games; 4096 with a game result); corpus: no corpus shard was given
+value fp32: ties 0, CE 0.9985 (delta 0), mean |dv| 0, argmax changed 0, shared logit median 0.6048, start W/D/L 0.479/0.105/0.417 -> fine
+value bf16/fp32_from_pre_bn: ties 0, CE 0.9978 (delta -7.128e-04), mean |dv| 0.009849, argmax changed 0.01098, shared logit median 0.6037, start W/D/L 0.477/0.105/0.417 -> fine
+value bf16/mixed_final_projection: ties 0, CE 0.9978 (delta -7.128e-04), mean |dv| 0.009849, argmax changed 0.01098, shared logit median 0.6037, start W/D/L 0.477/0.105/0.417 -> fine
+value fp16/fp32_from_pre_bn: ties 0, CE 0.9983 (delta -1.708e-04), mean |dv| 6.283e-04, argmax changed 2.441e-04, shared logit median 0.6045, start W/D/L 0.478/0.105/0.417 -> fine
+value fp16/mixed_final_projection: ties 0, CE 0.9983 (delta -1.708e-04), mean |dv| 6.283e-04, argmax changed 2.441e-04, shared logit median 0.6045, start W/D/L 0.478/0.105/0.417 -> fine
+policy fp32: KL 0, top-2 ties 0, top-1 changed 0, legal level median 6.692, legal spread median 0.5749, all-move mean median -8.819 -> fine
+policy bf16/fp32_from_pre_bn: KL 2.149e-04, top-2 ties 0, top-1 changed 0.01733, legal level median 6.69, legal spread median 0.5719, all-move mean median -8.856 -> fine
+policy bf16/mixed_final_projection: KL 2.226e-04, top-2 ties 0, top-1 changed 0.01733, legal level median 6.69, legal spread median 0.572, all-move mean median -8.856 -> fine
+policy fp16/fp32_from_pre_bn: KL 2.732e-06, top-2 ties 0, top-1 changed 0.001953, legal level median 6.692, legal spread median 0.5751, all-move mean median -8.816 -> fine
+policy fp16/mixed_final_projection: KL 2.867e-06, top-2 ties 0, top-1 changed 0.001709, legal level median 6.692, legal spread median 0.5749, all-move mean median -8.816 -> fine
+activation taps: 23
+findings: 0 BAD, 6 degraded
+  degraded head shared offset: policy_conv_weights — mean-row ratio 0.5291 is 4.582x init; bias mean 3.607e-04 (init 0)
+  degraded batch-norm stats: block2_bn1 — max |mean|/std 48.64 at channel 48
+  degraded activations: block2_bn1_input (policy tail fp32_from_pre_bn) [bf16] — max |x| 15.81, headroom 2.136e+37, max channel |mean|/std 43.56, error vs fp32 0.005975, non-finite 0
+  degraded activations: block2_bn1_input (policy tail mixed_final_projection) [bf16] — max |x| 15.81, headroom 2.136e+37, max channel |mean|/std 43.56, error vs fp32 0.005975, non-finite 0
+  degraded activations: block2_bn1_input (policy tail fp32_from_pre_bn) [fp16] — max |x| 15.87, headroom 4128, max channel |mean|/std 43.75, error vs fp32 6.597e-04, non-finite 0
+  degraded activations: block2_bn1_input (policy tail mixed_final_projection) [fp16] — max |x| 15.87, headroom 4128, max channel |mean|/std 43.75, error vs fp32 6.597e-04, non-finite 0
+
+{"event":"numerics","json":"\/Users\/andrew\/cursor\/drews-chess-machine\/experiments\/20261008-zlra-selfplay-lr\/analysis-elitecyc-plateau\/numerics-20261011-zlra-elitecyc-latest-step250000\/numerics_audit_20261026-000851_20261018-2-lEdz.json","layer_health_always_on_channels":0,"layer_health_dead_channels":0,"layer_health_mostly_off_channels":0,"layer_health_non_finite_values":0,"layer_health_running_variance_max_over_median":446.2381354973233,"layer_health_running_variance_worst_site":"blocks.2.bn1","layer_health_se_zero_velocity_units":0,"layer_health_value_fc1_zero_velocity_units":0,"model":"\/Users\/andrew\/Library\/Application Support\/DrewsChessMachine\/Models\/20261011-zlra-elitecyc-latest-step250000.safetensors","model_id":"20261018-2-lEdz","overall":"degraded","policy_kl_bf16_fp32_from_pre_bn":0.00021490229893701785,"policy_kl_bf16_mixed_final_projection":0.00022262431296247073,"policy_kl_fp16_fp32_from_pre_bn":2.7315318736248083e-06,"policy_kl_fp16_mixed_final_projection":2.8669981177554095e-06,"policy_offset_ratio_to_init":4.5824218674227453,"policy_tail_precision":"fp32_from_pre_bn","policy_top2_ties_bf16_fp32_from_pre_bn":0,"policy_top2_ties_bf16_mixed_final_projection":0,"policy_top2_ties_fp16_fp32_from_pre_bn":0,"policy_top2_ties_fp16_mixed_final_projection":0,"positions":4097,"segment_step":10899,"stated_training_step":250000,"step_basis":"trainer_step","training_step":250000,"value_ce_delta_bf16_fp32_from_pre_bn":-0.00071277027248695113,"value_ce_delta_bf16_mixed_final_projection":-0.00071277027248695113,"value_ce_delta_fp16_fp32_from_pre_bn":-0.00017083534591511018,"value_ce_delta_fp16_mixed_final_projection":-0.00017083534591511018,"value_offset_ratio_to_init":0.0075921498721957976,"value_ties_bf16_fp32_from_pre_bn":0,"value_ties_bf16_mixed_final_projection":0,"value_ties_fp16_fp32_from_pre_bn":0,"value_ties_fp16_mixed_final_projection":0}
