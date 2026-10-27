@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-26 21:17 — Lichess bot: request session replaced after unanswered requests; unanswered challenge responses retried `26095e2a`
+
+- Prompted by 2026-10-26 08:23–08:26: every non-stream request timed out for three minutes while the event stream stayed up, and two accepted challenges were reported failed once and never answered.
+- Two consecutive requests that get no answer (a connection-failure `URLError`) replace the request `URLSession`, at most once per 30 s; any HTTP response clears the count. A replaced session is invalidated only after its last request finishes. Logged `[LICHESS-BOT] request connections reset …`.
+- An accept or decline that got no answer is retried after 2 s and 5 s while the challenge is still open; a cancel, decline echo, `gameStart` or the end of the run stops it; draining or a 429 hold turns an accept retry into a `later` decline. A challenge re-sent on the stream while its answer is in progress is not decided again.
+- Plan and review notes: `documentation/plans-active/LICHESS_BOT_REQUEST_FAILURE_RECOVERY_PLAN.md`. The deployed bot (build 2620) gets it at its next frozen-build swap.
+
 ## 2026-10-25 12:57 — Lichess bot: bots' challenges accepted under the ordinary rules while DCM is at Lichess's limit `8aaf500e`
 
 - Owner decision: Lichess's recorded daily bot-game limit stops only DCM's own outgoing bot challenges. A received challenge goes through the ordinary accept/decline rules; when Lichess refuses the acceptance (429, DCM's limit), DCM declines it `later`. Prompted by bots' challenges declined on DCM's record of the limit without ever asking Lichess.
