@@ -9,6 +9,13 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-10-27 01:59 — Lichess bot: circuit breakers stop new games and never abandon a game in progress `067298ca`
+
+- Owner decisions 2026-10-26: no automatic action abandons a game in progress. A 429 or a breaker trip only stops new games; games in progress finish. Before, a second 429 within an hour, or one game that stopped moving, tore the bot down and abandoned every live game.
+- 429 cooldown: the longest wait Lichess named (`Retry-After` or the body's `ratelimit.seconds`), at least 60 s, plus a 10 s margin.
+- Breakers (Settings ▸ Connection, each with threshold, window and resume): rate limit 2 in 60 min → no new games for 2 h; lost on time 3 of the last 30 → finish games, then stop until going online; move posts with no answer 5 in 10 min → 30 min; event-stream reconnects 10 in 10 min → 30 min. The Overview shows active holds.
+- Settings: the saved rate-limit breaker window carries over; five never-read breaker keys are dropped. Plan: `documentation/plans-active/LICHESS_BOT_CIRCUIT_BREAKERS_PLAN.md`.
+
 ## 2026-10-26 21:17 — Lichess bot: request session replaced after unanswered requests; unanswered challenge responses retried `26095e2a`
 
 - Prompted by 2026-10-26 08:23–08:26: every non-stream request timed out for three minutes while the event stream stayed up, and two accepted challenges were reported failed once and never answered.
