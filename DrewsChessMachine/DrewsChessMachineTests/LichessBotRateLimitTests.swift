@@ -9,14 +9,42 @@ final class LichessBotRateLimitTests: XCTestCase {
     }
 
     func testCooldownNeverGoesBelowTheFloor() {
-        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: nil), .seconds(60))
-        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: .zero), .seconds(60))
-        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: .seconds(5)), .seconds(60), "a shorter Retry-After still waits the full floor")
-        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: .seconds(60)), .seconds(60))
+        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: nil, bodyWait: nil, margin: .zero), .seconds(60))
+        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: .zero, bodyWait: nil, margin: .zero), .seconds(60))
+        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: .seconds(5), bodyWait: nil, margin: .zero), .seconds(60), "a shorter Retry-After still waits the full floor")
+        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: .seconds(60), bodyWait: nil, margin: .zero), .seconds(60))
+    }
+
+    /// Protects: the wait a 429's body names (`ratelimit.seconds`) counts
+    /// like `Retry-After`; the longer of the two wins, never under the
+    /// floor, and the margin is added on top (owner decision 2026-10-26).
+    /// Fails if: the body's wait is ignored, the shorter wait wins, or the
+    /// margin is dropped or applied before the floor.
+    func testCooldownIsTheLongestWaitLichessNamedPlusTheMargin() {
+        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: nil, bodyWait: .seconds(400), margin: .zero), .seconds(400))
+        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: .seconds(120), bodyWait: .seconds(90), margin: .zero), .seconds(120))
+        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: .seconds(90), bodyWait: .seconds(120), margin: .zero), .seconds(120))
+        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: nil, bodyWait: .seconds(5), margin: .seconds(10)), .seconds(70), "the margin goes on top of the floor")
+        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: .seconds(300), bodyWait: nil, margin: .seconds(10)), .seconds(310))
+    }
+
+    /// Protects: `ratelimit.seconds` is read from any 429 body lila writes,
+    /// and anything else names no wait.
+    /// Fails if: only one limit key is read, or a malformed body yields a
+    /// wait.
+    func testBodyWaitReadsRateLimitSeconds() {
+        XCTAssertEqual(LichessBotRateLimit.bodyWait(from: Data(#"{"error":"Too many requests","ratelimit":{"key":"challenge.create.user","seconds":75}}"#.utf8)), .seconds(75))
+        XCTAssertEqual(LichessBotRateLimit.bodyWait(from: Data(#"{"ratelimit":{"seconds":0}}"#.utf8)), .zero)
+        XCTAssertNil(LichessBotRateLimit.bodyWait(from: Data()), "no body")
+        XCTAssertNil(LichessBotRateLimit.bodyWait(from: Data("<html>Too Many Requests</html>".utf8)), "not JSON")
+        XCTAssertNil(LichessBotRateLimit.bodyWait(from: Data(#"{"error":"Too many requests"}"#.utf8)), "no ratelimit object")
+        XCTAssertNil(LichessBotRateLimit.bodyWait(from: Data(#"{"ratelimit":{"seconds":"soon"}}"#.utf8)), "not a number")
+        XCTAssertNil(LichessBotRateLimit.bodyWait(from: Data(#"{"ratelimit":{"seconds":-5}}"#.utf8)), "negative")
+        XCTAssertNil(LichessBotRateLimit.bodyWait(from: Data(#"[1,2]"#.utf8)), "not an object")
     }
 
     func testLongerRetryAfterIsHonored() {
-        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: .seconds(300)), .seconds(300))
+        XCTAssertEqual(LichessBotRateLimit.cooldown(retryAfter: .seconds(300), bodyWait: nil, margin: .zero), .seconds(300))
     }
 
     func testParsesDeltaSecondsRetryAfter() {

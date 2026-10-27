@@ -314,6 +314,9 @@ final class LichessBotLiveGame: Identifiable {
             latestDecision = decision
         case .movePosted:
             break
+        case .movePostFailed:
+            // Its `moveRejected` records it; the controller counts it.
+            break
         case .moveRejected(let ply, let uci, let error):
             let anomalyID = recordAnomaly("move \(uci) at ply \(ply) rejected: \(error)")
             rejectionAnomalies.append(RejectionAnomaly(ply: ply, uci: uci, anomalyID: anomalyID))

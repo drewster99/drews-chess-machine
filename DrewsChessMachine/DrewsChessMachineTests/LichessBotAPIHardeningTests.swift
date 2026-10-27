@@ -63,7 +63,7 @@ final class LichessBotAPIHardeningTests: XCTestCase {
     /// session's is the longest, so either way the shorter one binds.
     func testRequestsCarryTheirPriorityIdleTimeoutAndStreamsKeepTheDefault() async throws {
         let transport = LichessBotScriptedTransport { _ in (200, Data(#"{"ok":true}"#.utf8), [:]) }
-        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), rateLimitPolicy: .testPolicy) { _ in }
         let client = try makeClient(gate: gate, records: SyncBox([]), transport: transport)
         try await client.makeMove(gameID: "g1", uci: "e2e4", offeringDraw: false)
         try await client.chat(gameID: "g1", room: .player, text: "hi")
@@ -86,7 +86,7 @@ final class LichessBotAPIHardeningTests: XCTestCase {
 
     func testRateLimitedRequestIsRecordedWithStatusAndBody() async throws {
         let records = SyncBox<[LichessBotRequestRecord]>([])
-        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), rateLimitPolicy: .testPolicy) { _ in }
         let transport = LichessBotScriptedTransport { _ in (429, Data(#"{"error":"Too many requests"}"#.utf8), [:]) }
         let client = try makeClient(gate: gate, records: records, transport: transport)
         do {
@@ -108,7 +108,7 @@ final class LichessBotAPIHardeningTests: XCTestCase {
     // MARK: - Gate: close, cooldown, reopen
 
     func testALateRateLimitDoesNotReopenAClosedGate() async throws {
-        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), rateLimitPolicy: .testPolicy) { _ in }
         let latch = LichessBotTestLatch()
         let limited = try lichessBotTestResponse(status: 429)
         let ok = try lichessBotTestResponse(status: 200)
@@ -136,21 +136,21 @@ final class LichessBotAPIHardeningTests: XCTestCase {
         }
     }
 
-    /// Reopening after the breaker trips resumes the cooldown still running
-    /// from the second 429, instead of sending straight away.
+    /// Reopening a closed gate resumes the cooldown still running from the
+    /// last 429, instead of sending straight away. (The breaker no longer
+    /// closes the gate, 2026-10-26; the gate is closed here directly.)
     func testReopenHonorsACooldownStillRunning() async throws {
         let time = LichessBotVirtualTime()
-        let gate = LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: time, rateLimitPolicy: .testPolicy) { _ in }
         let limited = try lichessBotTestResponse(status: 429)
         let ok = try lichessBotTestResponse(status: 200)
-        for attempt in 0..<2 {
-            do {
-                _ = try await gate.perform(priority: .move, label: "move \(attempt)") { (value: 0, response: limited) }
-                XCTFail("a 429 must throw")
-            } catch LichessBotGateError.rateLimited {
-            }
+        do {
+            _ = try await gate.perform(priority: .move, label: "move") { (value: 0, response: limited) }
+            XCTFail("a 429 must throw")
+        } catch LichessBotGateError.rateLimited {
         }
         let trippedAt = time.now()
+        await gate.close(reason: "closed during the cooldown")
         await gate.reopen()
         let startedAt = SyncBox<Duration?>(nil)
         _ = try await gate.perform(priority: .move, label: "after reopen") {
@@ -162,7 +162,7 @@ final class LichessBotAPIHardeningTests: XCTestCase {
     }
 
     func testAFailedCooldownTimerClosesTheGate() async throws {
-        let gate = LichessBotRequestGate(time: BrokenSleepTime(), breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: BrokenSleepTime(), rateLimitPolicy: .testPolicy) { _ in }
         let limited = try lichessBotTestResponse(status: 429)
         let ok = try lichessBotTestResponse(status: 200)
         do {
@@ -202,16 +202,16 @@ final class LichessBotAPIHardeningTests: XCTestCase {
 
     func testBreakerWindowMustOutlastTheMinimumCooldown() {
         var settings = LichessBotSettings.testBaseline()
-        settings.connection.rateLimitBreakerWindowMinutes = Int(LichessBotRateLimit.minimumCooldown.components.seconds / 60)
+        settings.breakers.rateLimit.windowMinutes = Int(LichessBotRateLimit.minimumCooldown.components.seconds / 60)
         XCTAssertEqual(settings.validationProblems().count, 1)
-        settings.connection.rateLimitBreakerWindowMinutes += 1
+        settings.breakers.rateLimit.windowMinutes += 1
         XCTAssertEqual(settings.validationProblems(), [])
     }
 
     func testOnlineBotsReportsAnOversizeLine() async throws {
         let huge = String(repeating: "x", count: LichessBotNDJSONSplitter.defaultMaximumLineLength + 1)
         let body = #"{"id":"bota","username":"BotA","title":"BOT"}"# + "\n" + huge + "\n"
-        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), rateLimitPolicy: .testPolicy) { _ in }
         let client = try makeClient(gate: gate, records: SyncBox([]), transport: LichessBotScriptedTransport { _ in (200, Data(body.utf8), [:]) })
         do {
             _ = try await client.onlineBots(count: 50)
@@ -222,7 +222,7 @@ final class LichessBotAPIHardeningTests: XCTestCase {
     }
 
     func testUsersStatusRejectsTooManyIDs() async throws {
-        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), rateLimitPolicy: .testPolicy) { _ in }
         let transport = LichessBotScriptedTransport { _ in (200, Data("[]".utf8), [:]) }
         let client = try makeClient(gate: gate, records: SyncBox([]), transport: transport)
         let ids = (0...LichessBotLimits.userStatusMaximumIDs).map { "u\($0)" }

@@ -852,6 +852,43 @@ final class LichessBotGameSessionTests: XCTestCase {
         XCTAssertTrue(h.observer.rejections.first?.contains("rate limited") == true)
     }
 
+    /// Protects: a move POST that got a 5xx is reported as
+    /// `.movePostFailed`, which the move-post failure breaker counts, and is
+    /// still retried.
+    /// Fails if: the event is missing (the breaker never sees the failure),
+    /// or the retry stops.
+    func testAServerFailureOnAMoveIsReportedAndRetried() async throws {
+        let server = try LichessBotFakeGameServer()
+        await server.setScript(moveOutcomes: [.rejected(status: 503)], afterOurMoves: [.finish(status: "resign", winner: "white")])
+        let h = makeHarness(server: server)
+        let run = Task { await h.session.run() }
+        // The retry waits on the session's clock.
+        try await waitUntil("the game ends", advancing: h.time, by: .milliseconds(500)) { h.observer.finishedStatus != nil }
+        await run.value
+        let failures = h.observer.events.value.filter { event in
+            if case .movePostFailed(let ply, _) = event { return ply == 0 }
+            return false
+        }
+        XCTAssertEqual(failures.count, 1)
+        let record = await server.record()
+        XCTAssertEqual(record.acceptedPlies, [0], "the move is posted again and goes through")
+    }
+
+    /// Protects: a refusal Lichess sent (a 4xx) is not a move-post failure:
+    /// Lichess answered, and resync handles it.
+    /// Fails if: every rejected move counts toward the breaker.
+    func testARefusedMoveIsNotAMovePostFailure() async throws {
+        let server = try LichessBotFakeGameServer()
+        await server.setScript(moveOutcomes: [.rejected(status: 400)], afterOurMoves: [.finish(status: "resign", winner: "white")])
+        let h = makeHarness(server: server)
+        await runToEnd(h)
+        XCTAssertEqual(h.observer.rejections.count, 1, "the refusal itself is reported")
+        XCTAssertFalse(h.observer.events.value.contains { event in
+            if case .movePostFailed = event { return true }
+            return false
+        })
+    }
+
     /// E22: when the game ends without a final `gameState`, a resync
     /// request (from the event stream's `gameFinish`) reopens the stream,
     /// and the new `gameFull` carries the finished status.

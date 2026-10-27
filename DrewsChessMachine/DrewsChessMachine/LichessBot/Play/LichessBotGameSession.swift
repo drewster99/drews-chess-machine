@@ -1003,6 +1003,7 @@ actor LichessBotGameSession {
             } catch {
                 lastPostedPly = nil
                 await observer.gameEvent(gameID: gameID, .moveRejected(ply: ply, uci: decision.uci, error: String(describing: error)))
+                await observer.gameEvent(gameID: gameID, .movePostFailed(ply: ply, error: String(describing: error)))
                 guard transientFailures < LichessBotGameSession.maximumTransientPostRetries, stillOurMove(at: ply, in: position) else {
                     throw ResyncNeeded(reason: "move post kept failing: \(error)", isDisagreement: false)
                 }

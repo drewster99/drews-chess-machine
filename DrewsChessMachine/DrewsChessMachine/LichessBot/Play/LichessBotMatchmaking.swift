@@ -31,8 +31,9 @@ enum LichessBotMatchmaking {
     struct PassConditions: Sendable, Equatable {
         /// Online, and not Draining (which a 429 hold also shows as).
         var isOnline: Bool
-        /// A post-429 hold is in force.
-        var rateLimitHoldActive: Bool
+        /// A hold on new games is in force: a 429 or a circuit breaker
+        /// (`LichessBotNewGameHolds`).
+        var newGameHoldActive: Bool
         /// The request gate is open (not cooling down after a 429, not
         /// closed by the breaker).
         var gateOpen: Bool
@@ -58,8 +59,8 @@ enum LichessBotMatchmaking {
         if !conditions.isOnline {
             return "the bot is not Online"
         }
-        if conditions.rateLimitHoldActive {
-            return "rate-limit hold after a 429"
+        if conditions.newGameHoldActive {
+            return "new games held (a 429 or a circuit breaker)"
         }
         if !conditions.gateOpen {
             return "the request gate is not open"

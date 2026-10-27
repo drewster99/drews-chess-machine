@@ -82,7 +82,7 @@ final class LichessBotOwnBotGameLimitTests: XCTestCase {
 
     private func gateAndLog() -> (LichessBotRequestGate, SyncBox<[LichessBotGateEvent]>) {
         let events = SyncBox<[LichessBotGateEvent]>([])
-        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), breakerWindow: .seconds(3600), wallClock: { [respondedAt] in respondedAt }) { event in
+        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), rateLimitPolicy: .testPolicy, wallClock: { [respondedAt] in respondedAt }) { event in
             events.modify { $0.append(event) }
         }
         return (gate, events)
@@ -121,7 +121,7 @@ final class LichessBotOwnBotGameLimitTests: XCTestCase {
     func testARequestRate429StillCoolsDown() async throws {
         let (gate, events) = gateAndLog()
         do {
-            _ = try await gate.perform(priority: .challengeResponse, label: "challenge", causeOf429: { _, _ in .requestRate }) {
+            _ = try await gate.perform(priority: .challengeResponse, label: "challenge", causeOf429: { _, _ in .requestRate(bodyWait: nil) }) {
                 (value: 0, response: try lichessBotTestResponse(status: 429))
             }
             XCTFail("a request-rate 429 must throw")
@@ -225,7 +225,7 @@ final class LichessBotOwnBotGameLimitTests: XCTestCase {
     }
 
     private func passConditions(ownLimitUntil: Date?, now: Date) -> LichessBotMatchmaking.PassConditions {
-        LichessBotMatchmaking.PassConditions(isOnline: true, rateLimitHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, ownBotGameLimitUntil: ownLimitUntil, now: now)
+        LichessBotMatchmaking.PassConditions(isOnline: true, newGameHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, ownBotGameLimitUntil: ownLimitUntil, now: now)
     }
 
     func testMatchmakingSkipsBotsWhileLimitedAndResumesAfter() {
@@ -260,7 +260,7 @@ final class LichessBotOwnBotGameLimitTests: XCTestCase {
         let account = LichessBotFakeAccountAPI(script: [.openThenClose(lines: [botLine, humanLine])])
         let refusal = LichessBotOwnBotGameLimitRefusal(message: Self.ownMessage, secondsUntilClear: 6311, respondedAt: respondedAt)
         await account.refuseAcceptance(of: "cbot", with: .ownBotGameLimit(refusal))
-        let gate = LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: time, rateLimitPolicy: .testPolicy) { _ in }
         let slots = try await LichessBotModelSlots.prepare(for: settings.model, provider: try await LichessBotFakeModelProvider.randomChampion(), time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in })
         let events = SyncBox<[LichessBotManagerEvent]>([])
         let manager = LichessBotSessionManager(

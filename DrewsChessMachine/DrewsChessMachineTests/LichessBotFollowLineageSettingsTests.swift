@@ -26,10 +26,17 @@ final class LichessBotFollowLineageSettingsTests: XCTestCase {
         XCTAssertEqual(result.filledFromDefaults, [
             // Added 2026-10-13 by the game-start alerts (LichessBotGameStartAlert).
             "alerts.humanAcceptedOurChallengeSound", "alerts.weAcceptedHumanChallengeSound",
+            // Added 2026-10-26 by the circuit breakers (LICHESS_BOT_CIRCUIT_BREAKERS_PLAN.md);
+            // breakers.rateLimit.windowMinutes is carried forward from the save.
+            "breakers.lostOnTime", "breakers.movePostFailures", "breakers.rateLimit.count",
+            "breakers.rateLimit.resumeAfterMinutes", "breakers.rateLimit.resumesAutomatically",
+            "breakers.reconnectStorm",
             // Added 2026-10-17 by per-room greetings and event-triggered chat messages
             // (LichessBotChatEvents): absent from this save, so from their defaults.
             "chat.events", "chat.goodbyeSpectatorEnabled", "chat.goodbyeSpectatorTemplate",
             "chat.greetingSpectatorEnabled", "chat.greetingSpectatorTemplate",
+            // Added 2026-10-26 by the circuit breakers.
+            "connection.rateLimitCooldownMarginSeconds",
             "matchmaking.noBotDeclineBlockDays",
             // Added 2026-10-14 by matchmaking's peak window (LichessBotMatchmakingSchedule).
             "matchmaking.offPeakRatePercent", "matchmaking.peakEndHour", "matchmaking.peakStartHour",
@@ -39,7 +46,12 @@ final class LichessBotFollowLineageSettingsTests: XCTestCase {
             // Added 2026-10-12 by the stuck-game watchdog (LICHESS_BOT_STUCK_GAME_PLAN.md).
             "play.stuckGameGraceSeconds",
         ])
-        XCTAssertEqual(result.ignoredSavedKeys, [])
+        // Declared but never read before the circuit breakers (2026-10-26).
+        XCTAssertEqual(result.ignoredSavedKeys, [
+            "connection.breakerWindowMinutes", "connection.lostOnTimeBreakerCount",
+            "connection.lostOnTimeBreakerWindowGames", "connection.movePostFailureBreakerCount",
+            "connection.reconnectStormBreakerCount",
+        ])
         XCTAssertEqual(result.settings.model.source, .file)
         XCTAssertEqual(result.settings.challenge.maxConcurrentGames, 12, "everything saved is kept")
     }

@@ -157,6 +157,11 @@ enum LichessBotGameEvent: Sendable {
     case moveDecided(ply: Int, decision: LichessBotMoveDecision, generation: LichessBotGenerationInfo)
     case movePosted(ply: Int, uci: String, offeringDraw: Bool, milliseconds: Double)
     case moveRejected(ply: Int, uci: String, error: String)
+    /// The move POST at `ply` got no answer, or a 5xx: Lichess never took it
+    /// (its `moveRejected` is beside it). Counted by the move-post failure
+    /// breaker; a 4xx (a refusal) and a 429 (the rate-limit breaker's) are
+    /// not this. Not journaled.
+    case movePostFailed(ply: Int, error: String)
     /// The move refused at `ply` (the last `moveRejected` there for `uci`)
     /// was refused because the game had already ended: the first game state
     /// after the refusal reports the game over (`status`) with no move after

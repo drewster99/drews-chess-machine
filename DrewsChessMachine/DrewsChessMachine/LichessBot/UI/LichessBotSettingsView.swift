@@ -166,6 +166,7 @@ struct LichessBotSettingsTabForm: View {
                 LichessBotAlertSettingsSection(settings: $draft.alerts)
             case .connection:
                 LichessBotConnectionSettingsSection(settings: $draft.connection, display: $draft.display)
+                LichessBotBreakerSettingsSection(settings: $draft.breakers, connection: $draft.connection)
             case .account:
                 LichessBotAccountSettingsSection(controller: controller, expectedAccountID: $draft.connection.expectedAccountID)
             }
@@ -492,7 +493,6 @@ struct LichessBotConnectionSettingsSection: View {
             LichessBotIntegerField(label: "Reconnect delay at most", value: $settings.reconnectCapSeconds, unit: "s")
             LichessBotIntegerField(label: "Event stream silent for", value: $settings.eventStreamStallTimeoutSeconds, unit: "s")
             LichessBotIntegerField(label: "Game stream resync after", value: $settings.gameStreamResyncSeconds, unit: "s")
-            LichessBotIntegerField(label: "Rate-limit breaker window", value: $settings.rateLimitBreakerWindowMinutes, unit: "min")
             LichessBotIntegerField(label: "Export spacing", value: $settings.exportMinimumSpacingSeconds, unit: "s")
             LichessBotIntegerField(label: "Low-clock threshold", value: $settings.lowClockThresholdMilliseconds, unit: "ms")
         }

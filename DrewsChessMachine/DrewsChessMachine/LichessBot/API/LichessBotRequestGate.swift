@@ -45,16 +45,17 @@ enum LichessBotGateEvent: Sendable {
     /// toward the breaker. The controller records the limit from this.
     case ownBotGameLimitRefused(LichessBotOwnBotGameLimitRefusal, label: String, priority: LichessBotRequestPriority)
     case cooldownEnded
-    /// A second 429 inside the breaker window: the gate is closed until
-    /// `reopen()` — an explicit operator action.
+    /// The policy's count of 429s inside its window: the gate keeps cooling
+    /// down (it never closes for this), and the controller stops new games
+    /// for the rate-limit breaker's hold.
     case breakerTripped(rateLimitsInWindow: Int, window: Duration)
     case closed(reason: String)
     case reopened
 }
 
 enum LichessBotGateError: LocalizedError, Equatable {
-    /// The gate is closed (the rate-limit breaker tripped, or the cooldown
-    /// timer failed) and stays closed until `reopen()`.
+    /// The gate is closed (the cooldown timer failed) and stays closed
+    /// until `reopen()`.
     case closed(reason: String)
     /// The request got a 429. The gate is now cooling down; nothing is
     /// retried automatically (plan §5.4).
@@ -85,13 +86,17 @@ enum LichessBotGateError: LocalizedError, Equatable {
 /// while any game awaits our move, and when a game's clock is low only
 /// moves, game-critical actions and stream opens are eligible (plan E18).
 ///
-/// **429 is a full stop.** Any request-rate 429 closes the gate for
-/// `max(Retry-After, LichessBotRateLimit.minimumCooldown)`. Nothing is sent
+/// **429 is a full stop for its cooldown.** Any request-rate 429 holds every
+/// request for `LichessBotRateLimit.cooldown`: the longest wait Lichess
+/// named, never under a minute, plus the policy's margin. Nothing is sent
 /// during the cooldown — moves included, since Lichess would refuse them
 /// anyway. The failed request is not retried; the caller re-derives what is
-/// still needed from fresh state once the gate reopens. A second 429 inside
-/// `breakerWindow` trips the breaker: the gate stays closed until `reopen()`,
-/// because repeated 429s risk longer lockouts or action on the account.
+/// still needed from fresh state once the gate reopens. `breakerCount` 429s
+/// inside `breakerWindow` trip the rate-limit breaker: the gate reports it
+/// and keeps cooling down, and the controller stops new games for a while.
+/// It never closes the gate for it: games in progress must still be
+/// finished once each cooldown ends (owner decision 2026-10-26: no
+/// automatic action abandons a game).
 /// A 429 that `causeOf429` identifies as DCM at its own daily bot-game
 /// limit is not a request rate: it is returned like any other refusal,
 /// with no cooldown and no breaker count (`LichessBotOwnBotGameLimitRefusal`).
@@ -129,7 +134,7 @@ actor LichessBotRequestGate {
     /// reopening a closed gate resumes a cooldown still running instead of
     /// sending straight after a 429.
     private var rateLimitCooldownEnd: Duration?
-    private var breakerWindow: Duration
+    private var rateLimitPolicy: LichessBotRateLimit.Policy
 
     /// Start times and priorities of requests in the last `recentWindow`,
     /// for telemetry and 429 diagnosis.
@@ -144,12 +149,12 @@ actor LichessBotRequestGate {
 
     init(
         time: any LichessBotTimeSource,
-        breakerWindow: Duration,
+        rateLimitPolicy: LichessBotRateLimit.Policy,
         wallClock: @escaping @Sendable () -> Date = { Date() },
         onEvent: @escaping @Sendable (LichessBotGateEvent) -> Void
     ) {
         self.time = time
-        self.breakerWindow = breakerWindow
+        self.rateLimitPolicy = rateLimitPolicy
         self.wallClock = wallClock
         self.onEvent = onEvent
     }
@@ -169,7 +174,7 @@ actor LichessBotRequestGate {
     func perform<Value: Sendable>(
         priority: LichessBotRequestPriority,
         label: String,
-        causeOf429: @Sendable (Value, Date) -> LichessBotTooManyRequestsCause = { _, _ in .requestRate },
+        causeOf429: @Sendable (Value, Date) -> LichessBotTooManyRequestsCause = { _, _ in .requestRate(bodyWait: nil) },
         _ body: @Sendable () async throws -> (value: Value, response: HTTPURLResponse)
     ) async throws -> (value: Value, response: HTTPURLResponse) {
         try await acquire(priority: priority)
@@ -194,12 +199,14 @@ actor LichessBotRequestGate {
         onEvent(.requestFinished(id: id, priority: priority, label: label, status: status, latency: time.now() - start, retryAfterHeader: retryAfterHeader))
 
         if status == 429 {
-            if case .ownBotGameLimit(let refusal) = causeOf429(result.value, wallClock()) {
+            switch causeOf429(result.value, wallClock()) {
+            case .ownBotGameLimit(let refusal):
                 onEvent(.ownBotGameLimitRefused(refusal, label: label, priority: priority))
                 return result
+            case .requestRate(let bodyWait):
+                let cooldown = beginCooldown(retryAfterHeader: retryAfterHeader, bodyWait: bodyWait, triggerLabel: label, triggerPriority: priority)
+                throw LichessBotGateError.rateLimited(cooldown: cooldown)
             }
-            let cooldown = beginCooldown(retryAfterHeader: retryAfterHeader, triggerLabel: label, triggerPriority: priority)
-            throw LichessBotGateError.rateLimited(cooldown: cooldown)
         }
         return result
     }
@@ -217,15 +224,15 @@ actor LichessBotRequestGate {
         dispatchNext()
     }
 
-    func setBreakerWindow(_ window: Duration) {
-        breakerWindow = window
+    func setRateLimitPolicy(_ policy: LichessBotRateLimit.Policy) {
+        rateLimitPolicy = policy
     }
 
     // MARK: - Opening and closing
 
     /// Close the gate: every waiter and every later request fails with
-    /// `.closed(reason)` until `reopen()`. The breaker and a failed cooldown
-    /// timer close it. Going offline does not: the gate lives as long as the
+    /// `.closed(reason)` until `reopen()`. Only a failed cooldown timer
+    /// closes it. Going offline does not: the gate lives as long as the
     /// controller, so a cooldown outlives going offline and back.
     func close(reason: String) {
         if case .closed = state { return }
@@ -237,9 +244,9 @@ actor LichessBotRequestGate {
     }
 
     /// Reopen after a close. Going online calls this, which makes it the
-    /// operator's explicit decision to resume after a breaker trip. Clears
-    /// the breaker's 429 history; a cooldown still running resumes as a
-    /// cooldown, so nothing is sent before it ends.
+    /// operator's explicit decision to resume. Clears the breaker's 429
+    /// history; a cooldown still running resumes as a cooldown, so nothing
+    /// is sent before it ends.
     func reopen() {
         guard case .closed = state else { return }
         rateLimitTimes.removeAll()
@@ -386,12 +393,12 @@ actor LichessBotRequestGate {
 
     // MARK: - Rate limiting
 
-    private func beginCooldown(retryAfterHeader: String?, triggerLabel: String, triggerPriority: LichessBotRequestPriority) -> Duration {
+    private func beginCooldown(retryAfterHeader: String?, bodyWait: Duration?, triggerLabel: String, triggerPriority: LichessBotRequestPriority) -> Duration {
         let now = time.now()
         let retryAfter = LichessBotRateLimit.parseRetryAfter(retryAfterHeader, now: wallClock())
-        let cooldown = LichessBotRateLimit.cooldown(retryAfter: retryAfter)
+        let cooldown = LichessBotRateLimit.cooldown(retryAfter: retryAfter, bodyWait: bodyWait, margin: rateLimitPolicy.cooldownMargin)
 
-        rateLimitTimes = rateLimitTimes.filter { now - $0 <= breakerWindow }
+        rateLimitTimes = rateLimitTimes.filter { now - $0 <= rateLimitPolicy.breakerWindow }
         rateLimitTimes.append(now)
         let end = now + cooldown
         if let existing = rateLimitCooldownEnd, existing > end {
@@ -402,20 +409,21 @@ actor LichessBotRequestGate {
 
         onEvent(.rateLimited(cooldown: cooldown, triggerLabel: triggerLabel, triggerPriority: triggerPriority, recentRequestCounts: recentRequestCounts(now: now)))
 
-        if rateLimitTimes.count >= 2 {
-            onEvent(.breakerTripped(rateLimitsInWindow: rateLimitTimes.count, window: breakerWindow))
-            close(reason: "rate-limit breaker: \(rateLimitTimes.count) HTTP 429 responses within \(breakerWindow)")
-        } else {
-            switch state {
-            case .open:
-                state = .cooldown(until: end)
-            case .cooldown(let until):
-                state = .cooldown(until: max(until, end))
-            case .closed:
-                // Closed while this request was in flight. A 429 is no
-                // reason to open it; only `reopen()` does that.
-                break
-            }
+        switch state {
+        case .open:
+            state = .cooldown(until: end)
+        case .cooldown(let until):
+            state = .cooldown(until: max(until, end))
+        case .closed:
+            // Closed while this request was in flight. A 429 is no
+            // reason to open it; only `reopen()` does that.
+            break
+        }
+        if rateLimitTimes.count >= rateLimitPolicy.breakerCount {
+            onEvent(.breakerTripped(rateLimitsInWindow: rateLimitTimes.count, window: rateLimitPolicy.breakerWindow))
+            // The count starts over, as every breaker's does: tripping again
+            // takes a fresh run of 429s, not each later one in the window.
+            rateLimitTimes.removeAll()
         }
         return cooldown
     }

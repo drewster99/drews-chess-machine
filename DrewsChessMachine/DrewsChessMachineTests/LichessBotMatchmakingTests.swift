@@ -263,7 +263,7 @@ final class LichessBotMatchmakingTests: XCTestCase {
     // MARK: - When a pass runs
 
     private func conditions() -> LichessBotMatchmaking.PassConditions {
-        LichessBotMatchmaking.PassConditions(isOnline: true, rateLimitHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, ownBotGameLimitUntil: nil, now: now)
+        LichessBotMatchmaking.PassConditions(isOnline: true, newGameHoldActive: false, gateOpen: true, hasChallengeScope: true, playOneGameActive: false, queueHasEntriesToSend: false, ownBotGameLimitUntil: nil, now: now)
     }
 
     func testAPassRunsOnlyWhileOnlineWithNoHoldAndAnEmptyQueue() {
@@ -272,7 +272,7 @@ final class LichessBotMatchmakingTests: XCTestCase {
         offline.isOnline = false
         XCTAssertNotNil(LichessBotMatchmaking.passBlockedReason(offline))
         var held = conditions()
-        held.rateLimitHoldActive = true
+        held.newGameHoldActive = true
         XCTAssertNotNil(LichessBotMatchmaking.passBlockedReason(held))
         var gateShut = conditions()
         gateShut.gateOpen = false

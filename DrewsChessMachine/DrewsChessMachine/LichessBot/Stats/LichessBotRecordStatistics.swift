@@ -823,7 +823,7 @@ private struct LaterAccumulator {
                 clockRow.gamesWithFinalClock += 1
                 clockRow.sumFinalClockMilliseconds += Double(final)
             }
-            if ourScore == 0, LichessBotGameStatusName(rawValue: row.status) == .outOfTime {
+            if LichessBotGameEnding.isTimeForfeitLoss(status: row.status, ourScore: ourScore) {
                 clockRow.flagged += 1
             }
             clock[row.speed] = clockRow

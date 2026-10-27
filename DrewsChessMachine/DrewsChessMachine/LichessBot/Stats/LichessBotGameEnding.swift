@@ -86,6 +86,13 @@ enum LichessBotGameEnding: Sendable, Hashable, Comparable {
         return false
     }
 
+    /// Whether DCM lost the game on time: its flag fell (`outoftime`) and it
+    /// scored nothing. The one rule for the clock statistics' flagged count
+    /// and the lost-on-time breaker.
+    static func isTimeForfeitLoss(status: String, ourScore: Double?) -> Bool {
+        ourScore == 0 && LichessBotGameStatusName(rawValue: status) == .outOfTime
+    }
+
     /// Classify one game. `localDrawCondition` is nil both when DCM's
     /// engine saw no draw rule and when it is unknown; `drawConditionKnown`
     /// tells them apart (false only for an index row without facts).

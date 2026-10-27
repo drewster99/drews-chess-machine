@@ -9,7 +9,7 @@ final class LichessBotPhase5CoreTests: XCTestCase {
     // MARK: - Request records (plan §14.3a)
 
     private func makeClient(records: SyncBox<[LichessBotRequestRecord]>, _ handler: @escaping LichessBotScriptedTransport.Handler) throws -> LichessBotAPIClient {
-        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), rateLimitPolicy: .testPolicy) { _ in }
         return LichessBotAPIClient(
             baseURL: try LichessBotAPIClient.lichessBaseURL(),
             token: "lip_SECRETTOKEN",
@@ -66,7 +66,7 @@ final class LichessBotPhase5CoreTests: XCTestCase {
     /// A request the gate refuses is still recorded, with no status.
     func testRefusedRequestIsRecorded() async throws {
         let records = SyncBox<[LichessBotRequestRecord]>([])
-        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), rateLimitPolicy: .testPolicy) { _ in }
         let client = LichessBotAPIClient(
             baseURL: try LichessBotAPIClient.lichessBaseURL(),
             token: "lip_x",
@@ -154,7 +154,7 @@ final class LichessBotPhase5CoreTests: XCTestCase {
         let manager = LichessBotSessionManager(
             accountAPI: account,
             gameAPI: server,
-            gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
+            gate: LichessBotRequestGate(time: time, rateLimitPolicy: .testPolicy) { _ in },
             slots: try await LichessBotModelSlots.prepare(for: frozen.model, provider: provider, time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in }),
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,

@@ -130,7 +130,7 @@ final class LichessBotDeclineReasonKeyTests: XCTestCase {
         ]
         XCTAssertEqual(Set(expected.keys), Set(LichessBotDeclineReason.allCases))
         let transport = LichessBotScriptedTransport { _ in (200, Data(#"{"ok":true}"#.utf8), [:]) }
-        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), rateLimitPolicy: .testPolicy) { _ in }
         let client = LichessBotAPIClient(baseURL: try LichessBotAPIClient.lichessBaseURL(), token: "lip_TESTTOKEN123", transport: transport, gate: gate)
         for reason in LichessBotDeclineReason.allCases {
             try await client.declineChallenge(id: "c1", reason: reason)

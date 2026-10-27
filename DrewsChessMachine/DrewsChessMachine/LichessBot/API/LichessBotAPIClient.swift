@@ -444,7 +444,7 @@ final class LichessBotAPIClient: Sendable {
         do {
             (response, http) = try await gate.perform(priority: priority, label: label, causeOf429: { answer, respondedAt in
                 guard let refusal = LichessBotOwnBotGameLimitRefusal.parse(status: answer.response.statusCode, body: answer.body, respondedAt: respondedAt) else {
-                    return .requestRate
+                    return .requestRate(bodyWait: LichessBotRateLimit.bodyWait(from: answer.body))
                 }
                 ownLimit.value = refusal
                 return .ownBotGameLimit(refusal)

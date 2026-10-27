@@ -96,6 +96,13 @@ struct LichessBotControlsCard: View {
                         .font(.system(.callout, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
+                // A 429 or a circuit breaker: no new games; games in progress
+                // continue.
+                Text("No new games: \(controller.newGameHoldSummary ?? "")")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .shown(controller.newGameHoldSummary != nil)
                 HStack(spacing: 8) {
                     Button("Go Online") {
                         Task { await controller.goOnline() }

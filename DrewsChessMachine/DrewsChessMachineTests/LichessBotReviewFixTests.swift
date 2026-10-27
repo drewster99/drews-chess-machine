@@ -107,7 +107,7 @@ final class LichessBotReviewFixTests: XCTestCase {
         let manager = LichessBotSessionManager(
             accountAPI: LichessBotFakeAccountAPI(script: []),
             gameAPI: try LichessBotFakeGameServer(),
-            gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
+            gate: LichessBotRequestGate(time: time, rateLimitPolicy: .testPolicy) { _ in },
             slots: try await LichessBotModelSlots.prepare(for: LichessBotModelSettings.testBaseline(), provider: try await LichessBotFakeModelProvider.randomChampion(), time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in }),
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,
@@ -116,11 +116,11 @@ final class LichessBotReviewFixTests: XCTestCase {
             onEvent: { _ in },
             journalReader: LichessBotTestJournalReaders.none
         )
-        await manager.setRateLimitHold(true)
+        await manager.setNewGameHold(true)
         var accepting = await manager.isAcceptingNewGames
         XCTAssertFalse(accepting)
         await manager.setAcceptingNewGames(false)
-        await manager.setRateLimitHold(false)
+        await manager.setNewGameHold(false)
         accepting = await manager.isAcceptingNewGames
         XCTAssertFalse(accepting, "the drain is still in force")
         await manager.setAcceptingNewGames(true)
@@ -175,7 +175,7 @@ final class LichessBotReviewFixTests: XCTestCase {
         let manager = LichessBotSessionManager(
             accountAPI: account,
             gameAPI: try LichessBotFakeGameServer(),
-            gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
+            gate: LichessBotRequestGate(time: time, rateLimitPolicy: .testPolicy) { _ in },
             slots: try await LichessBotModelSlots.prepare(for: LichessBotModelSettings.testBaseline(), provider: provider, time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in }),
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,
@@ -209,7 +209,7 @@ final class LichessBotReviewFixTests: XCTestCase {
         let manager = LichessBotSessionManager(
             accountAPI: account,
             gameAPI: try LichessBotFakeGameServer(),
-            gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
+            gate: LichessBotRequestGate(time: time, rateLimitPolicy: .testPolicy) { _ in },
             slots: try await LichessBotModelSlots.prepare(for: LichessBotModelSettings.testBaseline(), provider: try await LichessBotFakeModelProvider.randomChampion(), time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in }),
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,
@@ -244,7 +244,7 @@ final class LichessBotReviewFixTests: XCTestCase {
         let manager = LichessBotSessionManager(
             accountAPI: account,
             gameAPI: try LichessBotFakeGameServer(),
-            gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
+            gate: LichessBotRequestGate(time: time, rateLimitPolicy: .testPolicy) { _ in },
             slots: try await LichessBotModelSlots.prepare(for: LichessBotModelSettings.testBaseline(), provider: try await LichessBotFakeModelProvider.randomChampion(), time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in }),
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,

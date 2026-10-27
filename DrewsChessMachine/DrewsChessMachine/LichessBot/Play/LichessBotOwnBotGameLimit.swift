@@ -69,9 +69,11 @@ struct LichessBotOwnBotGameLimitRefusal: Sendable, Equatable {
 
 /// What a 429 response means to the request gate.
 enum LichessBotTooManyRequestsCause: Sendable, Equatable {
-    /// Lichess's request-rate limiting: the gate cools down, and a second
-    /// one inside the breaker window closes it.
-    case requestRate
+    /// Lichess's request-rate limiting: the gate cools down for at least
+    /// what Lichess asked, including `bodyWait`, the body's
+    /// `ratelimit.seconds` (nil when the body named none or wasn't read),
+    /// and counts it toward the rate-limit breaker.
+    case requestRate(bodyWait: Duration?)
     /// DCM at its own daily bot-game limit: an ordinary refusal for the
     /// gate, which neither cools down nor counts it.
     case ownBotGameLimit(LichessBotOwnBotGameLimitRefusal)

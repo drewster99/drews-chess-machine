@@ -29,7 +29,7 @@ final class LichessBotReadyBeforePlayManagerTests: XCTestCase {
         let manager = LichessBotSessionManager(
             accountAPI: account,
             gameAPI: server,
-            gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
+            gate: LichessBotRequestGate(time: time, rateLimitPolicy: .testPolicy) { _ in },
             slots: slots,
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,

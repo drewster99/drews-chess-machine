@@ -13,13 +13,45 @@ enum LichessBotRateLimit {
     /// lockout.
     static let minimumCooldown: Duration = .seconds(60)
 
-    /// Cooldown to apply after a 429: the server's `Retry-After` when it asks
-    /// for longer than the floor, otherwise the floor.
-    static func cooldown(retryAfter: Duration?) -> Duration {
-        guard let retryAfter, retryAfter > minimumCooldown else {
-            return minimumCooldown
+    /// How the request gate answers request-rate 429s (owner decisions
+    /// 2026-10-26, `LICHESS_BOT_CIRCUIT_BREAKERS_PLAN.md`): `breakerCount`
+    /// of them inside `breakerWindow` trip the rate-limit breaker, and every
+    /// cooldown adds `cooldownMargin` to what Lichess asked for.
+    struct Policy: Sendable, Equatable {
+        let breakerCount: Int
+        let breakerWindow: Duration
+        let cooldownMargin: Duration
+    }
+
+    /// Cooldown to apply after a 429: the longest wait Lichess named (its
+    /// `Retry-After` header, or the body's `ratelimit.seconds`), never less
+    /// than the floor, plus `margin`. Lichess asks for "a full minute"; the
+    /// margin is DCM's own caution on top.
+    static func cooldown(retryAfter: Duration?, bodyWait: Duration?, margin: Duration) -> Duration {
+        let asked = [retryAfter, bodyWait].compactMap { $0 }.max() ?? .zero
+        return max(asked, minimumCooldown) + margin
+    }
+
+    /// The wait a 429's body names, `{"ratelimit": {"seconds": N}}` (lila's
+    /// `JsonLimited`, any limit key), or nil when the body has none: not
+    /// JSON, no `ratelimit` object, or no non-negative number there.
+    static func bodyWait(from body: Data) -> Duration? {
+        guard !body.isEmpty else { return nil }
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: body)
+        } catch {
+            // Not JSON (a proxy's page): it names no wait.
+            return nil
         }
-        return retryAfter
+        guard let fields = object as? [String: Any],
+              let rateLimit = fields["ratelimit"] as? [String: Any],
+              let seconds = rateLimit["seconds"] as? NSNumber,
+              seconds.doubleValue >= 0
+        else {
+            return nil
+        }
+        return .seconds(seconds.doubleValue)
     }
 
     /// Parse an HTTP `Retry-After` header, which is either delta-seconds

@@ -24,7 +24,7 @@ final class LichessBotMultipleChallengesTests: XCTestCase {
         let manager = LichessBotSessionManager(
             accountAPI: account,
             gameAPI: try LichessBotFakeGameServer(),
-            gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
+            gate: LichessBotRequestGate(time: time, rateLimitPolicy: .testPolicy) { _ in },
             slots: try await LichessBotModelSlots.prepare(for: LichessBotModelSettings.testBaseline(), provider: try await LichessBotFakeModelProvider.randomChampion(), time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in }),
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,
@@ -72,7 +72,7 @@ final class LichessBotMultipleChallengesTests: XCTestCase {
         let manager = LichessBotSessionManager(
             accountAPI: account,
             gameAPI: try LichessBotFakeGameServer(),
-            gate: LichessBotRequestGate(time: time, breakerWindow: .seconds(3600)) { _ in },
+            gate: LichessBotRequestGate(time: time, rateLimitPolicy: .testPolicy) { _ in },
             slots: try await LichessBotModelSlots.prepare(for: LichessBotModelSettings.testBaseline(), provider: try await LichessBotFakeModelProvider.randomChampion(), time: time, folderScanner: LichessBotNoModelsFolderScanner(), log: { _ in }),
             ourAccountID: LichessBotFakeGameServer.botID,
             time: time,

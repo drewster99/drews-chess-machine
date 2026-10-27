@@ -557,9 +557,20 @@ final class LichessBotController {
     private let gate: LichessBotRequestGate
     /// Where gate events go while a runtime is up.
     private let gateEventSink = SyncBox<AsyncStream<LichessBotControllerEvent>.Continuation?>(nil)
-    /// After a 429: new games are declined until this time, then accepting
-    /// resumes (plan §5.4, `postRateLimitDrainMinutes`).
-    private var rateLimitHoldUntil: Date?
+    /// What is stopping new games, and until when: a 429 or a circuit
+    /// breaker (`LICHESS_BOT_CIRCUIT_BREAKERS_PLAN.md`). Games in progress
+    /// are never touched by a hold. Outlives going offline and back, except
+    /// the holds only the operator ends, which going online ends.
+    private(set) var newGameHolds = LichessBotNewGameHolds()
+    /// The circuit breakers' counts (thresholds from the settings in force).
+    private var lostOnTimeBreaker: LichessBotLostOnTimeBreaker
+    private var movePostFailureBreaker: LichessBotEventRateBreaker
+    private var reconnectStormBreaker: LichessBotEventRateBreaker
+    /// Event streams opened since going online; every one after the first
+    /// is a reconnect.
+    private var eventStreamOpensSinceOnline = 0
+    /// The latest settings save's push of the rate-limit policy to the gate.
+    private var rateLimitPolicyPush: Task<Void, Never>?
     /// The operator (or "Play one game") asked to stop taking games: the bot
     /// goes offline once they finish. A rate-limit hold alone does not.
     private var drainRequested = false
@@ -605,6 +616,9 @@ final class LichessBotController {
             settingsError = error.localizedDescription
         }
         settings = loadedSettings
+        lostOnTimeBreaker = Self.makeLostOnTimeBreaker(loadedSettings.breakers)
+        movePostFailureBreaker = Self.makeEventRateBreaker(loadedSettings.breakers.movePostFailures)
+        reconnectStormBreaker = Self.makeEventRateBreaker(loadedSettings.breakers.reconnectStorm)
         showsGrid = defaults.bool(forKey: Self.showsGridKey)
         focusedGameID = defaults.string(forKey: Self.focusedGameIDKey)
         if let savedTab = defaults.string(forKey: Self.rememberedSettingsTabKey) {
@@ -618,7 +632,7 @@ final class LichessBotController {
         let sink = gateEventSink
         gate = LichessBotRequestGate(
             time: LichessBotSystemTimeSource(),
-            breakerWindow: .seconds(loadedSettings.connection.rateLimitBreakerWindowMinutes * 60)
+            rateLimitPolicy: Self.rateLimitPolicy(loadedSettings)
         ) { event in
             log.record(LichessBotController.kind(of: event), LichessBotController.describe(event))
             sink.value?.yield(.gate(event))
@@ -869,10 +883,17 @@ final class LichessBotController {
         settingsError = nil
         settingsBox?.value = newSettings
         let gate = self.gate
-        let window = Duration.seconds(newSettings.connection.rateLimitBreakerWindowMinutes * 60)
-        Task {
-            await gate.setBreakerWindow(window)
+        let policy = Self.rateLimitPolicy(newSettings)
+        // Chained, so two quick saves reach the gate in the order made.
+        let previousPush = rateLimitPolicyPush
+        rateLimitPolicyPush = Task {
+            await previousPush?.value
+            await gate.setRateLimitPolicy(policy)
         }
+        let breakers = newSettings.breakers
+        lostOnTimeBreaker.update(count: breakers.lostOnTime.count, windowGames: breakers.lostOnTime.windowGames)
+        movePostFailureBreaker.update(count: breakers.movePostFailures.count, windowMinutes: breakers.movePostFailures.windowMinutes)
+        reconnectStormBreaker.update(count: breakers.reconnectStorm.count, windowMinutes: breakers.reconnectStorm.windowMinutes)
         if accountChanged {
             // The token status and account shown belong to the previous id.
             tokenState = .unknown
@@ -1047,6 +1068,18 @@ final class LichessBotController {
         }
         oneGameRequested = oneGame
         drainRequested = false
+        // Going online is the operator's resume after a breaker that waits
+        // for it; dated holds still running (a 429's) stay.
+        for reason in newGameHolds.operatorWentOnline() + newGameHolds.expire(now: Date()) {
+            protocolLog.record(.lifecycle, "new-games hold over: \(reason.label)")
+            SessionLogger.shared.log("[LICHESS-BOT] new-games hold over: \(reason.label)")
+        }
+        // Every breaker counts from going online: the operator's resume, and
+        // a new runtime's events say nothing about the last one's.
+        lostOnTimeBreaker = Self.makeLostOnTimeBreaker(settings.breakers)
+        movePostFailureBreaker = Self.makeEventRateBreaker(settings.breakers.movePostFailures)
+        reconnectStormBreaker = Self.makeEventRateBreaker(settings.breakers.reconnectStorm)
+        eventStreamOpensSinceOnline = 0
         // The running bot consults the player notes (favorites, bot limits,
         // decline cool-downs) and records into them and the challenge-outcome
         // log. The bot window loads both when it opens, but the bot can go
@@ -1072,8 +1105,14 @@ final class LichessBotController {
             }
             // Something may have stopped the new runtime while it started.
             guard connection == .connecting, runtime != nil else { return }
-            // A post-429 hold outlives going offline and back (plan §5.4).
-            connection = rateLimitHoldUntil == nil ? .online : .draining
+            // A dated hold (a 429's, a breaker's) outlives going offline and
+            // back (plan §5.4).
+            connection = newGameHolds.isHolding ? .draining : .online
+            // A breaker that waits for the operator tripped while going
+            // online found no runtime to drain; drain now.
+            if newGameHolds.requiresOperator {
+                await drain()
+            }
             protocolLog.record(.lifecycle, oneGame ? "online (one game)" : "online")
             SessionLogger.shared.log("[LICHESS-BOT] online\(oneGame ? " (one game)" : "") as \(accountID)")
             for failure in HardwareInfo.current.readFailures {
@@ -2481,8 +2520,8 @@ final class LichessBotController {
     /// the latest gate snapshot, or nil when one may.
     private var outgoingSendBlockedReason: String? {
         guard runtime != nil else { return "the bot is offline" }
-        if rateLimitHoldUntil != nil {
-            return "rate-limit hold after a 429"
+        if let holds = newGameHoldSummary {
+            return "new games held: \(holds)"
         }
         switch connection {
         case .online:
@@ -2776,7 +2815,7 @@ final class LichessBotController {
     private func startAutomaticMatchmakingPassIfDue() {
         let matchmaking = settings.matchmaking
         guard matchmaking.enabled, !matchmakingPassRunning, !isFillingOpenSlots,
-              runtime != nil, connection == .online, rateLimitHoldUntil == nil, !oneGameRequested,
+              runtime != nil, connection == .online, !newGameHolds.isHolding, !oneGameRequested,
               !challengeQueue.hasEntriesToSend, Date() >= nextAutomaticMatchmakingPassAt else { return }
         let slots = LichessBotMatchmaking.openSlots(
             maxConcurrentGames: settings.challenge.maxConcurrentGames,
@@ -2961,7 +3000,7 @@ final class LichessBotController {
         let readAt = Date()
         let conditions = LichessBotMatchmaking.PassConditions(
             isOnline: runtime != nil && connection == .online,
-            rateLimitHoldActive: rateLimitHoldUntil != nil,
+            newGameHoldActive: newGameHolds.isHolding,
             gateOpen: phase == .open,
             hasChallengeScope: hasChallengeScope,
             playOneGameActive: oneGameRequested,
@@ -3402,8 +3441,8 @@ final class LichessBotController {
             await manager.setOneGameMode(true)
             try throwIfGoingOnlineStopped(after: .startingSession)
         }
-        if rateLimitHoldUntil != nil {
-            await manager.setRateLimitHold(true)
+        if newGameHolds.isHolding {
+            await manager.setNewGameHold(true)
             try throwIfGoingOnlineStopped(after: .startingSession)
         }
         await beginGoingOnlineStep(.readingTodaysGames)
@@ -3691,8 +3730,8 @@ final class LichessBotController {
             if todays != gamesTodayByOpponent {
                 gamesTodayByOpponent = todays
             }
-            if let until = rateLimitHoldUntil, Date() >= until {
-                await endRateLimitHold()
+            if newGameHolds.isHolding {
+                await releaseExpiredHolds()
                 guard current() else { return }
             }
             let timeout = settings.challenge.outgoingChallengeTimeoutSeconds
@@ -3824,8 +3863,30 @@ final class LichessBotController {
             updateAutoFollow()
             switch gameEvent {
             case .stoppedMoving(let reason):
-                // Plan §6.1 B: never race another client; go offline.
-                failRuntime("game \(gameID): \(reason)")
+                // Plan §6.1 B: never race another client. That game stops
+                // moving; the others finish, then the bot goes offline
+                // (no automatic action abandons a game).
+                raiseAlarm("Game \(gameID) stopped moving: \(reason); no new games until you go online; the other games continue")
+                Task {
+                    await holdNewGames(.gameStoppedMoving, until: .whenOperatorGoesOnline)
+                }
+            case .movePostFailed:
+                if movePostFailureBreaker.note(at: Date()) {
+                    let breaker = settings.breakers.movePostFailures
+                    Task {
+                        await tripBreaker(.movePostFailures, resumesAutomatically: breaker.resumesAutomatically, resumeAfterMinutes: breaker.resumeAfterMinutes,
+                                          detail: "\(breaker.count) move posts got no answer within \(breaker.windowMinutes) min; moves keep being retried")
+                    }
+                }
+            case .finished(let status, _, _):
+                if let ourScore = listedGame(gameID)?.ourScore,
+                   lostOnTimeBreaker.noteFinished(gameID: gameID, lostOnTime: LichessBotGameEnding.isTimeForfeitLoss(status: status.raw, ourScore: ourScore)) {
+                    let breaker = settings.breakers.lostOnTime
+                    Task {
+                        await tripBreaker(.lostOnTime, resumesAutomatically: breaker.resumesAutomatically, resumeAfterMinutes: breaker.resumeAfterMinutes,
+                                          detail: "\(breaker.count) games lost on time among the last \(breaker.windowGames)")
+                    }
+                }
             case .tokenRejected(let detail):
                 failRuntime("Lichess rejected the token: \(detail)")
             default:
@@ -3872,6 +3933,14 @@ final class LichessBotController {
         switch event {
         case .eventStreamOpened(let attempt):
             protocolLog.record(.stream, "event stream opened", fields: ["attempt": "\(attempt)"])
+            eventStreamOpensSinceOnline += 1
+            if eventStreamOpensSinceOnline > 1, reconnectStormBreaker.note(at: Date()) {
+                let breaker = settings.breakers.reconnectStorm
+                Task {
+                    await tripBreaker(.reconnectStorm, resumesAutomatically: breaker.resumesAutomatically, resumeAfterMinutes: breaker.resumeAfterMinutes,
+                                      detail: "the event stream reconnected \(breaker.count) times within \(breaker.windowMinutes) min")
+                }
+            }
         case .eventStreamEnded(let reason):
             protocolLog.record(.stream, "event stream ended: \(reason)")
         case .takeoverSuspected(let count):
@@ -4090,48 +4159,118 @@ final class LichessBotController {
     private func handle(_ event: LichessBotGateEvent) {
         switch event {
         case .rateLimited(let cooldown, let label, _, _):
-            let minutes = settings.connection.postRateLimitDrainMinutes
-            raiseAlarm("Rate limited by Lichess on \(label); cooling down \(cooldown) and taking no new games for \(minutes) min")
+            // No new games until a while after the cooldown ends (plan §5.4);
+            // games in progress go on once it ends.
+            let cooldownSeconds = TimeInterval(cooldown.components.seconds)
+            let end = LichessBotNewGameHoldEnd.at(Date().addingTimeInterval(cooldownSeconds + TimeInterval(settings.connection.postRateLimitDrainMinutes * 60)))
+            raiseAlarm("Rate limited by Lichess on \(label); every request waits \(cooldown), and no new games \(Self.describe(end))")
             Task {
-                await startRateLimitHold(minutes: minutes)
+                await holdNewGames(.rateLimit, until: end)
             }
         case .ownBotGameLimitRefused(let refusal, let label, _):
             recordOwnBotGameLimit(refusal, label: label)
-        case .breakerTripped:
-            failRuntime("a second 429 within the breaker window closed the request gate")
+        case .breakerTripped(let count, let window):
+            let breaker = settings.breakers.rateLimit
+            Task {
+                await tripBreaker(.rateLimitBreaker, resumesAutomatically: breaker.resumesAutomatically, resumeAfterMinutes: breaker.resumeAfterMinutes,
+                                  detail: "\(count) HTTP 429 responses within \(window)")
+            }
         case .closed(let reason):
-            // Any other close (a failed cooldown timer) stops the bot just as
-            // visibly. After a breaker trip the runtime is already gone and
-            // this does nothing.
+            // Only a failed cooldown timer closes the gate: nothing can be
+            // sent safely, so no game can go on either.
             failRuntime("request gate closed: \(reason)")
         default:
             break
         }
     }
 
-    /// After a 429: decline new games for a while; games in progress go on
-    /// (plan §5.4). Accepting resumes when the hold ends, unless the
-    /// operator drained meanwhile.
-    private func startRateLimitHold(minutes: Int) async {
-        rateLimitHoldUntil = Date().addingTimeInterval(TimeInterval(minutes * 60))
+    /// Stop new games for `reason` until `end` (`LichessBotNewGameHolds`);
+    /// games in progress go on. A hold only the operator can end drains, so
+    /// the bot goes offline once they finish.
+    private func holdNewGames(_ reason: LichessBotNewGameHoldReason, until end: LichessBotNewGameHoldEnd) async {
+        newGameHolds.hold(reason, until: end)
+        protocolLog.record(.lifecycle, "new-games hold: \(reason.label) \(Self.describe(end))")
         guard let manager = runtime?.manager else { return }
-        await manager.setRateLimitHold(true)
-        guard runtime?.manager === manager else { return }
-        if connection == .online {
+        await pushNewGameHold(to: manager)
+        guard runtime?.manager === manager, newGameHolds.isHolding else { return }
+        if newGameHolds.requiresOperator {
+            if !drainRequested {
+                await drain()
+            }
+        } else if connection == .online {
             connection = .draining
         }
     }
 
-    /// The hold is over. The manager accepts again only if nothing else
-    /// (a drain, "one game") stopped it; the state follows the manager.
-    private func endRateLimitHold() async {
-        rateLimitHoldUntil = nil
-        guard let manager = runtime?.manager else { return }
-        await manager.setRateLimitHold(false)
+    /// A circuit breaker tripped: alarm, and hold new games per its resume
+    /// setting.
+    private func tripBreaker(_ reason: LichessBotNewGameHoldReason, resumesAutomatically: Bool, resumeAfterMinutes: Int, detail: String) async {
+        let end: LichessBotNewGameHoldEnd = resumesAutomatically
+            ? .at(Date().addingTimeInterval(TimeInterval(resumeAfterMinutes * 60)))
+            : .whenOperatorGoesOnline
+        raiseAlarm("Circuit breaker, \(reason.label): \(detail); no new games \(Self.describe(end)); games in progress continue")
+        await holdNewGames(reason, until: end)
+    }
+
+    /// Dated holds that are over end. With none left the manager accepts
+    /// again, and the state follows it, unless something else (a drain,
+    /// "one game") stopped it.
+    private func releaseExpiredHolds() async {
+        let ended = newGameHolds.expire(now: Date())
+        guard !ended.isEmpty else { return }
+        for reason in ended {
+            protocolLog.record(.lifecycle, "new-games hold over: \(reason.label)")
+            SessionLogger.shared.log("[LICHESS-BOT] new-games hold over: \(reason.label)")
+        }
+        guard !newGameHolds.isHolding, let manager = runtime?.manager else { return }
+        await pushNewGameHold(to: manager)
         let accepting = await manager.isAcceptingNewGames
-        guard runtime?.manager === manager, connection == .draining, accepting, !drainRequested else { return }
+        // A new hold may have started during either wait.
+        guard runtime?.manager === manager, !newGameHolds.isHolding, connection == .draining, accepting, !drainRequested else { return }
         connection = .online
-        protocolLog.record(.lifecycle, "rate-limit hold over; accepting games again")
+        protocolLog.record(.lifecycle, "no holds left; accepting games again")
+    }
+
+    /// Make the manager's flag agree with `newGameHolds`. Re-read after each
+    /// push: a hold that starts or ends during the wait is pushed too, so
+    /// whichever caller finishes last leaves the two in agreement.
+    private func pushNewGameHold(to manager: LichessBotSessionManager) async {
+        var pushed: Bool?
+        while pushed != newGameHolds.isHolding {
+            let holding = newGameHolds.isHolding
+            await manager.setNewGameHold(holding)
+            guard runtime?.manager === manager else { return }
+            pushed = holding
+        }
+    }
+
+    /// The holds in force, for the Overview and the outgoing-send reason.
+    var newGameHoldSummary: String? {
+        newGameHolds.summary { $0.formatted(date: .omitted, time: .shortened) }
+    }
+
+    nonisolated static func describe(_ end: LichessBotNewGameHoldEnd) -> String {
+        switch end {
+        case .at(let date):
+            return "until \(date.formatted(date: .omitted, time: .shortened))"
+        case .whenOperatorGoesOnline:
+            return "until you go online (the bot goes offline once its games finish)"
+        }
+    }
+
+    nonisolated static func rateLimitPolicy(_ settings: LichessBotSettings) -> LichessBotRateLimit.Policy {
+        LichessBotRateLimit.Policy(
+            breakerCount: settings.breakers.rateLimit.count,
+            breakerWindow: .seconds(settings.breakers.rateLimit.windowMinutes * 60),
+            cooldownMargin: .seconds(settings.connection.rateLimitCooldownMarginSeconds))
+    }
+
+    nonisolated static func makeLostOnTimeBreaker(_ breakers: LichessBotBreakerSettings) -> LichessBotLostOnTimeBreaker {
+        LichessBotLostOnTimeBreaker(count: breakers.lostOnTime.count, windowGames: breakers.lostOnTime.windowGames)
+    }
+
+    nonisolated static func makeEventRateBreaker(_ breaker: LichessBotTimedBreakerSettings) -> LichessBotEventRateBreaker {
+        LichessBotEventRateBreaker(count: breaker.count, windowMinutes: breaker.windowMinutes)
     }
 
     /// Refresh the Overview's account (ratings, game counts) once a game is
@@ -4238,6 +4377,11 @@ final class LichessBotController {
             }
         }
         stopRuntime(reason: oneGameRequested ? "one game finished" : "drained")
+        // A breaker that waits for the operator drained the bot: it stays
+        // stopped, saying why, until the operator goes online.
+        if newGameHolds.requiresOperator, let holds = newGameHoldSummary {
+            connection = .error("Stopped for new games: \(holds)")
+        }
         // A quit asked for while records were being filed is answered now.
         completeQuitIfPending(quit: true)
     }

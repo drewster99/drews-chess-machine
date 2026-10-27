@@ -154,6 +154,22 @@ enum LichessBotSettingsStore {
             result["chat"] = chat
         }
 
+        // connection.rateLimitBreakerWindowMinutes → breakers.rateLimit
+        // .windowMinutes (circuit-breakers plan, 2026-10-26).
+        if var connection = result["connection"] as? [String: Any],
+           let old = connection["rateLimitBreakerWindowMinutes"] {
+            connection["rateLimitBreakerWindowMinutes"] = nil
+            result["connection"] = connection
+            var breakers = (result["breakers"] as? [String: Any]) ?? [:]
+            var rateLimit = (breakers["rateLimit"] as? [String: Any]) ?? [:]
+            if rateLimit["windowMinutes"] == nil {
+                rateLimit["windowMinutes"] = old
+                breakers["rateLimit"] = rateLimit
+                result["breakers"] = breakers
+                notes.append("connection.rateLimitBreakerWindowMinutes \(old) → breakers.rateLimit.windowMinutes")
+            }
+        }
+
         return (result, notes)
     }
 

@@ -70,6 +70,7 @@ enum LichessBotSettingsTab: String, CaseIterable, Identifiable, Sendable {
         case .connection:
             result.connection = draft.connection
             result.connection.expectedAccountID = baseline.connection.expectedAccountID
+            result.breakers = draft.breakers
             result.display = draft.display
         case .account:
             result.connection.expectedAccountID = draft.connection.expectedAccountID

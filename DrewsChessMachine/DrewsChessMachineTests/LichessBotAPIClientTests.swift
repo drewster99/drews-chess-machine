@@ -40,7 +40,7 @@ final class LichessBotAPIClientTests: XCTestCase {
 
     private func makeClient(_ handler: @escaping LichessBotScriptedTransport.Handler) throws -> (LichessBotAPIClient, LichessBotScriptedTransport) {
         let transport = LichessBotScriptedTransport(handler: handler)
-        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), breakerWindow: .seconds(3600)) { _ in }
+        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), rateLimitPolicy: .testPolicy) { _ in }
         let client = LichessBotAPIClient(baseURL: try LichessBotAPIClient.lichessBaseURL(), token: token, transport: transport, gate: gate)
         return (client, transport)
     }

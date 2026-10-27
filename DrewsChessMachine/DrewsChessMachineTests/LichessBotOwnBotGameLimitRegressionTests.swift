@@ -26,7 +26,7 @@ final class LichessBotOwnBotGameLimitRegressionTests: XCTestCase {
             }
             return (200, Self.okBody, [:])
         }
-        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), breakerWindow: .seconds(3600)) { event in
+        let gate = LichessBotRequestGate(time: LichessBotVirtualTime(), rateLimitPolicy: .testPolicy) { event in
             events.modify { $0.append(event) }
         }
         let client = LichessBotAPIClient(baseURL: try LichessBotAPIClient.lichessBaseURL(), token: "lip_TESTTOKEN123", transport: transport, gate: gate)

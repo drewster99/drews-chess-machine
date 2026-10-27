@@ -57,7 +57,7 @@ final class LichessBotRequestGateTests: XCTestCase {
     }
 
     private func makeGate(time: any LichessBotTimeSource = LichessBotVirtualTime(), breakerWindow: Duration = .seconds(3600), log: EventLog = EventLog()) -> LichessBotRequestGate {
-        LichessBotRequestGate(time: time, breakerWindow: breakerWindow) { event in
+        LichessBotRequestGate(time: time, rateLimitPolicy: LichessBotRateLimit.Policy(breakerCount: 2, breakerWindow: breakerWindow, cooldownMargin: .zero)) { event in
             log.append(event)
         }
     }
@@ -252,15 +252,25 @@ final class LichessBotRequestGateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(try XCTUnwrap(startedAt.value) - limitedAt, .seconds(300))
     }
 
-    func testSecondRateLimitInsideTheWindowTripsTheBreaker() async throws {
+    /// Protects: a second 429 inside the window trips the breaker, and the
+    /// gate keeps cooling down instead of closing: the next request goes out
+    /// once the cooldown ends (owner decision 2026-10-26: no automatic action
+    /// abandons a game, so moves must still be sent).
+    /// Fails if: the breaker closes the gate, or never trips.
+    func testSecondRateLimitInsideTheWindowTripsTheBreakerWithoutClosingTheGate() async throws {
         let log = EventLog()
-        let gate = makeGate(breakerWindow: .seconds(3600), log: log)
+        let time = LichessBotVirtualTime()
+        let gate = makeGate(time: time, log: log)
         let limited = try lichessBotTestResponse(status: 429)
         let response = try ok()
 
+        let lastLimitedAt = SyncBox<Duration?>(nil)
         for attempt in 0..<2 {
             do {
-                _ = try await gate.perform(priority: .move, label: "move \(attempt)") { (value: 0, response: limited) }
+                _ = try await gate.perform(priority: .move, label: "move \(attempt)") {
+                    lastLimitedAt.value = time.now()
+                    return (value: 0, response: limited)
+                }
                 XCTFail("a 429 must throw")
             } catch LichessBotGateError.rateLimited {
                 // expected
@@ -268,15 +278,49 @@ final class LichessBotRequestGateTests: XCTestCase {
         }
         XCTAssertTrue(log.events.value.contains { if case .breakerTripped = $0 { return true } else { return false } })
 
-        do {
-            _ = try await gate.perform(priority: .move, label: "after breaker") { (value: 0, response: response) }
-            XCTFail("the gate must stay closed after the breaker trips")
-        } catch LichessBotGateError.closed {
-            // expected
+        let startedAt = SyncBox<Duration?>(nil)
+        _ = try await gate.perform(priority: .move, label: "after breaker") {
+            startedAt.value = time.now()
+            return (value: 0, response: response)
         }
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(startedAt.value) - XCTUnwrap(lastLimitedAt.value), LichessBotRateLimit.minimumCooldown, "the request waited out the cooldown")
+        XCTAssertFalse(log.events.value.contains { if case .closed = $0 { return true } else { return false } }, "the breaker never closes the gate")
+    }
 
-        await gate.reopen()
-        _ = try await gate.perform(priority: .move, label: "after reopen") { (value: 0, response: response) }
+    /// Protects: after a trip the breaker's count starts over, so it trips
+    /// again only after a fresh run of 429s, not at every later one inside
+    /// the window (each trip restarts the bot's two-hour hold).
+    /// Fails if: the gate keeps the tripping 429s and re-trips on the next.
+    func testTheBreakerCountStartsOverAfterATrip() async throws {
+        let log = EventLog()
+        let gate = makeGate(log: log)
+        let limited = try lichessBotTestResponse(status: 429)
+        func trips() -> Int {
+            log.events.value.filter { if case .breakerTripped = $0 { return true } else { return false } }.count
+        }
+        for attempt in 0..<4 {
+            do {
+                _ = try await gate.perform(priority: .move, label: "move \(attempt)") { (value: 0, response: limited) }
+                XCTFail("a 429 must throw")
+            } catch LichessBotGateError.rateLimited {
+            }
+            XCTAssertEqual(trips(), [0, 1, 1, 2][attempt], "after 429 number \(attempt + 1)")
+        }
+    }
+
+    /// Protects: the gate's cooldown is the longest wait Lichess named,
+    /// from the body when it beats `Retry-After`, plus the policy's margin.
+    /// Fails if: the gate ignores the body's wait or the margin.
+    func testBodyWaitAndMarginSetTheGatesCooldown() async throws {
+        let time = LichessBotVirtualTime()
+        let gate = LichessBotRequestGate(time: time, rateLimitPolicy: LichessBotRateLimit.Policy(breakerCount: 2, breakerWindow: .seconds(3600), cooldownMargin: .seconds(10))) { _ in }
+        let limited = try lichessBotTestResponse(status: 429, headers: ["Retry-After": "90"])
+        do {
+            _ = try await gate.perform(priority: .move, label: "move", causeOf429: { _, _ in .requestRate(bodyWait: .seconds(200)) }) { (value: 0, response: limited) }
+            XCTFail("a 429 must throw")
+        } catch LichessBotGateError.rateLimited(let cooldown) {
+            XCTAssertEqual(cooldown, .seconds(210))
+        }
     }
 
     func testRateLimitsOutsideTheWindowDoNotTripTheBreaker() async throws {

@@ -214,16 +214,44 @@ struct LichessBotConnectionSettings: Sendable, Equatable, Codable {
     /// Game-stream silence before a cheap resync, used until keep-alives
     /// have been seen on that game's stream.
     var gameStreamResyncSeconds = 60
-    var rateLimitBreakerWindowMinutes = 60
+    /// After a 429's cooldown ends, how long no new games are taken.
     var postRateLimitDrainMinutes = 15
+    /// Added to every 429 cooldown, on top of the longest wait Lichess named
+    /// (owner decision 2026-10-26: respect Lichess's time, and add to it).
+    var rateLimitCooldownMarginSeconds = 10
     var accountRefreshMinimumIntervalSeconds = 300
     var exportMinimumSpacingSeconds = 10
     var lowClockThresholdMilliseconds = 10_000
-    var lostOnTimeBreakerCount = 3
-    var lostOnTimeBreakerWindowGames = 10
-    var movePostFailureBreakerCount = 5
-    var reconnectStormBreakerCount = 10
-    var breakerWindowMinutes = 10
+}
+
+/// One circuit breaker that trips at `count` events inside a time window,
+/// and whether it resumes by itself (`LICHESS_BOT_CIRCUIT_BREAKERS_PLAN.md`).
+/// A trip stops new games; games in progress always finish. A breaker that
+/// doesn't resume by itself goes offline once they have, until the operator
+/// goes online.
+struct LichessBotTimedBreakerSettings: Sendable, Equatable, Codable {
+    var count: Int
+    var windowMinutes: Int
+    var resumesAutomatically: Bool
+    /// From the trip; a later trip extends it.
+    var resumeAfterMinutes: Int
+}
+
+/// The lost-on-time breaker: `count` time-forfeit losses among the last
+/// `windowGames` games.
+struct LichessBotLostOnTimeBreakerSettings: Sendable, Equatable, Codable {
+    var count: Int
+    var windowGames: Int
+    var resumesAutomatically: Bool
+    var resumeAfterMinutes: Int
+}
+
+/// The circuit breakers (owner decisions 2026-10-26; plan §14.4).
+struct LichessBotBreakerSettings: Sendable, Equatable, Codable {
+    var rateLimit = LichessBotTimedBreakerSettings(count: 2, windowMinutes: 60, resumesAutomatically: true, resumeAfterMinutes: 120)
+    var lostOnTime = LichessBotLostOnTimeBreakerSettings(count: 3, windowGames: 30, resumesAutomatically: false, resumeAfterMinutes: 120)
+    var movePostFailures = LichessBotTimedBreakerSettings(count: 5, windowMinutes: 10, resumesAutomatically: true, resumeAfterMinutes: 30)
+    var reconnectStorm = LichessBotTimedBreakerSettings(count: 10, windowMinutes: 10, resumesAutomatically: true, resumeAfterMinutes: 30)
 }
 
 /// Automatic challenges to online bots (plan §7.3). Read
@@ -360,6 +388,7 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
     var chat = LichessBotChatSettings()
     var model = LichessBotModelSettings()
     var connection = LichessBotConnectionSettings()
+    var breakers = LichessBotBreakerSettings()
     var display = LichessBotDisplaySettings()
     var matchmaking = LichessBotMatchmakingSettings()
     var alerts = LichessBotAlertSettings()
@@ -451,15 +480,26 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(n.reconnectInitialSeconds >= 1 && n.reconnectInitialSeconds <= n.reconnectCapSeconds, "Reconnect delay must be at least one second and at most the cap")
         require(n.eventStreamStallTimeoutSeconds > LichessBotLimits.eventStreamKeepAliveSeconds, "Event-stream stall timeout must exceed Lichess' keep-alive interval of \(LichessBotLimits.eventStreamKeepAliveSeconds) seconds")
         require(n.gameStreamResyncSeconds >= 10, "Game-stream resync must be at least ten seconds")
-        // A second 429 cannot come before the first one's cooldown ends, so a
-        // breaker window no longer than the cooldown could never trip.
-        let minimumCooldownMinutes = Int(LichessBotRateLimit.minimumCooldown.components.seconds / 60)
-        require(n.rateLimitBreakerWindowMinutes > minimumCooldownMinutes, "The rate-limit breaker window must be longer than the cooldown after a 429, or a second 429 could never fall inside it")
         require(n.postRateLimitDrainMinutes >= 0, "The post-rate-limit hold cannot be negative")
+        require(LichessBotLimits.rateLimitCooldownMarginSecondsRange.contains(n.rateLimitCooldownMarginSeconds), "The 429 cooldown margin must be \(LichessBotLimits.rateLimitCooldownMarginSecondsRange.lowerBound)–\(LichessBotLimits.rateLimitCooldownMarginSecondsRange.upperBound) seconds")
         require(n.accountRefreshMinimumIntervalSeconds >= 60 && n.exportMinimumSpacingSeconds >= 1, "Housekeeping spacing is too aggressive")
         require(n.lowClockThresholdMilliseconds >= 0, "Low-clock threshold cannot be negative")
-        require(n.lostOnTimeBreakerCount >= 1 && n.lostOnTimeBreakerWindowGames >= n.lostOnTimeBreakerCount, "Lost-on-time breaker must trip within its window")
-        require(n.movePostFailureBreakerCount >= 1 && n.reconnectStormBreakerCount >= 1 && n.breakerWindowMinutes >= 1, "Breaker thresholds must be at least one")
+
+        let b = breakers
+        let counts = LichessBotLimits.breakerCountRange
+        let minutes = LichessBotLimits.breakerMinutesRange
+        for (name, breaker) in [("Rate-limit", b.rateLimit), ("Move-post failure", b.movePostFailures), ("Reconnect-storm", b.reconnectStorm)] {
+            require(counts.contains(breaker.count), "\(name) breaker: the count must be \(counts.lowerBound)–\(counts.upperBound)")
+            require(minutes.contains(breaker.windowMinutes), "\(name) breaker: the window must be \(minutes.lowerBound)–\(minutes.upperBound) minutes")
+            require(minutes.contains(breaker.resumeAfterMinutes), "\(name) breaker: resume after \(minutes.lowerBound)–\(minutes.upperBound) minutes")
+        }
+        // A second 429 cannot come before the first one's cooldown ends (at
+        // least the floor plus the margin), so a window no longer than that
+        // could never trip.
+        let shortestCooldownSeconds = Int(LichessBotRateLimit.minimumCooldown.components.seconds) + n.rateLimitCooldownMarginSeconds
+        require(b.rateLimit.count == 1 || b.rateLimit.windowMinutes * 60 > shortestCooldownSeconds, "The rate-limit breaker window must be longer than the shortest cooldown after a 429 (\(shortestCooldownSeconds) s), or a second 429 could never fall inside it")
+        require(counts.contains(b.lostOnTime.count) && b.lostOnTime.windowGames >= b.lostOnTime.count && b.lostOnTime.windowGames <= LichessBotLimits.lostOnTimeWindowGamesMaximum, "Lost-on-time breaker: the count must be \(counts.lowerBound)–\(counts.upperBound) and fit in its window of at most \(LichessBotLimits.lostOnTimeWindowGamesMaximum) games")
+        require(minutes.contains(b.lostOnTime.resumeAfterMinutes), "Lost-on-time breaker: resume after \(minutes.lowerBound)–\(minutes.upperBound) minutes")
         require(display.finishedGameRetentionMinutes >= 0, "Finished-game retention cannot be negative")
 
         let repeats = LichessBotLimits.alertSoundRepeatCountRange
@@ -483,6 +523,13 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
 enum LichessBotLimits {
     /// Lichess's documented event-stream keep-alive interval.
     static let eventStreamKeepAliveSeconds = 7
+    /// What DCM may add to a 429's cooldown: none, up to ten minutes.
+    static let rateLimitCooldownMarginSecondsRange = 0...600
+    /// A breaker's count.
+    static let breakerCountRange = 1...1000
+    /// A breaker's window and resume time: a minute to a week.
+    static let breakerMinutesRange = 1...10_080
+    static let lostOnTimeWindowGamesMaximum = 1000
     /// `SamplingSchedule` needs a strictly positive temperature; the argmax
     /// stand-in is the practical floor.
     static let minimumTemperature: Float = 0.01

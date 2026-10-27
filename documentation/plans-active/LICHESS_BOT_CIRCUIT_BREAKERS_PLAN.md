@@ -115,3 +115,13 @@ Session / controller:
 3. /recheck, independent review.
 4. Deploy: new frozen Release build; bot swapped per the handoff (drain, finish games, relaunch the new build with `--lichess-bot`, go online); the session log shows the new build online.
 5. Live: the next 429 / reconnect storm shows the hold lines and no `Bot stopped:` alarm with games in progress.
+
+## Implementation notes (2026-10-26)
+
+- **The gate's breaker count starts over after a trip**, like the other breakers' (independent review): kept, every later 429 inside the window re-tripped and restarted the two-hour hold. Test `testTheBreakerCountStartsOverAfterATrip`.
+- **The manager's hold flag is pushed by one function** (`pushNewGameHold(to:)`) that re-reads `newGameHolds` after each push, so a hold starting while another ends can't leave the manager accepting under a hold.
+- **Every breaker restarts at go-online** (the time-window ones too), and settings saves reach the gate in order (chained pushes).
+- **Validation bounds**: counts 1…1000, windows and resume times 1 min…1 week, lost-on-time window ≤ 1000 games; the rate-limit window must exceed the shortest cooldown including the margin.
+- `stoppedMoving` and a repeated operator hold drain once.
+- `LichessBotMatchmaking.PassConditions.rateLimitHoldActive` is now `newGameHoldActive` (any hold), and `setRateLimitHold` is `setNewGameHold`.
+- Controller test `testALostOnTimeTripFinishesTheOtherGameThenStopsUntilTheOperatorGoesOnline` pins the cardinal rule end to end. No controller test drives a 429: the controller's gate runs on the real clock and a 429 costs a real minute.

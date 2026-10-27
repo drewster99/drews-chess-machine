@@ -87,6 +87,9 @@ enum LichessBotJournal {
             return .keepAlive
         case .gameInfo, .chat:
             return nil
+        case .movePostFailed:
+            // Its `moveRejected` is journaled beside it.
+            return nil
         case .positionSynced(let sync, _):
             switch sync {
             case .unchanged:

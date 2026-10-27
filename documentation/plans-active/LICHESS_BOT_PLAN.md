@@ -345,6 +345,8 @@ its category, status, latency, and `Retry-After` in the protocol log (§10.3).
 
 **5.4 On a 429 (any request, any category)**
 
+> Superseded in part by `LICHESS_BOT_CIRCUIT_BREAKERS_PLAN.md` (owner decisions 2026-10-26): the cooldown also honors the body's `ratelimit.seconds` plus a margin, and a second 429 no longer takes the bot offline (item 4) — it holds new games for a configurable time while games in progress finish.
+
 1. The gate **closes account-wide** for `max(Retry-After, 60 s)`. The 60 s
    floor is a constant (`LichessBotRateLimit.minimumCooldownSec`) and is not
    configurable below 60. Nothing is sent, moves included; Lichess would
@@ -1599,6 +1601,8 @@ status area, which is always visible:
   - Live checks:
     - an operator message in each room shows on lichess.org and in the transcript as an operator message
     - Hold with a short clock auto-plays at the threshold and logs it
+
+> Superseded by `LICHESS_BOT_CIRCUIT_BREAKERS_PLAN.md` (owner decisions 2026-10-26): no breaker abandons a game; each stops new games, with its own threshold, window and resume setting.
 
 **14.4 Circuit breakers** are configurable and shown in Overview. Each trip
 logs, alarms, and moves the bot to Draining or Offline:

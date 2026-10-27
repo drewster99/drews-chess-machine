@@ -173,9 +173,10 @@ actor LichessBotSessionManager {
     /// Online (true) or Draining (false) — the operator's choice, or "one
     /// game" once its game started.
     private var acceptingNewGames = true
-    /// A 429 hold is in force (plan §5.4). Kept apart from
-    /// `acceptingNewGames` so the hold ending can never undo a drain.
-    private var rateLimitHold = false
+    /// A hold on new games is in force (a 429 or a circuit breaker;
+    /// `LichessBotNewGameHolds`). Kept apart from `acceptingNewGames` so the
+    /// hold ending can never undo a drain.
+    private var newGameHold = false
     private var sessions: [String: LichessBotGameSession] = [:]
     private var sessionTasks: [String: Task<Void, Never>] = [:]
     private var opponentByGame: [String: String] = [:]
@@ -266,14 +267,15 @@ actor LichessBotSessionManager {
 
     // MARK: - Controls
 
-    /// Hold (or release) new games after a 429. Independent of draining.
-    func setRateLimitHold(_ held: Bool) {
-        rateLimitHold = held
+    /// Hold (or release) new games: a 429 or a circuit breaker. Independent
+    /// of draining; games in progress are never touched.
+    func setNewGameHold(_ held: Bool) {
+        newGameHold = held
     }
 
     /// Whether a new challenge could be accepted right now.
     var isAcceptingNewGames: Bool {
-        acceptingNewGames && !rateLimitHold
+        acceptingNewGames && !newGameHold
     }
 
     /// Accepted challenges whose game hasn't started yet (expired ones
@@ -698,7 +700,7 @@ actor LichessBotSessionManager {
             return
         }
         let context = LichessBotChallengeContext(
-            acceptingNewGames: acceptingNewGames && !rateLimitHold,
+            acceptingNewGames: isAcceptingNewGames,
             // Our pending outgoing challenges hold their slots too, so an
             // incoming game plus their later acceptance can never exceed
             // the concurrent-game limit.

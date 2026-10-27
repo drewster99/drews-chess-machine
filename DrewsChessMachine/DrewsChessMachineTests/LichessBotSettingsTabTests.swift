@@ -89,7 +89,7 @@ final class LichessBotSettingsTabTests: XCTestCase {
     /// group fails this until it is given a tab there.
     func testSettingsGroupsAreTheOnesTheTabsAssign() {
         let groups = Set(Mirror(reflecting: LichessBotSettings()).children.compactMap(\.label))
-        XCTAssertEqual(groups, ["challenge", "play", "chat", "model", "connection", "display", "matchmaking", "alerts"])
+        XCTAssertEqual(groups, ["challenge", "play", "chat", "model", "connection", "breakers", "display", "matchmaking", "alerts"])
     }
 
     func testOpensOnAccountOnlyWhenNoTokenIsSaved() {
