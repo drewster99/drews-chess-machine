@@ -72,7 +72,14 @@ struct LichessBotControllerServices: Sendable {
 
     static let live = LichessBotControllerServices(
         openBotWindow: { controller in LichessBotWindowLauncher.openWindow(controller: controller) },
-        makeTransport: { LichessBotURLSessionTransport() },
+        makeTransport: {
+            LichessBotURLSessionTransport(
+                makeConfiguration: { .ephemeral },
+                onRequestConnectionsReset: { reset in
+                    SessionLogger.shared.log("[LICHESS-BOT] request connections reset after \(reset.failures) consecutive requests got no answer (last: \(LichessBotRedaction.redact(reset.lastFailure))); requests now use new connections (generation \(reset.generation))")
+                }
+            )
+        },
         readToken: { accountID in try LichessBotTokenStore().read(account: accountID) }
     )
 }
@@ -3906,6 +3913,8 @@ final class LichessBotController {
                 // with a move (plan §14.3b).
                 loadOpponentProfile(challengerID)
             }
+        case .challengeResponseRetrying(let challengeID, let response, let attempt, let delay, let error):
+            protocolLog.record(.anomaly, Self.describeRetry(of: response, attempt: attempt, delay: delay, error: error), fields: ["challenge": challengeID])
         case .challengeResponseFailed(let challengeID, let error):
             protocolLog.record(.anomaly, "challenge response failed: \(error)", fields: ["challenge": challengeID])
             recordChallengeEvent(.incomingResponseFailed(challengeID: challengeID, error: LichessBotRedaction.redact(error)))
@@ -4393,6 +4402,12 @@ final class LichessBotController {
         case .closed, .reopened: return .lifecycle
         case .requestStarted, .requestFinished, .requestFailed: return .request
         }
+    }
+
+    /// The protocol-log line for a challenge response that got no answer
+    /// and will be sent again.
+    nonisolated static func describeRetry(of response: LichessBotChallengeResponseKind, attempt: Int, delay: Duration, error: String) -> String {
+        "challenge \(response.rawValue) got no answer (attempt \(attempt)): \(LichessBotRedaction.redact(error)); retrying in \(delay)"
     }
 
     nonisolated static func describe(_ decision: LichessBotChallengeDecision) -> String {

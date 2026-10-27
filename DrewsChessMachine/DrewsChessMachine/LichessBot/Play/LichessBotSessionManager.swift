@@ -31,7 +31,12 @@ enum LichessBotManagerEvent: Sendable {
     /// keeps the game's `source`).
     case gameStartReceived(LichessBotGameEventInfo)
     case challengeDecision(challengeID: String, challengerID: String, decision: LichessBotChallengeDecision)
+    /// The final failure of an acceptance or decline: Lichess refused it,
+    /// or every attempt got no answer.
     case challengeResponseFailed(challengeID: String, error: String)
+    /// An acceptance or decline got no answer (`attempt`, from 1, failed)
+    /// and will be sent again after `delay`.
+    case challengeResponseRetrying(challengeID: String, response: LichessBotChallengeResponseKind, attempt: Int, delay: Duration, error: String)
     /// A session started for a game: a new one, or one resumed from a
     /// journal left by an earlier runtime (a relaunch, or going offline and
     /// back).
@@ -210,6 +215,22 @@ actor LichessBotSessionManager {
     /// ours: the answer to a challenge can arrive before its POST returns.
     private var recentChallengeOutcomes: [(id: String, outcome: LichessBotOutgoingChallengeOutcome)] = []
     private static let acceptedStartTimeout: Duration = .seconds(60)
+    /// Waits before each retry of a challenge response Lichess never
+    /// answered: one retry per entry.
+    static let challengeResponseRetryDelays: [Duration] = [.seconds(2), .seconds(5)]
+    /// Retries waiting to resend a challenge response, by challenge id.
+    /// Ended when the challenge settles (canceled, declined, its game
+    /// started) and when `run()` ends.
+    private var challengeResponseRetries: [String: Task<Void, Never>] = [:]
+    /// Declines sent or waiting to be retried, by challenge id. A decline
+    /// holds no slot, so this is what says it is still unsettled: a cancel
+    /// that arrives meanwhile removes it, and the retry then sends nothing.
+    private var declinesInProgress: Set<String> = []
+    /// Whether `run()` is running. A retry whose request was already in
+    /// flight when the run ended is out of `challengeResponseRetries`, so
+    /// `run()` can't cancel it; this keeps it from scheduling another, or
+    /// from sending one it woke up for, for a runtime that has gone.
+    private var isRunning = false
     private static let recentOutcomeLimit = 64
     private var oneGameMode = false
     private var gapTracker = LichessBotStreamGapTracker(
@@ -470,6 +491,7 @@ actor LichessBotSessionManager {
     /// Hold the event stream until cancelled, the gate closes, or a
     /// takeover is detected. Reconnects with backoff otherwise.
     func run() async {
+        isRunning = true
         var attempt = 0
         var shortStreams = 0
         let stopReason: String
@@ -571,6 +593,11 @@ actor LichessBotSessionManager {
             }
             attempt += 1
         }
+        isRunning = false
+        for retry in challengeResponseRetries.values {
+            retry.cancel()
+        }
+        challengeResponseRetries.removeAll()
         onEvent(.stopped(reason: stopReason))
     }
 
@@ -608,6 +635,8 @@ actor LichessBotSessionManager {
                 pendingOutgoingChallenges.removeAll { $0.id == info.gameId }
                 onEvent(.outgoingChallengeResolved(challengeID: info.gameId, outcome: .accepted(gameID: info.gameId)))
             }
+            // An acceptance waiting to be retried went through after all.
+            endResponseRetry(for: info.gameId)
             startingSessionIDs.insert(info.gameId)
             await startSessionIfNeeded(info)
             startingSessionIDs.remove(info.gameId)
@@ -617,10 +646,12 @@ actor LichessBotSessionManager {
             sessions[info.gameId]?.requestResync(reason: "gameFinish on the event stream")
         case .challengeDeclined(let reference):
             onEvent(.challengeAnsweredOnStream(reference, .declined))
+            endResponseRetry(for: reference.id)
             resolveChallenge(reference.id, outcome: .declined(reason: reference.declineReason ?? reference.declineReasonKey, reasonKey: reference.declineReasonKey))
         case .challengeCanceled(let reference):
             onEvent(.challengeAnsweredOnStream(reference, .canceled))
             acceptedAwaitingStart[reference.id] = nil
+            endResponseRetry(for: reference.id)
             resolveChallenge(reference.id, outcome: .canceled)
         case .unknown(let type):
             onEvent(.anomaly("unknown event type \(type)"))
@@ -655,6 +686,17 @@ actor LichessBotSessionManager {
         let now = time.now()
         challengeResponseTimes.removeAll { now - $0 > .seconds(60) }
         dropExpiredAcceptances()
+        // A reconnected stream re-sends the challenges still open, this one
+        // included while its acceptance or decline is unanswered or waiting
+        // to be retried. It already has its answer; deciding again would send
+        // a second one (at capacity, a decline of the challenge being
+        // accepted, since its own held slot counts as taken).
+        if acceptedAwaitingStart[challenge.id] != nil || declinesInProgress.contains(challenge.id) {
+            // Not a `challengeDecision`: the challenge log keeps the decision
+            // actually sent, and its outcome.
+            onEvent(.anomaly("challenge \(challenge.id) arrived again while its answer is in progress; not decided again"))
+            return
+        }
         let context = LichessBotChallengeContext(
             acceptingNewGames: acceptingNewGames && !rateLimitHold,
             // Our pending outgoing challenges hold their slots too, so an
@@ -688,13 +730,13 @@ actor LichessBotSessionManager {
             // The slot is held from here until the game starts: another
             // challenge handled meanwhile must see it as taken.
             acceptedAwaitingStart[challenge.id] = (challenge.challenger.id, time.now())
-            await accept(challenge)
+            await accept(challenge, attempt: 0)
         case .decline(let reason, _):
-            await decline(challenge, reason: reason)
+            await decline(challenge, reason: reason, attempt: 0)
         }
     }
 
-    private func accept(_ challenge: LichessBotChallenge) async {
+    private func accept(_ challenge: LichessBotChallenge, attempt: Int) async {
         challengeResponseTimes.append(time.now())
         do {
             try await accountAPI.acceptChallenge(id: challenge.id)
@@ -702,6 +744,10 @@ actor LichessBotSessionManager {
                 acceptedAwaitingStart[challenge.id] = (challenge.challenger.id, time.now())
             }
         } catch {
+            // The slot stays held while a retry waits.
+            if scheduleRetry(of: .accept, to: challenge, failedWith: error, attempt: attempt) {
+                return
+            }
             acceptedAwaitingStart[challenge.id] = nil
             reportResponseFailure(challenge, error)
             // Lichess refused the acceptance because DCM is at its daily
@@ -710,18 +756,135 @@ actor LichessBotSessionManager {
             // stay open on the challenger's side until it expires, so it is
             // declined `later`, which is what it means.
             if let apiError = error as? LichessBotAPIError, case .ownBotGameLimit = apiError {
-                await decline(challenge, reason: .later)
+                await decline(challenge, reason: .later, attempt: 0)
             }
         }
     }
 
-    private func decline(_ challenge: LichessBotChallenge, reason: LichessBotDeclineReason) async {
+    private func decline(_ challenge: LichessBotChallenge, reason: LichessBotDeclineReason, attempt: Int) async {
         challengeResponseTimes.append(time.now())
+        declinesInProgress.insert(challenge.id)
         do {
             try await accountAPI.declineChallenge(id: challenge.id, reason: reason)
+            declinesInProgress.remove(challenge.id)
         } catch {
+            if scheduleRetry(of: .decline(reason), to: challenge, failedWith: error, attempt: attempt) {
+                return
+            }
+            declinesInProgress.remove(challenge.id)
             reportResponseFailure(challenge, error)
         }
+    }
+
+    /// A challenge response to send, for a retry.
+    private enum ChallengeResponse {
+        case accept
+        case decline(LichessBotDeclineReason)
+
+        var kind: LichessBotChallengeResponseKind {
+            switch self {
+            case .accept:
+                return .acceptance
+            case .decline:
+                return .decline
+            }
+        }
+    }
+
+    /// Schedules the next attempt at a response that got no answer
+    /// (`LichessBotRequestConnectionHealth.isConnectionFailure`) while the
+    /// challenge is still unsettled and attempts remain. Returns whether it
+    /// did; if not, the failure is final and the caller reports it.
+    ///
+    /// Only "no answer" is retried. A response Lichess sent (a 4xx, a 429)
+    /// is its decision; sending the same request again would only repeat
+    /// it. The retry runs in its own task: the event loop handles one line
+    /// at a time, and a cancel or `gameStart` for this very challenge must
+    /// be read while the retry waits.
+    private func scheduleRetry(of response: ChallengeResponse, to challenge: LichessBotChallenge, failedWith error: Error, attempt: Int) -> Bool {
+        guard isRunning,
+              LichessBotRequestConnectionHealth.isConnectionFailure(error),
+              attempt < Self.challengeResponseRetryDelays.count,
+              isUnsettled(response, challengeID: challenge.id)
+        else {
+            return false
+        }
+        let delay = Self.challengeResponseRetryDelays[attempt]
+        if case .accept = response {
+            // The slot's start-timeout runs from the latest attempt, so
+            // slow failed attempts can't expire it while a retry is due.
+            acceptedAwaitingStart[challenge.id] = (challenge.challenger.id, time.now())
+        }
+        onEvent(.challengeResponseRetrying(challengeID: challenge.id, response: response.kind, attempt: attempt + 1, delay: delay, error: error.localizedDescription))
+        challengeResponseRetries[challenge.id]?.cancel()
+        challengeResponseRetries[challenge.id] = Task {
+            do {
+                try await time.sleep(for: delay)
+            } catch is CancellationError {
+                // The challenge settled or the run ended.
+                return
+            } catch {
+                retryTimerFailed(response, to: challenge, error)
+                return
+            }
+            await retry(response, to: challenge, attempt: attempt + 1)
+        }
+        return true
+    }
+
+    private func isUnsettled(_ response: ChallengeResponse, challengeID: String) -> Bool {
+        switch response {
+        case .accept:
+            return acceptedAwaitingStart[challengeID] != nil
+                && sessions[challengeID] == nil
+                && !startingSessionIDs.contains(challengeID)
+        case .decline:
+            return declinesInProgress.contains(challengeID)
+        }
+    }
+
+    private func retry(_ response: ChallengeResponse, to challenge: LichessBotChallenge, attempt: Int) async {
+        // A retry ended while it was being scheduled onto the actor sends
+        // nothing, and must not clear a newer retry's entry.
+        guard !Task.isCancelled, isRunning else { return }
+        challengeResponseRetries[challenge.id] = nil
+        dropExpiredAcceptances()
+        guard isUnsettled(response, challengeID: challenge.id) else { return }
+        switch response {
+        case .accept:
+            // The decision to accept was made before the wait; draining or
+            // a 429 hold since then means no new game, which for a
+            // challenge still open is a decline `later`.
+            guard isAcceptingNewGames else {
+                acceptedAwaitingStart[challenge.id] = nil
+                await decline(challenge, reason: .later, attempt: 0)
+                return
+            }
+            await accept(challenge, attempt: attempt)
+        case .decline(let reason):
+            await decline(challenge, reason: reason, attempt: attempt)
+        }
+    }
+
+    /// Without its timer the retry can't be sent: the response's failure is
+    /// final, and what it held (the slot, the decline mark) is released.
+    private func retryTimerFailed(_ response: ChallengeResponse, to challenge: LichessBotChallenge, _ error: Error) {
+        guard !Task.isCancelled else { return }
+        challengeResponseRetries[challenge.id] = nil
+        switch response {
+        case .accept:
+            acceptedAwaitingStart[challenge.id] = nil
+        case .decline:
+            declinesInProgress.remove(challenge.id)
+        }
+        reportResponseFailure(challenge, error)
+    }
+
+    /// The challenge settled (canceled, declined, or its game started): a
+    /// response waiting to be retried is no longer wanted.
+    private func endResponseRetry(for challengeID: String) {
+        challengeResponseRetries.removeValue(forKey: challengeID)?.cancel()
+        declinesInProgress.remove(challengeID)
     }
 
     private func reportResponseFailure(_ challenge: LichessBotChallenge, _ error: Error) {
@@ -868,4 +1031,11 @@ actor LichessBotSessionManager {
         await gate.setGamesAwaitingOurMove(awaiting.count)
         await gate.setLowClockUrgency(lowClock)
     }
+}
+
+/// Which response to a challenge a `challengeResponseRetrying` event is
+/// about.
+enum LichessBotChallengeResponseKind: String, Sendable, Equatable {
+    case acceptance
+    case decline
 }

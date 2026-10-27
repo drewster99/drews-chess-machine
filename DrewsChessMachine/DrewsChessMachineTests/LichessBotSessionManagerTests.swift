@@ -23,6 +23,15 @@ actor LichessBotFakeAccountAPI: LichessBotAccountAPI {
     /// client throws for it. Still listed in `accepted`: the request was
     /// sent.
     private var acceptRefusals: [String: LichessBotAPIError] = [:]
+    /// Errors the next attempts to accept or decline a challenge throw, in
+    /// order; once used up, attempts succeed. Every attempt is still listed
+    /// in `accepted` / `declined`: the request was sent.
+    private var acceptFailures: [String: [any Error]] = [:]
+    private var declineFailures: [String: [any Error]] = [:]
+    /// Challenges whose next acceptance (after any queued failures) stays
+    /// in flight until the test releases it.
+    private var acceptHolds: Set<String> = []
+    private var heldAcceptances: [String: CheckedContinuation<Void, any Error>] = [:]
 
     init(script: [Connection]) {
         self.script = script
@@ -77,15 +86,46 @@ actor LichessBotFakeAccountAPI: LichessBotAccountAPI {
         acceptRefusals[id] = error
     }
 
+    func failAcceptance(of id: String, with errors: [any Error]) {
+        acceptFailures[id, default: []].append(contentsOf: errors)
+    }
+
+    func failDecline(of id: String, with errors: [any Error]) {
+        declineFailures[id, default: []].append(contentsOf: errors)
+    }
+
+    func holdNextAcceptance(of id: String) {
+        acceptHolds.insert(id)
+    }
+
+    func isHoldingAcceptance(of id: String) -> Bool {
+        heldAcceptances[id] != nil
+    }
+
+    func releaseHeldAcceptance(of id: String, failingWith error: any Error) {
+        heldAcceptances.removeValue(forKey: id)?.resume(throwing: error)
+    }
+
     func acceptChallenge(id: String) async throws {
         accepted.append(id)
         if let refusal = acceptRefusals[id] {
             throw refusal
         }
+        if let failure = acceptFailures[id]?.first {
+            acceptFailures[id]?.removeFirst()
+            throw failure
+        }
+        if acceptHolds.remove(id) != nil {
+            try await withCheckedThrowingContinuation { heldAcceptances[id] = $0 }
+        }
     }
 
     func declineChallenge(id: String, reason: LichessBotDeclineReason) async throws {
         declined.append((id, reason))
+        if let failure = declineFailures[id]?.first {
+            declineFailures[id]?.removeFirst()
+            throw failure
+        }
     }
 
     var declineReasons: [LichessBotDeclineReason] {
@@ -384,5 +424,226 @@ final class LichessBotSessionManagerTests: XCTestCase {
         try await waitUntil("the manager stops", advancing: h.time, by: .milliseconds(500)) { stopReason(h) != nil }
         await run.value
         XCTAssertEqual(stopReason(h), "request gate closed: script exhausted")
+    }
+
+    // MARK: - Challenge responses that got no answer
+
+    /// What URLSession throws when Lichess never answered (2026-10-26:
+    /// `NSURLErrorDomain -1001`, POSIX 60 underneath).
+    private static let noAnswer = URLError(.timedOut)
+
+    private func responseFailures(_ h: Harness) -> [String] {
+        h.events.value.compactMap { event in
+            if case .challengeResponseFailed(let challengeID, _) = event { return challengeID }
+            return nil
+        }
+    }
+
+    private func challengeCanceledLine(id: String) -> String {
+        #"{"type":"challengeCanceled","challenge":{"id":"\#(id)","status":"canceled"}}"#
+    }
+
+    /// Let the manager's clock run on, a second at a time.
+    private func advance(_ h: Harness, seconds: Int) async throws {
+        for _ in 0..<seconds {
+            h.time.advance(by: .seconds(1))
+            try await Task.sleep(for: .milliseconds(3))
+        }
+    }
+
+    private func waitForEventLine(_ h: Harness, containing marker: String) async throws {
+        await h.account.sendSentinel(marker)
+        try await waitUntil("the manager reads \(marker)") {
+            h.events.value.contains { $0.isEventStreamLine(containing: marker) }
+        }
+    }
+
+    /// Protects: an acceptance Lichess never answered is sent again while
+    /// the challenge is still open.
+    /// Fails if: a failed acceptance is reported and dropped, leaving the
+    /// challenger waiting (2026-10-26, GeoModPhreak's NbJuXlWI).
+    func testAcceptanceThatGotNoAnswerIsRetried() async throws {
+        let h = try await makeHarness(script: [.open(lines: [challengeLine(id: "c1")])], provider: try await LichessBotFakeModelProvider.randomChampion())
+        await h.account.failAcceptance(of: "c1", with: [Self.noAnswer])
+        let run = Task { await h.manager.run() }
+        try await waitUntil("the acceptance is retried", advancing: h.time, by: .seconds(1)) { await h.account.accepted.count == 2 }
+        try await advance(h, seconds: 30)
+        let accepted = await h.account.accepted
+        XCTAssertEqual(accepted, ["c1", "c1"])
+        XCTAssertEqual(responseFailures(h), [], "an acceptance that went through on a retry is no failure")
+        run.cancel()
+        await run.value
+    }
+
+    /// Protects: retries are bounded, and the failure is reported once,
+    /// after the last attempt.
+    /// Fails if: the retries never stop, or each failed attempt is reported
+    /// as the challenge's failure.
+    func testAcceptanceRetriesStopAtTheLimitAndReportOnce() async throws {
+        let h = try await makeHarness(script: [.open(lines: [challengeLine(id: "c1")])], provider: try await LichessBotFakeModelProvider.randomChampion())
+        await h.account.failAcceptance(of: "c1", with: Array(repeating: Self.noAnswer, count: 10))
+        let run = Task { await h.manager.run() }
+        try await waitUntil("the failure is reported", advancing: h.time, by: .seconds(1)) { !responseFailures(h).isEmpty }
+        try await advance(h, seconds: 60)
+        let accepted = await h.account.accepted
+        XCTAssertEqual(accepted.count, 1 + LichessBotSessionManager.challengeResponseRetryDelays.count)
+        XCTAssertEqual(responseFailures(h), ["c1"])
+        run.cancel()
+        await run.value
+    }
+
+    /// Protects: a refusal Lichess sent (an HTTP status) is final.
+    /// Fails if: every failure, answered or not, is retried.
+    func testAcceptanceLichessRefusedIsNotRetried() async throws {
+        let h = try await makeHarness(script: [.open(lines: [challengeLine(id: "c1")])], provider: try await LichessBotFakeModelProvider.randomChampion())
+        await h.account.failAcceptance(of: "c1", with: [LichessBotAPIError.http(status: 400, message: "challenge not found")])
+        let run = Task { await h.manager.run() }
+        try await waitUntil("the failure is reported") { !responseFailures(h).isEmpty }
+        try await advance(h, seconds: 60)
+        let accepted = await h.account.accepted
+        XCTAssertEqual(accepted, ["c1"])
+        XCTAssertEqual(responseFailures(h), ["c1"])
+        run.cancel()
+        await run.value
+    }
+
+    /// Protects: a challenge canceled while its retry waits is not accepted
+    /// again.
+    /// Fails if: the retry doesn't check that the challenge is still open.
+    func testAcceptanceRetryStopsWhenTheChallengeIsCanceled() async throws {
+        let h = try await makeHarness(script: [.open(lines: [challengeLine(id: "c1")])], provider: try await LichessBotFakeModelProvider.randomChampion())
+        await h.account.failAcceptance(of: "c1", with: [Self.noAnswer])
+        let run = Task { await h.manager.run() }
+        try await waitUntil("the first attempt is made") { await h.account.accepted.count == 1 }
+        await h.account.send(challengeCanceledLine(id: "c1"))
+        try await waitForEventLine(h, containing: "after-cancel")
+        try await advance(h, seconds: 60)
+        let accepted = await h.account.accepted
+        XCTAssertEqual(accepted, ["c1"])
+        run.cancel()
+        await run.value
+    }
+
+    /// Protects: an acceptance that did get through (its `gameStart`
+    /// arrived) is not sent again.
+    /// Fails if: the retry ignores a game that started meanwhile.
+    func testAcceptanceRetryStopsWhenTheGameStarts() async throws {
+        let server = try LichessBotFakeGameServer()
+        await server.setScript(afterOurMoves: [.finish(status: "resign", winner: "white")])
+        let gameID = LichessBotFakeGameServer.gameID
+        let h = try await makeHarness(script: [.open(lines: [challengeLine(id: gameID)])], provider: try await LichessBotFakeModelProvider.randomChampion(), gameServer: server)
+        await h.account.failAcceptance(of: gameID, with: [Self.noAnswer])
+        let run = Task { await h.manager.run() }
+        try await waitUntil("the first attempt is made") { await h.account.accepted.count == 1 }
+        await h.account.send(gameStartLine())
+        try await waitUntil("the game session ends") {
+            h.events.value.contains { event in
+                if case .gameSessionEnded = event { return true }
+                return false
+            }
+        }
+        try await advance(h, seconds: 60)
+        let accepted = await h.account.accepted
+        XCTAssertEqual(accepted, [gameID])
+        XCTAssertEqual(responseFailures(h), [])
+        run.cancel()
+        await run.value
+    }
+
+    /// Protects: a bot that started draining while an acceptance waited to
+    /// be retried takes no new game; the challenge is declined `later`.
+    /// Fails if: the retry accepts regardless, or drops the challenge
+    /// unanswered.
+    func testAcceptanceRetryWhileDrainingDeclinesLater() async throws {
+        let h = try await makeHarness(script: [.open(lines: [challengeLine(id: "c1")])], provider: try await LichessBotFakeModelProvider.randomChampion())
+        await h.account.failAcceptance(of: "c1", with: [Self.noAnswer])
+        let run = Task { await h.manager.run() }
+        try await waitUntil("the first attempt is made") { await h.account.accepted.count == 1 }
+        await h.manager.setAcceptingNewGames(false)
+        try await waitUntil("the retry declines", advancing: h.time, by: .seconds(1)) { await h.account.declined.count == 1 }
+        try await advance(h, seconds: 30)
+        let accepted = await h.account.accepted
+        let reasons = await h.account.declineReasons
+        XCTAssertEqual(accepted, ["c1"])
+        XCTAssertEqual(reasons, [.later])
+        run.cancel()
+        await run.value
+    }
+
+    /// Protects: the same challenge arriving again on the stream (a
+    /// reconnect re-sends open challenges) while its acceptance waits to be
+    /// retried gets no second decision of its own.
+    /// Fails if: the repeat is decided afresh, sending another acceptance
+    /// (or, at capacity, a decline of the challenge being accepted) beside
+    /// the retry.
+    func testChallengeRepeatedWhileItsAcceptanceWaitsIsNotAnsweredTwice() async throws {
+        let h = try await makeHarness(script: [.open(lines: [challengeLine(id: "c1")])], provider: try await LichessBotFakeModelProvider.randomChampion())
+        await h.account.failAcceptance(of: "c1", with: [Self.noAnswer])
+        let run = Task { await h.manager.run() }
+        try await waitUntil("the first attempt is made") { await h.account.accepted.count == 1 }
+        await h.account.send(challengeLine(id: "c1"))
+        try await waitForEventLine(h, containing: "after-repeat")
+        try await advance(h, seconds: 30)
+        let accepted = await h.account.accepted
+        let declined = await h.account.declined.count
+        XCTAssertEqual(accepted, ["c1", "c1"], "the first attempt and its one retry")
+        XCTAssertEqual(declined, 0)
+        run.cancel()
+        await run.value
+    }
+
+    /// Protects: a retry whose request is in flight when the run ends sends
+    /// nothing more for the runtime that has gone; its failure is final.
+    /// Fails if: the retry, out of the run's reach while its request is
+    /// out, schedules another attempt (an acceptance for a bot that went
+    /// offline).
+    func testRetryInFlightWhenTheRunEndsSendsNoMore() async throws {
+        let h = try await makeHarness(script: [.open(lines: [challengeLine(id: "c1")])], provider: try await LichessBotFakeModelProvider.randomChampion())
+        await h.account.failAcceptance(of: "c1", with: [Self.noAnswer])
+        await h.account.holdNextAcceptance(of: "c1")
+        let run = Task { await h.manager.run() }
+        try await waitUntil("the retry is in flight", advancing: h.time, by: .seconds(1)) { await h.account.isHoldingAcceptance(of: "c1") }
+        run.cancel()
+        await run.value
+        await h.account.releaseHeldAcceptance(of: "c1", failingWith: Self.noAnswer)
+        try await waitUntil("the retry's failure is reported") { responseFailures(h) == ["c1"] }
+        try await advance(h, seconds: 30)
+        let accepted = await h.account.accepted
+        XCTAssertEqual(accepted, ["c1", "c1"])
+    }
+
+    /// Protects: a decline Lichess never answered is sent again.
+    /// Fails if: a failed decline is reported and dropped.
+    func testDeclineThatGotNoAnswerIsRetried() async throws {
+        let h = try await makeHarness(script: [.open(lines: [challengeLine(id: "c1")])], provider: try await LichessBotFakeModelProvider.randomChampion())
+        await h.account.failDecline(of: "c1", with: [Self.noAnswer])
+        await h.manager.setAcceptingNewGames(false)
+        let run = Task { await h.manager.run() }
+        try await waitUntil("the decline is retried", advancing: h.time, by: .seconds(1)) { await h.account.declined.count == 2 }
+        try await advance(h, seconds: 30)
+        let reasons = await h.account.declineReasons
+        XCTAssertEqual(reasons, [.later, .later])
+        XCTAssertEqual(responseFailures(h), [])
+        run.cancel()
+        await run.value
+    }
+
+    /// Protects: a challenge canceled while its decline waits to be retried
+    /// is not declined again.
+    /// Fails if: the decline retry doesn't check that the challenge is
+    /// still open.
+    func testDeclineRetryStopsWhenTheChallengeIsCanceled() async throws {
+        let h = try await makeHarness(script: [.open(lines: [challengeLine(id: "c1")])], provider: try await LichessBotFakeModelProvider.randomChampion())
+        await h.account.failDecline(of: "c1", with: [Self.noAnswer])
+        await h.manager.setAcceptingNewGames(false)
+        let run = Task { await h.manager.run() }
+        try await waitUntil("the first attempt is made") { await h.account.declined.count == 1 }
+        await h.account.send(challengeCanceledLine(id: "c1"))
+        try await waitForEventLine(h, containing: "after-cancel")
+        try await advance(h, seconds: 60)
+        let declined = await h.account.declined.count
+        XCTAssertEqual(declined, 1)
+        run.cancel()
+        await run.value
     }
 }

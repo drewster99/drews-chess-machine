@@ -59,23 +59,65 @@ enum LichessBotTransportError: LocalizedError {
 ///
 /// Both sessions are ephemeral: no cookies, cache or credentials persist to
 /// disk. The bearer token travels only in each request's header.
+///
+/// The request session is replaced when its requests stop getting answers
+/// (`LichessBotRequestConnectionHealth`): on 2026-10-26 every request timed
+/// out for three minutes while the event stream stayed up, and nothing
+/// replaced the pool. The stream session needs no such rule; the stream
+/// watchdog already reopens a stream that goes quiet.
 final class LichessBotURLSessionTransport: LichessBotTransport {
-    private let requestSession: URLSession
     private let streamSession: URLSession
+    private let makeRequestSession: @Sendable () -> URLSession
+    private let onRequestConnectionsReset: @Sendable (LichessBotRequestConnectionHealth.Reset) -> Void
+    private let created = ContinuousClock.now
 
-    init() {
-        let requestConfiguration = URLSessionConfiguration.ephemeral
-        // Short on purpose: every request holds the single-flight gate, so a
-        // stalled one delays every other (plan §5.2). Each request also sets
-        // its own, possibly shorter, idle limit for its priority; the
-        // session's is the longest of those.
-        requestConfiguration.timeoutIntervalForRequest = LichessBotRequestTimeouts.longestIdle
-        requestConfiguration.timeoutIntervalForResource = LichessBotRequestTimeouts.resource
-        requestConfiguration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        requestConfiguration.waitsForConnectivity = false
-        requestSession = URLSession(configuration: requestConfiguration)
+    /// The request session in use, the sessions it replaced that still have
+    /// requests in flight, and the rule that decides a replacement
+    /// (`LichessBotRequestConnectionHealth`).
+    ///
+    /// A replaced session is invalidated only once its last request has
+    /// finished: creating a task on an invalidated session raises an
+    /// Objective-C exception, so a request that read the session just
+    /// before a reset must still be able to start on it. Counting each
+    /// generation's requests under the lock that hands the session out
+    /// closes that window.
+    private struct RequestSessions {
+        var current: URLSession
+        var health = LichessBotRequestConnectionHealth()
+        var inFlight: [Int: Int] = [:]
+        var replaced: [Int: URLSession] = [:]
+    }
 
-        let streamConfiguration = URLSessionConfiguration.ephemeral
+    private let requestSessions: OSAllocatedUnfairLock<RequestSessions>
+
+    /// - Parameters:
+    ///   - makeConfiguration: The base configuration for every session the
+    ///     transport creates (`.ephemeral` in the app); the transport sets
+    ///     its timeouts and cache policy on top. Called again for each
+    ///     replacement request session.
+    ///   - onRequestConnectionsReset: Told each time the request session is
+    ///     replaced, after the replacement is in use.
+    init(
+        makeConfiguration: @escaping @Sendable () -> URLSessionConfiguration,
+        onRequestConnectionsReset: @escaping @Sendable (LichessBotRequestConnectionHealth.Reset) -> Void
+    ) {
+        let makeRequestSession: @Sendable () -> URLSession = {
+            let requestConfiguration = makeConfiguration()
+            // Short on purpose: every request holds the single-flight gate, so
+            // a stalled one delays every other (plan §5.2). Each request also
+            // sets its own, possibly shorter, idle limit for its priority; the
+            // session's is the longest of those.
+            requestConfiguration.timeoutIntervalForRequest = LichessBotRequestTimeouts.longestIdle
+            requestConfiguration.timeoutIntervalForResource = LichessBotRequestTimeouts.resource
+            requestConfiguration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            requestConfiguration.waitsForConnectivity = false
+            return URLSession(configuration: requestConfiguration)
+        }
+        self.makeRequestSession = makeRequestSession
+        self.onRequestConnectionsReset = onRequestConnectionsReset
+        requestSessions = OSAllocatedUnfairLock(initialState: RequestSessions(current: makeRequestSession()))
+
+        let streamConfiguration = makeConfiguration()
         streamConfiguration.timeoutIntervalForRequest = 24 * 60 * 60
         streamConfiguration.timeoutIntervalForResource = 30 * 24 * 60 * 60
         streamConfiguration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -85,17 +127,76 @@ final class LichessBotURLSessionTransport: LichessBotTransport {
     }
 
     deinit {
-        requestSession.invalidateAndCancel()
+        let sessions = requestSessions.withLock { [$0.current] + Array($0.replaced.values) }
+        for session in sessions {
+            session.invalidateAndCancel()
+        }
         streamSession.invalidateAndCancel()
     }
 
     func data(for request: URLRequest) async throws -> LichessBotTransportResponse {
+        let (session, generation) = requestSessions.withLock { sessions in
+            let generation = sessions.health.generation
+            sessions.inFlight[generation, default: 0] += 1
+            return (sessions.current, generation)
+        }
         let metrics = LichessBotProtocolNameCollector()
-        let (body, response) = try await requestSession.data(for: request, delegate: metrics)
+        let body: Data
+        let response: URLResponse
+        do {
+            (body, response) = try await session.data(for: request, delegate: metrics)
+        } catch {
+            finishRequest(on: generation, failure: error)
+            throw error
+        }
+        finishRequest(on: generation, failure: nil)
         guard let http = response as? HTTPURLResponse else {
             throw LichessBotTransportError.notHTTPResponse
         }
         return LichessBotTransportResponse(body: body, response: http, networkProtocolName: metrics.protocolName)
+    }
+
+    /// Ends one request's count on its session and feeds its outcome to the
+    /// health rule, replacing the request session when the rule says so.
+    /// `failure` is nil when a response arrived, whatever its status.
+    private func finishRequest(on generation: Int, failure: (any Error)?) {
+        let now = ContinuousClock.now - created
+        let outcome = requestSessions.withLock { sessions -> (reset: LichessBotRequestConnectionHealth.Reset?, finished: [URLSession]) in
+            sessions.inFlight[generation, default: 0] -= 1
+            if sessions.inFlight[generation] == 0 {
+                sessions.inFlight[generation] = nil
+            }
+            var reset: LichessBotRequestConnectionHealth.Reset?
+            if let failure {
+                reset = sessions.health.noteFailure(failure, generation: generation, now: now)
+            } else {
+                sessions.health.noteAnswered(generation: generation)
+            }
+            if let reset {
+                // Made under the lock: the new generation and its session
+                // must appear together, or a request could be tagged with
+                // the new generation and go out on the old session. Resets
+                // are rare (`minimumResetSpacing` apart), and building a
+                // session takes no lock of ours.
+                sessions.replaced[reset.generation - 1] = sessions.current
+                sessions.current = makeRequestSession()
+            }
+            var finished: [URLSession] = []
+            for (replacedGeneration, session) in sessions.replaced where sessions.inFlight[replacedGeneration] == nil {
+                finished.append(session)
+                sessions.replaced[replacedGeneration] = nil
+            }
+            return (reset, finished)
+        }
+        // Requests still open on a finished session can't exist (its count
+        // is zero), so letting it finish is the same as cancelling; finish
+        // keeps that true even if a count were ever wrong.
+        for session in outcome.finished {
+            session.finishTasksAndInvalidate()
+        }
+        if let reset = outcome.reset {
+            onRequestConnectionsReset(reset)
+        }
     }
 
     /// How long a stream request may wait for its response headers.
