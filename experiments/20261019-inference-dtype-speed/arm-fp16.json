@@ -1,0 +1,66 @@
+{
+  "alarm_config" : {
+    "actions" : {
+      "bn_running_variance_jump" : "log",
+      "bn_running_variance_runaway" : "log",
+      "dead_channels" : "log",
+      "divergence" : "log",
+      "gradient_collapse" : "log",
+      "gradient_spike" : "log",
+      "illegal_mass" : "log",
+      "legal_mass_stall" : "log",
+      "loss_spike" : "log",
+      "non_finite" : "log",
+      "policy_offset_drift" : "log",
+      "value_draw_saturation" : "log",
+      "value_fc1_zero_velocity" : "log",
+      "value_saturation" : "log"
+    },
+    "check_interval_steps" : 1000,
+    "enabled" : true,
+    "learning_grace_steps" : 1000,
+    "legal_mass_stall_evaluations" : 8,
+    "legal_mass_stall_threshold" : 0.99,
+    "lr_warmup_steps" : 1000,
+    "momentum_coefficient" : 0.9
+  },
+  "alarms" : [
+
+  ],
+  "arena_results" : [
+
+  ],
+  "candidate_tests" : [
+
+  ],
+  "gpu_faults" : {
+    "crash_dumps" : [
+
+    ],
+    "faults" : [
+
+    ],
+    "monitor" : "available"
+  },
+  "layer_health" : [
+
+  ],
+  "random_seed" : "20261019",
+  "random_seed_mode" : "seeded",
+  "rng_stream_derivation" : "v1",
+  "run_kind" : "self_play",
+  "sampling_constraints" : {
+    "applied" : true,
+    "max_draw_pct" : 100,
+    "max_per_game" : 10,
+    "stratify_by_material" : false,
+    "target_length" : 999
+  },
+  "session_id" : "20261020-15-eA1L",
+  "stats" : [
+
+  ],
+  "termination_reason" : "SIGTERM-received",
+  "total_training_seconds" : 243.01149606704712,
+  "training_elapsed_seconds" : 243.01149606704712
+}
