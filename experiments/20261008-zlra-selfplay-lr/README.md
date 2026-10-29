@@ -276,7 +276,9 @@ R-elitefresh segments (build 2523, git `a242b7ad`, clean, for all):
 | 5 | `launch/elitefresh_resume6_launch.sh` | 142,084 → 143,756 | 10-18 14:25 → 16:17 | SIGINT abort save; reason not recorded | `train-elitefresh-seg6.stdout`, `results-elitefresh-seg6.json` |
 | 6 | `launch/elitefresh_resume7_launch.sh` | 143,756 → 182,041 | 10-18 19:00 → 10-19 19:56 | SIGINT abort save; reason not recorded | `train-elitefresh-seg7.stdout`, `results-elitefresh-seg7.json` |
 | 7 | `launch/elitefresh_resume8_launch.sh` | 182,041 → 196,491 | 10-19 23:01 → 10-20 07:30 | SIGINT abort save (`manual_stop`) | `train-elitefresh-seg8.stdout`, `results-elitefresh-seg8.json` |
-| 8 | `launch/elitefresh_resume9_launch.sh` | 196,491 → (running) | 10-23 → | running | `train-elitefresh-seg9.stdout`, `results-elitefresh-seg9.json` |
+| 8 | `launch/elitefresh_resume9_launch.sh` | 196,491 → 221,457 | 10-23 07:26 → 10-24 02:06 | SIGINT abort save | `train-elitefresh-seg9.stdout`, `results-elitefresh-seg9.json` |
+| 9 | `launch/elitefresh_resume10_launch.sh` | 221,457 → 245,158 | 10-24 22:48 → 10-25 14:23 | SIGINT abort save (owner; GPU for R-elitecyc-anneal) | `train-elitefresh-seg10.stdout`, `results-elitefresh-seg10.json` |
+| 10 | `launch/elitefresh_resume11_launch.sh` (`--epochs 5`, step limit to trainer step 700,000, owner 10-28) | 245,158 → (running) | 10-28 21:37 → | running | `train-elitefresh-seg11.stdout`, `results-elitefresh-seg11.json` |
 
 - Every resume logged `[RESUME] EXACT`; segment 1 also `[RESUME] OS changed (Version 27.2 (Build 26B5091g) →
   Version 27.2 (Build 26B5112a)), behavior fingerprint matches`.
