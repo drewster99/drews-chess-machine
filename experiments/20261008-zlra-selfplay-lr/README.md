@@ -278,7 +278,8 @@ R-elitefresh segments (build 2523, git `a242b7ad`, clean, for all):
 | 7 | `launch/elitefresh_resume8_launch.sh` | 182,041 → 196,491 | 10-19 23:01 → 10-20 07:30 | SIGINT abort save (`manual_stop`) | `train-elitefresh-seg8.stdout`, `results-elitefresh-seg8.json` |
 | 8 | `launch/elitefresh_resume9_launch.sh` | 196,491 → 221,457 | 10-23 07:26 → 10-24 02:06 | SIGINT abort save | `train-elitefresh-seg9.stdout`, `results-elitefresh-seg9.json` |
 | 9 | `launch/elitefresh_resume10_launch.sh` | 221,457 → 245,158 | 10-24 22:48 → 10-25 14:23 | SIGINT abort save (owner; GPU for R-elitecyc-anneal) | `train-elitefresh-seg10.stdout`, `results-elitefresh-seg10.json` |
-| 10 | `launch/elitefresh_resume11_launch.sh` (`--epochs 5`, step limit to trainer step 700,000, owner 10-28) | 245,158 → (running) | 10-28 21:37 → | running | `train-elitefresh-seg11.stdout`, `results-elitefresh-seg11.json` |
+| 10 | `launch/elitefresh_resume11_launch.sh` (`--epochs 5`, step limit to trainer step 700,000, owner 10-28) | 245,158 → 278,000 (last save; died at ~278,420) | 10-28 21:37 → 10-29 ~19:10 | process died with no termination line after a sleep/wake on battery; no results file | `train-elitefresh-seg11.stdout` |
+| 11 | `launch/elitefresh_resume12_launch.sh` (same settings) | 278,000 → (running) | 10-29 23:08 → | running | `train-elitefresh-seg12.stdout`, `results-elitefresh-seg12.json` |
 
 - Every resume logged `[RESUME] EXACT`; segment 1 also `[RESUME] OS changed (Version 27.2 (Build 26B5091g) →
   Version 27.2 (Build 26B5112a)), behavior fingerprint matches`.
