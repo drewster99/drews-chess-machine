@@ -46,7 +46,8 @@ extension LichessBotPlaySettings {
         settings.temperatureStart = 0.5
         settings.temperatureDecayPerPly = 0.05
         settings.temperatureFloor = 0.01
-        settings.minimumThinkMilliseconds = 0
+        settings.minimumThinkMillisecondsVersusHumans = 0
+        settings.minimumThinkMillisecondsVersusBots = 0
         return settings
     }
 }

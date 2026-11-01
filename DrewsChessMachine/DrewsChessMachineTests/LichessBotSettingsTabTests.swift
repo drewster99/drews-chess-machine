@@ -21,7 +21,7 @@ final class LichessBotSettingsTabTests: XCTestCase {
         let baseline = makeBaseline()
         var draft = baseline
         draft.challenge.maxGamesPerDay = 7
-        draft.play.minimumThinkMilliseconds = 5
+        draft.play.minimumThinkMillisecondsVersusHumans = 5
         XCTAssertEqual(draft.validationProblems(), [])
         XCTAssertEqual(LichessBotSettingsTab.tabsWithProblems(in: draft, comparedWith: baseline), [])
     }
@@ -65,7 +65,7 @@ final class LichessBotSettingsTabTests: XCTestCase {
         var draft = baseline
         draft.challenge.maxGamesPerDay = 7
         draft.matchmaking.maxChallengesPerHour = 3
-        draft.play.minimumThinkMilliseconds = 5
+        draft.play.minimumThinkMillisecondsVersusHumans = 5
         draft.model.liveTrainerRefreshIntervalSeconds = 300
         draft.chat.goodbyeEnabled = !baseline.chat.goodbyeEnabled
         draft.alerts.botChallengeSoundName = "Ping"

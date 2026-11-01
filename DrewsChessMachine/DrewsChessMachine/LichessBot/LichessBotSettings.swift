@@ -62,7 +62,14 @@ struct LichessBotPlaySettings: Sendable, Equatable, Codable {
     var temperatureStart: Float = 0.11
     var temperatureDecayPerPly: Float = 0.02
     var temperatureFloor: Float = 0.01
-    var minimumThinkMilliseconds = 0
+    /// The least time DCM takes over each move, per kind of opponent (owner
+    /// request 2026-11-01): a human may want to watch DCM think while a bot
+    /// gains nothing from the wait. Replaced the one `minimumThinkMilliseconds`
+    /// for every opponent; an older save's value becomes both
+    /// (`LichessBotSettingsStore.carryForwardReplacedFields`).
+    var minimumThinkMillisecondsVersusHumans = 0
+    /// Bots and Lichess's own AI.
+    var minimumThinkMillisecondsVersusBots = 0
 
     var resignEnabled = false
     var resignLossProbability: Float = 0.95
@@ -91,6 +98,15 @@ struct LichessBotPlaySettings: Sendable, Equatable, Codable {
     /// ever: that is a self-play exploration device, not play.
     var samplingSchedule: SamplingSchedule {
         SamplingSchedule(startTau: temperatureStart, decayPerPly: temperatureDecayPerPly, floorTau: temperatureFloor)
+    }
+
+    /// The minimum think time against this kind of opponent. Lichess's AI
+    /// is an engine, so it gets the bots' time.
+    func minimumThinkMilliseconds(against opponent: LichessBotOpponentKind) -> Int {
+        switch opponent {
+        case .human: return minimumThinkMillisecondsVersusHumans
+        case .bot, .lichessAI: return minimumThinkMillisecondsVersusBots
+        }
     }
 }
 
@@ -422,7 +438,7 @@ struct LichessBotSettings: Sendable, Equatable, Codable {
         require(p.temperatureFloor >= LichessBotLimits.minimumTemperature, "Temperature floor must be at least \(LichessBotLimits.minimumTemperature)")
         require(p.temperatureStart >= p.temperatureFloor, "Starting temperature must be at least the floor")
         require(p.temperatureDecayPerPly >= 0, "Temperature decay cannot be negative")
-        require(p.minimumThinkMilliseconds >= 0, "Minimum think time cannot be negative")
+        require(p.minimumThinkMillisecondsVersusHumans >= 0 && p.minimumThinkMillisecondsVersusBots >= 0, "Minimum think time cannot be negative")
         for (value, name) in [(p.resignLossProbability, "Resign"), (p.offerDrawProbability, "Offer-draw"), (p.acceptDrawExpectedScore, "Accept-draw")] {
             require(value >= 0 && value <= 1, "\(name) threshold must be between 0 and 1")
         }

@@ -182,4 +182,69 @@ final class LichessBotSettingsStoreTests: XCTestCase {
         XCTAssertEqual(result.carriedForward, [])
         XCTAssertEqual(result.ignoredSavedKeys, [])
     }
+
+    // MARK: Minimum think time split (2026-11-01)
+
+    /// Protects: a save made before the split keeps its think time for every
+    /// opponent. Fails if the carry-forward is dropped (both fall to 0) or
+    /// fills only one side.
+    func testTheSingleMinimumThinkTimeCarriesIntoBothNewTimes() throws {
+        let defaults = try makeTemporaryDefaults()
+        try store(LichessBotSettings(), in: defaults) { object in
+            var play = try XCTUnwrap(object["play"] as? [String: Any])
+            play["minimumThinkMillisecondsVersusHumans"] = nil
+            play["minimumThinkMillisecondsVersusBots"] = nil
+            play["minimumThinkMilliseconds"] = 7000
+            object["play"] = play
+        }
+        let result = try LichessBotSettingsStore.loadReporting(from: defaults)
+        XCTAssertEqual(result.settings.play.minimumThinkMillisecondsVersusHumans, 7000)
+        XCTAssertEqual(result.settings.play.minimumThinkMillisecondsVersusBots, 7000)
+        XCTAssertEqual(result.filledFromDefaults, [])
+        XCTAssertEqual(result.ignoredSavedKeys, [])
+        XCTAssertEqual(result.carriedForward.count, 1)
+    }
+
+    /// Protects: a save that already holds the split times keeps them; a
+    /// stray old key never overwrites them.
+    func testASaveWithTheSplitThinkTimesKeepsThem() throws {
+        let defaults = try makeTemporaryDefaults()
+        var settings = LichessBotSettings()
+        settings.play.minimumThinkMillisecondsVersusHumans = 7000
+        settings.play.minimumThinkMillisecondsVersusBots = 0
+        try store(settings, in: defaults) { object in
+            var play = try XCTUnwrap(object["play"] as? [String: Any])
+            play["minimumThinkMilliseconds"] = 3000
+            object["play"] = play
+        }
+        let result = try LichessBotSettingsStore.loadReporting(from: defaults)
+        XCTAssertEqual(result.settings.play.minimumThinkMillisecondsVersusHumans, 7000)
+        XCTAssertEqual(result.settings.play.minimumThinkMillisecondsVersusBots, 0)
+        XCTAssertEqual(result.carriedForward, [])
+        XCTAssertEqual(result.ignoredSavedKeys, [])
+    }
+
+    /// Protects: humans get the human time; bots and Lichess's AI the bots'.
+    /// Fails if the kinds are swapped or Lichess's AI is treated as human.
+    func testMinimumThinkTimeFollowsTheOpponentKind() {
+        var play = LichessBotPlaySettings()
+        play.minimumThinkMillisecondsVersusHumans = 7000
+        play.minimumThinkMillisecondsVersusBots = 250
+        XCTAssertEqual(play.minimumThinkMilliseconds(against: .human), 7000)
+        XCTAssertEqual(play.minimumThinkMilliseconds(against: .bot), 250)
+        XCTAssertEqual(play.minimumThinkMilliseconds(against: .lichessAI), 250)
+    }
+
+    /// Protects: a negative time on either side is refused.
+    func testANegativeMinimumThinkTimeIsInvalid() {
+        for side in ["humans", "bots"] {
+            var settings = LichessBotSettings()
+            if side == "humans" {
+                settings.play.minimumThinkMillisecondsVersusHumans = -1
+            } else {
+                settings.play.minimumThinkMillisecondsVersusBots = -1
+            }
+            XCTAssertFalse(settings.validationProblems().isEmpty, side)
+        }
+    }
 }

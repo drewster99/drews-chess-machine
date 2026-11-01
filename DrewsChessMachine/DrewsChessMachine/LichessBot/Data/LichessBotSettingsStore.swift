@@ -109,7 +109,10 @@ enum LichessBotSettingsStore {
     /// instead of falling to today's defaults (owner rule: saved settings
     /// survive changes). `challenge.maxGamesPerOpponentPerDay` (one limit for
     /// every opponent) became `maxGamesPerHumanOpponentPerDay` and
-    /// `maxGamesPerBotOpponentPerDay` (2026-10-12): an old save's value
+    /// `maxGamesPerBotOpponentPerDay` (2026-10-12), and
+    /// `play.minimumThinkMilliseconds` became
+    /// `minimumThinkMillisecondsVersusHumans` and
+    /// `minimumThinkMillisecondsVersusBots` (2026-11-01): an old save's value
     /// becomes both, unless the save already holds either new field. The old
     /// key is then dropped from what is decoded; the stored blob itself is
     /// not touched until the operator next saves.
@@ -127,6 +130,18 @@ enum LichessBotSettingsStore {
                 notes.append("challenge.maxGamesPerOpponentPerDay \(old) → challenge.maxGamesPerHumanOpponentPerDay and challenge.maxGamesPerBotOpponentPerDay")
             }
             result["challenge"] = challenge
+        }
+
+        // play.minimumThinkMilliseconds → vs humans + vs bots (2026-11-01).
+        if var play = result["play"] as? [String: Any],
+           let old = play["minimumThinkMilliseconds"] {
+            play["minimumThinkMilliseconds"] = nil
+            if play["minimumThinkMillisecondsVersusHumans"] == nil && play["minimumThinkMillisecondsVersusBots"] == nil {
+                play["minimumThinkMillisecondsVersusHumans"] = old
+                play["minimumThinkMillisecondsVersusBots"] = old
+                notes.append("play.minimumThinkMilliseconds \(old) → play.minimumThinkMillisecondsVersusHumans and play.minimumThinkMillisecondsVersusBots")
+            }
+            result["play"] = play
         }
 
         // chat.room (one picker for greeting and goodbye) → per-room fields

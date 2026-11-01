@@ -1203,7 +1203,9 @@ of that decision. Each group in the UI says which:
   argmax, so E45's repeated-line risk is larger.
   The minimum is 0.01; τ=0 is unsupported. No Dirichlet noise, ever.
 - **Minimum think time:** default 0 ms. Optional, for spectator
-  friendliness.
+  friendliness. Set separately vs humans and vs bots (Lichess's AI counts
+  as a bot) since 2026-11-01 (owner request); a save with the one older
+  value carries it into both.
 - **Resign:** default **off**. When enabled: `p_loss ≥ threshold` (0.95)
   for N consecutive own moves (6), and only after ply ≥ 40.
 - **Offer draw:** default **off**. When enabled: `p_draw ≥ threshold` (0.85)

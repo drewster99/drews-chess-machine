@@ -696,7 +696,8 @@ actor LichessBotGameSession {
     // MARK: - Moving
 
     private func playMove(state: LichessBotGameState, ourColor: LichessBotColorName, opponentColor: LichessBotColorName, settings: LichessBotSettings) async throws {
-        guard let tracker else { return }
+        // `tracker` is made from a `gameFull`, so both are set together.
+        guard let tracker, let gameFull else { return }
         let ply = tracker.ply
         let engine = tracker.engine
         // The position this decision is for: every later check compares it,
@@ -760,8 +761,11 @@ actor LichessBotGameSession {
             }
         }
 
-        if settings.play.minimumThinkMilliseconds > 0 {
-            try await time.sleep(for: .milliseconds(settings.play.minimumThinkMilliseconds))
+        let opponent = opponentColor == .white ? gameFull.white : gameFull.black
+        let minimumThink = settings.play.minimumThinkMilliseconds(
+            against: LichessBotOpponentKind.of(title: opponent.title, aiLevel: opponent.aiLevel))
+        if minimumThink > 0 {
+            try await time.sleep(for: .milliseconds(minimumThink))
             guard stillOurMove(at: ply, in: position) else { return }
         }
 
