@@ -280,6 +280,7 @@ R-elitefresh segments (build 2523, git `a242b7ad`, clean, for all):
 | 9 | `launch/elitefresh_resume10_launch.sh` | 221,457 → 245,158 | 10-24 22:48 → 10-25 14:23 | SIGINT abort save (owner; GPU for R-elitecyc-anneal) | `train-elitefresh-seg10.stdout`, `results-elitefresh-seg10.json` |
 | 10 | `launch/elitefresh_resume11_launch.sh` (`--epochs 5`, step limit to trainer step 700,000, owner 10-28) | 245,158 → 278,000 (last save; died at ~278,420) | 10-28 21:37 → 10-29 ~19:10 | process died with no termination line after a sleep/wake on battery; no results file | `train-elitefresh-seg11.stdout` |
 | 11 | `launch/elitefresh_resume12_launch.sh` (same settings) | 278,000 → 353,776 | 10-29 23:08 → 11-01 12:47 | SIGINT abort save (owner: stop chess trainers) | `train-elitefresh-seg12.stdout`, `results-elitefresh-seg12.json` |
+| 12 | `launch/elitefresh_resume13_launch.sh` (same settings) | 353,776 → 353,933 | 11-01 19:30 → 11-01 19:36 | SIGINT abort save (owner: stop elitefresh until elitecyc hits 1 million steps); `launch/elitefresh_after_elitecyc_1m.sh` starts `launch/elitefresh_resume14_launch.sh` when R-elitecyc ends at 1,000,000 | `train-elitefresh-seg13.stdout`, `results-elitefresh-seg13.json` |
 
 - Every resume logged `[RESUME] EXACT`; segment 1 also `[RESUME] OS changed (Version 27.2 (Build 26B5091g) →
   Version 27.2 (Build 26B5112a)), behavior fingerprint matches`.
