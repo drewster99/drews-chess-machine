@@ -1,0 +1,72 @@
+[PARAM] legacy LR schedule keys converted: kf=[0:1.00e+00/1.00e-03 m0.850/0.950, 1000:1.00e+00/1.00e-03 m0.850/0.950, 1001000:1.00e-03/1.00e-06 m0.900/0.950]
+[REPLAY] starting offline corpus replay over 1 corpus path(s)
+[REPLAY] start-model: 20261012-zlra-elitefresh-latest-step353776.safetensors modelID=20261030-1-tsQB encoding=basic24 policy_tail=fp32_from_pre_bn
+[REPLAY-ARCH] (start-model) in basic24(24) -> stem 128 (5x5) . 3x[9x9+9x9 @128, no-SE, silu/pre, clean_add, no-ReZero, out:layer_norm, drop*1] . act silu . policy intermediate_conv(4864) . value WDL(24->FC128) . bfloat16 policy-tail fp32_from_pre_bn . 8,271,279 params
+[REPLAY-HPARAMS] lr=0.001 batch=4096 wd=0.0003 momentum=0.9 gradClip=15 entropyBonus=0 drawPenalty=0 policyW=1 valueW=1 illegalW=1 pLabelSmooth=0.1 pLabelSmoothMode=fixed_total pLabelSmoothPerMove=0.0033 pLabelSmoothPerMoveCap=0.5 vLabelSmooth=0.013 dropout=0 lrWarmup=1000 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=on batchStats=10 klProbe=100 relClip=clip/k3/N1000/W100/floor0.75 stepLineSec=180 sampling=(maxPerGame=10 maxDrawPct=100 targetLen=999 stratify=off applied=on)
+[GRAD-CLIP] config mode=clip k=3 N=1000 W=100 floor=0.75 hardMax=15
+[REPLAY] trainer-model output: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261012-zlra-elitefresh-latest.safetensors (replacing the existing file, which holds model 20261030-1-tsQB at step 353776 — the model line this run continues)
+[REPLAY] enumerated checkpoints: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261012-zlra-elitefresh-latest-step354000.safetensors and siblings (never overwritten)
+[REPLAY] corpus 20260704-215145-op24Gp: 42 sealed shard(s)
+[RESUME] EXACT
+[PARAM] random_seed_mode and random_seed=0 not used: an exact resume keeps the run's seed
+[REPLAY] building network + trainer (encoding=basic24)
+[NUMERICS] policy_tail_precision=fp32_from_pre_bn source=architecture
+[RESUME] rng: sampler=restored
+[RESUME] rng: dropout stream=restored
+[REPLAY] start-model trainer state restored exactly (fp32 masters, velocity, trainerStep=353776) + feeder net (base tensors=61)
+[REPLAY-CYCLE] lr=^10000st cnt=0 inv=true mom=[0.75,0.90]^1000st cnt=0 inv=false momFollow=on kf=[0:1.00e+00/1.00e-03 m0.850/0.950, 1000:1.00e+00/1.00e-03 m0.850/0.950, 1001000:1.00e-03/1.00e-06 m0.900/0.950] origin=trainerStep 353776 cycleStep 352776 cycleLR=1.5235e-03 cycleMom=0.9159 (exact resume of 20261030-1-tsQB)
+[PARAM] WARNING lr_cycle_keyframes: trough below 0.0001 at step(s) 1001000:1.0e-06; the bf16 working weights barely move at such an LR (LR_KEYFRAMES_PLAN.md)
+[REPLAY] step lines: every 50 trainer steps through 1000, every 1000, and the first diagnostics step ≥ 180 s after the previous line; saves at trainer-step multiples of 1000 (next: 354000)
+[RUN] path=replay run=F79C7568-4DDB-443E-BFB4-8131DAB27F4A seg=12 (exact resume of 20261030-1-tsQB sha=8e67458ce9cd) build=2523 git=a242b7ad dirty=false git_diff=none device="Apple M5 Max" vm=false os="Version 27.2 (Build 26B123)" seed=20261008 mode=resumed(command_line) derivation=v1 params_sha=f81a755afd4b policy_tail=fp32_from_pre_bn cum_step=353776 cum_games=34829307 cum_train_sec=860148.1630855799 argv="/Users/andrew/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2523-a242b7ad.app/Contents/MacOS/DrewsChessMachine --replay-corpus 20260704-215145-op24Gp --start-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261012-zlra-elitefresh-latest-step353776.safetensors --resume-exact --parameters /Users/andrew/cursor/drews-chess-machine/experiments/20261008-zlra-selfplay-lr/parameters-zlra.json --out-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261012-zlra-elitefresh-latest.safetensors --epochs 5 --training-step-limit 346224 --enumerate-checkpoints --overwrite-output --output /Users/andrew/cursor/drews-chess-machine/experiments/20261008-zlra-selfplay-lr/results-elitefresh-seg13.json"
+[HEALTH] config enabled=true interval=1000 grace=1000 warmup=1000 momentum=0.9 legalMassStall=0.99x8 path=replay actions=non_finite:log,dead_channels:log,value_fc1_zero_velocity:log,illegal_mass:log,gradient_collapse:log,loss_spike:log,policy_offset_drift:log,bn_run[ALARM] health raise rule=bn_running_variance_runaway severity=warning trainerStep=353800 value=rvMaxOverMedian=4110.1 site=blocks.1.bn1 threshold=>=1000 action=log lr=0.00145 mom=0.9165
+[ALARM] health raise rule=policy_offset_drift severity=warning trainerStep=353850 value=medianAbs=11.2842 threshold=medianAbs>=3 action=log lr=0.0013 mom=0.9178
+SessionLogger: write failed: Error Domain=NSCocoaErrorDomain Code=640 "The file couldn’t be saved because there isn’t enough space." UserInfo={NSUnderlyingError=0x7b74f3a010 {Error Domain=NSPOSIXErrorDomain Code=28 "No space left on device"}}
+ning_variance_runaway:log,gradient_spike:log,divergence:log,value_saturation:log,value_draw_saturation:log,legal_mass_stall:log,bn_running_variance_jump:log value_fc1_zero_velocity=not_applicable(activation=silu)
+[REPLAY] batchSize=4096 reuse=0.48 K=8533 minPrefill=500000 stepLimit=346224 epochLimit=5
+[REPLAY] pre-filled: bufCount=1000000 positionsFed=1417149 gamesFed=17242 rejected=0 skipped=0
+[REPLAY] step=1 loss=3.4108 pLoss=2.5835 vLoss=0.8267 pEnt=-- pIllM=0.0006 playedP=-- pW=-- pD=-- pL=-- vAbs=-- pLogitMean=-- vLogitMean=-- gNorm=0.455 lr=0.00152 ms=2252.5 buf=1000000 plies=1425726 games=17343 rejected=0 skipped=0 epoch=2 mom=0.9160 lrCyc[pk=8.7e-02,tr=8.7e-05] gNormMax=0.4554 clips=0 gCap=1.4150 trainerStep=353777
+[LAYER-HEALTH] live trainerStep=353777 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=4104.5@blocks.1.bn1[13] rvOver10xMedian=83 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=353800 batchHash=99919007f979e949 batchChain=partial
+[HEALTH] rule value_fc1_zero_velocity does not apply: value FC1 activation is silu, not relu
+[ALARM] health raise rule=bn_running_variance_runaway severity=warning trainerStep=353800 value=rvMaxOverMedian=4110.1 site=blocks.1.bn1 threshold=>=1000 action=log lr=0.00145 mom=0.9165
+[ALARM] health raise rule=policy_offset_drift severity=warning trainerStep=353850 value=medianAbs=11.2842 threshold=medianAbs>=3 action=log lr=0.0013 mom=0.9178
+[REPLAY] step=94 loss=3.3688 pLoss=2.5639 vLoss=0.8042 pEnt=2.813 pIllM=0.0007 playedP=0.201 pW=0.46 pD=0.09 pL=0.45 vAbs=0.297 pLogitMean=-11.2852 vLogitMean=0.5989 gNorm=0.441 lr=0.00125 ms=2827.8 buf=1000000 plies=2219285 games=26993 rejected=0 skipped=0 epoch=2 mom=0.9183 lrCyc[pk=8.7e-02,tr=8.7e-05] gNormMax=0.5009 clips=0 gCap=1.4021 trainerStep=353870
+[LAYER-HEALTH] live trainerStep=353870 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=4127.0@blocks.1.bn1[13] rvOver10xMedian=83 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=353900 batchHash=8f540d7cd53305b2 batchChain=partial
+[REPLAY] SIGINT received — finishing current step, saving, then exiting (Ctrl-C again to force-quit)
+[REPLAY] abort requested — stopping at step 157
+[REPLAY] saved trainer model (abort) step=157 trainerStep=353933 nextGame=5607303 shard=15 epoch=2 -> 20261012-zlra-elitefresh-latest.safetensors
+[LAYER-HEALTH] checkpoint replay-abort step=157 trainerStep=353933 scope=all_tensors reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=4136.1@blocks.1.bn1[13] rvOver10xMedian=83 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=82.64@blocks.1.bn1.running_var
+[LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+[LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]  rv≥10x
+[LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0    -25.62 [91]         +3.51 [126]           5.0 [32]           0
+[LAYER-HEALTH]     blocks.0.bn1    silu          128    n/a    n/a    n/a      0      0     -1.53 [25]         +2.52 [41]           54.5 [13]          10
+[LAYER-HEALTH]     blocks.0.bn2    silu          128    n/a    n/a    n/a      0      0     -1.64 [103]        +7.71 [57]            4.8 [6]            0
+[LAYER-HEALTH]     blocks.1.bn1    silu          128    n/a    n/a    n/a      0      0     -2.01 [46]         -0.22 [79]         4136.1 [13]          41
+[LAYER-HEALTH]     blocks.1.bn2    silu          128    n/a    n/a    n/a      0      0     -1.84 [36]         +0.06 [106]           3.4 [18]           0
+[LAYER-HEALTH]     blocks.2.bn1    silu          128    n/a    n/a    n/a      0      0     -2.45 [83]         +0.78 [8]          1053.4 [32]          31
+[LAYER-HEALTH]     blocks.2.bn2    silu          128    n/a    n/a    n/a      0      0     -2.06 [127]        +0.41 [123]           3.1 [127]          0
+[LAYER-HEALTH]     tower_final_bn  silu          128    n/a    n/a    n/a      0      0     -1.04 [51]         +2.28 [40]           23.6 [32]           1
+[LAYER-HEALTH]     policy.pre_bn   silu          128    n/a    n/a    n/a      0      0     -1.85 [113]        +2.32 [65]            4.2 [113]          0
+[LAYER-HEALTH]     value.bn        silu           24    n/a    n/a    n/a      0      0     -1.65 [6]          +0.49 [19]            3.4 [17]           0
+[LAYER-HEALTH]   parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < 0.00135 of the range (Φ(-3)), mostly off < 0.02275 (Φ(-2)); equals dead / off for relu/leaky_relu
+[LAYER-HEALTH]     site            act            ch parked    off       min P   median P
+[LAYER-HEALTH]     blocks.0.bn1    silu          128      0      0    0.144667   0.275959
+[LAYER-HEALTH]     blocks.0.bn2    silu          128      0      0    0.107904   0.242216
+[LAYER-HEALTH]     blocks.1.bn1    silu          128      0      0    0.095094   0.183266
+[LAYER-HEALTH]     blocks.1.bn2    silu          128      0      0    0.080152   0.185516
+[LAYER-HEALTH]     blocks.2.bn1    silu          128      0      0    0.041657   0.142130
+[LAYER-HEALTH]     blocks.2.bn2    silu          128      0      0    0.048503   0.205414
+[LAYER-HEALTH]     tower_final_bn  silu          128      0      0    0.196416   0.519029
+[LAYER-HEALTH]     policy.pre_bn   silu          128      0      0    0.112018   0.529425
+[LAYER-HEALTH]     value.bn        silu           24      0      0    0.110113   0.127666
+[LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+[LAYER-HEALTH]     value.fc1.weight  silu  units 128  zero 0  low 14  median unit norm 0.007421
+[LAYER-HEALTH]     (no SE blocks)
+[LAYER-HEALTH]   ReZero: none
+[LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (16540206 values examined)
+[LAYER-HEALTH]   largest |value|: blocks.1.bn1.running_var 82.64, blocks.0.bn1.running_var 20.82, blocks.1.bn1.running_mean 11.11, blocks.2.bn1.running_var 11.03, blocks.0.bn2.running_var 7.035
+[REPLAY] enumerated checkpoint -> 20261012-zlra-elitefresh-latest-step353933.safetensors
+[HEALTH] check trainerStep=353933 generation=0 evaluations=5 live=4 checkpoint=1 stale=0 truncated=0 cost_ms=3.6 train_ms=337077.8 liveReadFailed=0 lossMaxRatio=-- lossMedianRatio=-- gradMaxRatio=-- rvRiseMax=1.02 rvOutliers=83/83 nodata=loss_spike:4,gradient_spike:4 active=policy_offset_drift:warning,bn_running_variance_runaway:warning final=true
+[REPLAY] wrote results: /Users/andrew/cursor/drews-chess-machine/experiments/20261008-zlra-selfplay-lr/results-elitefresh-seg13.json (stats=2)
+[REPLAY] done: steps=157 positionsFed=2756843 gamesFed=33544 rejected=0 skipped=0 epochs=2

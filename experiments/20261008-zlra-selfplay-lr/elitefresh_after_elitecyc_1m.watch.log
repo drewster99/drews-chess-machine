@@ -1,0 +1,6 @@
+Sun Nov  1 19:36:46 CST 2026 watching R-elitecyc pid 24076
+Mon Nov  2 10:15:56 CST 2026 R-elitecyc pid 24076 exited
+Mon Nov  2 10:15:56 CST 2026 R-elitecyc did not end with a final save at 1,000,000; R-elitefresh NOT launched
+10:02:54.051  [REPLAY] saved trainer model (autosave) step=41226 trainerStep=721000 nextGame=14317540 shard=40 epoch=4 -> 20261011-zlra-elitecyc-latest.safetensors
+10:15:28.416  [REPLAY] saved trainer model (abort) step=41810 trainerStep=721584 nextGame=14373799 shard=40 epoch=4 -> 20261011-zlra-elitecyc-latest.safetensors
+10:15:28.958  [REPLAY] done: steps=41810 positionsFed=358262819 gamesFed=4019209 rejected=0 skipped=0 epochs=4
