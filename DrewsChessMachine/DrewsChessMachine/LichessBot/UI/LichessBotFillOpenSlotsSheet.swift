@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// Fill Open Slots' confirmation: how many matchmaking challenges to send
-/// (one per game it tries to start; the slots open now by default, at most
-/// those) and whether to override matchmaking's time limits for this fill.
+/// (the slots open now by default, at most those) or, with "Keep going",
+/// how many games to start; and whether to override matchmaking's time
+/// limits for this fill.
 struct LichessBotFillOpenSlotsSheet: View {
     let controller: LichessBotController
     @Binding var isPresented: Bool
@@ -13,15 +14,17 @@ struct LichessBotFillOpenSlotsSheet: View {
     /// initializer argument, which `@State` would keep stale).
     @State private var challengeCountText = ""
     @State private var overridesTimeLimits = false
+    @State private var keepsGoingUntilGamesStart = false
 
     var body: some View {
-        let range = LichessBotFillOpenSlotsRequest.challengeCountRange(openSlots: controller.openSlotsToFill)
+        let range = LichessBotFillOpenSlotsRequest.countRange(target: target, openSlots: controller.openSlotsToFill)
         let challengeCount = Self.parsedCount(challengeCountText)
         VStack(alignment: .leading, spacing: 14) {
             Text("Fill Open Slots")
                 .font(.title2.weight(.semibold))
             LichessBotFillOpenSlotsSlotsLine(controller: controller)
-            LichessBotFillOpenSlotsCountRow(challengeCountText: $challengeCountText, range: range)
+            LichessBotFillOpenSlotsCountRow(challengeCountText: $challengeCountText, target: target, range: range)
+            LichessBotFillOpenSlotsKeepGoingToggle(keepsGoingUntilGamesStart: $keepsGoingUntilGamesStart)
             LichessBotFillOpenSlotsOverrideToggle(overridesTimeLimits: $overridesTimeLimits)
             LichessBotFillOpenSlotsButtons(
                 canStart: challengeCount.map { range?.contains($0) == true } == true && controller.connection == .online,
@@ -36,6 +39,10 @@ struct LichessBotFillOpenSlotsSheet: View {
         }
     }
 
+    private var target: LichessBotFillOpenSlotsTarget {
+        keepsGoingUntilGamesStart ? .gamesStarted : .challengesSent
+    }
+
     /// Digits only (surrounding spaces ignored); nil for anything else.
     static func parsedCount(_ text: String) -> Int? {
         Int(text.trimmingCharacters(in: .whitespaces))
@@ -43,7 +50,7 @@ struct LichessBotFillOpenSlotsSheet: View {
 
     private func start() {
         guard let challengeCount = Self.parsedCount(challengeCountText) else { return }
-        controller.startFillingOpenSlots(LichessBotFillOpenSlotsRequest(challengeCount: challengeCount, overridesTimeLimits: overridesTimeLimits))
+        controller.startFillingOpenSlots(LichessBotFillOpenSlotsRequest(count: challengeCount, target: target, overridesTimeLimits: overridesTimeLimits))
         isPresented = false
     }
 }
@@ -63,9 +70,11 @@ struct LichessBotFillOpenSlotsSlotsLine: View {
     }
 }
 
-/// The editable challenge count, with its bounds.
+/// The editable count, with its bounds: challenges to send, or games to
+/// start.
 struct LichessBotFillOpenSlotsCountRow: View {
     @Binding var challengeCountText: String
+    let target: LichessBotFillOpenSlotsTarget
     let range: ClosedRange<Int>?
 
     var body: some View {
@@ -74,12 +83,12 @@ struct LichessBotFillOpenSlotsCountRow: View {
         let isValid = count.map { range?.contains($0) == true } == true
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Text("Challenges to send")
-                TextField("Challenges", text: $challengeCountText)
+                Text(target == .gamesStarted ? "Games to start" : "Challenges to send")
+                TextField("Count", text: $challengeCountText)
                     .font(.system(.body, design: .monospaced))
                     .frame(width: 60)
                     .multilineTextAlignment(.trailing)
-                Stepper("Challenges to send") {
+                Stepper("Count") {
                     step(by: 1)
                 } onDecrement: {
                     step(by: -1)
@@ -87,7 +96,7 @@ struct LichessBotFillOpenSlotsCountRow: View {
                 .labelsHidden()
                 .disabled(range == nil)
             }
-            Text(range == nil ? "No slot is open." : "From \(bounds.lowerBound) to \(bounds.upperBound). Each challenge is one game it tries to start; a declined challenge frees its slot but isn't replaced.")
+            Text(range == nil ? "No slot is open." : "From \(bounds.lowerBound) to \(bounds.upperBound). \(target == .gamesStarted ? "A declined challenge is replaced; it waits for free slots." : "Each challenge is one game it tries to start; a declined challenge frees its slot but isn't replaced.")")
                 .font(.callout)
                 .foregroundStyle(range != nil && !isValid ? Color.red : Color.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -100,6 +109,21 @@ struct LichessBotFillOpenSlotsCountRow: View {
         guard let range else { return }
         let current = LichessBotFillOpenSlotsSheet.parsedCount(challengeCountText) ?? range.lowerBound
         challengeCountText = "\(min(max(current + delta, range.lowerBound), range.upperBound))"
+    }
+}
+
+/// "Keep going until the games start": the count becomes games started.
+struct LichessBotFillOpenSlotsKeepGoingToggle: View {
+    @Binding var keepsGoingUntilGamesStart: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Keep going until the games start", isOn: $keepsGoingUntilGamesStart)
+            Text("Sends until that many of its challenges are accepted: replaces declined ones, waits for free slots and for time limits, and retries when no bot fits (it gives up after a few passes in a row without a send). The count may exceed the slots open now.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

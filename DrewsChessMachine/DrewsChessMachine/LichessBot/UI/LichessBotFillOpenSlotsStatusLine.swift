@@ -30,17 +30,30 @@ struct LichessBotFillOpenSlotsStatusLine: View {
         switch run {
         case .idle:
             return ""
-        case .running(let request, let sent, let startedAt, let waitingUntil):
-            var parts = ["Filling open slots: \(sent) of \(request.challengeCount) sent since \(startedAt.formatted(date: .omitted, time: .standard))"]
-            if let waitingUntil {
-                parts.append("next send at \(waitingUntil.formatted(date: .omitted, time: .standard))")
+        case .running(let request, let progress, let startedAt, let waiting):
+            var parts = ["Filling open slots since \(startedAt.formatted(date: .omitted, time: .standard)): \(LichessBotController.fillOpenSlotsTally(request, progress: progress))"]
+            if let waiting {
+                parts.append(waitText(waiting))
             }
             if request.overridesTimeLimits {
                 parts.append("time limits overridden")
             }
             return parts.joined(separator: " · ")
-        case .finished(let request, let sent, let endedAt, let reason):
-            return "Fill Open Slots done at \(endedAt.formatted(date: .omitted, time: .standard)): sent \(sent) of \(request.challengeCount); \(reason)"
+        case .finished(let request, let progress, let endedAt, let reason):
+            return "Fill Open Slots done at \(endedAt.formatted(date: .omitted, time: .standard)): \(LichessBotController.fillOpenSlotsTally(request, progress: progress)); \(reason)"
+        }
+    }
+
+    static func waitText(_ wait: LichessBotFillOpenSlotsWait) -> String {
+        switch wait {
+        case .sendLimit(let until):
+            return "next send at \(until.formatted(date: .omitted, time: .standard))"
+        case .freeSlot:
+            return "waiting for a free slot"
+        case .pendingAnswers:
+            return "waiting for answers to its pending challenges"
+        case .retry(let until, let after):
+            return "trying again at \(until.formatted(date: .omitted, time: .standard)) (\(after))"
         }
     }
 }
