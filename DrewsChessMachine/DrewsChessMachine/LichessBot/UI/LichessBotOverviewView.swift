@@ -6,6 +6,7 @@ import SwiftUI
 struct LichessBotOverviewView: View {
     let controller: LichessBotController
     @State private var showingChallengeSheet = false
+    @State private var showingFillOpenSlotsSheet = false
 
     var body: some View {
         ScrollView {
@@ -18,7 +19,11 @@ struct LichessBotOverviewView: View {
                     LichessBotAlarmsCard(controller: controller)
                         .shown(hasAlarms)
                         .padding(.bottom, hasAlarms ? 16 : 0)
-                    LichessBotControlsCard(controller: controller, onChallenge: { showingChallengeSheet = true })
+                    LichessBotControlsCard(
+                        controller: controller,
+                        onChallenge: { showingChallengeSheet = true },
+                        onFillOpenSlots: { showingFillOpenSlotsSheet = true }
+                    )
                 }
                 // The account's ratings and game counts are what the
                 // operator checks most, so they sit right under the
@@ -49,6 +54,9 @@ struct LichessBotOverviewView: View {
         .sheet(isPresented: $showingChallengeSheet) {
             LichessBotChallengeSheet(controller: controller, isPresented: $showingChallengeSheet)
         }
+        .sheet(isPresented: $showingFillOpenSlotsSheet) {
+            LichessBotFillOpenSlotsSheet(controller: controller, isPresented: $showingFillOpenSlotsSheet)
+        }
     }
 
     private var hasAlarms: Bool {
@@ -60,6 +68,7 @@ struct LichessBotOverviewView: View {
 struct LichessBotControlsCard: View {
     let controller: LichessBotController
     let onChallenge: () -> Void
+    let onFillOpenSlots: () -> Void
     @State private var confirmingResignAll = false
 
     var body: some View {
@@ -132,17 +141,16 @@ struct LichessBotControlsCard: View {
                         }
                     }
                     Spacer()
-                    Button("Fill Open Slots") {
-                        Task { await controller.fillOpenSlots() }
-                    }
-                    .disabled(connection != .online || !controller.hasChallengeScope || controller.isFillingOpenSlots)
-                    .help(controller.hasChallengeScope ? "Challenge online bots now, with the matchmaking settings, until every slot outside those reserved for humans is taken (even with matchmaking off)" : "The token lacks challenge:write")
+                    Button("Fill Open Slots…", action: onFillOpenSlots)
+                        .disabled(connection != .online || !controller.hasChallengeScope || controller.isFillingOpenSlots)
+                        .help(controller.hasChallengeScope ? "Challenge online bots now, with the matchmaking settings, to fill slots outside those reserved for humans (even with matchmaking off); asks how many first" : "The token lacks challenge:write")
                     Button("Challenge…", action: onChallenge)
                         .disabled(connection != .online || !controller.hasChallengeScope)
                         .help(controller.hasChallengeScope ? "Challenge an online bot or any player" : "The token lacks challenge:write")
                 }
                 LichessBotModelInUseLine(controller: controller)
                 LichessBotMatchmakingStatusLine(controller: controller)
+                LichessBotFillOpenSlotsStatusLine(controller: controller)
                 LichessBotChallengeCreditsLine(controller: controller)
                 ForEach(controller.pendingChallenges, id: \.id) { pending in
                     HStack(spacing: 8) {

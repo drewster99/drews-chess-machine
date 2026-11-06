@@ -395,11 +395,28 @@ struct LichessBotMatchmakingRateLimiter: Sendable, Equatable {
         return decision(now: now, perHourCap: rate.hourlyCap, minimumSpacing: minimumSpacing)
     }
 
+    /// The decision under `limits`: the time-of-day cap and the spacing, or
+    /// (Fill Open Slots with "Override time limits") the spacing alone. The
+    /// spacing always holds: it is what keeps a run of sends, or of
+    /// failures, from hammering Lichess's challenge endpoint.
+    func decision(now: Date, rate: LichessBotMatchmakingSchedule.Rate, minimumSpacing: TimeInterval, limits: LichessBotMatchmakingSendLimits) -> Decision {
+        switch limits {
+        case .scheduled:
+            return decision(now: now, rate: rate, minimumSpacing: minimumSpacing)
+        case .spacingOnly:
+            return spacingDecision(now: now, minimumSpacing: minimumSpacing)
+        }
+    }
+
     func decision(now: Date, perHourCap: Int, minimumSpacing: TimeInterval) -> Decision {
         let recent = challengeTimes.filter { now.timeIntervalSince($0) < Self.window }
         if recent.count >= perHourCap, let oldest = recent.first {
             return .hourlyCap(until: oldest.addingTimeInterval(Self.window), count: recent.count)
         }
+        return spacingDecision(now: now, minimumSpacing: minimumSpacing)
+    }
+
+    private func spacingDecision(now: Date, minimumSpacing: TimeInterval) -> Decision {
         if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < minimumSpacing {
             return .spacing(until: lastAttemptAt.addingTimeInterval(minimumSpacing))
         }

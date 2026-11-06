@@ -260,6 +260,38 @@ final class LichessBotMatchmakingTests: XCTestCase {
         XCTAssertEqual(limiter.decision(now: now.addingTimeInterval(3600), perHourCap: 3, minimumSpacing: 20), .allowed, "the oldest challenge has left the hour")
     }
 
+    /// Protects: Fill Open Slots' "Override time limits" lifts the hourly cap
+    /// and the off-peak pause, and only those.
+    /// Fails if: `.spacingOnly` still applies the cap or the off-peak pause,
+    /// drops the spacing, or `.scheduled` stops following the time-of-day
+    /// rate.
+    func testSpacingOnlyLimitsIgnoreTheCapAndTheScheduleButKeepTheSpacing() {
+        var limiter = LichessBotMatchmakingRateLimiter()
+        for index in 0..<3 {
+            limiter.recordAttempt(at: now.addingTimeInterval(TimeInterval(index * 20)), reachedLichess: true)
+        }
+        let later = now.addingTimeInterval(600)
+        let peak = LichessBotMatchmakingSchedule.Rate(hourlyCap: 3, isPeak: true, percent: 100, changesAt: nil)
+        let offPeakZero = LichessBotMatchmakingSchedule.Rate(hourlyCap: 0, isPeak: false, percent: 0, changesAt: now.addingTimeInterval(7200))
+        XCTAssertEqual(limiter.decision(now: later, rate: peak, minimumSpacing: 20, limits: .scheduled), .hourlyCap(until: now.addingTimeInterval(3600), count: 3))
+        XCTAssertEqual(limiter.decision(now: later, rate: offPeakZero, minimumSpacing: 20, limits: .scheduled), .offPeakPaused(peakStartsAt: now.addingTimeInterval(7200)))
+        XCTAssertEqual(limiter.decision(now: later, rate: peak, minimumSpacing: 20, limits: .spacingOnly), .allowed, "the hourly cap is overridden")
+        XCTAssertEqual(limiter.decision(now: later, rate: offPeakZero, minimumSpacing: 20, limits: .spacingOnly), .allowed, "the off-peak pause is overridden")
+        limiter.recordAttempt(at: later, reachedLichess: true)
+        XCTAssertEqual(limiter.decision(now: later.addingTimeInterval(5), rate: offPeakZero, minimumSpacing: 20, limits: .spacingOnly), .spacing(until: later.addingTimeInterval(20)), "the spacing still holds")
+    }
+
+    /// Protects: the Fill Open Slots sheet offers one up to the open slots,
+    /// and nothing when none is open.
+    /// Fails if: the range starts at zero, exceeds the open slots, or offers
+    /// a count with no open slot.
+    func testFillOpenSlotsChallengeCountRange() {
+        XCTAssertNil(LichessBotFillOpenSlotsRequest.challengeCountRange(openSlots: 0))
+        XCTAssertNil(LichessBotFillOpenSlotsRequest.challengeCountRange(openSlots: -2), "more committed than capacity")
+        XCTAssertEqual(LichessBotFillOpenSlotsRequest.challengeCountRange(openSlots: 1), 1...1)
+        XCTAssertEqual(LichessBotFillOpenSlotsRequest.challengeCountRange(openSlots: 7), 1...7)
+    }
+
     // MARK: - When a pass runs
 
     private func conditions() -> LichessBotMatchmaking.PassConditions {

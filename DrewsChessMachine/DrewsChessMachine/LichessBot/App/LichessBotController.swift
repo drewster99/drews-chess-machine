@@ -372,8 +372,12 @@ final class LichessBotController {
     /// candidate rules, so that pass can't pick the bot meanwhile (it has no
     /// decline cool-down yet, and no challenge pending).
     private var casualResendWaitingOpponentIDs: Set<String> = []
+    /// Fill Open Slots' progress, for the Overview (one fill at a time).
+    private(set) var fillOpenSlotsRun: LichessBotFillOpenSlotsRun = .idle
+    /// The running fill, so Cancel can stop it (its sleeps end at once).
+    private var fillOpenSlotsTask: Task<Void, Never>?
     /// The Overview's Fill Open Slots is filling slots.
-    private(set) var isFillingOpenSlots = false
+    var isFillingOpenSlots: Bool { fillOpenSlotsRun.isRunning }
     /// What the latest matchmaking pass did, for the Overview.
     private(set) var matchmakingStatus: String?
     /// When the next automatic pass may run: after a send, the spacing;
@@ -2760,53 +2764,109 @@ final class LichessBotController {
 
     private static let secondsPerHour: TimeInterval = 3600
 
-    /// The Overview's Fill Open Slots: one pass that fills every open slot
-    /// (outside those reserved for humans) with matchmaking's criteria, even
-    /// when matchmaking is off. Sends go one at a time with matchmaking's
-    /// spacing, and the per-hour cap still holds.
-    func fillOpenSlots() async {
-        guard !isFillingOpenSlots, runtime != nil else { return }
+    /// Slots Fill Open Slots may fill now: those outside the ones reserved
+    /// for humans that no game, pending challenge or send holds. The sheet's
+    /// default and its upper bound.
+    var openSlotsToFill: Int {
+        LichessBotMatchmaking.openSlots(
+            maxConcurrentGames: settings.challenge.maxConcurrentGames,
+            gamesReservedForHumans: settings.challenge.gamesReservedForHumans,
+            fillMode: .everyFreeSlot,
+            committed: committedGameSlots
+        )
+    }
+
+    /// The Overview's Fill Open Slots, as the sheet asked for it: send up to
+    /// `request.challengeCount` matchmaking challenges, with matchmaking's
+    /// criteria, even when matchmaking is off. Runs in the background;
+    /// `fillOpenSlotsRun` reports its progress and how it ended.
+    func startFillingOpenSlots(_ request: LichessBotFillOpenSlotsRequest) {
+        guard !isFillingOpenSlots, runtime != nil, request.challengeCount >= 1 else { return }
+        // Running from here, so a second press can't start another fill
+        // before the task begins.
+        let startedAt = Date()
+        fillOpenSlotsRun = .running(request, sent: 0, startedAt: startedAt, waitingUntil: nil)
+        fillOpenSlotsTask = Task {
+            await fillOpenSlots(request, startedAt: startedAt)
+        }
+    }
+
+    /// Stop the running fill: challenges already sent stay pending, and a
+    /// send under way completes first (see `fillOpenSlots`).
+    func cancelFillingOpenSlots() {
+        fillOpenSlotsTask?.cancel()
+    }
+
+    /// Sends go one at a time with matchmaking's spacing; the time-of-day
+    /// hourly cap holds unless the request overrides it. The fill ends when
+    /// it has sent the count, when every slot is taken, or at the first
+    /// outcome that isn't a send or a spacing wait (no candidate, the cap, a
+    /// failure, a hold), and on Cancel.
+    private func fillOpenSlots(_ request: LichessBotFillOpenSlotsRequest, startedAt: Date) async {
         let generationAtStart = runtimeGeneration
         func current() -> Bool { runtimeGeneration == generationAtStart }
-        isFillingOpenSlots = true
-        defer {
-            if current() { isFillingOpenSlots = false }
-        }
-        protocolLog.record(.challenge, "matchmaking: Fill Open Slots")
-        var sentCount = 0
-        while current() {
-            // An automatic pass may be deciding or sending; let it finish.
-            while matchmakingPassRunning {
-                do {
+        let limitsText = request.overridesTimeLimits ? "time limits overridden" : "time limits in force"
+        protocolLog.record(.challenge, "matchmaking: Fill Open Slots: \(request.challengeCount) challenge(s), \(limitsText)")
+        SessionLogger.shared.log("[LICHESS-BOT] Fill Open Slots started: \(request.challengeCount) challenge(s), \(limitsText)")
+        var sent = 0
+        let reason: String
+        fill: while true {
+            guard sent < request.challengeCount else {
+                reason = "sent every challenge asked for"
+                break fill
+            }
+            guard !Task.isCancelled else {
+                reason = "canceled"
+                break fill
+            }
+            do {
+                // An automatic pass may be deciding or sending; let it finish.
+                while matchmakingPassRunning {
                     try await Task.sleep(for: .milliseconds(250))
-                } catch {
-                    return
+                    guard current() else { return }
                 }
+                // The pass runs outside this task's cancellation: Cancel
+                // must not abort a challenge request Lichess may already
+                // have created, which would then be pending untracked.
+                let outcome = await Task {
+                    await runMatchmakingPass(trigger: .fillOpenSlots, fillMode: .everyFreeSlot, limits: request.sendLimits)
+                }.value
+                // Teardown recorded how the fill ended.
                 guard current() else { return }
-            }
-            let outcome = await runMatchmakingPass(trigger: .fillOpenSlots, fillMode: .everyFreeSlot)
-            guard current() else { return }
-            switch outcome {
-            case .sent:
-                sentCount += 1
-                continue
-            case .rateLimited(.spacing(let until)):
-                let delay = until.timeIntervalSinceNow
-                if delay > 0 {
-                    do {
+                switch outcome {
+                case .sent:
+                    sent += 1
+                    fillOpenSlotsRun = .running(request, sent: sent, startedAt: startedAt, waitingUntil: nil)
+                case .rateLimited(.spacing(let until)):
+                    fillOpenSlotsRun = .running(request, sent: sent, startedAt: startedAt, waitingUntil: until)
+                    let delay = until.timeIntervalSinceNow
+                    if delay > 0 {
                         try await Task.sleep(for: .seconds(delay))
-                    } catch {
-                        return
                     }
+                    guard current() else { return }
+                    fillOpenSlotsRun = .running(request, sent: sent, startedAt: startedAt, waitingUntil: nil)
+                default:
+                    reason = Task.isCancelled ? "canceled" : outcome.text
+                    break fill
                 }
-                continue
-            default:
-                let summary = "Fill Open Slots sent \(sentCount); \(outcome.text)"
-                matchmakingStatus = "\(Date().formatted(date: .omitted, time: .standard)) \(summary)"
-                protocolLog.record(.challenge, "matchmaking: \(summary)")
-                return
+            } catch {
+                // `Task.sleep` throws only on Cancel.
+                guard current() else { return }
+                reason = "canceled"
+                break fill
             }
         }
+        finishFillingOpenSlots(request, sent: sent, reason: reason)
+    }
+
+    /// The one place a fill's end is recorded: the Overview's line, the
+    /// protocol log and the session log.
+    private func finishFillingOpenSlots(_ request: LichessBotFillOpenSlotsRequest, sent: Int, reason: String) {
+        fillOpenSlotsRun = .finished(request, sent: sent, endedAt: Date(), reason: reason)
+        fillOpenSlotsTask = nil
+        let summary = "Fill Open Slots finished: sent \(sent) of \(request.challengeCount); \(reason)"
+        protocolLog.record(.challenge, "matchmaking: \(summary)")
+        SessionLogger.shared.log("[LICHESS-BOT] \(summary)")
     }
 
     /// Start an automatic pass when matchmaking is on and one is due. The
@@ -2837,7 +2897,7 @@ final class LichessBotController {
         let generation = runtimeGeneration
         let settingsGeneration = matchmakingDecisionSettingsGeneration
         Task {
-            let outcome = await runMatchmakingPass(trigger: .automaticPass, fillMode: matchmaking.fillMode)
+            let outcome = await runMatchmakingPass(trigger: .automaticPass, fillMode: matchmaking.fillMode, limits: .scheduled)
             // Teardown reset the schedule for the next runtime.
             guard runtimeGeneration == generation else { return }
             nextAutomaticMatchmakingPassAt = matchmakingDecisionSettingsGeneration == settingsGeneration
@@ -2876,7 +2936,7 @@ final class LichessBotController {
     /// One matchmaking pass: at most one challenge, sent only if every
     /// condition holds before the send (plan §7.3 B). The conditions are
     /// checked again after the online-bots refresh, since that awaits.
-    private func runMatchmakingPass(trigger: LichessBotMatchmakingTrigger, fillMode: LichessBotMatchmakingSettings.FillMode) async -> MatchmakingPassOutcome {
+    private func runMatchmakingPass(trigger: LichessBotMatchmakingTrigger, fillMode: LichessBotMatchmakingSettings.FillMode, limits: LichessBotMatchmakingSendLimits) async -> MatchmakingPassOutcome {
         guard !matchmakingPassRunning else { return .blocked(reason: "another matchmaking pass is running") }
         matchmakingPassRunning = true
         let generationAtStart = runtimeGeneration
@@ -2884,7 +2944,7 @@ final class LichessBotController {
         defer {
             if current() { matchmakingPassRunning = false }
         }
-        if let outcome = await matchmakingPrecheck(fillMode: fillMode) {
+        if let outcome = await matchmakingPrecheck(fillMode: fillMode, limits: limits) {
             return outcome
         }
         guard current() else { return .stopped("the bot went offline") }
@@ -2894,7 +2954,7 @@ final class LichessBotController {
         if onlineBotsRefresh != nil || onlineBotsNeedMatchmakingRefresh(now: Date()) {
             await refreshOnlineBots()
             guard current() else { return .stopped("the bot went offline") }
-            if let outcome = await matchmakingPrecheck(fillMode: fillMode) {
+            if let outcome = await matchmakingPrecheck(fillMode: fillMode, limits: limits) {
                 return outcome
             }
             guard current() else { return .stopped("the bot went offline") }
@@ -2980,12 +3040,12 @@ final class LichessBotController {
 
     /// Whether a matchmaking send may happen now, and why not; nil when it
     /// may. Reads the gate's live phase.
-    private func matchmakingPrecheck(fillMode: LichessBotMatchmakingSettings.FillMode) async -> MatchmakingPassOutcome? {
+    private func matchmakingPrecheck(fillMode: LichessBotMatchmakingSettings.FillMode, limits: LichessBotMatchmakingSendLimits) async -> MatchmakingPassOutcome? {
         if let outcome = await matchmakingSendConditionsBlock(fillMode: fillMode) {
             return outcome
         }
         let now = Date()
-        let decision = matchmakingRateLimiter.decision(now: now, rate: matchmakingRate(now: now), minimumSpacing: LichessBotMatchmaking.minimumSendSpacing)
+        let decision = matchmakingRateLimiter.decision(now: now, rate: matchmakingRate(now: now), minimumSpacing: LichessBotMatchmaking.minimumSendSpacing, limits: limits)
         guard decision == .allowed else { return .rateLimited(decision) }
         return nil
     }
@@ -3610,7 +3670,11 @@ final class LichessBotController {
         challengeQueuePumpRunning = false
         matchmakingPassRunning = false
         casualResendWaitingOpponentIDs = []
-        isFillingOpenSlots = false
+        fillOpenSlotsTask?.cancel()
+        if case .running(let request, let sent, _, _) = fillOpenSlotsRun {
+            finishFillingOpenSlots(request, sent: sent, reason: "stopped: the bot went offline")
+        }
+        fillOpenSlotsTask = nil
         nextAutomaticMatchmakingPassAt = .distantPast
         lastLoggedAutomaticMatchmakingOutcome = nil
         matchmakingStatus = nil

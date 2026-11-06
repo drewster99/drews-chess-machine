@@ -96,7 +96,7 @@ struct LichessBotMatchmakingStatusLine: View {
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .help("Matchmaking challenges that reached Lichess in the last hour, against the cap now in force: Settings ▸ Matchmaking's per-hour cap inside the peak window, scaled by the off-peak rate outside it")
-                Text(controller.isFillingOpenSlots ? "filling open slots…" : (controller.matchmakingStatus ?? ""))
+                Text(controller.matchmakingStatus ?? "")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
