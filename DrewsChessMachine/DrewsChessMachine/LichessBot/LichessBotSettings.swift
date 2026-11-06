@@ -363,7 +363,7 @@ struct LichessBotMatchmakingSettings: Sendable, Equatable, Codable {
 struct LichessBotDisplaySettings: Sendable, Equatable, Codable {
     /// How long a finished game stays in the live grid before it is removed
     /// (it can also be dismissed by hand). Zero removes it at once.
-    var finishedGameRetentionMinutes = 10
+    var finishedGameRetentionMinutes = 60
 }
 
 /// A system sound played a number of times in a row, each play starting

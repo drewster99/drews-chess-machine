@@ -12,9 +12,9 @@ import Foundation
 /// advance its clock at the moments these windows close.
 enum LichessBotGridOrdering {
     /// How long a finished game keeps its live-section grid position.
-    static let positionHold: TimeInterval = 5
+    static let positionHold: TimeInterval = 60
     /// How long a finished game's tile shows its result color.
-    static let resultHighlight: TimeInterval = 10
+    static let resultHighlight: TimeInterval = 600
 
     /// The ordering inputs for one game.
     struct Entry: Equatable {
