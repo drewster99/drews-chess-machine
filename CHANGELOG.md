@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-11-06 00:05 — Lichess bot: Fill Open Slots ends on drain; pending-player status fixes `374300b5`
+
+- Grid (`7413f078`): a finished game keeps its live spot 1 min (was 5 s) and its result color 10 min (was 10 s); finished-game retention defaults to 60 min (was 10; a saved value still wins).
+- A fill ends at once when the bot stops being online (drain, offline) instead of sleeping through a long hourly-cap or peak-window wait; waits sleep in 2 s slices.
+- A player Lichess's `users/status` reply leaves out (closed account) is no longer re-read every poll; the row says "no Lichess status".
+
 ## 2026-11-05 23:40 — Lichess bot: pending challenge rows link to the opponent and show whether they are playing `d2a544a6`
 
 - The player's name in each Overview pending-challenge row opens their breakdown window.
