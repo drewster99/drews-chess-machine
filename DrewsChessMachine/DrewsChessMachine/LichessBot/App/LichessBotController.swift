@@ -2245,6 +2245,7 @@ final class LichessBotController {
         let now = Date()
         guard pendingOpponentStatuses.needsRead(of: ids, now: now) else { return }
         pendingOpponentStatuses.noteReadStarted(at: now)
+        pendingOpponentStatuses.noteReadRequested(ids)
         let generationAtStart = runtimeGeneration
         pendingOpponentStatusRefresh = Task {
             let result: Result<[String: LichessBotUserStatus], Error>
@@ -2903,6 +2904,13 @@ final class LichessBotController {
                 reason = "canceled"
                 break fill
             }
+            // Draining or going offline: no send could happen until the
+            // operator goes online again, so the fill ends now rather than
+            // sit out a wait that reads as if it will send.
+            guard connection == .online else {
+                reason = "stopped: the bot is no longer online"
+                break fill
+            }
             do {
                 // Starting games: the next send waits for answers that could
                 // finish the fill, and for a slot to put it in.
@@ -2990,12 +2998,17 @@ final class LichessBotController {
         }
     }
 
-    /// Shows what the running fill waits for, then sleeps `duration`.
-    /// Throws on Cancel.
+    /// Shows what the running fill waits for, then sleeps `duration`, in
+    /// slices of `fillOpenSlotsPollInterval` so a wait for the hourly cap or
+    /// the peak window ends early when the bot stops being online (the loop
+    /// then ends the fill). Throws on Cancel.
     private func waitFillingOpenSlots(_ wait: LichessBotFillOpenSlotsWait, for duration: Duration) async throws {
         setFillingOpenSlotsWait(wait)
-        if duration > .zero {
-            try await Task.sleep(for: duration)
+        var remaining = duration
+        while remaining > .zero, connection == .online {
+            let slice = min(remaining, Self.fillOpenSlotsPollInterval)
+            try await Task.sleep(for: slice)
+            remaining -= slice
         }
     }
 

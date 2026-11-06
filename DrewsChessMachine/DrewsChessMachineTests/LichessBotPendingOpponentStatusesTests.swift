@@ -63,4 +63,17 @@ final class LichessBotPendingOpponentStatusesTests: XCTestCase {
         XCTAssertEqual(statuses.activity(of: "gone"), .offline(readAt: start))
         XCTAssertEqual(statuses.activity(of: "never"), .notReadYet)
     }
+
+    /// Protects: a player Lichess's reply leaves out (a closed account) is
+    /// not read again every poll, and its row says Lichess reported nothing.
+    /// Fails if: the "new player" check looks only at the reply, so the
+    /// left-out id reads as never asked about.
+    func testAPlayerLeftOutOfTheReplyIsNotReadAgainEachPoll() {
+        var statuses = LichessBotPendingOpponentStatuses()
+        statuses.noteReadStarted(at: start)
+        statuses.noteReadRequested(["a", "closed"])
+        statuses.noteRead(["a": status("a", online: true, playing: false)], at: start)
+        XCTAssertFalse(statuses.needsRead(of: ["a", "closed"], now: start.addingTimeInterval(1)))
+        XCTAssertEqual(statuses.activity(of: "closed"), .notReported(readAt: start))
+    }
 }

@@ -49,6 +49,8 @@ struct LichessBotPendingChallengeRow: View {
             return "· online, not playing"
         case .offline:
             return "· offline"
+        case .notReported:
+            return "· no Lichess status"
         case .notReadYet:
             return "· checking…"
         case .unknown:
@@ -58,7 +60,7 @@ struct LichessBotPendingChallengeRow: View {
 
     static func activityHelp(_ activity: LichessBotPendingOpponentStatuses.Activity) -> String {
         switch activity {
-        case .playing(let readAt), .onlineNotPlaying(let readAt), .offline(let readAt):
+        case .playing(let readAt), .onlineNotPlaying(let readAt), .offline(let readAt), .notReported(let readAt):
             return "Lichess status as of \(readAt.formatted(date: .omitted, time: .standard)); read every \(Int(LichessBotPendingOpponentStatuses.readInterval)) s while challenges are pending"
         case .notReadYet:
             return "Lichess status not read yet"
