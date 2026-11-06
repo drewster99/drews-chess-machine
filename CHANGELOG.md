@@ -9,6 +9,10 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-11-06 00:25 — Lichess bot: keep-going fill picks another bot after a daily-limit refusal `f06839fb`
+
+- A pick refused because that bot is at Lichess's bot-vs-bot daily limit no longer counts toward a keep-going fill's 5-misses give-up; the refused bot is passed over until its limit ends, so the fill picks again (00:08–00:09 on 2026-11-06, four such refusals in a row ended a 20-game fill at 3 games). A refusal whose end time is already past still counts as a miss. Plain challenge-count fills still end there with Lichess's reason.
+
 ## 2026-11-06 00:05 — Lichess bot: Fill Open Slots ends on drain; pending-player status fixes `374300b5`
 
 - Grid (`7413f078`): a finished game keeps its live spot 1 min (was 5 s) and its result color 10 min (was 10 s); finished-game retention defaults to 60 min (was 10; a saved value still wins).
