@@ -7,21 +7,24 @@ struct LichessBotFillOpenSlotsSheet: View {
     let controller: LichessBotController
     @Binding var isPresented: Bool
 
+    /// The count as typed, parsed on every keystroke: a value-formatted
+    /// field updates only on commit, so Start could send a stale count.
     /// Set from the open slots when the sheet appears (not from an
     /// initializer argument, which `@State` would keep stale).
-    @State private var challengeCount = 1
+    @State private var challengeCountText = ""
     @State private var overridesTimeLimits = false
 
     var body: some View {
         let range = LichessBotFillOpenSlotsRequest.challengeCountRange(openSlots: controller.openSlotsToFill)
+        let challengeCount = Self.parsedCount(challengeCountText)
         VStack(alignment: .leading, spacing: 14) {
             Text("Fill Open Slots")
                 .font(.title2.weight(.semibold))
             LichessBotFillOpenSlotsSlotsLine(controller: controller)
-            LichessBotFillOpenSlotsCountRow(challengeCount: $challengeCount, range: range)
+            LichessBotFillOpenSlotsCountRow(challengeCountText: $challengeCountText, range: range)
             LichessBotFillOpenSlotsOverrideToggle(overridesTimeLimits: $overridesTimeLimits)
             LichessBotFillOpenSlotsButtons(
-                canStart: range?.contains(challengeCount) == true && controller.connection == .online,
+                canStart: challengeCount.map { range?.contains($0) == true } == true && controller.connection == .online,
                 onCancel: { isPresented = false },
                 onStart: start
             )
@@ -29,11 +32,17 @@ struct LichessBotFillOpenSlotsSheet: View {
         .padding(20)
         .frame(width: 460)
         .onAppear {
-            challengeCount = max(1, controller.openSlotsToFill)
+            challengeCountText = "\(max(1, controller.openSlotsToFill))"
         }
     }
 
+    /// Digits only (surrounding spaces ignored); nil for anything else.
+    static func parsedCount(_ text: String) -> Int? {
+        Int(text.trimmingCharacters(in: .whitespaces))
+    }
+
     private func start() {
+        guard let challengeCount = Self.parsedCount(challengeCountText) else { return }
         controller.startFillingOpenSlots(LichessBotFillOpenSlotsRequest(challengeCount: challengeCount, overridesTimeLimits: overridesTimeLimits))
         isPresented = false
     }
@@ -56,27 +65,41 @@ struct LichessBotFillOpenSlotsSlotsLine: View {
 
 /// The editable challenge count, with its bounds.
 struct LichessBotFillOpenSlotsCountRow: View {
-    @Binding var challengeCount: Int
+    @Binding var challengeCountText: String
     let range: ClosedRange<Int>?
 
     var body: some View {
         let bounds = range ?? 0...0
+        let count = LichessBotFillOpenSlotsSheet.parsedCount(challengeCountText)
+        let isValid = count.map { range?.contains($0) == true } == true
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Text("Challenges to send")
-                TextField("Challenges", value: $challengeCount, format: .number)
+                TextField("Challenges", text: $challengeCountText)
                     .font(.system(.body, design: .monospaced))
                     .frame(width: 60)
                     .multilineTextAlignment(.trailing)
-                Stepper("Challenges to send", value: $challengeCount, in: max(1, bounds.lowerBound)...max(1, bounds.upperBound))
-                    .labelsHidden()
-                    .disabled(range == nil)
+                Stepper("Challenges to send") {
+                    step(by: 1)
+                } onDecrement: {
+                    step(by: -1)
+                }
+                .labelsHidden()
+                .disabled(range == nil)
             }
             Text(range == nil ? "No slot is open." : "From \(bounds.lowerBound) to \(bounds.upperBound). Each challenge is one game it tries to start; a declined challenge frees its slot but isn't replaced.")
                 .font(.callout)
-                .foregroundStyle(range?.contains(challengeCount) == false ? Color.red : Color.secondary)
+                .foregroundStyle(range != nil && !isValid ? Color.red : Color.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// The stepper moves from the typed count (or the low bound when it
+    /// isn't a number), kept inside the range.
+    private func step(by delta: Int) {
+        guard let range else { return }
+        let current = LichessBotFillOpenSlotsSheet.parsedCount(challengeCountText) ?? range.lowerBound
+        challengeCountText = "\(min(max(current + delta, range.lowerBound), range.upperBound))"
     }
 }
 

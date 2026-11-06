@@ -2781,18 +2781,32 @@ final class LichessBotController {
     /// criteria, even when matchmaking is off. Runs in the background;
     /// `fillOpenSlotsRun` reports its progress and how it ended.
     func startFillingOpenSlots(_ request: LichessBotFillOpenSlotsRequest) {
-        guard !isFillingOpenSlots, runtime != nil, request.challengeCount >= 1 else { return }
-        // Running from here, so a second press can't start another fill
-        // before the task begins.
-        let startedAt = Date()
-        fillOpenSlotsRun = .running(request, sent: 0, startedAt: startedAt, waitingUntil: nil)
+        guard let startedAt = beginFillingOpenSlots(request) else { return }
         fillOpenSlotsTask = Task {
-            await fillOpenSlots(request, startedAt: startedAt)
+            await runFillingOpenSlots(request, startedAt: startedAt)
         }
     }
 
+    /// Fill Open Slots, returning when the fill ends. With no request: every
+    /// slot open now, under the scheduled time limits.
+    func fillOpenSlots(_ request: LichessBotFillOpenSlotsRequest? = nil) async {
+        let request = request ?? LichessBotFillOpenSlotsRequest(challengeCount: openSlotsToFill, overridesTimeLimits: false)
+        guard let startedAt = beginFillingOpenSlots(request) else { return }
+        await runFillingOpenSlots(request, startedAt: startedAt)
+    }
+
+    /// Marks a fill running, or returns nil when one may not start (one is
+    /// running, the bot is offline, nothing to send). Running from here, so
+    /// a second press can't start another fill before the first begins.
+    private func beginFillingOpenSlots(_ request: LichessBotFillOpenSlotsRequest) -> Date? {
+        guard !isFillingOpenSlots, runtime != nil, request.challengeCount >= 1 else { return nil }
+        let startedAt = Date()
+        fillOpenSlotsRun = .running(request, sent: 0, startedAt: startedAt, waitingUntil: nil)
+        return startedAt
+    }
+
     /// Stop the running fill: challenges already sent stay pending, and a
-    /// send under way completes first (see `fillOpenSlots`).
+    /// send under way completes first (see `runFillingOpenSlots`).
     func cancelFillingOpenSlots() {
         fillOpenSlotsTask?.cancel()
     }
@@ -2802,7 +2816,7 @@ final class LichessBotController {
     /// it has sent the count, when every slot is taken, or at the first
     /// outcome that isn't a send or a spacing wait (no candidate, the cap, a
     /// failure, a hold), and on Cancel.
-    private func fillOpenSlots(_ request: LichessBotFillOpenSlotsRequest, startedAt: Date) async {
+    private func runFillingOpenSlots(_ request: LichessBotFillOpenSlotsRequest, startedAt: Date) async {
         let generationAtStart = runtimeGeneration
         func current() -> Bool { runtimeGeneration == generationAtStart }
         let limitsText = request.overridesTimeLimits ? "time limits overridden" : "time limits in force"
@@ -2859,12 +2873,13 @@ final class LichessBotController {
         finishFillingOpenSlots(request, sent: sent, reason: reason)
     }
 
-    /// The one place a fill's end is recorded: the Overview's line, the
+    /// The one place a fill's end is recorded: the Overview's lines, the
     /// protocol log and the session log.
     private func finishFillingOpenSlots(_ request: LichessBotFillOpenSlotsRequest, sent: Int, reason: String) {
         fillOpenSlotsRun = .finished(request, sent: sent, endedAt: Date(), reason: reason)
         fillOpenSlotsTask = nil
         let summary = "Fill Open Slots finished: sent \(sent) of \(request.challengeCount); \(reason)"
+        matchmakingStatus = "\(Date().formatted(date: .omitted, time: .standard)) \(summary)"
         protocolLog.record(.challenge, "matchmaking: \(summary)")
         SessionLogger.shared.log("[LICHESS-BOT] \(summary)")
     }
