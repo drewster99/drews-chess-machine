@@ -130,4 +130,18 @@ final class LichessBotFillOpenSlotsTests: XCTestCase {
         XCTAssertEqual(LichessBotController.fillOpenSlotsTally(request(4, .gamesStarted), progress: progress), "1 of 4 games started; 3 challenges sent, 1 pending, 1 not accepted")
         XCTAssertEqual(LichessBotController.fillOpenSlotsTally(request(4, .challengesSent), progress: progress), "sent 3 of 4")
     }
+
+    /// Protects: a keep-going fill picks another bot after a pick refused
+    /// as at its daily limit, without spending a miss; a plain fill still
+    /// ends there with Lichess's reason.
+    /// Fails if: such refusals count toward giving up (five bots at their
+    /// limit in a row ended a 20-game fill after 3 games, 2026-11-06), or
+    /// the plain fill stops reporting the limit.
+    func testABotAtItsDailyLimitIsNotAMissWhenStartingGames() {
+        let until = now.addingTimeInterval(3600)
+        let refused = LichessBotController.MatchmakingPassOutcome.opponentAtBotLimit(username: "maia5", until: until)
+        XCTAssertEqual(LichessBotController.fillOpenSlotsNextStep(after: refused, target: .gamesStarted, consecutiveMisses: 4, now: now), .pickAnotherBot)
+        XCTAssertEqual(LichessBotController.fillOpenSlotsNextStep(after: refused, target: .challengesSent, consecutiveMisses: 0, now: now), .end(refused.text))
+        XCTAssertTrue(refused.text.contains("maia5 is at Lichess' bot-vs-bot daily limit until"), refused.text)
+    }
 }

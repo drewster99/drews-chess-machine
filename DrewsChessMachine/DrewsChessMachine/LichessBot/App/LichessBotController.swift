@@ -2782,6 +2782,10 @@ final class LichessBotController {
         case rateLimited(LichessBotMatchmakingRateLimiter.Decision)
         case noCandidate(String)
         case failed(String)
+        /// Lichess refused the pick: that bot is at its bot-vs-bot daily
+        /// limit until `until`. Recorded (`recordBotLimit`), so later picks
+        /// pass over it; another bot may well be free.
+        case opponentAtBotLimit(username: String, until: Date)
         /// A 429, the gate closing, or the runtime going away stopped the
         /// send.
         case stopped(String)
@@ -2806,6 +2810,8 @@ final class LichessBotController {
                 return detail
             case .failed(let detail):
                 return "failed: \(detail)"
+            case .opponentAtBotLimit(let username, let until):
+                return "failed: \(username) is at Lichess' bot-vs-bot daily limit until \(until.formatted(date: .omitted, time: .shortened))"
             case .stopped(let detail):
                 return "stopped: \(detail)"
             }
@@ -2880,7 +2886,9 @@ final class LichessBotController {
     /// Starting games, it waits instead for a free slot, for its pending
     /// challenges' answers and for the cap or the off-peak schedule, and
     /// tries again after a pass that found no bot or failed, up to
-    /// `fillOpenSlotsMaximumConsecutiveMisses` in a row. It ends when that
+    /// `fillOpenSlotsMaximumConsecutiveMisses` in a row. A pick refused
+    /// because that bot is at its daily limit isn't a miss: it picks again,
+    /// and the refused bot is passed over from then on. It ends when that
     /// many of its challenges are accepted, or at a hold, a stop or a
     /// paused off-peak rate with no peak to wait for.
     ///
@@ -2939,6 +2947,8 @@ final class LichessBotController {
                 switch Self.fillOpenSlotsNextStep(after: outcome, target: request.target, consecutiveMisses: consecutiveMisses, now: Date()) {
                 case .sendAgain:
                     consecutiveMisses = 0
+                case .pickAnotherBot:
+                    break
                 case .wait(let wait, let until):
                     try await waitFillingOpenSlots(wait, for: .seconds(max(0, until.timeIntervalSinceNow)))
                 case .retry(let until):
@@ -2963,6 +2973,10 @@ final class LichessBotController {
     /// What a fill does after a matchmaking pass.
     enum FillOpenSlotsStep: Equatable {
         case sendAgain
+        /// The pick was a bot at its daily limit: pick again (after the
+        /// spacing, which the refused send started) without counting a miss,
+        /// since each refusal takes one bot out of the picks.
+        case pickAnotherBot
         case wait(LichessBotFillOpenSlotsWait, until: Date)
         /// Try another pass then: the pass found no bot or failed.
         case retry(until: Date)
@@ -2974,12 +2988,16 @@ final class LichessBotController {
     /// spacing wait always continue; starting games also waits out the cap,
     /// the off-peak schedule and a full house, and retries a pass that found
     /// no bot or failed until `fillOpenSlotsMaximumConsecutiveMisses` in a
-    /// row; everything else ends the fill with the outcome's text.
+    /// row, and picks again, without counting a miss, after a pick refused
+    /// as at its bot's daily limit; everything else ends the fill with the
+    /// outcome's text.
     nonisolated static func fillOpenSlotsNextStep(after outcome: MatchmakingPassOutcome, target: LichessBotFillOpenSlotsTarget, consecutiveMisses: Int, now: Date) -> FillOpenSlotsStep {
         let startingGames = target == .gamesStarted
         switch outcome {
         case .sent:
             return .sendAgain
+        case .opponentAtBotLimit where startingGames:
+            return .pickAnotherBot
         case .rateLimited(.spacing(let until)):
             return .wait(.sendLimit(until: until), until: until)
         case .rateLimited(.hourlyCap(let until, _)) where startingGames:
@@ -3118,7 +3136,7 @@ final class LichessBotController {
             // Checked again shortly, without a request: the window or the
             // settings may change before its start.
             return now.addingTimeInterval(LichessBotMatchmaking.retryAfterUnproductivePass)
-        case .blocked, .noCandidate, .failed, .stopped:
+        case .blocked, .noCandidate, .failed, .opponentAtBotLimit, .stopped:
             return now.addingTimeInterval(LichessBotMatchmaking.retryAfterUnproductivePass)
         }
     }
@@ -3209,7 +3227,7 @@ final class LichessBotController {
                 outcome = .stopped(text)
             } else if case LichessBotAPIError.http(_, let message?) = error, let refusal = LichessBotBotLimitRefusal.parse(message) {
                 // `sendChallenge` recorded the limit; say plainly what it is.
-                outcome = .failed("\(username) is at Lichess' bot-vs-bot daily limit until \(refusal.until.formatted(date: .omitted, time: .shortened))")
+                outcome = .opponentAtBotLimit(username: username, until: refusal.until)
             } else if case LichessBotAPIError.ownBotGameLimit(let refusal) = error {
                 // The gate event recorded it; later passes stop at the
                 // budget's `.lichessReportedLimit` until it ends.
