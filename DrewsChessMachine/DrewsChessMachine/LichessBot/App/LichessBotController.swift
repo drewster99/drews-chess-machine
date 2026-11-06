@@ -2996,7 +2996,10 @@ final class LichessBotController {
         switch outcome {
         case .sent:
             return .sendAgain
-        case .opponentAtBotLimit where startingGames:
+        case .opponentAtBotLimit(_, let until) where startingGames && until > now:
+            // Only while the limit is still ahead: the picks pass over the
+            // bot until then. A time already past wouldn't exclude it, so the
+            // same bot could be picked forever; that counts as a miss below.
             return .pickAnotherBot
         case .rateLimited(.spacing(let until)):
             return .wait(.sendLimit(until: until), until: until)
@@ -3006,7 +3009,7 @@ final class LichessBotController {
             return .wait(.sendLimit(until: peakStartsAt), until: peakStartsAt)
         case .noOpenSlot where startingGames:
             return .waitForFreeSlot
-        case .noCandidate where startingGames, .failed where startingGames:
+        case .noCandidate where startingGames, .failed where startingGames, .opponentAtBotLimit where startingGames:
             guard consecutiveMisses + 1 < fillOpenSlotsMaximumConsecutiveMisses else {
                 return .end("gave up after \(fillOpenSlotsMaximumConsecutiveMisses) passes in a row without a send; the last: \(outcome.text)")
             }

@@ -144,4 +144,12 @@ final class LichessBotFillOpenSlotsTests: XCTestCase {
         XCTAssertEqual(LichessBotController.fillOpenSlotsNextStep(after: refused, target: .challengesSent, consecutiveMisses: 0, now: now), .end(refused.text))
         XCTAssertTrue(refused.text.contains("maia5 is at Lichess' bot-vs-bot daily limit until"), refused.text)
     }
+
+    /// Protects: a daily-limit refusal whose end time is already past counts
+    /// as a miss, since the picks wouldn't pass over that bot.
+    /// Fails if: such a refusal is retried without limit.
+    func testAPastDailyLimitTimeCountsAsAMiss() {
+        let refused = LichessBotController.MatchmakingPassOutcome.opponentAtBotLimit(username: "maia5", until: now.addingTimeInterval(-1))
+        XCTAssertEqual(LichessBotController.fillOpenSlotsNextStep(after: refused, target: .gamesStarted, consecutiveMisses: 0, now: now), .retry(until: now.addingTimeInterval(LichessBotMatchmaking.minimumSendSpacing)))
+    }
 }
