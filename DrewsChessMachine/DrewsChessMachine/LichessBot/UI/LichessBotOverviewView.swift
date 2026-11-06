@@ -153,14 +153,7 @@ struct LichessBotControlsCard: View {
                 LichessBotFillOpenSlotsStatusLine(controller: controller)
                 LichessBotChallengeCreditsLine(controller: controller)
                 ForEach(controller.pendingChallenges, id: \.id) { pending in
-                    HStack(spacing: 8) {
-                        LichessBotFavoriteStar(controller: controller, userID: pending.username)
-                        Text("Challenge to \(pending.username) waiting since \(pending.sentAt.formatted(date: .omitted, time: .standard))")
-                            .font(.callout)
-                        Button("Cancel") {
-                            Task { await controller.cancelChallenge(id: pending.id) }
-                        }
-                    }
+                    LichessBotPendingChallengeRow(controller: controller, pending: pending)
                 }
                 LichessBotChallengeQueueList(controller: controller)
                 HStack(spacing: 8) {

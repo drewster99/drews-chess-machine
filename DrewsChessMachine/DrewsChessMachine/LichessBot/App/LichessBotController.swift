@@ -407,6 +407,12 @@ final class LichessBotController {
     /// none. Not tied to a runtime: the list outlives going offline, and the
     /// sheet fetches while offline too.
     private var onlineBotsRefresh: Task<Void, Never>?
+    /// What the players DCM's pending challenges wait on are doing, read
+    /// from `GET /api/users/status` while any challenge is pending
+    /// (`refreshPendingOpponentStatusesIfDue`), for the Overview's rows.
+    private(set) var pendingOpponentStatuses = LichessBotPendingOpponentStatuses()
+    /// The status read under way, so the poll loop starts at most one.
+    private var pendingOpponentStatusRefresh: Task<Void, Never>?
     /// The Live tab's single-game choice; nil means "Auto": follow a game
     /// (`autoFollowedGameID`).
     /// Remembered across launches (a specific game shows again only while it
@@ -2228,6 +2234,38 @@ final class LichessBotController {
         return statuses
     }
 
+    /// Read the pending challenges' players' statuses when
+    /// `LichessBotPendingOpponentStatuses.needsRead` says so; one read at a
+    /// time, never blocking the poll loop. A failed read is shown on the rows
+    /// and retried after the same interval; it raises no alarm, since the
+    /// rows are only informational.
+    private func refreshPendingOpponentStatusesIfDue() {
+        guard pendingOpponentStatusRefresh == nil, runtime != nil else { return }
+        let ids = Set(pendingChallenges.map { $0.username.lowercased() })
+        let now = Date()
+        guard pendingOpponentStatuses.needsRead(of: ids, now: now) else { return }
+        pendingOpponentStatuses.noteReadStarted(at: now)
+        let generationAtStart = runtimeGeneration
+        pendingOpponentStatusRefresh = Task {
+            let result: Result<[String: LichessBotUserStatus], Error>
+            do {
+                result = .success(try await userStatuses(ids.sorted()))
+            } catch {
+                result = .failure(error)
+            }
+            // Teardown reset the statuses and the task for the next runtime.
+            guard runtimeGeneration == generationAtStart else { return }
+            pendingOpponentStatusRefresh = nil
+            switch result {
+            case .success(let statuses):
+                pendingOpponentStatuses.noteRead(statuses, at: Date())
+            case .failure(let error):
+                pendingOpponentStatuses.noteReadFailed(Self.safeDescription(error))
+                protocolLog.record(.anomaly, "pending opponents' status read failed: \(Self.safeDescription(error))")
+            }
+        }
+    }
+
     func autocompleteUsers(_ term: String) async throws -> [LichessBotLightUser] {
         let client = try await accountClient()
         return try await client.autocompleteUsers(term: term)
@@ -3812,6 +3850,9 @@ final class LichessBotController {
         fillOpenSlotsTask?.cancel()
         finishFillingOpenSlots(reason: "stopped: the bot went offline")
         fillOpenSlotsTask = nil
+        pendingOpponentStatusRefresh?.cancel()
+        pendingOpponentStatusRefresh = nil
+        pendingOpponentStatuses = LichessBotPendingOpponentStatuses()
         nextAutomaticMatchmakingPassAt = .distantPast
         lastLoggedAutomaticMatchmakingOutcome = nil
         matchmakingStatus = nil
@@ -3990,6 +4031,7 @@ final class LichessBotController {
             scheduleChallengeQueuePump()
             startAutomaticMatchmakingPassIfDue()
             refreshOnlineBotsForMatchmakingIfDue()
+            refreshPendingOpponentStatusesIfDue()
             do {
                 try await Task.sleep(for: .seconds(1))
             } catch {
