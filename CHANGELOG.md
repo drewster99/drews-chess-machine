@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-11-05 22:06 — Lichess bot: Fill Open Slots can keep going until N games start `d7c756de`
+
+- Sheet toggle "Keep going until the games start": the count is games started (accepted challenges), 1–100, independent of the slots open now.
+- Declined, canceled or refused challenges are replaced; the fill waits for a free slot, for its pending challenges' answers, and (time limits in force) for the hourly cap or the off-peak peak window. A pass that finds no bot or fails is retried after the 20 s spacing; 5 in a row end the fill. A hold (429, breaker, DCM's own daily limit), a stop or Cancel ends it.
+- Progress comes from the one send path and the one challenge-outcome path (`LichessBotFillOpenSlotsProgress`); the Overview and the end line show games started, challenges sent, pending and not accepted, plus what it waits for.
+
 ## 2026-11-05 19:18 — Lichess bot: Fill Open Slots asks how many, can override time limits, shows progress `a9aae79f`
 
 - Fill Open Slots… opens a sheet: the slots open now, an editable count of challenges to send (1 up to the open slots, default all), and "Override time limits" for this fill only.
