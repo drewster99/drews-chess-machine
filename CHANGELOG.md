@@ -9,6 +9,11 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-11-05 23:40 — Lichess bot: pending challenge rows link to the opponent and show whether they are playing `d2a544a6`
+
+- The player's name in each Overview pending-challenge row opens their breakdown window.
+- While any challenge is pending, `GET /api/users/status` is read every 15 s (at once for a newly challenged player); each row shows "playing a game", "online, not playing" or "offline", with the read time on hover (`LichessBotPendingOpponentStatuses`). A failed read shows "status unknown" and is retried after the interval; no alarm.
+
 ## 2026-11-05 22:06 — Lichess bot: Fill Open Slots can keep going until N games start `d7c756de`
 
 - Sheet toggle "Keep going until the games start": the count is games started (accepted challenges), 1–100, independent of the slots open now.
