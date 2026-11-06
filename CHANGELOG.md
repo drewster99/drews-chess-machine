@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-11-05 19:18 — Lichess bot: Fill Open Slots asks how many, can override time limits, shows progress `a9aae79f`
+
+- Fill Open Slots… opens a sheet: the slots open now, an editable count of challenges to send (1 up to the open slots, default all), and "Override time limits" for this fill only.
+- Override lifts matchmaking's hourly cap and off-peak schedule (`LichessBotMatchmakingSendLimits.spacingOnly`); the 20 s spacing between sends, Lichess's limits, 429 holds and circuit breakers still apply.
+- The Overview shows the fill while it runs (spinner, sent N of M, next send, Cancel Fill) and how it ended; start and end are logged as `[LICHESS-BOT] Fill Open Slots …` session-log lines. Cancel stops between sends; a send under way completes.
+
 ## 2026-10-27 01:59 — Lichess bot: circuit breakers stop new games and never abandon a game in progress `067298ca`
 
 - Owner decisions 2026-10-26: no automatic action abandons a game in progress. A 429 or a breaker trip only stops new games; games in progress finish. Before, a second 429 within an hour, or one game that stopped moving, tore the bot down and abandoned every live game.
