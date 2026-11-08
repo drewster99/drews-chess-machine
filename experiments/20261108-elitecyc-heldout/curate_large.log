@@ -1,0 +1,83 @@
+preset=large band=400-3200 themes=13 tiers=25 snapshot=2026-11-08
+  scanned 1,000,000 rows  eligible 531,507
+  scanned 1,500,000 rows  eligible 797,385
+  scanned 2,500,000 rows  eligible 1,329,008
+  scanned 4,500,000 rows  eligible 2,392,434
+  scanned 5,000,000 rows  eligible 2,658,029
+  scanned 6,000,000 rows  eligible 3,189,900
+scan done: 6,193,530 rows, 3,292,525 eligible
+  WARNING: mateIn1 [1950-2049] has 562 eligible, wanted 580 — taking all
+  WARNING: mateIn1 [2050-2149] has 165 eligible, wanted 580 — taking all
+  WARNING: mateIn1 [2150-2249] has 50 eligible, wanted 580 — taking all
+  WARNING: mateIn1 [2250-2349] has 9 eligible, wanted 580 — taking all
+  WARNING: mateIn1 [2350-2449] has 4 eligible, wanted 580 — taking all
+  WARNING: mateIn1 [2450-2549] has 1 eligible, wanted 580 — taking all
+  WARNING: mateIn1 [2550-2649] has 0 eligible, wanted 580 — taking all
+  WARNING: mateIn1 [2650-2749] has 0 eligible, wanted 580 — taking all
+  WARNING: mateIn1 [2750-2849] has 0 eligible, wanted 580 — taking all
+  WARNING: mateIn1 [2850-3200] has 0 eligible, wanted 360 — taking all
+  mateIn1          picked 9271
+  WARNING: mateIn2 [2350-2449] has 239 eligible, wanted 580 — taking all
+  WARNING: mateIn2 [2450-2549] has 68 eligible, wanted 580 — taking all
+  WARNING: mateIn2 [2550-2649] has 18 eligible, wanted 580 — taking all
+  WARNING: mateIn2 [2650-2749] has 1 eligible, wanted 580 — taking all
+  WARNING: mateIn2 [2750-2849] has 0 eligible, wanted 580 — taking all
+  WARNING: mateIn2 [2850-3200] has 0 eligible, wanted 360 — taking all
+  mateIn2          picked 11126
+  WARNING: hangingPiece [400-549] has 19 eligible, wanted 180 — taking all
+  WARNING: hangingPiece [550-649] has 160 eligible, wanted 290 — taking all
+  WARNING: hangingPiece [2650-2749] has 233 eligible, wanted 290 — taking all
+  WARNING: hangingPiece [2750-2849] has 51 eligible, wanted 290 — taking all
+  WARNING: hangingPiece [2850-3200] has 9 eligible, wanted 180 — taking all
+  hangingPiece     picked 6272
+  WARNING: fork [400-549] has 93 eligible, wanted 180 — taking all
+  WARNING: fork [2750-2849] has 160 eligible, wanted 290 — taking all
+  WARNING: fork [2850-3200] has 19 eligible, wanted 180 — taking all
+  fork             picked 6652
+  WARNING: pin [400-549] has 1 eligible, wanted 180 — taking all
+  WARNING: pin [550-649] has 44 eligible, wanted 290 — taking all
+  WARNING: pin [650-749] has 144 eligible, wanted 290 — taking all
+  WARNING: pin [2750-2849] has 190 eligible, wanted 290 — taking all
+  WARNING: pin [2850-3200] has 23 eligible, wanted 180 — taking all
+  pin              picked 6202
+  WARNING: skewer [400-549] has 9 eligible, wanted 180 — taking all
+  WARNING: skewer [2550-2649] has 186 eligible, wanted 290 — taking all
+  WARNING: skewer [2650-2749] has 110 eligible, wanted 290 — taking all
+  WARNING: skewer [2750-2849] has 26 eligible, wanted 290 — taking all
+  WARNING: skewer [2850-3200] has 4 eligible, wanted 180 — taking all
+  skewer           picked 6135
+  WARNING: discoveredAttack [400-549] has 22 eligible, wanted 180 — taking all
+  WARNING: discoveredAttack [550-649] has 211 eligible, wanted 290 — taking all
+  WARNING: discoveredAttack [2750-2849] has 62 eligible, wanted 290 — taking all
+  WARNING: discoveredAttack [2850-3200] has 5 eligible, wanted 180 — taking all
+  discoveredAttack picked 6390
+  WARNING: deflection [400-549] has 2 eligible, wanted 180 — taking all
+  WARNING: deflection [550-649] has 29 eligible, wanted 290 — taking all
+  WARNING: deflection [650-749] has 75 eligible, wanted 290 — taking all
+  WARNING: deflection [2750-2849] has 68 eligible, wanted 290 — taking all
+  WARNING: deflection [2850-3200] has 9 eligible, wanted 180 — taking all
+  deflection       picked 5983
+  WARNING: sacrifice [400-549] has 28 eligible, wanted 180 — taking all
+  WARNING: sacrifice [550-649] has 128 eligible, wanted 290 — taking all
+  WARNING: sacrifice [2750-2849] has 183 eligible, wanted 290 — taking all
+  WARNING: sacrifice [2850-3200] has 20 eligible, wanted 180 — taking all
+  sacrifice        picked 6449
+  WARNING: promotion [400-549] has 127 eligible, wanted 180 — taking all
+  WARNING: promotion [2750-2849] has 69 eligible, wanted 290 — taking all
+  WARNING: promotion [2850-3200] has 7 eligible, wanted 180 — taking all
+  promotion        picked 6583
+  WARNING: endgame [2850-3200] has 159 eligible, wanted 180 — taking all
+  endgame          picked 7009
+  WARNING: middlegame [400-549] has 167 eligible, wanted 180 — taking all
+  WARNING: middlegame [2850-3200] has 41 eligible, wanted 180 — taking all
+  middlegame       picked 6878
+  WARNING: opening [400-549] has 6 eligible, wanted 180 — taking all
+  WARNING: opening [550-649] has 18 eligible, wanted 290 — taking all
+  WARNING: opening [650-749] has 67 eligible, wanted 290 — taking all
+  WARNING: opening [750-849] has 243 eligible, wanted 290 — taking all
+  WARNING: opening [2550-2649] has 128 eligible, wanted 290 — taking all
+  WARNING: opening [2650-2749] has 36 eligible, wanted 290 — taking all
+  WARNING: opening [2750-2849] has 0 eligible, wanted 290 — taking all
+  WARNING: opening [2850-3200] has 0 eligible, wanted 180 — taking all
+  opening          picked 5428
+wrote /private/tmp/claude-501/-Users-andrew-cursor-drews-chess-machine/b03ed6fa-431e-4f8f-bf7a-a21f57bdff66/scratchpad/lichess_probes_large.json (90378 puzzles)

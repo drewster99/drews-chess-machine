@@ -33,6 +33,7 @@ what's available and warn (expected for thin tail tiers / rare themes).
 """
 
 import argparse
+import dataclasses
 import csv
 import json
 import sys
@@ -162,7 +163,33 @@ WIDE = Preset(
     },
 )
 
-PRESETS = {p.name: p for p in (LEGACY, WIDE)}
+# Large: the wide preset's shape at ~22x density (~100k puzzles), for
+# --probe-set-file analysis runs where the bundled sets' noise is too large to
+# resolve checkpoint-to-checkpoint differences. Never bundled in the app.
+LARGE = Preset(
+    name="large",
+    out_path=Path("/tmp/lichess_probes_large.json"),
+    set_id="lichess-large",
+    title="Lichess puzzles, large",
+    description_template=("{total:,} Lichess puzzles rated 400\u20133200, flat per-100 density 550\u20132849, "
+                          "13 themes, mate-weighted, wide preset at ~22x density (puzzle DB {db_snapshot})."),
+    theme_priority=WIDE.theme_priority,
+    rating_tiers=(
+        [(400, 549, 180)]
+        + uniform_tiers(550, 2849, 100, 290)
+        + [(2850, 3200, 180)]
+    ),
+    theme_tiers={
+        "mateIn1": (
+            [(400, 549, 360)] + uniform_tiers(550, 2849, 100, 580) + [(2850, 3200, 360)]
+        ),
+        "mateIn2": (
+            [(400, 549, 360)] + uniform_tiers(550, 2849, 100, 580) + [(2850, 3200, 360)]
+        ),
+    },
+)
+
+PRESETS = {p.name: p for p in (LEGACY, WIDE, LARGE)}
 
 
 def assign_bucket(themes_str: str, theme_priority: list[str]) -> str | None:
@@ -346,11 +373,7 @@ def main() -> int:
 
     preset = PRESETS[args.preset]
     if args.out is not None:
-        preset = Preset(
-            name=preset.name, out_path=args.out, theme_priority=preset.theme_priority,
-            rating_tiers=preset.rating_tiers, filters=preset.filters,
-            theme_tiers=preset.theme_tiers,
-        )
+        preset = dataclasses.replace(preset, out_path=args.out)
 
     if not args.csv.exists():
         print(f"missing {args.csv} — download lichess_db_puzzle.csv.zst and decompress it", file=sys.stderr)
