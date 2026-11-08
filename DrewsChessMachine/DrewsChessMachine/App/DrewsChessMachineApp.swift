@@ -198,6 +198,12 @@ struct DrewsChessMachineApp: App {
         // predate the live probes. Exits before SwiftUI / Metal GUI init.
         Self.handleProbeModelIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: headless corpus loss evaluation (--eval-corpus). Scores
+        // saved models' policy and value heads on a corpus's recorded games
+        // (held-out vs training games), one JSON line per model. Read-only;
+        // exits before SwiftUI / Metal GUI init.
+        EvalCorpusCLI.handleIfRequested(rawArgs: rawArgs)
+
         // Pre-flight: headless numerics audit (--analyze-numerics). Checks a
         // checkpoint's (or a folder of checkpoints') weights and activations
         // against fp32 / bf16 / fp16, writing JSON per checkpoint. Exits

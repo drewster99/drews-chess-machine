@@ -121,6 +121,15 @@ enum CommandLineHelp {
                                       given (replaces a regular file only, never a folder or link), and may
                                       never be a probed checkpoint or each other. Exits non-zero if an
                                       output cannot be written, or after the sweep if any checkpoint failed.
+      --eval-corpus <corpus id or folder> --eval-model <file|folder> [--eval-model <file|folder> ...]
+                         [--eval-games <n>] [--eval-from-end] [--eval-out <file>] [--eval-out-overwrite]
+                                      Policy and value loss of saved models on a corpus's recorded games
+                                      (read only): the first <n> games in corpus order (default 50000), or
+                                      the last <n> with --eval-from-end. One JSON line per model: policy_nll,
+                                      top1, top5 (legal-masked softmax), value_ce, value_acc, mean W/D/L,
+                                      the same per ply bucket, and skipped games by reason. --eval-out must
+                                      not exist unless --eval-out-overwrite is given, and is never a model.
+                                      Exits non-zero after the sweep if any model failed.
       --analyze-numerics <path> [--numerics-corpus <shard>] [--numerics-out <dir>] [--numerics-static-only]
                                       Numerics audit of a weight file or every weight file under a folder:
                                       fp32/bf16/fp16 fitness of weights and activations, head offsets,
