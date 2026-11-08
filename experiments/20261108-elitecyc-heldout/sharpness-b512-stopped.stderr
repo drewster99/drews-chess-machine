@@ -1,0 +1,5 @@
+[SHARPNESS] corpus 20260704-215145-op24Gp: 476 game(s) from game 0 (40039 recorded moves) for a 40000-position buffer; 4 model(s); compute fp32; K=8 N=30 tol=0.001 eps=0.001·‖w‖ seed=0
+[SHARPNESS] 20261011-zlra-elitecyc-latest-step10000.safetensors: loading
+[PARAM] legacy LR schedule keys converted: kf=[0:2.00e-02/2.00e-03 m0.850/0.950]
+[SHARPNESS] 20261011-zlra-elitecyc-latest-step10000.safetensors: gradients at w on 8 batch(es) of 512
+error: process footprint 6.30 GiB exceeds the 6.00 GiB limit (--sharpness-max-footprint-gb) after 10 gradient evaluation(s); stopping

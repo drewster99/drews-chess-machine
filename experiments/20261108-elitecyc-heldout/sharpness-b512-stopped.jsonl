@@ -1,0 +1,1 @@
+{"error":"process footprint 6.30 GiB exceeds the 6.00 GiB limit (--sharpness-max-footprint-gb) after 10 gradient evaluation(s)","event":"error","model":"\/Users\/andrew\/Library\/Application Support\/DrewsChessMachine\/Models\/20261011-zlra-elitecyc-latest-step10000.safetensors"}
