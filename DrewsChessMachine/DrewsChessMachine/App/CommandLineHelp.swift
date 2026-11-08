@@ -138,11 +138,12 @@ enum CommandLineHelp {
                          [--sharpness-corpus-start-game <n>] [--sharpness-buffer-positions <n>] [--sharpness-batches <k>]
                          [--sharpness-iterations <n>] [--sharpness-tolerance <x>] [--sharpness-epsilon <x>]
                          [--sharpness-seed <n>] [--sharpness-compute fp32|bf16] [--sharpness-groups]
+                         [--sharpness-max-footprint-gb <x>]
                          [--sharpness-out <file>] [--sharpness-out-overwrite]
                                       Top Hessian eigenvalue (lambda_max) of the training loss at trainer-state
                                       checkpoints (read only): gradients from a trainer built in this process
                                       with the file's recorded parameters (clipping off), on <k> fixed batches
-                                      (default 4) from a buffer of <n> positions (default 100000) filled from
+                                      (default 4) from a buffer of <n> positions (default 40000) filled from
                                       game <n> on (default 0); power iteration (default 30 iterations, tolerance
                                       1e-3) on central-difference Hessian-vector products, epsilon relative to
                                       ||w|| (default 1e-3), fp32 compute by default. One JSON line per checkpoint
@@ -150,7 +151,9 @@ enum CommandLineHelp {
                                       schedule's LR and momentum at the checkpoint's step and the stability
                                       threshold 2(1+momentum)/LR, gradient norms, determinism, epsilon and
                                       symmetry checks. --sharpness-out must not exist unless
-                                      --sharpness-out-overwrite is given. Exits non-zero if any model failed.
+                                      --sharpness-out-overwrite is given. Stops (exit 117) when the process
+                                      footprint exceeds --sharpness-max-footprint-gb (default 6). Exits non-zero
+                                      if any model failed.
       --analyze-numerics <path> [--numerics-corpus <shard>] [--numerics-out <dir>] [--numerics-static-only]
                                       Numerics audit of a weight file or every weight file under a folder:
                                       fp32/bf16/fp16 fitness of weights and activations, head offsets,

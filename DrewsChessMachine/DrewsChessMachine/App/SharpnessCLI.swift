@@ -110,6 +110,7 @@ enum SharpnessCLI {
     static let seedFlag = "--sharpness-seed"
     static let computeFlag = "--sharpness-compute"
     static let groupsFlag = "--sharpness-groups"
+    static let footprintLimitFlag = "--sharpness-max-footprint-gb"
     static let outFlag = "--sharpness-out"
     /// `--sharpness-out` refuses an existing file unless this flag is also
     /// given (the `--probe-out-overwrite` rule).
@@ -119,9 +120,14 @@ enum SharpnessCLI {
     static let defaultIterationCount = 30
     static let defaultTolerance = 1e-3
     static let defaultRelativeEpsilon = 1e-3
-    /// ~1,200 elite games: enough distinct games for a 4096-position batch
-    /// under a 10-positions-per-game cap, at ~0.6 GB of basic24 boards.
-    static let defaultBufferPositions = 100_000
+    /// ~480 elite games (~0.25 GB of basic24 boards): the fewest that hold
+    /// R-elitecyc's 4096-position batch under its 10-positions-per-game cap
+    /// (≥ 410 games) with a margin. A smaller buffer cannot draw the batch.
+    static let defaultBufferPositions = 40_000
+    /// The process footprint (`phys_footprint`) above which the probe stops,
+    /// in GiB: it shares the machine with a live trainer, and a first run
+    /// grew to 38 GB (graphics memory) over ~70 gradient evaluations.
+    static let defaultFootprintLimitGiB = 6.0
     static let defaultSeed: UInt64 = 0
 
     /// The probe's compute precision.
@@ -141,6 +147,7 @@ enum SharpnessCLI {
         case outputWriteFailed = 114
         case modelsFailed = 115
         case gpuFault = 116
+        case footprintLimit = 117
     }
 
     // MARK: - Options
@@ -157,6 +164,8 @@ enum SharpnessCLI {
         var seed: UInt64
         var compute: Compute
         var perGroup: Bool
+        /// Stop the run when the process footprint exceeds this.
+        var footprintLimitBytes: UInt64
         var outPath: String?
         var replaceExistingOut: Bool
     }
@@ -172,7 +181,8 @@ enum SharpnessCLI {
     /// pair (Xcode's `-NSDocumentRevisionsDebugMode YES`) is skipped.
     static func parseOptions(_ rawArgs: [String]) throws -> Options {
         let valueFlags: Set<String> = [modelFlag, corpusFlag, corpusStartGameFlag, bufferPositionsFlag, batchesFlag,
-                                       iterationsFlag, toleranceFlag, epsilonFlag, seedFlag, computeFlag, outFlag]
+                                       iterationsFlag, toleranceFlag, epsilonFlag, seedFlag, computeFlag, footprintLimitFlag,
+                                       outFlag]
         let booleanFlags: Set<String> = [modeFlag, groupsFlag, replaceOutFlag]
         var values: [String: [String]] = [:]
         var present: Set<String> = []
@@ -248,6 +258,7 @@ enum SharpnessCLI {
         }
         let tolerance = try positiveReal(toleranceFlag, default: defaultTolerance)
         let relativeEpsilon = try positiveReal(epsilonFlag, default: defaultRelativeEpsilon)
+        let footprintLimitGiB = try positiveReal(footprintLimitFlag, default: defaultFootprintLimitGiB)
         guard relativeEpsilon < 1 else {
             throw UsageError("\(epsilonFlag) is relative to ‖w‖ and must be below 1; got \(relativeEpsilon)")
         }
@@ -257,7 +268,9 @@ enum SharpnessCLI {
             batchCount: try positiveInteger(batchesFlag, default: defaultBatchCount),
             iterationCount: try positiveInteger(iterationsFlag, default: defaultIterationCount),
             tolerance: tolerance, relativeEpsilon: relativeEpsilon, seed: seed, compute: compute,
-            perGroup: present.contains(groupsFlag), outPath: outPath, replaceExistingOut: replaceExistingOut)
+            perGroup: present.contains(groupsFlag),
+            footprintLimitBytes: UInt64(footprintLimitGiB * 1024 * 1024 * 1024),
+            outPath: outPath, replaceExistingOut: replaceExistingOut)
     }
 
     /// Never returns when `--sharpness` is on the command line. Main actor:
@@ -345,6 +358,12 @@ enum SharpnessCLI {
             do {
                 let records = try probe(modelURL: model, options: options, corpus: corpus, games: games, started: started)
                 lines = try records.map(ProbeModelCLI.encodeLine)
+            } catch let limit as SharpnessError {
+                if case .footprintLimitExceeded = limit {
+                    emitFailure(model: model, limit.localizedDescription)
+                    fail("error: \(limit.localizedDescription); stopping", code: .footprintLimit)
+                }
+                failure = limit.localizedDescription
             } catch {
                 failure = error.localizedDescription
             }
@@ -417,6 +436,7 @@ enum SharpnessCLI {
         case stepClipped(norm: Float, cap: Float)
         case nonFiniteGradient(batch: Int)
         case nonFiniteEstimate(String)
+        case footprintLimitExceeded(footprintBytes: UInt64, limitBytes: UInt64, evaluations: Int)
 
         var errorDescription: String? {
             switch self {
@@ -456,6 +476,9 @@ enum SharpnessCLI {
                 return "the gradient on batch \(batch) is not finite"
             case .nonFiniteEstimate(let what):
                 return "\(what) is not finite"
+            case let .footprintLimitExceeded(footprint, limit, evaluations):
+                return String(format: "process footprint %.2f GiB exceeds the %.2f GiB limit (%@) after %d gradient evaluation(s)",
+                              Double(footprint) / 1_073_741_824, Double(limit) / 1_073_741_824, footprintLimitFlag, evaluations)
             }
         }
     }
@@ -533,6 +556,28 @@ enum SharpnessCLI {
         return CorpusGames(corpusID: corpus.corpusID, startGame: startGame, records: records)
     }
 
+    /// The replay buffer, filled the way corpus replay fills it
+    /// (`CorpusReplayFeeder`), from `games` in order, skipping any game that
+    /// would overflow the ring. The feeder network only supplies the input
+    /// encoding (`ActiveGame` never evaluates it); it is released on return,
+    /// before any gradient work.
+    private static func fillBuffer(architecture: NetworkArchitecture, games: CorpusGames, options: Options,
+                                   constraints: ReplayBuffer.SamplingConstraints,
+                                   sampler: DCMRandom) throws -> (ReplayBuffer, CorpusReplayFeedTally) {
+        let feederNetwork = try ChessMPSNetwork(.overwrittenByLoad, arch: architecture)
+        let buffer = ReplayBuffer(capacity: options.bufferPositions, inputEncoding: feederNetwork.inputEncoding,
+                                  sampler: sampler)
+        buffer.setSamplingConstraints(constraints)
+        let feeder = CorpusReplayFeeder(network: feederNetwork, buffer: buffer)
+        var feedTally = CorpusReplayFeedTally()
+        for game in games.records where buffer.count + game.moves.count <= options.bufferPositions {
+            if let rejection = feedTally.record(feeder.feed(game)) {
+                progress("game rejected while filling the buffer: \(rejection)")
+            }
+        }
+        return (buffer, feedTally)
+    }
+
     // MARK: - Probe
 
     /// One checkpoint's records: the whole-network line, then one per group
@@ -586,29 +631,15 @@ enum SharpnessCLI {
             dropoutStream: streams.generator(.probe(name: "sharpness.dropout", trainerStep: 0)),
             hyperparameters: hyperparameters, arch: architecture, initialization: .overwrittenByLoad)
 
-        // The replay buffer, filled the way corpus replay fills it. The feeder
-        // network only stages positions; it carries the file's weights as in
-        // the runner.
-        let feederNetwork = try ChessMPSNetwork(.overwrittenByLoad, arch: file.architecture)
-        let baseCount = feederNetwork.network.trainableVariables.count + feederNetwork.network.bnRunningStatsVariables.count
+        let baseCount = plan.count + architecture.weightTensorPlan().filter { $0.kind == .bnRunningStat }.count
         guard file.weights.count >= baseCount else {
             throw SharpnessError.weightCountTooSmall(have: file.weights.count, need: baseCount)
         }
-        let baseWeights = file.networkWeights
-        try runBlocking { try await feederNetwork.network.loadWeights(baseWeights) }
         let batchSamplers = (0..<options.batchCount).map {
             streams.generator(.probe(name: "sharpness.batch.\($0)", trainerStep: 0))
         }
-        let buffer = ReplayBuffer(capacity: options.bufferPositions, inputEncoding: feederNetwork.inputEncoding,
-                                  sampler: batchSamplers[0])
-        buffer.setSamplingConstraints(replayParams.samplingConstraints)
-        let feeder = CorpusReplayFeeder(network: feederNetwork, buffer: buffer)
-        var feedTally = CorpusReplayFeedTally()
-        for game in games.records where buffer.count + game.moves.count <= options.bufferPositions {
-            if let rejection = feedTally.record(feeder.feed(game)) {
-                progress("game rejected while filling the buffer: \(rejection)")
-            }
-        }
+        let (buffer, feedTally) = try fillBuffer(architecture: file.architecture, games: games, options: options,
+                                                 constraints: replayParams.samplingConstraints, sampler: batchSamplers[0])
         let batchSize = replayParams.trainingBatchSize
         guard buffer.count >= batchSize else {
             throw SharpnessError.bufferTooSmall(positions: buffer.count, batchSize: batchSize)
@@ -616,32 +647,40 @@ enum SharpnessCLI {
 
         let trainableCount = plan.count
         let networkTrainables = trainer.network.trainableVariables.count
-        let weights = Array(baseWeights.prefix(trainableCount))
-        let runningStatistics = Array(baseWeights.dropFirst(trainableCount))
+        let weights = Array(file.weights.prefix(trainableCount))
+        let runningStatistics = Array(file.weights[trainableCount..<baseCount])
         let oracle = GradientOracle(trainer: trainer, buffer: buffer, batchSize: batchSize,
-                                    runningStatistics: runningStatistics, batchSamplers: batchSamplers)
+                                    runningStatistics: runningStatistics, batchSamplers: batchSamplers,
+                                    footprintLimitBytes: options.footprintLimitBytes)
         if hyperparameters.dropoutRate > 0 {
             try oracle.fixDropoutMasks(loading: weights)
         }
 
         // The gradient at w on each batch, then batch 0 again (determinism).
         progress("\(modelURL.lastPathComponent): gradients at w on \(options.batchCount) batch(es) of \(batchSize)")
-        var atWeights: [GradientOracle.Evaluation] = []
-        for batch in 0..<options.batchCount {
-            atWeights.append(try oracle.gradient(at: weights, batch: batch))
-        }
-        guard atWeights[0].gradient.count == trainableCount, networkTrainables == trainableCount else {
-            throw SharpnessError.trainableCountMismatch(plan: trainableCount, network: networkTrainables,
-                                                        velocity: atWeights[0].gradient.count)
-        }
-        try SharpnessVectorMath.requireSameLayout(atWeights[0].gradient, weights)
-        let repeated = try oracle.gradient(at: weights, batch: 0)
-        let determinism = try SharpnessVectorMath.difference(atWeights[0].gradient, repeated.gradient)
+        // Only batch 0's gradient is kept (for the determinism check); the
+        // others go into the mean as they arrive, so at most two full
+        // gradients are alive here.
+        var atWeights: [(timing: TrainStepTiming, velocityNorm: Double)] = []
         var meanGradientSum = SharpnessVectorMath.zeroAccumulator(shapedLike: weights)
-        for evaluation in atWeights {
+        var firstGradient: [[Float]] = []
+        for batch in 0..<options.batchCount {
+            let evaluation = try oracle.gradient(at: weights, batch: batch)
+            if batch == 0 {
+                guard evaluation.gradient.count == trainableCount, networkTrainables == trainableCount else {
+                    throw SharpnessError.trainableCountMismatch(plan: trainableCount, network: networkTrainables,
+                                                                velocity: evaluation.gradient.count)
+                }
+                try SharpnessVectorMath.requireSameLayout(evaluation.gradient, weights)
+                firstGradient = evaluation.gradient
+            }
+            atWeights.append((evaluation.timing, SharpnessVectorMath.norm(evaluation.gradient)))
             try SharpnessVectorMath.accumulate(into: &meanGradientSum, evaluation.gradient, scale: 1 / Double(options.batchCount))
         }
+        let determinism = try SharpnessVectorMath.difference(firstGradient, oracle.gradient(at: weights, batch: 0).gradient)
+        firstGradient = []
         let meanGradient = SharpnessVectorMath.narrowed(meanGradientSum)
+        meanGradientSum = []
 
         // What the checkpoint's own schedule feeds at its trainer step.
         let fed = LRMomentumCycleReadout.values(
@@ -682,7 +721,7 @@ enum SharpnessCLI {
             "parameters_absent_from_record": absentFromRecord,
             "gradient": [
                 "graph_pre_clip_norm_per_batch": atWeights.map { Double($0.timing.gradGlobalNorm) },
-                "velocity_norm_per_batch": atWeights.map { SharpnessVectorMath.norm($0.gradient) },
+                "velocity_norm_per_batch": atWeights.map(\.velocityNorm),
                 "mean_gradient_norm": SharpnessVectorMath.norm(meanGradient),
                 "loss_per_batch": atWeights.map { Double($0.timing.loss) },
                 "policy_loss_per_batch": atWeights.map { Double($0.timing.policyLoss) },
@@ -721,6 +760,7 @@ enum SharpnessCLI {
             record["symmetry_check"] = ["u_J_v": result.startDotProductOfFinal, "v_J_u": result.finalDotProductOfStart,
                                         "relative_asymmetry": result.relativeAsymmetry] as [String: Any]
             record["gradient_evaluations"] = oracle.evaluationCount - evaluationsBefore
+            record["peak_footprint_bytes"] = oracle.peakFootprintBytes
             record["scope_elapsed_ms"] = (Double(DispatchTime.now().uptimeNanoseconds - scopeStarted.uptimeNanoseconds) / 1e6).rounded()
             record["elapsed_ms"] = (Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e6).rounded()
             records.append(record)
@@ -777,7 +817,9 @@ enum SharpnessCLI {
             guard lambda.isFinite else { throw SharpnessError.nonFiniteEstimate("the Rayleigh quotient at iteration \(iteration)") }
             sequence.append(lambda)
             lastProduct = applied
-            progress(String(format: "%@ [%@] iteration %d: lambda %.6g", modelName, scopeName, iteration, lambda))
+            progress(String(format: "%@ [%@] iteration %d: lambda %.6g (footprint %.2f GiB after %d evaluations)",
+                            modelName, scopeName, iteration, lambda,
+                            Double(oracle.lastFootprintBytes) / 1_073_741_824, oracle.evaluationCount))
             if let previous = sequence.dropLast().last,
                SharpnessVectorMath.hasConverged(previous: previous, current: lambda, relativeTolerance: options.tolerance) {
                 converged = true
@@ -821,11 +863,16 @@ enum SharpnessCLI {
         private let batchSize: Int
         private let runningStatistics: [[Float]]
         private let batchSamplers: [DCMRandom]
+        private let footprintLimitBytes: UInt64
         private var dropoutState: DropoutPhiloxState?
         private(set) var evaluationCount = 0
+        /// The process footprint after the latest evaluation, and the largest seen.
+        private(set) var lastFootprintBytes: UInt64 = 0
+        private(set) var peakFootprintBytes: UInt64 = 0
 
         init(trainer: ChessTrainer, buffer: ReplayBuffer, batchSize: Int, runningStatistics: [[Float]],
-             batchSamplers: [DCMRandom]) {
+             batchSamplers: [DCMRandom], footprintLimitBytes: UInt64) {
+            self.footprintLimitBytes = footprintLimitBytes
             self.trainer = trainer
             self.buffer = buffer
             self.batchSize = batchSize
@@ -863,6 +910,18 @@ enum SharpnessCLI {
                 return (try await trainer.exportVelocitySnapshot(), timing)
             }
             evaluationCount += 1
+            // The footprint guard: a failed read is an error, not a pass.
+            switch ChessTrainer.readPhysFootprintBytes() {
+            case .success(let bytes):
+                lastFootprintBytes = bytes
+                peakFootprintBytes = max(peakFootprintBytes, bytes)
+                guard bytes <= footprintLimitBytes else {
+                    throw SharpnessError.footprintLimitExceeded(footprintBytes: bytes, limitBytes: footprintLimitBytes,
+                                                                evaluations: evaluationCount)
+                }
+            case .failure(let error):
+                throw error
+            }
             guard !timing.gradientCap.clipped(preClipNorm: timing.gradGlobalNorm) else {
                 throw SharpnessError.stepClipped(norm: timing.gradGlobalNorm, cap: timing.gradientCap.fedCap)
             }
