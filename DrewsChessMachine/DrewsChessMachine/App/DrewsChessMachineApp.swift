@@ -204,6 +204,12 @@ struct DrewsChessMachineApp: App {
         // exits before SwiftUI / Metal GUI init.
         EvalCorpusCLI.handleIfRequested(rawArgs: rawArgs)
 
+        // Pre-flight: headless loss-surface sharpness probe (--sharpness).
+        // λmax of the training loss's Hessian at saved trainer checkpoints,
+        // through a trainer built in this process; one JSON line per
+        // checkpoint. Read-only; exits before SwiftUI / Metal GUI init.
+        SharpnessCLI.handleIfRequested(rawArgs: rawArgs)
+
         // Pre-flight: headless numerics audit (--analyze-numerics). Checks a
         // checkpoint's (or a folder of checkpoints') weights and activations
         // against fp32 / bf16 / fp16, writing JSON per checkpoint. Exits
