@@ -104,6 +104,12 @@ enum SharpnessCLI {
     static let corpusStartGameFlag = "--sharpness-corpus-start-game"
     static let bufferPositionsFlag = "--sharpness-buffer-positions"
     static let batchesFlag = "--sharpness-batches"
+    /// Overrides the checkpoint's recorded training batch size. fp32 at
+    /// R-elitecyc's 4096 needs ~30 GiB of GPU working set, so K smaller
+    /// batches covering the same number of positions keep the probe beside a
+    /// live trainer; BN then normalizes over the smaller batch, which the
+    /// record states (`batch_size`, `recorded_batch_size`).
+    static let batchSizeFlag = "--sharpness-batch-size"
     static let iterationsFlag = "--sharpness-iterations"
     static let toleranceFlag = "--sharpness-tolerance"
     static let epsilonFlag = "--sharpness-epsilon"
@@ -125,8 +131,10 @@ enum SharpnessCLI {
     /// (≥ 410 games) with a margin. A smaller buffer cannot draw the batch.
     static let defaultBufferPositions = 40_000
     /// The process footprint (`phys_footprint`) above which the probe stops,
-    /// in GiB: it shares the machine with a live trainer, and a first run
-    /// grew to 38 GB (graphics memory) over ~70 gradient evaluations.
+    /// in GiB: it shares the machine with a live trainer. The working set is
+    /// set by compute precision and batch size, not by run length: fp32 at
+    /// batch 4096 measured ~30 GiB after the first gradient evaluation, bf16
+    /// ~7 GiB; smaller batches stay flat over 80+ evaluations.
     static let defaultFootprintLimitGiB = 6.0
     static let defaultSeed: UInt64 = 0
 
@@ -158,6 +166,8 @@ enum SharpnessCLI {
         var corpusStartGame: Int
         var bufferPositions: Int
         var batchCount: Int
+        /// nil: the checkpoint's recorded training batch size.
+        var batchSizeOverride: Int?
         var iterationCount: Int
         var tolerance: Double
         var relativeEpsilon: Double
@@ -180,7 +190,7 @@ enum SharpnessCLI {
     /// repeat, the others may appear once. A system-supplied `-Key value`
     /// pair (Xcode's `-NSDocumentRevisionsDebugMode YES`) is skipped.
     static func parseOptions(_ rawArgs: [String]) throws -> Options {
-        let valueFlags: Set<String> = [modelFlag, corpusFlag, corpusStartGameFlag, bufferPositionsFlag, batchesFlag,
+        let valueFlags: Set<String> = [modelFlag, corpusFlag, corpusStartGameFlag, bufferPositionsFlag, batchesFlag, batchSizeFlag,
                                        iterationsFlag, toleranceFlag, epsilonFlag, seedFlag, computeFlag, footprintLimitFlag,
                                        outFlag]
         let booleanFlags: Set<String> = [modeFlag, groupsFlag, replaceOutFlag]
@@ -266,6 +276,7 @@ enum SharpnessCLI {
             modelPaths: models, corpusArgument: corpus, corpusStartGame: startGame,
             bufferPositions: try positiveInteger(bufferPositionsFlag, default: defaultBufferPositions),
             batchCount: try positiveInteger(batchesFlag, default: defaultBatchCount),
+            batchSizeOverride: try values[batchSizeFlag].map { _ in try positiveInteger(batchSizeFlag, default: 1) },
             iterationCount: try positiveInteger(iterationsFlag, default: defaultIterationCount),
             tolerance: tolerance, relativeEpsilon: relativeEpsilon, seed: seed, compute: compute,
             perGroup: present.contains(groupsFlag),
@@ -640,7 +651,7 @@ enum SharpnessCLI {
         }
         let (buffer, feedTally) = try fillBuffer(architecture: file.architecture, games: games, options: options,
                                                  constraints: replayParams.samplingConstraints, sampler: batchSamplers[0])
-        let batchSize = replayParams.trainingBatchSize
+        let batchSize = options.batchSizeOverride ?? replayParams.trainingBatchSize
         guard buffer.count >= batchSize else {
             throw SharpnessError.bufferTooSmall(positions: buffer.count, batchSize: batchSize)
         }
@@ -715,6 +726,7 @@ enum SharpnessCLI {
             "buffer": ["capacity": options.bufferPositions, "positions": buffer.count, "games_fed": feedTally.games,
                        "games_rejected": feedTally.rejected, "games_skipped": feedTally.skipped] as [String: Any],
             "batch_size": batchSize,
+            "recorded_batch_size": replayParams.trainingBatchSize,
             "batches": options.batchCount,
             "seed": String(options.seed),
             "dropout_rate": Double(hyperparameters.dropoutRate),

@@ -136,6 +136,7 @@ enum CommandLineHelp {
                                       Exits non-zero after the sweep if any model failed.
       --sharpness --sharpness-model <file> [--sharpness-model <file> ...] --sharpness-corpus <corpus id or folder>
                          [--sharpness-corpus-start-game <n>] [--sharpness-buffer-positions <n>] [--sharpness-batches <k>]
+                         [--sharpness-batch-size <n>]
                          [--sharpness-iterations <n>] [--sharpness-tolerance <x>] [--sharpness-epsilon <x>]
                          [--sharpness-seed <n>] [--sharpness-compute fp32|bf16] [--sharpness-groups]
                          [--sharpness-max-footprint-gb <x>]
@@ -143,7 +144,7 @@ enum CommandLineHelp {
                                       Top Hessian eigenvalue (lambda_max) of the training loss at trainer-state
                                       checkpoints (read only): gradients from a trainer built in this process
                                       with the file's recorded parameters (clipping off), on <k> fixed batches
-                                      (default 4) from a buffer of <n> positions (default 40000) filled from
+                                      (default 4; --sharpness-batch-size overrides the recorded batch size) from a buffer of <n> positions (default 40000) filled from
                                       game <n> on (default 0); power iteration (default 30 iterations, tolerance
                                       1e-3) on central-difference Hessian-vector products, epsilon relative to
                                       ||w|| (default 1e-3), fp32 compute by default. One JSON line per checkpoint
