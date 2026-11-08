@@ -41,9 +41,10 @@ struct ProbeTestSet: Sendable {
 /// stored UCI move.
 ///
 /// Loading is lazy and one-shot — the JSON parse happens at the first
-/// touch of `largeSet`. Failures are `preconditionFailure` because the
-/// JSON ships in the app bundle; a malformed payload would mean a
-/// broken build, not a runtime condition to recover from.
+/// touch of `largeSet`. Bundled-set failures are `preconditionFailure`
+/// because the JSON ships in the app bundle; a malformed payload would
+/// mean a broken build. A set file named on the command line
+/// (`loadProbeSetFile`) goes through the same parser and throws instead.
 enum LichessProbeData {
 
     /// Bundled 200-puzzle set, parsed at first access.
@@ -90,19 +91,20 @@ enum LichessProbeData {
         let bestMoveUci: String
     }
 
-    /// Single one-shot bundle load. Computed lazily on first access of
-    /// `largeSet` or `metadata`; subsequent accesses are O(1).
-    private struct Loaded: Sendable {
+    /// One parsed set file: the set with its identity, and per-puzzle
+    /// metadata keyed by `TacticalProbe.name`. The bundled sets and a
+    /// `--probe-set-file` set are both this, from `parseProbeSet`.
+    struct ParsedProbeSet: Sendable {
         let testSet: ProbeTestSet
         let metadata: [String: PuzzleMetadata]
     }
 
-    private static let loaded: Loaded = loadFromBundle(resource: "lichess_probes_200")
-    private static let loadedWide: Loaded = loadFromBundle(resource: "lichess_probes_wide")
+    private static let loaded: ParsedProbeSet = loadFromBundle(resource: "lichess_probes_200")
+    private static let loadedWide: ParsedProbeSet = loadFromBundle(resource: "lichess_probes_wide")
 
     // MARK: - JSON shape
 
-    private struct BundleJSON: Decodable {
+    private struct SetFileJSON: Decodable {
         let metadata: SetMetadataJSON
         let puzzles: [PuzzleJSON]
     }
@@ -131,62 +133,89 @@ enum LichessProbeData {
         }
     }
 
-    // MARK: - Bundle load
+    // MARK: - Parsing
 
-    private static func loadFromBundle(resource: String) -> Loaded {
-        guard let url = Bundle.main.url(
-            forResource: resource,
-            withExtension: "json"
-        ) else {
-            preconditionFailure(
-                "LichessProbeData: \(resource).json not in bundle"
-            )
+    /// Why a set file could not be read or parsed.
+    enum ProbeSetFileError: LocalizedError, Equatable {
+        case unreadable(path: String, reason: String)
+        case notASetFile(reason: String)
+        case noPuzzles
+        case duplicatePuzzleID(String)
+        case badFEN(puzzleID: String, fen: String, reason: String)
+        case badMove(puzzleID: String, uci: String)
+        case unknownTheme(puzzleID: String, theme: String)
+
+        var errorDescription: String? {
+            switch self {
+            case let .unreadable(path, reason):
+                return "cannot read the puzzle set file \(path): \(reason)"
+            case let .notASetFile(reason):
+                return "not a puzzle set file (top-level metadata {id, title, description} + puzzles [{id, theme, rating, fen, best_move_uci}]): \(reason)"
+            case .noPuzzles:
+                return "the puzzle set file holds no puzzles"
+            case let .duplicatePuzzleID(id):
+                return "puzzle \(id) appears more than once"
+            case let .badFEN(puzzleID, fen, reason):
+                return "puzzle \(puzzleID): bad FEN '\(fen)': \(reason)"
+            case let .badMove(puzzleID, uci):
+                return "puzzle \(puzzleID): bad UCI move '\(uci)'"
+            case let .unknownTheme(puzzleID, theme):
+                return "puzzle \(puzzleID): theme '\(theme)' is not one of the Lichess probe themes"
+            }
         }
+    }
 
+    /// Read and parse a set file named on the command line
+    /// (`--probe-set-file`). Every failure is a thrown `ProbeSetFileError`:
+    /// a user's file is input, not part of the build.
+    static func loadProbeSetFile(at url: URL) throws -> ParsedProbeSet {
         let data: Data
         do {
             data = try Data(contentsOf: url)
         } catch {
-            preconditionFailure(
-                "LichessProbeData: read failed for \(url.path): \(error)"
-            )
+            throw ProbeSetFileError.unreadable(path: url.path, reason: error.localizedDescription)
         }
+        return try parseProbeSet(jsonData: data)
+    }
 
-        let decoded: BundleJSON
+    /// The one parser for a set file's JSON (bundled or not): decode, turn
+    /// each puzzle into a `TacticalProbe` plus its metadata, and compute the
+    /// set's fingerprint over the puzzles in file order. Puzzle ids must be
+    /// unique: a probe's name embeds its id, and the metadata is keyed by it.
+    static func parseProbeSet(jsonData: Data) throws -> ParsedProbeSet {
+        let decoded: SetFileJSON
         do {
-            decoded = try JSONDecoder().decode(BundleJSON.self, from: data)
+            decoded = try JSONDecoder().decode(SetFileJSON.self, from: jsonData)
+        } catch let error as DecodingError {
+            throw ProbeSetFileError.notASetFile(reason: describe(error))
         } catch {
-            preconditionFailure(
-                "LichessProbeData: JSON decode failed: \(error)"
-            )
+            throw ProbeSetFileError.notASetFile(reason: error.localizedDescription)
         }
+        guard !decoded.puzzles.isEmpty else { throw ProbeSetFileError.noPuzzles }
 
         var probes: [TacticalProbe] = []
         var metadata: [String: PuzzleMetadata] = [:]
+        var puzzleIDs: Set<String> = []
         var fingerprintText = ""
         probes.reserveCapacity(decoded.puzzles.count)
         metadata.reserveCapacity(decoded.puzzles.count)
+        puzzleIDs.reserveCapacity(decoded.puzzles.count)
 
         for entry in decoded.puzzles {
+            guard puzzleIDs.insert(entry.id).inserted else {
+                throw ProbeSetFileError.duplicatePuzzleID(entry.id)
+            }
             let state: GameState
             do {
                 state = try FENParser.parse(entry.fen)
             } catch {
-                preconditionFailure(
-                    "LichessProbeData: bad FEN for \(entry.id): \(error)"
-                )
+                throw ProbeSetFileError.badFEN(puzzleID: entry.id, fen: entry.fen, reason: "\(error)")
             }
-
             guard let move = parseUCI(entry.bestMoveUci) else {
-                preconditionFailure(
-                    "LichessProbeData: bad UCI '\(entry.bestMoveUci)' for \(entry.id)"
-                )
+                throw ProbeSetFileError.badMove(puzzleID: entry.id, uci: entry.bestMoveUci)
             }
-
             guard let category = ProbeCategory(lichessThemeID: entry.theme) else {
-                preconditionFailure(
-                    "LichessProbeData: unknown theme '\(entry.theme)' for \(entry.id)"
-                )
+                throw ProbeSetFileError.unknownTheme(puzzleID: entry.id, theme: entry.theme)
             }
 
             // Name includes the puzzle id and rating so a `[TACTICAL]`
@@ -218,7 +247,44 @@ enum LichessProbeData {
             fingerprintSHA256: Self.sha256Hex(fingerprintText),
             probes: probes
         )
-        return Loaded(testSet: testSet, metadata: metadata)
+        return ParsedProbeSet(testSet: testSet, metadata: metadata)
+    }
+
+    /// A decoding failure as one line: what went wrong and where.
+    private static func describe(_ error: DecodingError) -> String {
+        func path(_ codingPath: [CodingKey]) -> String {
+            codingPath.isEmpty ? "top level" : codingPath.map { $0.intValue.map { "[\($0)]" } ?? $0.stringValue }.joined(separator: ".")
+        }
+        switch error {
+        case let .typeMismatch(_, context), let .valueNotFound(_, context), let .dataCorrupted(context):
+            return "\(context.debugDescription) (at \(path(context.codingPath)))"
+        case let .keyNotFound(key, context):
+            return "missing key '\(key.stringValue)' (at \(path(context.codingPath)))"
+        @unknown default:
+            return "\(error)"
+        }
+    }
+
+    // MARK: - Bundle load
+
+    /// The bundled sets ship in the app, so a missing or malformed one is a
+    /// broken build, not a runtime condition: it stops here.
+    private static func loadFromBundle(resource: String) -> ParsedProbeSet {
+        guard let url = Bundle.main.url(
+            forResource: resource,
+            withExtension: "json"
+        ) else {
+            preconditionFailure(
+                "LichessProbeData: \(resource).json not in bundle"
+            )
+        }
+        do {
+            return try loadProbeSetFile(at: url)
+        } catch {
+            preconditionFailure(
+                "LichessProbeData: bundled \(resource).json: \(error.localizedDescription)"
+            )
+        }
     }
 
     // MARK: - Fingerprint

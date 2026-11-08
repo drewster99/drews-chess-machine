@@ -110,11 +110,15 @@ enum CommandLineHelp {
                                       Batch-size throughput sweep; print the table and exit.
       --analyze-replay-buffer <path>  Analyze a replay_buffer.bin (or a .dcmsession dir); print JSON,
                                       human summary to stderr, and exit.
-      --probe-model <path> [--probe-set 200|wide|both] [--probe-out <file>]
+      --probe-model <path> [--probe-set 200|wide|both | --probe-set-file <set.json>] [--probe-out <file>]
                          [--probe-positions-out <file>] [--probe-out-overwrite]
                                       Run the Lichess probe batteries against saved checkpoints
                                       (a weight file, one .dcmsession, or a directory of sessions);
                                       one JSON line per checkpoint x set, then exit.
+                                      --probe-set-file probes a puzzle set file (the bundled sets' JSON
+                                      format, from scripts/curate_lichess_probes.py) instead of the
+                                      bundled sets; its lines' set is the file's metadata id. Every
+                                      summary carries setID, setTitle and fingerprint_sha256.
                                       --probe-positions-out also writes one JSON line per position
                                       (rank, probability and NLL of the bookmove, top-1, entropy, ...).
                                       Output files must not already exist unless --probe-out-overwrite is

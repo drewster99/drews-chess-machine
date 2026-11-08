@@ -1897,8 +1897,8 @@ struct DrewsChessMachineApp: App {
     // MARK: - Checkpoint probe pre-flight (--probe-model)
 
     /// Inspects `rawArgs` for `--probe-model`. If present, parses the
-    /// optional companions (`--probe-set <200|wide|both>`,
-    /// `--probe-out <path>`, `--probe-positions-out <path>`,
+    /// optional companions (`--probe-set <200|wide|both>` or
+    /// `--probe-set-file <set.json>`, `--probe-out <path>`, `--probe-positions-out <path>`,
     /// `--probe-out-overwrite`) and hands control to
     /// `ProbeModelCLI.runAndExit`, which never returns.
     /// Investigation-only — retro-probes saved checkpoints with the
@@ -1910,8 +1910,9 @@ struct DrewsChessMachineApp: App {
         let outFlag = "--probe-out"
         let replaceOutFlag = ProbeModelCLI.replaceExistingOutFlag
         let positionsOutFlag = ProbeModelCLI.positionsOutFlag
+        let setFileFlag = ProbeModelCLI.setFileFlag
 
-        let allowedFlags: Set<String> = [flag, setFlag, outFlag, positionsOutFlag, replaceOutFlag]
+        let allowedFlags: Set<String> = [flag, setFlag, setFileFlag, outFlag, positionsOutFlag, replaceOutFlag]
         if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
             FileHandle.standardError.write(Data(
                 "error: \(flag) does not accept '\(bad)'\n".utf8
@@ -1935,17 +1936,27 @@ struct DrewsChessMachineApp: App {
             ))
             Darwin.exit(63)
         }
-        var set = ProbeModelCLI.ProbeSet.both
-        if let raw = value(after: setFlag) {
+        let source: ProbeModelCLI.ProbeBatterySource
+        switch (value(after: setFlag), value(after: setFileFlag)) {
+        case (.some, .some):
+            FileHandle.standardError.write(Data(
+                "error: \(setFlag) and \(setFileFlag) cannot be combined; give one\n".utf8
+            ))
+            Darwin.exit(71)
+        case (nil, .some(let setFilePath)):
+            source = .setFile(path: setFilePath)
+        case (.some(let raw), nil):
             guard let parsed = ProbeModelCLI.ProbeSet(rawValue: raw) else {
                 FileHandle.standardError.write(Data(
                     "error: \(setFlag) must be 200, wide, or both; got '\(raw)'\n".utf8
                 ))
                 Darwin.exit(64)
             }
-            set = parsed
+            source = .bundled(parsed)
+        case (nil, nil):
+            source = .bundled(.both)
         }
-        ProbeModelCLI.runAndExit(modelPath: modelPath, set: set, outPath: value(after: outFlag),
+        ProbeModelCLI.runAndExit(modelPath: modelPath, source: source, outPath: value(after: outFlag),
                                  positionsOutPath: value(after: positionsOutFlag),
                                  replaceExistingOut: rawArgs.contains(replaceOutFlag))
     }

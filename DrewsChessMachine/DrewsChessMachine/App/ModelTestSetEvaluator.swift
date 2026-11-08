@@ -259,11 +259,20 @@ struct ProbeBatterySummary {
     /// every answer is right or wrong, NaN with none.
     let puzzleElo: Double
 
+    /// Fold results of the bundled sets (their ratings come from
+    /// `LichessProbeData.metadata`).
     init(results: [ProbeResult]) {
+        self.init(results: results, puzzleMetadata: LichessProbeData.metadata)
+    }
+
+    /// Fold results of any set, its puzzles' ratings read from
+    /// `puzzleMetadata` (keyed by `TacticalProbe.name`) — for a set file
+    /// named on the command line, that file's own metadata.
+    init(results: [ProbeResult], puzzleMetadata: [String: LichessProbeData.PuzzleMetadata]) {
         aggregates = LichessProbeHistory.aggregates(from: results)
         overall = LichessProbeOverallSummary(folding: aggregates)
         let pairs: [(rating: Int, correct: Bool)] = results.compactMap {
-            guard let meta = LichessProbeData.metadata[$0.probe.name] else { return nil }
+            guard let meta = puzzleMetadata[$0.probe.name] else { return nil }
             let correct = $0.verdict == .correctAndConfident || $0.verdict == .correctButFlat
             return (rating: meta.rating, correct: correct)
         }
