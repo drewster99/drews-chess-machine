@@ -73,3 +73,14 @@ DrewsChessMachine --probe-model <ckpt> --probe-set-file lichess_probes_large.jso
 DrewsChessMachine --sharpness --sharpness-model <ckpt> ... --sharpness-corpus 20260704-215145-op24Gp \
   --sharpness-batch-size 256 --sharpness-batches 16 --sharpness-max-footprint-gb 7 --sharpness-out sharpness.jsonl
 ```
+
+## 4. Per-layer momentum-buffer norms over the run (`velocity_norms/`)
+
+Every elitecyc trainer checkpoint stores each tensor's momentum buffer (`opt.<tensor>.velocity`; v ← μv + clipped g, so ‖v‖ ≈ a ~10-step gradient sum, before the LR). `vnorm.py` reads ‖w‖ and ‖v‖ per tensor from all 152 checkpoints (10k…846k, read-only); `group.py` groups them (`group_tables.txt`).
+
+- **The gNorm rise is proportional across the tower, not a shift between layers and not one layer running away.** The tower convs carry ~75–80% of ‖v‖² at every checkpoint (block 0 24→28%, block 1 22→29%, block 2 21→22%); each conv group's ‖v‖ rose 2.5–3× (0.40–0.43 → 1.07–1.22).
+- **Weight shrink accounts for most of it.** Conv ‖w‖ fell 38–53% (block 1 37.9 → 19.8), mostly before 380k; for a conv followed by BN the gradient scales with 1/‖w‖ (≈1.6–2.1×). Since 500k: ‖w‖ −3%, ‖v‖ +5–10%.
+- **The value head is the jumpy part.** Across 57 checkpoints 1k apart (790k–846k) the checkpoint-to-checkpoint coefficient of variation of ‖v‖ is 5–6% for tower convs, 10% policy conv, 20% value conv, 24% value fc1, 37% value fc2 (0.05–0.31), 53% value BN; at 700k and 790k all value groups were 2–3× up together. It is ~2% of ‖v‖², invisible in the global gNorm.
+- Combined with section 1's held-out mean pD swinging 0.138–0.194 between checkpoints on fixed positions: the value head follows the corpus region being fed. Corpus replay feeds the corpus in fixed (chronological) shard order every epoch; the 1M-position buffer turns over every ~117 steps (~12k consecutive games).
+
+Reproduce: `/usr/bin/python3 vnorm.py vnorm.csv && /usr/bin/python3 group.py` (numpy).
