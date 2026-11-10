@@ -1922,6 +1922,14 @@ final class ChessTrainer: @unchecked Sendable {
     /// Reported on the [STATS] line so velocity magnitude growth is
     /// observable when raising μ.
     private var velocityGlobalNormTensor: MPSGraphTensor
+    /// Per-tensor optimizer sums, `TrainingDynamicsSums.componentCount` per
+    /// trainable tensor in graph order (`TrainingDynamics.swift`). A lean
+    /// target: read back every step and recorded into `dynamicsLog`.
+    private var parameterDynamicsTensor: MPSGraphTensor
+    /// Every step's per-layer optimizer dynamics, drained by each path's
+    /// step-line code as one `[DYNAMICS]` line. Built from `arch`, which a
+    /// reset keeps, so its layout never changes for this trainer.
+    let dynamicsLog: TrainingDynamicsLog
     /// Scalar batch mean of the policy head's per-position mean logit,
     /// before the loss centers it. The shared offset centering holds at a
     /// constant; `[STATS]` reports it so drift stays visible.
@@ -2285,6 +2293,13 @@ final class ChessTrainer: @unchecked Sendable {
                                    reducedPrecisionFastMathRaw: reducedPrecisionFastMathRaw)
         net.commandQueue.label = "ChessTrainer.net(init)"
         self.networkBox = SyncBox(net)
+        // Layer names for `[DYNAMICS]`: the plan's trainable entries, which the
+        // network build checked position for position against its trainable
+        // variables (`validateAgainstPlan`; trainables come first in the plan).
+        // Derived from the architecture, so any model this app builds is
+        // covered — groups, SE styles, head styles alike.
+        let trainableTensorNames = arch.weightTensorPlan().prefix(net.trainableVariables.count).map(\.name)
+        self.dynamicsLog = TrainingDynamicsLog(layout: TrainingDynamicsLayout(tensorNames: Array(trainableTensorNames)))
         let built = try withLargeBuildStack {
             try Self.buildTrainingOps(network: net, splitTrainableWorkingSync: splitWorkingWeightSync)
         }
@@ -2346,6 +2361,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossWinTensor = built.policyLossWin
         self.policyLossLossTensor = built.policyLossLoss
         self.velocityGlobalNormTensor = built.velocityGlobalNorm
+        self.parameterDynamicsTensor = built.parameterDynamics
         self.policyLogitMeanTensor = built.policyLogitMean
         self.valueLogitMeanTensor = built.valueLogitMean
         self.assignOps = built.assignOps
@@ -2581,6 +2597,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossWinTensor = built.policyLossWin
         self.policyLossLossTensor = built.policyLossLoss
         self.velocityGlobalNormTensor = built.velocityGlobalNorm
+        self.parameterDynamicsTensor = built.parameterDynamics
         self.policyLogitMeanTensor = built.policyLogitMean
         self.valueLogitMeanTensor = built.valueLogitMean
         self.assignOps = built.assignOps
@@ -2790,6 +2807,8 @@ final class ChessTrainer: @unchecked Sendable {
         policyLossWin: MPSGraphTensor,
         policyLossLoss: MPSGraphTensor,
         velocityGlobalNorm: MPSGraphTensor,
+        /// Per-tensor optimizer sums (`TrainingDynamicsSums` order), `[6 × N]`.
+        parameterDynamics: MPSGraphTensor,
         /// Batch mean of the per-position mean policy logit, BEFORE the
         /// loss's centering — the policy head's shared offset. Scalar.
         policyLogitMean: MPSGraphTensor,
@@ -4368,6 +4387,16 @@ final class ChessTrainer: @unchecked Sendable {
         // [STATS] line so the user can see velocity magnitude growth
         // directly when raising μ.
         var velSumOfSquares: MPSGraphTensor?
+        // Per-layer dynamics (`TrainingDynamics.swift`): per tensor, in
+        // `TrainingDynamicsSums` order, Σg² (raw, pre-clip), Σg·v_old,
+        // Σv_old², Σv_new², Σ(Δw)², Σw². Separate reductions read the same
+        // tensors the update uses and feed nothing back, so the update is
+        // unchanged; ~5 extra fp32 passes over the parameters per step.
+        var dynamicsSums: [MPSGraphTensor] = []
+        dynamicsSums.reserveCapacity(network.trainableVariables.count * TrainingDynamicsSums.componentCount)
+        func flatSum(_ tensor: MPSGraphTensor) -> MPSGraphTensor {
+            graph.reductionSum(with: graph.reshape(tensor, shape: [-1], name: nil), axis: 0, name: nil)
+        }
         for (i, variable) in network.trainableVariables.enumerated() {
             guard let grad = grads[variable] else {
                 // Already checked in the norm-accumulation loop above,
@@ -4423,6 +4452,17 @@ final class ChessTrainer: @unchecked Sendable {
             }
             let updated = graph.subtraction(optWeight, totalStep, name: nil)
             ops.append(graph.assign(optWeight, tensor: updated, name: nil))
+            // Dynamics sums. `velocity` and `optWeight` here are the values
+            // the step started from (an assign does not change a tensor read
+            // in the same run — the decay term above relies on the same).
+            // `gradF`, `velocity`, `newVelocity`, `totalStep`, `optWeight`
+            // are all fp32 (masters under reduced precision), so no widen.
+            dynamicsSums.append(flatSum(graph.square(with: gradF, name: nil)))
+            dynamicsSums.append(flatSum(graph.multiplication(gradF, velocity, name: nil)))
+            dynamicsSums.append(flatSum(graph.square(with: velocity, name: nil)))
+            dynamicsSums.append(velScalar)
+            dynamicsSums.append(flatSum(graph.square(with: totalStep, name: nil)))
+            dynamicsSums.append(flatSum(graph.square(with: optWeight, name: nil)))
             if useMaster && !splitTrainableWorkingSync {
                 // Re-derive the bf16 working weight the forward graph reads.
                 // Skipped under the split experiment: the working sync runs as a
@@ -4489,6 +4529,7 @@ final class ChessTrainer: @unchecked Sendable {
             with: velSumOfSquaresTensor,
             name: "velocity_global_norm"
         )
+        let parameterDynamicsTensor = graph.concatTensors(dynamicsSums, dimension: 0, name: "parameter_dynamics")
 
         return (
             movePlayed, z, vBaseline, legalMask,
@@ -4516,6 +4557,7 @@ final class ChessTrainer: @unchecked Sendable {
             advantage,
             policyLossWin, policyLossLoss,
             velocityGlobalNormTensor,
+            parameterDynamicsTensor,
             policyLogitMeanTensor, valueLogitMeanTensor,
             ops
         )
@@ -7140,7 +7182,8 @@ final class ChessTrainer: @unchecked Sendable {
         // GPU_UTILIZATION_PLAN.md (Phase 1).
         let leanTargets: [MPSGraphTensor] = [
             totalLoss, policyLossTensor, valueLossTensor,
-            illegalMassPenaltyTensor, gradGlobalNormTensor
+            illegalMassPenaltyTensor, gradGlobalNormTensor,
+            parameterDynamicsTensor
         ]
         let diagnosticTargets: [MPSGraphTensor] = [
             policyEntropyTensor, policyNonNegCountTensor, policyNonNegIllegalCountTensor,
@@ -7319,10 +7362,22 @@ final class ChessTrainer: @unchecked Sendable {
             let policyData = results[policyLossTensor],
             let valueData = results[valueLossTensor],
             let illegalPenaltyData = results[illegalMassPenaltyTensor],
-            let gradNormData = results[gradGlobalNormTensor]
+            let gradNormData = results[gradGlobalNormTensor],
+            let dynamicsData = results[parameterDynamicsTensor]
         else {
             throw ChessTrainerError.lossOutputMissing
         }
+        // Per-tensor dynamics sums (fp32, a few hundred floats) into this
+        // trainer's window. A wrong length is a build/layout mismatch — a
+        // bug — so it fails the step rather than logging garbage.
+        let dynamicsCount = dynamicsData.shape.reduce(1) { $0 * Int(truncating: $1) }
+        var dynamicsSums = [Float](repeating: 0, count: dynamicsCount)
+        dynamicsSums.withUnsafeMutableBufferPointer { buf in
+            if let base = buf.baseAddress, dynamicsCount > 0 {
+                ChessNetwork.readFloatsFP32(from: dynamicsData, into: base, count: dynamicsCount)
+            }
+        }
+        try dynamicsLog.record(stepSums: dynamicsSums)
         // Every scalar the training graph reports is fp32 (the loss path runs
         // in the heads' fp32 tail dtype), so each is a raw fp32 read.
         ChessNetwork.readFloatsFP32(

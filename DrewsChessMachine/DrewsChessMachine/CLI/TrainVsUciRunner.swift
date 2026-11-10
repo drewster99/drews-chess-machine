@@ -1023,6 +1023,12 @@ enum TrainVsUciRunner {
                         + gradientCapReading.logFields
                         + " trainerStep=\(observedSteps)"
                     emit(line)
+                    // Per-layer optimizer dynamics over every step since the previous
+                    // line (`TrainingDynamics.swift`) — session log only, like the
+                    // batch statistics (one long line per step line).
+                    if let dynamicsLine = trainer.dynamicsLog.drainLine(trainerStep: observedSteps) {
+                        SessionLogger.shared.log(dynamicsLine)
+                    }
                     // This step's own batch statistics ride the step line — to the session
                     // log only, as the trainer wrote them before (a 72 KB JSON line
                     // does not belong on the console).

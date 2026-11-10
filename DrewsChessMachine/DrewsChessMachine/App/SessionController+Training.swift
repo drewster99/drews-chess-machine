@@ -2093,6 +2093,11 @@ extension SessionController {
                         }
                         let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr)\(gradientCapFields) vNorm=\(vNormStr) μ=\(muStr)\(klStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) pLogitMean=\(pLogitMeanStr) vLogitMean=\(vLogitMeanStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) sampBatch=(\(sampBatchStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
+                        // Per-layer optimizer dynamics over every step since
+                        // the previous [STATS] line (`TrainingDynamics.swift`).
+                        if let dynamicsLine = trainer.dynamicsLog.drainLine(trainerStep: trainer.completedTrainSteps) {
+                            SessionLogger.shared.log(dynamicsLine)
+                        }
 
                         // [DRAW-WATCH] summary — piggyback on the same
                         // periodic cadence. Rolling 30-min window
