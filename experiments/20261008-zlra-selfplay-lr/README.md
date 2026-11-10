@@ -1007,3 +1007,15 @@ W/D/L, then captures channel 13/25/48 activations at the four taps and correlate
 Pearson+Spearman tables) and `analysis/residual_carry_forward.json` (the carry-forward correlations above).
 `analysis/intervene_ch13.py` runs the causal intervention (remove pawn / remove minor / add pawn / impose check /
 move pawn at fixed count) and writes `analysis/intervention_results.json`.
+
+## 2026-11-09: R-elitecyc stopped at 883,503; R-elitecyc-hilr fork
+
+- **R-elitecyc segment 19** (`launch/elitecyc_resume18_decay_launch.sh`, build 2620, exact resume from 721,584) stopped by SIGINT on 2026-11-09 at 23:47 EST (owner). Abort save: trainer step 883,503 (`20261011-zlra-elitecyc-latest-step883503.safetensors`); `train-elitecyc-seg18.stdout`, `results-elitecyc-seg18.json`. Training had been flat since ~500k (`../20261108-elitecyc-heldout/README.md`).
+- **R-elitecyc-hilr** (owner 2026-11-09: "fork off where we switched to the updated LR regime and in the fork, continue with the original"; no shuffle — that is issue #24): `launch/elitecyc_hilr_fork_launch.sh` with `DCM_BIN` = `FrozenBuilds/DCM-2663-b1ed8b52.app`.
+  - Exact resume of `20261011-zlra-elitecyc-latest-step384964.safetensors` (the last state before segment 14 switched to `parameters-zlra-elitecyc-decay.json`), under the original `parameters-zlra-elite-gentlecycle.json` (geometric cosine 0.002 ↔ 0.02, period 10,000, momentum 0.90). `[RESUME] EXACT` (build and OS changed, behavior fingerprint matches).
+  - Started 2026-11-09 23:45 EST, pid 61460, to trainer step 1,000,000.
+    - stdout: `train-elitecyc-hilr-seg0.stdout`
+    - session log: `dcm_log_20261109-234535.txt`, which carries the new per-layer `[DYNAMICS]` lines (commit b1ed8b52)
+    - rolling stem: `20261109-zlra-elitecyc-hilr-latest`
+  - Its lineage records it as run `E709F4EB…` segment 14, the same as the main line's segment 14. The two branches are told apart by out-model stem and model ID.
+  - Question: was the high-LR phase still paying at 384,964? Compare with the main line from 384,964 on, by held-out NLL, large-set pElo and `[DYNAMICS]`.
