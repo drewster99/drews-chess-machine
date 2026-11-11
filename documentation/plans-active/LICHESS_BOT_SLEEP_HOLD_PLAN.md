@@ -10,16 +10,18 @@ On 2026-11-09 and 2026-11-10 the bot lost three games on time, and the third tri
 |---|---|---|
 | 12:19:57–12:20:02 | Clamshell sleep starts, on battery | — |
 | 12:29:58 | DarkWake (12:29:57, 6 s) | matchmaking challenge sent to karl-engine-v1 |
-| 12:38:30 | DarkWake (12:38:27, 5 s) | challenge sent to croco_little_bot, accepted, game XSyD9cqf started (30+0) |
+| 12:38:30 | DarkWake (12:38:27, 5 s) | challenge sent to croco_little_bot, accepted, game XSyD9cqf started (30+0; its long clock survived the sleep, won by mate 13:11) |
 | 12:43:34 | DarkWake (12:43:33, 8 s) | challenge sent to kbelludoo (2+1) |
 | 12:47:37 | DarkWake (12:47:37, 5 s) | kbelludoo accepted → game GaX1h6Ty; another challenge sent at 12:47:38 |
 | 12:58:49 | asleep | GaX1h6Ty lost on time at ply 24 |
-| 13:43:11 → 14:07:51 | still asleep | 3hOyU7UN started in a DarkWake, lost on time at ply 14 → breaker |
+| 13:43:11 → 14:07:51 | DarkWake 13:43:09–13:43:14, then asleep | 3hOyU7UN started in a DarkWake, lost on time at ply 14 → breaker |
 | 14:41:10 | `DarkWake to FullWake` | — |
 
 Nov 9's aayhCxxI (5+3, 12:40–13:03) fits the same pattern during the 11:46 lid-closed sleep.
 
-**`NSWorkspace.didWakeNotification` fires only on a full wake.** The bot's protocol log (`LichessBot/Protocol/events-2026110{8,9,10}.jsonl`) has exactly one `system woke` (Nov 10 03:57:54Z = Nov 9 22:57:54 EST). That matches the one `DarkWake to FullWake` in the window while the observer was registered (Nov 9 22:57:53). Of the 434 DarkWakes Nov 8–10, none posted it. So the existing notifications can tell "asleep, including its maintenance wakes" from "awake" without IOKit.
+**`NSWorkspace.didWakeNotification` fires only on a full wake.** The bot's protocol log (`LichessBot/Protocol/events-2026110{8,9,10}.jsonl`) has exactly one `system woke` (Nov 10 03:57:54Z = Nov 9 22:57:54 EST). That matches the one `DarkWake to FullWake` in the window while the observer was registered (Nov 9 22:57:53). None of the 426 DarkWakes while the observer was registered (bot online Nov 8 03:04 → offline Nov 10 14:16) posted it. So the existing notifications can tell "asleep, including its maintenance wakes" from "awake" without IOKit.
+
+**Unverified assumption:** `NSWorkspace.willSleepNotification` is posted before a clamshell sleep on battery, as it is for other sleeps. The live check (Validation 4) confirms it; if it is not, the hold must come from IOKit's `IORegisterForSystemPower` (`kIOMessageSystemWillSleep`) instead.
 
 ## Owner rule this must keep
 
