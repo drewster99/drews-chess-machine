@@ -1033,3 +1033,15 @@ move pawn at fixed count) and writes `analysis/intervention_results.json`.
 - So at 384,964 the original cycle had about run its course; the anneal was the better use of the steps. This narrows
   conclusion 3 of `../20261108-elitecyc-heldout/README.md`: the high-LR phase was still paying for ~65k more steps, not
   beyond.
+
+## 2026-11-12: R-elitecyc-fp32 — R-elitecyc's own continuation from 384,964, computing in fp32
+
+- Owner 2026-11-12: "start from the exact point where we branched this latest fork … keep elitecyc's metaparameters for the LR schedule etc (identical) … but resume it as full fp32".
+- Start file `20261112-zlra-elitecyc-fp32-start.safetensors` (model `20261113-2-1pxF`): `--derive-model --set-compute-dtype float32` of `20261011-zlra-elitecyc-latest-step384964.safetensors` on build 2669 (`DCM-2669-e9d4f722`, the derive of trainer-state files from `DERIVE_TRAINER_STATE_DTYPE_PLAN.md`). Every tensor copied bit-exact (fp32 masters, velocity, BN stats); the lineage record is the source's, so the resume continues run E709.
+- Launcher `launch/elitecyc_fp32_launch.sh`: `--resume-exact --accept-inexact schedule,compute_data_type,policy_tail_precision --parameters parameters-zlra-elitecyc-decay.json` (R-elitecyc's own continuation file), `--epochs 7 --training-step-limit 615036` (to trainer step 1,000,000), `--enumerate-checkpoints`, rolling stem `20261112-zlra-elitecyc-fp32-latest`.
+  - The first launch was refused: going to fp32 also sets the policy tail to `does_not_apply` (the bf16 state ran `fp32_from_pre_bn`), so `policy_tail_precision` must be accepted too. Its stdout was overwritten by the second launch.
+  - `[RESUME] NOT EXACT: schedule, compute_data_type, policy_tail_precision`; build (2523 → 2669) and OS changed, behavior fingerprint matches.
+  - `[RUN] … run=E709F4EB… seg=14 (resume of 20261113-2-1pxF …) policy_tail=does_not_apply cum_step=384964`. Like the hilr fork, it records segment 14 of E709; the three lines from 384,964 (main, hilr, fp32) are told apart by out-model stem and model ID.
+- Started 2026-11-12 23:45 CST, pid 81717; session log `dcm_log_20261112-234508.txt`; stdout `train-elitecyc-fp32-seg0.stdout`.
+- Speed: ~3.2 s per step in fp32 (bf16 runs of this model: ~1.25 s), about 1,100 steps/hour, so ~23 days to 1,000,000 at that rate.
+- Question: does fp32 compute change where the annealed line ends up? Compare with R-elitecyc (bf16) from 384,964 on: large puzzle set and held-out NLL at the same 10k checkpoints.
