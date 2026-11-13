@@ -57,8 +57,9 @@ enum InferenceGraphTestArchitectures {
         }
 
         // A width change between groups (1×1 skip projection) and the
-        // compress feature skip into both heads.
-        var widthCompress = base(se: .scaleAndBias)
+        // compress feature skip into both heads, on the 25-plane input (its
+        // constant board-edge plane reaches the zero-padded stem).
+        var widthCompress = base(se: .scaleAndBias, encoding: .basic25)
         let group = widthCompress.blockGroups[0]
         var wide = group
         wide.channels = 48

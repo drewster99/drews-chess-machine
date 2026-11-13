@@ -655,9 +655,12 @@ mover-relative frame per position** (`planesPerFrame × 64`) and
 reconstructs the full network input at sample time. So `floatsPerBoard`
 is the *stored* stride, not the network-input stride:
 
-- `basic20` → 1,280; `basic30` → 1,920
+- `basic20` → 1,280; `basic24` → 1,536; `basic30` → 1,920
+- `basic25` → **1,536 stored** (`basic24`'s 24 planes), 1,600 reconstructed:
+  its constant board-edge plane 24 is written at sample time, never stored
 - `full10ply200` → **1,280 stored** (one 20-plane frame), 12,800 reconstructed
-- `full10Ply10Reps210` → 1,344 stored
+- `full10Ply10Reps210` → 1,280 stored (one 20-plane frame), 13,440
+  reconstructed (the 10 repetition-tail planes are recomputed at sample time)
 
 The decoder still checks `floatsPerBoard` against the running build's
 stored stride (the `incompatibleBoardSize` gate), but a stride match is
@@ -677,7 +680,10 @@ the encoding check is skipped.
 
 On restore, a reconstructing buffer (`historyFrameCount > 1`) rejects a
 file whose tag is present-but-different (a stride-compatible-but-wrong
-encoding); single-frame encodings and tag-0 files skip the check. Added
+encoding); single-frame encodings and tag-0 files skip the check. That
+includes `basic25`, whose stride `basic24` shares: both store the same 24
+planes, and `basic25`'s tail reads nothing stored, so either file restores
+correctly into either buffer. Added
 2026-06-20 (`3016060`) as a backward-compatible refinement *within* v7 —
 no version bump, because the slot was already reserved.
 

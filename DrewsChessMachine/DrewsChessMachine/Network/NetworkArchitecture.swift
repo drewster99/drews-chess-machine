@@ -50,6 +50,24 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
     /// after two plies (each side has moved a piece), so those six planes are
     /// zero in every legal game and carry nothing (GitHub issue #10).
     case basic24
+    /// 25 planes: `basic24`'s planes 0–23 unchanged, plus plane 24 = 1.0 on
+    /// every square (owner decision 2026-11-12).
+    ///
+    /// Why a constant plane carries information: every convolution
+    /// zero-pads, so a plane that is 1 on the board is 0 exactly in the
+    /// padding, and the first layer sees where the board ends in every
+    /// position. lc0 keeps an all-ones input plane for this reason ("to help
+    /// NN find board edges"). In `basic24` the only board-wide nonzero planes
+    /// are the castling rights, the halfmove clock and the repetition flags,
+    /// each only some of the time (a right still held, the clock above zero,
+    /// a repetition); without them a filter over an edge square cannot tell
+    /// the padding from an empty square.
+    ///
+    /// The plane is a non-stacked tail (`tailPlanes == .boardEdgeMarker`):
+    /// the replay buffer stores `basic24`'s 24 planes per position and
+    /// writes the constant plane when it samples, so the marker costs no
+    /// buffer memory.
+    case basic25
     /// 200 planes: the 20-plane `basic20` block stacked 10× for plies N, N-1,
     /// … N-9 — every frame rendered from the ply-N mover's perspective. No
     /// marker planes; absent (pre-game-start) frames stay all-zero. History
@@ -88,6 +106,11 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
                 PlaneGroup((20 + offset)...(20 + offset),
                            "temporal repetition: position \(distance) plies ago is a strict duplicate")
             }
+        case .basic25:
+            // basic24's layout verbatim, so the two never drift.
+            return InputEncoding.basic24.planeGroups + [
+                PlaneGroup(24...24, "constant 1: board-edge marker")
+            ]
         case .full10ply200:
             // 10 stacked basic20 frames (current + 9 prior), all from the
             // ply-N mover's perspective. Frame 0 = ply N; frame f = ply N-f.
@@ -127,37 +150,63 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
     /// frame encodings; 10 for `full10ply200`.
     var historyFrameCount: Int {
         switch self {
-        case .basic20, .basic30, .basic24: return 1
+        case .basic20, .basic30, .basic24, .basic25: return 1
         case .full10ply200, .full10Ply10Reps210: return 10
         }
     }
 
     /// Planes per stacked frame. History encodings stack the 20-plane basic20
-    /// block; single-frame encodings report their whole plane count.
+    /// block; single-frame encodings report their whole plane count less any
+    /// non-stacked tail (`basic25`'s frame is `basic24`'s 24 planes).
     /// Invariant (asserted in tests): `historyFrameCount * planesPerFrame + tailPlaneCount == planeCount`.
     var planesPerFrame: Int {
         switch self {
         case .basic20: return 20
         case .basic30: return 30
-        case .basic24: return 24
+        case .basic24, .basic25: return 24
         case .full10ply200, .full10Ply10Reps210: return 20
         }
     }
 
-    /// Planes appended after the stacked frames that are NOT part of any frame
-    /// (e.g. whole-position repetition planes describing only the current ply).
-    /// `0` for every encoding whose planes are exactly
-    /// `historyFrameCount × planesPerFrame`. The replay buffer stores only the
-    /// stacked frames; a non-zero tail is produced by the consumer at sample
-    /// time (see `ReplayBuffer.appendRepetitionTail`) and at inference time
-    /// from the live `GameState`.
-    /// Invariant (asserted in tests): `historyFrameCount × planesPerFrame + tailPlaneCount == planeCount`.
-    var tailPlaneCount: Int {
-        switch self {
-        case .basic20, .basic30, .basic24, .full10ply200: return 0
-        case .full10Ply10Reps210: return 10
+    /// What, if anything, follows the stacked frames: planes that are NOT
+    /// part of any frame. The replay buffer stores only the stacked frames
+    /// and produces the tail when it samples (`ReplayBuffer.sample`); the
+    /// encoder writes it at inference time from the live `GameState`.
+    enum TailPlanes: Sendable, Hashable {
+        /// No tail: the planes are exactly `historyFrameCount × planesPerFrame`.
+        case none
+        /// The current position's ten temporal-repetition planes (`basic30`'s
+        /// planes 20–29), recomputed from the stored prior frames
+        /// (`full10Ply10Reps210`, `ReplayBuffer.appendRepetitionTail`).
+        case temporalRepetition
+        /// One plane of 1.0 on every square (`basic25`): it depends on no
+        /// stored data, so storing it would only spend buffer memory.
+        case boardEdgeMarker
+
+        /// Number of planes this tail occupies.
+        var planeCount: Int {
+            switch self {
+            case .none: return 0
+            case .temporalRepetition: return ChessGameEngine.recentPositionKeyWindow
+            case .boardEdgeMarker: return 1
+            }
         }
     }
+
+    /// This encoding's non-stacked tail (see `TailPlanes`).
+    var tailPlanes: TailPlanes {
+        switch self {
+        case .basic20, .basic30, .basic24, .full10ply200: return .none
+        case .full10Ply10Reps210: return .temporalRepetition
+        case .basic25: return .boardEdgeMarker
+        }
+    }
+
+    /// Planes appended after the stacked frames (`tailPlanes.planeCount`).
+    /// `0` for every encoding whose planes are exactly
+    /// `historyFrameCount × planesPerFrame`.
+    /// Invariant (asserted in tests): `historyFrameCount × planesPerFrame + tailPlaneCount == planeCount`.
+    var tailPlaneCount: Int { tailPlanes.planeCount }
 
     /// Human-readable table, rendered from `planeGroups` (single source of
     /// truth). History-stacking encodings repeat one frame's groups many times,
@@ -3306,14 +3355,15 @@ extension NetworkArchitecture {
     static var current: NetworkArchitecture { preset(.current) }
 
     /// What a newly built model starts from (the Build-New-Model screen and
-    /// the session's Build Network): the current preset with the `basic24`
-    /// input, which drops the six repetition planes that can never fire.
-    /// Presets keep their own encoding, so every existing model and every
-    /// preset still describes exactly what it was trained with; only new
-    /// builds move to the smaller input.
+    /// the session's Build Network): the current preset with the `basic25`
+    /// input — `basic24` (no repetition planes that can never fire) plus the
+    /// constant board-edge plane (owner decision 2026-11-12). Presets keep
+    /// their own encoding, so every existing model and every preset still
+    /// describes exactly what it was trained with; only new builds move to
+    /// the new input.
     static var newModelDefault: NetworkArchitecture {
         var architecture = current
-        architecture.inputEncoding = .basic24
+        architecture.inputEncoding = .basic25
         return architecture
     }
 

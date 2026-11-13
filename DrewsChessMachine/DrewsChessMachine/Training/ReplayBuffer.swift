@@ -43,14 +43,27 @@ final class ReplayBuffer: @unchecked Sendable {
     /// encoding (`basic20`/`basic30`, `historyFrameCount == 1`) the stored
     /// stride equals the reconstructed stride, so those encodings store
     /// and reconstruct one frame byte-identically — nothing changes.
+    ///
+    /// **Non-stacked tails are not stored either.** An encoding with a
+    /// `tailPlanes` tail stores only its frames; `sample(...)` writes the
+    /// tail after them. `basic25` therefore stores `basic24`'s 24 planes
+    /// (1,536 floats) and its constant board-edge plane is written at sample
+    /// time — 256 bytes per position (about 244 MB per 1M-position buffer) not
+    /// spent on a plane that is the same in every position.
     let floatsPerBoard: Int
 
     /// The input encoding the boards in this buffer were produced under.
     /// Owned so the buffer can derive both the STORED stride
     /// (`floatsPerBoard = planesPerFrame × 64`) and the RECONSTRUCTED
     /// stride (`reconstructedStride = planeCount × 64`) the trainer's GPU
-    /// staging expects. The two coincide for single-frame encodings.
+    /// staging expects. The two coincide for single-frame encodings without
+    /// a non-stacked tail.
     let inputEncoding: InputEncoding
+
+    /// The planes `sample(...)` writes after the stored frames
+    /// (`inputEncoding.tailPlanes`); `.none` leaves the sampled position
+    /// exactly the stored frames.
+    let tailPlanes: InputEncoding.TailPlanes
 
     /// Number of stacked position frames the network input carries
     /// (`inputEncoding.historyFrameCount`). `1` for single-frame
@@ -65,7 +78,8 @@ final class ReplayBuffer: @unchecked Sendable {
 
     /// Floats the trainer's GPU staging expects per sampled position —
     /// the FULL network input width, `inputEncoding.planeCount × 64`.
-    /// Equals `historyFrameCount × floatsPerBoard`. `sample(...)` writes
+    /// Equals `historyFrameCount × floatsPerBoard` plus the tail's
+    /// `tailPlaneCount × 64`. `sample(...)` writes
     /// exactly this many floats into each `intoBoards` slot, assembling
     /// the history stack from `historyFrameCount` stored single frames.
     let reconstructedStride: Int
@@ -366,7 +380,8 @@ final class ReplayBuffer: @unchecked Sendable {
     /// stored stride (`floatsPerBoard`) is derived as `planesPerFrame ×
     /// 64`; the reconstructed stride (`reconstructedStride`, the full
     /// network input width handed to the trainer's GPU staging) as
-    /// `planeCount × 64`. The two coincide for single-frame encodings.
+    /// `planeCount × 64`. The two coincide for single-frame encodings
+    /// without a non-stacked tail.
     ///
     /// `sampler` is the run's `sampler` stream
     /// (`DCMRandomStreams.generator(.sampler)`); a buffer that is only ever
@@ -377,6 +392,7 @@ final class ReplayBuffer: @unchecked Sendable {
         self.capacity = capacity
         self.samplerRandom = sampler
         self.inputEncoding = inputEncoding
+        self.tailPlanes = inputEncoding.tailPlanes
         self.historyFrameCount = inputEncoding.historyFrameCount
         self.planesPerFrame = inputEncoding.planesPerFrame
         let area = ChessNetwork.boardSize * ChessNetwork.boardSize
@@ -1678,6 +1694,54 @@ final class ReplayBuffer: @unchecked Sendable {
         }
     }
 
+    /// Write the full network input for the position stored at ring
+    /// `srcIndex` — `reconstructedStride` floats — into `dstBoard`
+    /// (caller-private staging, one position wide): the stored frame(s),
+    /// then the encoding's non-stacked tail. The one materialization both
+    /// `sample` and the `reconstructStack` test hook use. Must be called
+    /// while holding `lock`.
+    @inline(__always)
+    private func materializePosition(
+        srcIndex: Int,
+        into dstBoard: UnsafeMutablePointer<Float>
+    ) {
+        if historyFrameCount > 1 {
+            // History encoding: assemble the `historyFrameCount`-frame
+            // network input from `historyFrameCount` stored single frames
+            // (the sampled ply + its contiguous priors), then flip the odd
+            // frames into the sampled ply's perspective. The gather reads
+            // happen under the caller's lock; the flip mutates only
+            // `dstBoard`.
+            reconstructHistoryStack(srcIndex: srcIndex, into: dstBoard)
+        } else {
+            // Single-frame encoding: the byte-for-byte legacy frame copy —
+            // no gather, no flip. Without a tail this is the whole input.
+            dstBoard.update(
+                from: boardStorage + srcIndex * floatsPerBoard,
+                count: floatsPerBoard
+            )
+        }
+        switch tailPlanes {
+        case .none:
+            break
+        case .temporalRepetition:
+            appendRepetitionTail(srcIndex: srcIndex, into: dstBoard)
+        case .boardEdgeMarker:
+            appendBoardEdgeMarker(into: dstBoard)
+        }
+    }
+
+    /// Write `basic25`'s board-edge plane — 1.0 on every square — after the
+    /// stored frame, the plane `BoardEncoder` writes at inference time. It
+    /// depends on nothing stored, which is why the buffer does not store it.
+    @inline(__always)
+    private func appendBoardEdgeMarker(into dstBoard: UnsafeMutablePointer<Float>) {
+        let area = ChessNetwork.boardSize * ChessNetwork.boardSize
+        let tailBase = historyFrameCount * planesPerFrame
+        (dstBoard + tailBase * area).update(
+            repeating: 1, count: tailPlanes.planeCount * area)
+    }
+
     /// Apply the encoder's full perspective transform to one stored
     /// `planesPerFrame`-plane frame, in place. This is the bit-exact
     /// inverse-perspective of `BoardEncoder.writeBasicBlock`: encoding the
@@ -1764,17 +1828,7 @@ final class ReplayBuffer: @unchecked Sendable {
                 break
             }
             guard let srcIndex = match else { return false }
-            if historyFrameCount > 1 {
-                reconstructHistoryStack(srcIndex: srcIndex, into: dstBoard)
-                if inputEncoding == .full10Ply10Reps210 {
-                    appendRepetitionTail(srcIndex: srcIndex, into: dstBoard)
-                }
-            } else {
-                dstBoard.update(
-                    from: boardStorage + srcIndex * floatsPerBoard,
-                    count: floatsPerBoard
-                )
-            }
+            materializePosition(srcIndex: srcIndex, into: dstBoard)
             return true
         }
     }
@@ -1835,39 +1889,12 @@ final class ReplayBuffer: @unchecked Sendable {
                 return false
             }
 
-            let floatsPerBoard = self.floatsPerBoard
             let reconstructedStride = self.reconstructedStride
-            let multiFrame = historyFrameCount > 1
-            // Encodings with a non-stacked tail (currently only
-            // full10Ply10Reps210's 10 repetition planes) recompute that tail
-            // from stored priors after the stack gather. Inert for every other
-            // encoding, whose path below is byte-for-byte unchanged.
-            let appendRepTail = inputEncoding == .full10Ply10Reps210
 
             @inline(__always)
             func emit(_ i: Int, _ srcIndex: Int) {
                 let dstBoard = dstBoards + i * reconstructedStride
-                if multiFrame {
-                    // History encoding: assemble the `historyFrameCount`-frame
-                    // network input from `historyFrameCount` stored single
-                    // frames (the sampled ply + its contiguous priors), then
-                    // flip the odd frames into the sampled ply's perspective.
-                    // All gather reads stay under this lock (we're inside
-                    // `withLockUnchecked`); the flip mutates only `dstBoard`,
-                    // which is caller-private staging.
-                    reconstructHistoryStack(srcIndex: srcIndex, into: dstBoard)
-                    if appendRepTail {
-                        appendRepetitionTail(srcIndex: srcIndex, into: dstBoard)
-                    }
-                } else {
-                    // Single-frame encoding: the stored stride equals the
-                    // reconstructed stride, so this is the byte-for-byte
-                    // legacy frame copy — no gather, no flip.
-                    dstBoard.update(
-                        from: boardStorage + srcIndex * floatsPerBoard,
-                        count: floatsPerBoard
-                    )
-                }
+                materializePosition(srcIndex: srcIndex, into: dstBoard)
                 dstMoves[i] = moveStorage[srcIndex]
                 dstZs[i] = outcomeStorage[srcIndex]
                 if let dstPlies { dstPlies[i] = plyIndexStorage[srcIndex] }
@@ -3370,7 +3397,10 @@ final class ReplayBuffer: @unchecked Sendable {
         // buffer (`historyFrameCount == 1` — e.g. the save-time verify scratch,
         // which derives its encoding from stride alone, or a basic20/basic30
         // resume) only copies frames verbatim, so a tag difference is benign
-        // there and must not reject.
+        // there and must not reject. That includes `basic25`: its tail is a
+        // constant read from nothing stored, and the one encoding sharing its
+        // stored stride, `basic24`, stores the same 24 planes (the verify
+        // scratch of a basic25 save resolves to basic24).
         let encodingTagFile: UInt32 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 12, as: UInt32.self)
         }

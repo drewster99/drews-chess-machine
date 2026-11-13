@@ -250,6 +250,9 @@ struct GameState: Sendable {
 /// 0-19 as above, then planes 20-23 = repetition 4, 6, 8 and 10 plies ago
 /// (`InputEncoding.possibleRepetitionPlyDistances`), so its plane `20 + k`
 /// equals `basic30`'s plane `19 + possibleRepetitionPlyDistances[k]`.
+///
+/// `basic25` is `basic24` plus plane 24, 1.0 on every square: a board-edge
+/// marker for zero-padded convolutions (see `InputEncoding.basic25`).
 enum BoardEncoder {
 
     /// Number of floats one encoded position occupies for `encoding`:
@@ -312,9 +315,14 @@ enum BoardEncoder {
         case .basic30:
             writeBasicBlock(current, perspective: persp, planeBase: 0,
                             temporalRepetition: .everyPlyDistance, base: base)
-        case .basic24:
+        case .basic24, .basic25:
+            // basic25's frame is basic24's 24 planes; its constant tail plane
+            // follows the frame.
             writeBasicBlock(current, perspective: persp, planeBase: 0,
                             temporalRepetition: .possiblePlyDistancesOnly, base: base)
+            if encoding.tailPlanes == .boardEdgeMarker {
+                fillPlane(base, plane: encoding.planesPerFrame)
+            }
         case .full10ply200:
             // Frame 0 = current (ply N); frame f = history[f-1] = ply N-f
             // when available. All share `persp`. Absent frames stay zero
@@ -365,7 +373,7 @@ enum BoardEncoder {
         /// One plane per ply distance in the window (`basic30`).
         case everyPlyDistance
         /// One plane per distance at which a repetition is possible
-        /// (`basic24`, `InputEncoding.possibleRepetitionPlyDistances`).
+        /// (`basic24` and `basic25`, `InputEncoding.possibleRepetitionPlyDistances`).
         case possiblePlyDistancesOnly
     }
 

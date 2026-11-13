@@ -200,16 +200,4 @@ final class Basic24EncodingTests: XCTestCase {
         XCTAssertEqual(ReplayBuffer.singleFrameEncoding(forStoredStride: 24 * Self.area), .basic24)
         XCTAssertEqual(ReplayBuffer.singleFrameEncoding(forStoredStride: 30 * Self.area), .basic30)
     }
-
-    // MARK: - New-model default
-
-    /// Newly built models default to the 24-plane encoding; everything else
-    /// is the current preset, which (like every existing model) keeps its
-    /// 30-plane encoding.
-    func testNewModelDefaultIsTheCurrentPresetWith24Planes() {
-        var expected = NetworkArchitecture.current
-        XCTAssertEqual(expected.inputEncoding, .basic30)
-        expected.inputEncoding = .basic24
-        XCTAssertEqual(NetworkArchitecture.newModelDefault, expected)
-    }
 }

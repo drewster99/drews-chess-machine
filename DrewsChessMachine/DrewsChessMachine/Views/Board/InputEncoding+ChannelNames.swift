@@ -19,14 +19,14 @@ extension InputEncoding {
 
     /// Full human-readable name per plane. `count == planeCount`.
     var channelNames: [String] {
-        compose(base: Self.basic30ChannelNames) { frame, name in
+        compose(base: Self.basic30ChannelNames, boardEdgeMarker: "Constant 1 (Board Edge)") { frame, name in
             frame == 0 ? "[ply N] \(name)" : "[ply N-\(frame)] \(name)"
         }
     }
 
     /// Compact per-plane label for the strip thumbnails. `count == planeCount`.
     var shortChannelNames: [String] {
-        compose(base: Self.basic30ShortChannelNames) { frame, name in
+        compose(base: Self.basic30ShortChannelNames, boardEdgeMarker: "edge") { frame, name in
             frame == 0 ? name : "−\(frame) \(name)"
         }
     }
@@ -37,13 +37,16 @@ extension InputEncoding {
     /// `planeCount` correctly-positioned labels for every encoding (the fixed
     /// 30-entry list it replaced mislabeled every multi-frame plane).
     var analyzerPlaneLabels: [String] {
-        compose(base: Self.basic30AnalyzerLabels) { frame, name in
+        compose(base: Self.basic30AnalyzerLabels, boardEdgeMarker: "constant_one_board_edge") { frame, name in
             frame == 0 ? name : "ply_N-\(frame)_\(name)"
         }
     }
 
+    /// `boardEdgeMarker` names `basic25`'s constant plane, which has no
+    /// `basic30` counterpart, in the caller's style.
     private func compose(
         base base30: [String],
+        boardEdgeMarker: String,
         frameTag: (_ frame: Int, _ name: String) -> String
     ) -> [String] {
         switch self {
@@ -56,6 +59,10 @@ extension InputEncoding {
             // plane (basic30 plane 19 + distance).
             return Array(base30.prefix(20))
                 + InputEncoding.possibleRepetitionPlyDistances.map { base30[19 + $0] }
+        case .basic25:
+            return InputEncoding.basic24.compose(base: base30, boardEdgeMarker: boardEdgeMarker,
+                                                 frameTag: frameTag)
+                + [boardEdgeMarker]
         case .full10ply200, .full10Ply10Reps210:
             let frameBlock = Array(base30.prefix(20))   // the basic20 sub-block
             var out: [String] = []
