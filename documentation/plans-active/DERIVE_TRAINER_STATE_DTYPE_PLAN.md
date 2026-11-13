@@ -1,6 +1,14 @@
 # Derive a trainer-state file's precision (plan)
 
-Status: plan only, nothing implemented. Owner decision 2026-11-12: `--derive-model` accepts a trainer-state file for operations that rewrite no tensor (`--set-compute-dtype`, `--set-policy-tail-precision`), and the output can be continued with `--replay-corpus --resume-exact`. Precision stays an architecture field in the file. A resume-time precision flag was rejected.
+Status: being implemented 2026-11-12 (design below). Owner decision 2026-11-12: `--derive-model` accepts a trainer-state file for operations that rewrite no tensor (`--set-compute-dtype`, `--set-policy-tail-precision`), and the output can be continued with `--replay-corpus --resume-exact`. Precision stays an architecture field in the file. A resume-time precision flag was rejected.
+
+Owner decisions 2026-11-12 (second round), which replace the first draft's recommendations:
+
+- **OD-A, gap names.** Not `architecture` (too broad here). Two `ResumeGap` tokens named after the field that changed: `compute_data_type` and `policy_tail_precision`. Each is raised whenever the file's value differs from the value the trainer state was captured under, on the same build, OS and Mac too. (The removed `policy_tail` gap was a resume-time setting; the new token is a file whose architecture a derive changed after its trainer state was captured.)
+- **OD-B, no new run.** The derive does not mint a run. Like every `--accept-inexact` resume, the run ID is kept, the next segment increments, and the accepted gaps are recorded (`start: resume`, `exact_resume: false`, `not_exact_items`). The derived file carries the source's lineage record unchanged except what must change; the later `--resume-exact` is an ordinary resume of that run with the precision gaps. The first draft's `trainerStateCopyRecord` (a new run) is dropped.
+- **OD-C, chained derives allowed** (bf16 → fp32 → fp16 …). The resume walks back through the derive steps to the save where training happened and compares against that.
+- **OD-D, GUI `forceFloat32` stays.** It duplicates this mechanism; a ROADMAP item records moving it onto a session-level derive later.
+- **OD-E, tests.** Modifying tests the change requires is approved; new tests are preferred.
 
 Paths below are relative to `DrewsChessMachine/DrewsChessMachine/` unless stated otherwise.
 
@@ -67,180 +75,119 @@ Paths below are relative to `DrewsChessMachine/DrewsChessMachine/` unless stated
 - `DeriveTrainedSourceTests` and `DeriveLineageTrainedSourceTests` use plain sources only (`includesVelocity: false`).
 - No test asserts the trainer-state refusal for `--set-compute-dtype` or `--set-policy-tail-precision`. **No existing test needs modification** (see Tests).
 
-## Design
+## Design (as built)
 
 ### D1. Which operations may take a trainer-state source
 
-- Add `acceptsTrainerStateSource: Bool` to `DeriveOperationKind` (`ModelDerivation.swift:99-117`). Set it `true` only for `SetComputeDataTypeDeriveOperation.kind` and `SetPolicyTailPrecisionDeriveOperation.kind`.
+- `DeriveOperationKind.acceptsTrainerStateSource: Bool`, `true` only for `SetComputeDataTypeDeriveOperation.kind` and `SetPolicyTailPrecisionDeriveOperation.kind`.
 - Why not every no-rewrite kind: activation and ReZero-cap setters change the function the velocity was accumulated for. Precision changes only the rounding of the same function.
-- The engine still asserts that every operation's `tensorRewrites` is empty for a trainer-state source, checked before anything is built. A non-empty list is an internal error.
-- Replace `requirePlainModelSource` in `derive` with a source classification: `.plain(modelID)` or `.trainerState(modelID, schedule, gradNormHistory)`.
-  - A trainer-state source with any operation whose kind does not accept one keeps today's error, `sourceHasOptimizerState(source:detail:)`, with the detail naming the operation. Existing tests stay green.
-  - Graft keeps calling `requirePlainModelSource` unchanged.
+- A source carries trainer state when it has any `opt.*` tensor or any `trainer_*` schedule key (`ModelDerivation.trainerStateEvidence`). Such a source with any operation whose kind does not accept one keeps today's `sourceHasOptimizerState(source:detail:)`, the detail naming the operation.
+- A trainer-state source must also carry a trainer schedule (velocity alone, written before exact resume, cannot be resumed: `sourceHasOptimizerState`) and a lineage record (`trainerStateSourceWithoutLineage`).
+- An operation that declares a tensor rewrite on a trainer-state source is an internal error (`trainerStateSourceRewrite`), checked before anything is written.
+- Graft keeps calling `requirePlainModelSource` unchanged.
 
 ### D2. Tensors
 
-- All tensors are copied bit-exact: base weights (fp32 masters as stored), BN statistics, and every `opt.<name>.velocity`. Shapes and order are unchanged (`requireSameTensorLayout` already holds for these operations).
+- All tensors are copied bit-exact: base weights (fp32 masters as stored), BN statistics, and every `opt.<name>.velocity`. The weight plan and the trainable plan (velocity names and sizes) must be unchanged by the target architecture.
 
-### D3. Trainer metadata (one source: the decoders and encoders)
+### D3. Trainer metadata (one check, shared with every trainer-file writer)
 
-- Add `TrainerScheduleState.MetadataKey.all ∪ MetadataKey.legacy ∪ GradientNormHistory.metadataKey` to the keys a trainer-state derive replaces.
-- Write the current forms from the decoded values: `schedule.metadataEntries()` and `history.metadataValue()`. A legacy-schedule source then comes out in the current form only, never both.
-- Run the trainer-state checks that today live inline in `SafetensorsModelIO.encode` (`:255-284`) on the output. Factor them into one function (for example `SafetensorsModelIO.checkTrainerState(metadata:lineage:includesVelocity:)`) that `encode` and derive both call:
-  - lineage step total == clock;
-  - `training_step` == clock;
-  - history ends at clock;
-  - the record's schedule agrees with the trainer schedule.
-- `training_step` stays the clock (already the rule at `:435-437`). `value_head_centered` and every other non-rewritten key are carried as today.
+- The `trainer_*` keys (current and legacy forms) and `trainer_grad_norm_history` are replaced, not copied, by the entries of the decoded values. A legacy-schedule source comes out in the current form only.
+- `SafetensorsModelIO.trainerStateMetadataEntries(schedule:gradNormHistory:trainingStep:lineage:)` holds the checks that lived inline in `prepare` (lineage step total == clock, `training_step` == clock, history ends at the clock, the record's schedule keys agree with the schedule) and returns the entries. `prepare` and the derive both call it.
+- `training_step` = the clock (the existing rule: the source's `trainerStepOrStatedStep`).
 
 ### D4. Model identity
 
-- New ModelID, `creator = derive-model`, `parent_model_id` = the source ID, new `content_sha256` and `notes`, all as for any derive.
-- `notes` adds `trainer state carried (trainer step N, velocity, schedule)`.
-- Nothing in resume needs the source's ID: replay mints its own `runModelID` per process.
+- New ModelID, `creator = derive-model`, flat `parent_model_id` = the source's ModelID, new `notes`, as for any derive. `notes` adds `trainer state carried (lineage segment <id>, trainer step N)`.
+- `content_sha256` covers the data region only, so the derived file has the source's content hash (identical tensors).
 
-### D5. Lineage: a derive run that carries the trainer state
+### D5. Lineage: the source's record, carried (OD-B)
 
-- New `LineageTracker.trainerStateCopyRecord(source:derivation:sourceArchitecture:naming:argv:at:)`, built beside `untrainedCopyRecord` and sharing its body. It follows the documented rule "run id minted on fresh / branch / derive".
-  - `run`: new `lineage_run_id`, segment 0, `start: derive`, `exact_resume: false`, no gaps.
-  - `parent`: the source.
-  - `ancestry`: the source's run, left by `derive`, with `architecture_at_departure` = the source's architecture text. For these operations the architecture always changes: `apply` refuses a no-op.
-  - Totals: continue the source's. `cum_trainer_step` = clock; `segment_start_trainer_step` nil; `segment_local_step` 0; segment games, positions and times 0.
-  - `parameters`, `configuration`, `run_seeds`, `model_naming` (`ModelNaming.ofDerive`): as `untrainedCopyRecord` carries them.
-  - `fed.corpus`: **the source's position carried**. Identity, shard hashes, epoch, next game, shard, fill, capacity, `feed_ahead_positions` and `feed_per_step` are kept verbatim. `segment_start` is set to the saved position itself: the derive fed nothing, so a later segment summary never claims the derive fed the source segment's games.
-  - `rng`: **the source's `dropout_philox_state`, `streams` and `behavior_fingerprint` carried**. These describe the trainer snapshot the file still holds. `initialization` is nil (derive).
-  - `build`, `invocation`, `device`: the derive process's, as for every derive.
-  - `derivation_history`: the source's history plus this derivation.
-- The flat mirrors come from the record as usual (`LineageRecord.metadataEntries`).
-- Why a new run rather than continuing E709 in place:
-  - It matches the documented minting rule.
-  - It records the architecture the trainer state was captured under (`architecture_at_departure`), which the resume needs (D6).
-  - The old run's totals and segments stay intact in `ancestry`.
+- `LineageRecord.carryingTrainerState(through:naming:)` returns the source's record with exactly two changes:
+  - `derivation_history` gains this derivation (D6 below);
+  - `model_naming` follows the derive rule (`ModelNaming.ofDerive`: `--name`, and an unedited preset marked edited, since the architecture changes).
+- Everything else is the source's, and why it must stay so:
+  - `run` (run ID, segment index and ID, start, exactness), `steps`, `fed` (corpus position, totals), `time`, `segments`, `ancestry`: the file still holds that segment's trainer state at that step. The next `--resume-exact` continues this run as segment index + 1 (OD-B).
+  - `rng` (dropout Philox state, streams, behavior fingerprint), `parameters`, `run_seeds`: they describe the trainer snapshot the file still holds.
+  - `build`, `device`, `invocation`: the process that captured the trainer state. The resume's build / OS / device comparison must be against it (OD-C), and the record never claims the derive trained.
+  - `parent`: the file the captured segment trained from. The derived file's own parent is the derivation record's `parent_model_id` and the flat `parent_model_id`; the resumed segment records the derived file as its parent.
+  - `configuration` (including `policy_tail_precision`): how the segment that last trained these weights trained. It stays a fact about that segment; the file's architecture states the tail it now builds, and the resumed segment records its own configuration.
+- The record is re-encoded at the current schema (the record initializer, as `withoutTrainerState` does); a schema 2–4 source's unrecorded facts stay unrecorded and its parameter snapshot is carried word for word.
+- `[RUN]` in the derive log describes the carried record; a `[DERIVE]` line says the record is the source's and names its run, segment and step.
 
-### D6. Resume: one origin rule, one new gap
+### D6. The derivation record and the resume's capture rule (OD-A, OD-C)
 
-- New type in `Training/ResumeExactness.swift`: `TrainerStateOrigin`, built from the parent record. It is "the process and architecture that captured this trainer state".
-  - Ordinary record: the record's `build`, `device` and `rng.behavior_fingerprint`; architecture = the file's; not changed.
-  - Derive-start record carrying trainer state (`run.start == .derive` and the file has a trainer schedule):
-    - build and device = `ancestry.runs.last.segments.last`'s (the training save's: 2523, M5 Max);
-    - fingerprint = `rng.behavior_fingerprint`;
-    - captured architecture = `ancestry.runs.last.architecture_at_departure`, decoded through `SafetensorsModelIO.decodeArchitecture(fromMetadata:source:)` with `{architecture, dcm_format_version}`;
-    - `architectureChanged` = true, with the fields that differ (from the derivation record's `changed_architecture_fields` and the two decoded architectures).
-  - A derive-start trainer-state record missing that ancestry entry, its last segment or its architecture text is a refusal (malformed file), never "no gap".
-- `environmentGaps` takes the origin. The running fingerprint is computed for the **captured** architecture (`BehaviorFingerprint.compute(for: .init(arch: origin.capturedArchitecture))`, cached per architecture). `build` / `os` / `device` then keep meaning "does this build compute what the saved build computed for that trainer state". The existing `environmentGaps(writtenBy:…)` signature stays as a thin wrapper, so tests do not change.
-- New `ResumeGap.architecture` (token `architecture`), declared after `schedule`.
-  - Raised when `origin.architectureChanged`.
-  - Logged as one line: `[RESUME] architecture: changed by derive <derivedModelID> after the trainer state was captured: compute_data_type bfloat16 → float32, policy_tail_precision fp32_from_pre_bn → does_not_apply`.
-  - Why a gap: an exact resume claims to continue the saved run's trajectory. A dtype change keeps the state exact but changes every later step's arithmetic, the same reason a non-matching build is a gap. Without it, same build + OS + Mac would log EXACT. The operator accepts it with `--accept-inexact …,architecture`, recorded in `not_exact_items`.
-- One call site per path: corpus replay `:1450`, train-vs-UCI `:323` and the GUI (`SessionController+Lineage.swift:608`) all go through the origin. The GUI can never meet a derive-start trainer file in a session save, but the rule stays in one place.
-- `--accept-inexact` help is generated from `ResumeGap.allCases` (`App/CommandLineHelp.swift:286-290`), so it updates by itself.
+- `ModelDerivation.DerivationRecord.trainerState` (`trainer_state`, written only by a trainer-state derive; omitted otherwise, so every older history reads and writes as before):
+  - `segment_id` and `trainer_completed_steps`: the record segment and clock whose trainer state was carried;
+  - `source_architecture` and `source_architecture_format_version`: the source's architecture as this build resolved it (a pre-v12 source's recorded tail included), encoded at the current format.
+- `TrainerStateCapture(fileArchitecture:record:)` (`Training/ResumeExactness.swift`), the one rule for "which architecture captured this trainer state":
+  - the derivation-history entries whose `trainer_state.segment_id` is the record's own `run.segment_id` are the trainer-state derives since the capture (a resumed segment has a new segment ID, so earlier derives never match);
+  - none: the file's own architecture;
+  - otherwise the first such entry's `source_architecture` — the architecture of the last save where training happened, however many derives followed.
+  - Refused (never "no gap"): an entry whose `trainer_completed_steps` is not the record's clock; a captured architecture that differs from the file's in anything but `compute_data_type` / `policy_tail_precision`; an unreadable architecture.
+- `ResumeGap.precisionGaps(capture:runningArchitecture:)` raises `compute_data_type` and/or `policy_tail_precision` when the running (= file) architecture's value differs from the captured one, with one `[RESUME]` line each naming both values and the derive(s).
+- The running behavior fingerprint is computed for the **captured** architecture, so `build` / `os` / `device` keep meaning "does this build compute what the saved build computed for that trainer state"; the precision change is reported by its own gaps.
+- Call sites: corpus replay and train-vs-UCI `--resume-exact`. The GUI resume is unchanged: a session folder never holds a derived trainer file, and `forceFloat32` stays as it is (OD-D).
+- New tokens `compute_data_type`, `policy_tail_precision`, declared after `schedule`. The `--accept-inexact` help is generated from `ResumeGap.allCases`.
 
 ### D7. Expected real-run lines
 
 - `[RESUME] schedule: …` (as in segment 13)
-- `[RESUME] architecture: changed by derive <id> …`
-- `[RESUME] build changed (2523 a242b7ad → <new>), behavior fingerprint matches` (expected; 2663 matched for bf16)
-- `[RESUME] OS changed (… 26B118 → …), behavior fingerprint matches` (if the OS still differs)
-- `[RESUME] NOT EXACT: schedule, architecture`
-- `[RESUME] rng: sampler=restored`, `dropout=restored`, `dropout stream=restored`, `grad-norm history: restored entries=…`
-- `[REPLAY-ARCH] (start-model) … float32 …`, `policy_tail=does_not_apply`
-- `[REPLAY] start-model trainer state restored exactly (fp32 masters, velocity, trainerStep=384964)`
-- `[RUN] path=replay run=<derive run id> seg=1 (resume of <derivedID> sha=…, not exact: schedule, architecture) … policy_tail=does_not_apply cum_step=384964 cum_games=37772534 …`
+- `[RESUME] compute_data_type: the trainer state was captured under bfloat16; this file computes in float32 (changed by derive <id>)`
+- `[RESUME] policy_tail_precision: the trainer state was captured under fp32_from_pre_bn; this file has does_not_apply (changed by derive <id>)`
+- `[RESUME] build changed (2523 a242b7ad → <new>), behavior fingerprint matches` (the fingerprint is computed for bf16; 2663 matched)
+- `[RESUME] OS changed (…), behavior fingerprint matches` (if the OS still differs)
+- `[RESUME] NOT EXACT: schedule, compute_data_type, policy_tail_precision`
+- `[RUN] path=replay run=E709F4EB… seg=14 (resume of <derivedID> sha=343a3569…, not exact: schedule, compute_data_type, policy_tail_precision) … policy_tail=does_not_apply cum_step=384964 …`
 
 ## Guardrails
 
-- Only kinds with `acceptsTrainerStateSource` take a trainer-state source. Every other kind, any mix that includes one, and graft keep `sourceHasOptimizerState`.
-- Empty `tensorRewrites` is asserted for a trainer-state source (D1).
-- The source must carry a lineage record (format v7+). A pre-lineage trainer-state file is refused with a new `DeriveError.trainerStateSourceWithoutLineage`: there is no corpus position, streams or fingerprint to carry. Such a file can still be branched.
-- The source's record must not itself be a derive-start trainer-state record (chained trainer-state derives are refused, `DeriveError.trainerStateSourceIsDerived`). The origin rule (D6) then always points at a training save. Multiple operations in one call are allowed (`--set-compute-dtype bfloat16 --set-policy-tail-precision mixed_final_projection`).
-- The trainer-state checks (D3) run on the output before it is returned. Decode-back verification stays.
-- Never overwrites: unchanged (`FileSafety.publishNewFile`, `App/DeriveModelCLI.swift:247`).
+- Only kinds with `acceptsTrainerStateSource` take a trainer-state source; every other kind, any mix including one, and graft keep `sourceHasOptimizerState`.
+- A trainer-state source needs a schedule and a lineage record (D1).
+- No tensor rewrite on a trainer-state source (D1); same weight and trainable plans (D2).
+- The shared trainer-state check (D3) runs on the output; decode-back verification stays.
+- Chained derives are allowed (OD-C); each appends one `trainer_state` entry with the same segment and clock.
+- Never overwrites: unchanged (`FileSafety.publishNewFile`).
 
 ## Edge cases
 
-- **fp32 → bf16 back** (from a save trained in fp32): allowed. The tail becomes `fp32_from_pre_bn` (`ComputeDataTypeDerive.swift:66-73`). The bf16 trainer loads the fp32 working weights as masters and rounds the working copy. The resume reports the `architecture` gap.
-- **Tail only on a bf16 trainer file** (`fp32_from_pre_bn` ↔ `mixed_final_projection`): allowed; `architecture` gap. A tail on fp32, or `does_not_apply` on bf16, is refused by `target.validate()` as today.
+- **fp32 → bf16** (a save trained in fp32): allowed; tail `fp32_from_pre_bn`. The bf16 trainer loads the fp32 working weights as masters. Gaps: `compute_data_type`, `policy_tail_precision`.
+- **Tail only on a bf16 trainer file**: allowed; gap `policy_tail_precision` only.
+- **Round trip** (bf16 → fp32 → bf16 with the captured tail): the capture is the first derive's source, equal to the file's architecture, so no precision gap; the derivation history still records both derives.
 - **No-op** (`--set-compute-dtype bfloat16` on a bf16 file): refused as today (`operationNotApplicable`).
-- **A session folder's `trainer.safetensors`**: allowed as a source. The output is a standalone file and cannot be put back into a session.
-  - A GUI-session trainer file has no corpus position: corpus replay refuses it as today (`noCorpusPosition`). It can still be branched.
-  - A train-vs-UCI trainer file resumes through `--train-vs-uci --start-model <file> --resume-exact`, with `buffer` and `architecture` gaps.
-  - Document this; no extra refusal.
-- **Pre-v11 trainer-state files** (`training_step` was the segment step): the output is written at the current format with `training_step` = the clock (the existing rule). Legacy schedule keys are rewritten to the current form (D3). The record is rebuilt at the current schema (the record initializer, as `withoutTrainerState` does). The parameter snapshot is carried word for word.
-- **Pre-v12 files**: the tail resolves into the architecture; the flat key is already in `rewrittenMetadataKeys`.
-- **Lineage unrecorded (pre-v7)**: refused (Guardrails).
-- **Schema 2–4 records**: carried and converted to the current schema. Their unrecorded fields stay unrecorded.
-- **Velocity NaN payloads**: copied as `[Float]` bit patterns. The test asserts `bitPattern` equality.
-- **Test-set results**: re-evaluated under the target architecture (fp32). This uses the GPU, so the derive is slower than a pure file transform; that is fine next to a training job.
+- **A session folder's `trainer.safetensors`**: allowed as a source; the output is a standalone file. A GUI-session trainer file has no corpus position, so corpus replay refuses it (`noCorpusPosition`); a train-vs-UCI trainer file resumes through `--train-vs-uci --start-model <file> --resume-exact` with `buffer` and the precision gaps.
+- **Pre-v11 / pre-v12 sources**: written at the current format, `training_step` = the clock, the tail resolved into the architecture.
+- **Pre-lineage (pre-v7) trainer files**: refused; they can still be branched.
+- **Schema 2–4 records**: carried at the current schema.
+- **Velocity NaN payloads**: copied as raw bit patterns.
+- **Test-set results**: re-evaluated under the target architecture (GPU).
+- **Follow-lineage (Lichess bot)**: the derived file claims the source's segment and step with the same `content_sha256`, so it is a same-weights copy of that save, never a conflict.
+- **A branch** (`--start-model` without `--resume-exact`) from the derived file: an ordinary branch; the derivation history is carried.
 
 ## Tests
 
-Regression-first: write T1–T3 before the change and show they fail (`sourceHasOptimizerState`).
-
-New class `DeriveTrainerStateTests`, pure (no GPU). It uses `ModelTestSetFixtures.notEvaluated` overloads and `LineageRecord.forTests(trainerCompletedSteps:corpus:)` / `forTests(adopting:…)` (`DrewsChessMachineTests/LineageTestSupport.swift:13`, `:91`). Trainer files are built as in `LineageRecordTests` (`:40`).
-
-- T1: `--set-compute-dtype float32` on a bf16 trainer-state file (velocity, schedule, grad-norm history, a record with corpus position, streams, dropout state and fingerprint) succeeds. Then:
-  - every tensor, velocity included, is bit-identical;
-  - the decoded `trainerSchedule` and `trainerGradNormHistory` equal the source's;
-  - `training_step` == clock;
-  - architecture is float32 / `does_not_apply`.
-- T2: the record of T1's output:
-  - new run id, segment 0, `start: derive`, parent = the source;
-  - ancestry's last run = the source's run, `left_by: derive`, `architecture_at_departure` = the source's text byte for byte;
-  - totals continue;
-  - `fed.corpus` equals the source's except `segment_start` = the saved position;
-  - `rng` dropout state, streams and fingerprint equal the source's;
-  - `derivation_history` = the source's plus one entry with `changed_architecture_fields`.
-- T3: `--set-policy-tail-precision mixed_final_projection` on a bf16 `fp32_from_pre_bn` trainer file succeeds, with the same carry checks as T1.
-- T4: `--set-se-beta-init`, an activation setter, `--set-rezero-alpha-cap`, and a mix of `--set-compute-dtype` with any of them on a trainer-state file are still refused with `sourceHasOptimizerState`.
-- T5: a pre-lineage trainer-state file is refused (`trainerStateSourceWithoutLineage`). A source that is itself a derive-start trainer file is refused (`trainerStateSourceIsDerived`).
-- T6: a source in the legacy schedule form produces only the current `trainer_lr_schedule` keys. The schedule equals the converted one.
-- T7: an internally inconsistent source is refused by the shared trainer-state check, not written. Example: the lineage step total differs from the clock, hand-built.
-- T8 (`ResumeExactness`, pure):
-  - `TrainerStateOrigin` of an ordinary record is the record's build, device and fingerprint;
-  - of a derive-start trainer record it is the departed run's last segment, the captured architecture and `architectureChanged`;
-  - a malformed derive-start record throws;
-  - `ResumeGap.architecture` parses from `--accept-inexact` and is ordered after `schedule` in the log line.
-
-GPU tests (targeted classes):
-
-- T9 `ChessTrainer` lossless switch:
-  - build a bf16 trainer on `ResumeEquivalenceTests.architecture` with `computeDataType: .bfloat16`, train a few steps, `exportResumeSnapshot()`, write the file and derive it to fp32;
-  - `restoreExactly` into an fp32 trainer built from the derived file's architecture;
-  - `exportTrainerWeights()` must equal the snapshot's weights bit for bit (masters → fp32 working, velocity), with clock and dropout state equal.
-  - Also the reverse: fp32 → bf16 keeps the masters bit-exact.
-- T10 corpus-replay integration, in a new class (or a new case beside `CorpusReplayRefusalTests`). It reuses `ResumeEquivalenceTests.writeCorpus` / `writeStartModel` (static, `:110`, `:148`) with a bf16 variant of the tiny architecture.
-  - Train N steps, derive the save to fp32, then `runReplay` with `resumeExact: true`.
-  - With `acceptInexact: []` the refusal names `architecture`.
-  - With `[.architecture]` the run trains M steps; the trainer clock ends at N+M; the segment record has `exact_resume: false`, `not_exact_items == ["architecture"]` and segment index 1 of the derive's run; the feed position continues from the saved one; the output architecture is fp32.
-- T11: the T10 resume under the same build, OS and Mac still reports `architecture`. This pins the hole described in Findings.
-
-Existing tests that would need modification: **none found**.
-
-- These stay green unchanged: `SEBetaInitTests.testDeriveRefusesTrainerStateSources`, `GraftDeriveTests.testAGraftRefusesASourceCarryingOptimizerState`, `SEBetaInitTests.testOperationCatalogDrivesTheCLI` (flags unchanged; help still contains each flag), `PolicyTailPrecisionProvenanceTests.testPolicyTailIsNoLongerAResumeGap`, `ExactResumeCompletionTests` (gap ordering uses existing cases only), `UntrainedCopyRecordTests`, `DeriveTrainedSourceTests`, `DeriveLineageTrainedSourceTests`.
-- If any turns out to depend on the exact text of `sourceHasOptimizerState` or of the `--from` help line, stop and ask before editing it.
+- `DeriveTrainerStateTests` (pure):
+  - `--set-compute-dtype float32` on a bf16 trainer file: every tensor bit-identical, schedule and history equal, `training_step` = clock, fp32 / `does_not_apply`, the record equal to the source's except history and naming, the `trainer_state` entry.
+  - `--set-policy-tail-precision`, and both operations in one call.
+  - Refusals: every other kind and a mix; velocity without schedule; no lineage; graft unchanged.
+  - Legacy schedule keys come out in the current form only.
+  - An inconsistent source (record step ≠ clock) is refused by the shared check.
+  - Chained derive: two entries, the capture is the first one's source.
+- `TrainerStateCaptureTests` (pure): capture of a training save, of a derived file, of a chain; refusals; gap lines; tokens parse and order after `schedule`.
+- `DeriveTrainerStateResumeTests` (GPU):
+  - bf16 → fp32 → bf16 trainer state loads losslessly (masters ↔ working weights, velocity).
+  - Corpus replay: train N steps in bf16, derive to fp32, `--resume-exact`: refused naming both tokens without `--accept-inexact`; with them it trains M steps from the saved clock and feed position, in fp32, as segment 1 of the same run, `not_exact_items` = the two tokens — on the same build, OS and Mac.
 
 ## Docs
 
-- `documentation/deriving-models.md`: rewrite the `--from` paragraph (`:22-37`):
-  - trainer-state sources are accepted by `--set-compute-dtype` / `--set-policy-tail-precision` only;
-  - what is carried (velocity, schedule, history, corpus position, streams, dropout state, fingerprint);
-  - the new run with ancestry;
-  - the `architecture` gap and the refusals (pre-lineage, chained);
-  - a worked example (the R-elitecyc fp32 continuation).
-- `App/DeriveModelCLI.swift` help (`:50`, "not a trainer-state file") and the summaries in `ComputeDataTypeDerive.swift` / `PolicyTailPrecisionDerive.swift` (`:11` there says trainer files are refused).
-- `ModelDerivation.swift` file header (`:24-27`, `:37`).
-- `App/CommandLineHelp.swift`: the `--derive-model` line (`:172-181`) gets one sentence about trainer-state sources. The `--accept-inexact` list is generated.
-- `CLAUDE.md`:
-  - the `[RESUME]` tag paragraph (add the `architecture` gap);
-  - "File lineage" (a derive of a trainer-state file carries its trainer state into the new run);
-  - the policy-tail bullet ("on a plain model" → "on a plain model or a trainer-state file").
-- `documentation/plans-active/DETERMINISM_RESUME_LINEAGE_PLAN.md`: one line pointing here for the new gap.
-- ROADMAP: no edit without owner permission.
+- `documentation/deriving-models.md`, `App/DeriveModelCLI.swift` help, the operation summaries, `ModelDerivation.swift` header, `App/CommandLineHelp.swift` `--derive-model` line.
+- `CLAUDE.md`: the resume-gap and policy-tail lines.
+- `ROADMAP.md`: deferred item for `forceFloat32` (OD-D).
 
 ## Validation
 
 1. Build with drews-xcode-mcp: no errors, no new warnings.
-2. Targeted tests T1–T11 and the classes listed above (owner rule: no suite runs unless asked; report them as unrun if not approved). Run the full suite before merge, because persistence and lineage change (CLAUDE.md).
+2. The targeted test classes above plus the related existing classes (derive, lineage, resume exactness, safetensors trainer-state, policy-tail provenance). The full suite before merge (owner rule: not run unless asked).
 3. Freeze the build as `FrozenBuilds/DCM-<build>-<git>.app`.
 4. Derive (read-only on the source):
 
@@ -253,15 +200,15 @@ Existing tests that would need modification: **none found**.
 
    - Use a name without `-step<N>`, so it is never read as a step-enumerated checkpoint.
 5. Check the derived file before launching:
-   - `--describe-model` shows `compute_data_type float32`, tail `does_not_apply`, `trainer_completed_steps 384964`, `training_step 384964`, 41 velocity tensors, record `start: derive` with parent `20261025-1-qyUf` sha `343a3569…`, `fed.corpus` epoch 2 / next game 10,696,971 / feed_per_step 8533, streams and dropout state present, and test sets evaluated;
-   - a `python3 -I` header-and-data comparison shows every tensor's bytes identical to the source's;
-   - the source file's SHA-256 is unchanged.
+   - `--describe-model` shows `compute_data_type float32`, tail `does_not_apply`, `trainer_completed_steps 384964`, `training_step 384964`, 41 velocity tensors, the record of run `E709F4EB…` segment 13 unchanged, `derivation_history` ending in a `set-compute-dtype` entry with `trainer_state`, and test sets evaluated;
+   - every tensor's bytes identical to the source's (same `content_sha256`);
+   - the source file's SHA-256 unchanged.
 6. Launcher `experiments/20261008-zlra-selfplay-lr/launch/elitecyc_fp32_resume_launch.sh`, modeled on `elitecyc_resume13_decay_launch.sh`:
 
    ```sh
    exec "$BIN" --replay-corpus 20260704-215145-op24Gp \
      --start-model "$M/20261112-zlra-elitecyc-fp32-start.safetensors" \
-     --resume-exact --accept-inexact schedule,architecture \
+     --resume-exact --accept-inexact schedule,compute_data_type,policy_tail_precision \
      --parameters $E/parameters-zlra-elitecyc-decay.json \
      --out-model "$M/20261112-zlra-elitecyc-fp32-latest.safetensors" \
      --epochs 7 --training-step-limit 615036 --enumerate-checkpoints \
@@ -270,32 +217,17 @@ Existing tests that would need modification: **none found**.
    ```
 
    - 615,036 = 1,000,000 − 384,964. Both limits apply; the first reached ends the run.
-   - Checkpoints are named `20261112-zlra-elitecyc-fp32-replay-step<T>`. The first is at 385,000.
-   - If the run also reports `build` or `os` (fingerprint differs for bf16 on the new build), the refusal names them. Decide then whether to accept them; do not pre-accept.
-7. On launch, confirm the D7 lines. Then check:
-   - the first `[REPLAY]` step line's `pLoss` / `vLoss` / `pEnt` are close to segment 13's and the hilr fork's first lines (same weights; only the rounding differs);
-   - `[MEM]` footprint and plies/hour (fp32 roughly doubles activation memory and slows steps);
-   - no `[ALARM]` or `[GPU-ERR]`.
-8. Experiment write-up per the house rule (README, E-NNNN page, registry entry for the new lineage run, with ancestry pointing at E709 at 384,964), commit, push.
+   - If the run also reports `build` or `os` (the bf16 fingerprint differs on the new build), the refusal names them. Decide then; do not pre-accept.
+7. On launch, confirm the D7 lines; then the first `[REPLAY]` line's `pLoss` / `vLoss` / `pEnt` against segment 13's, `[MEM]` and plies/hour, no `[ALARM]` / `[GPU-ERR]`.
+8. Experiment write-up per the house rule; commit, push.
 
-## Open questions (with recommendations)
+## Resolved questions
 
-1. New run at the derive (D5) or continue E709 in place, with the derivation appended to the old record?
-   - Recommend a new run. It follows the documented "run id minted on derive" rule, records the captured architecture in `architecture_at_departure`, and keeps E709's record unchanged.
-   - Continuing in place would leave the record claiming the source save's build and segment while the file was written by derive, and the trained architecture would be lost.
-2. Should a precision change be a resume gap?
-   - Recommend yes, a new token `architecture`. The state is exact; the trajectory is not.
-   - Alternative names: `compute_precision`. `architecture` stays correct if more no-rewrite kinds are ever allowed.
-3. Fingerprint comparison for a derived trainer file.
-   - Recommend computing the running fingerprint on the captured (departed) architecture (D6), so `build` / `os` keep their meaning.
-   - Simpler alternative: compare against the file's architecture and accept `build` / `os` gaps whenever they changed. It is honest but noisy, and the real launch would then need `build,os` too.
-4. Chained trainer-state derives (derive of a derived trainer file)?
-   - Recommend refusing them. One call can apply both operations, and going back means deriving from the training save.
-5. Pre-lineage trainer-state sources?
-   - Recommend refusing them. There is nothing to carry for an exact resume, and branching still works.
-6. Allow the other no-rewrite kinds (activations, ReZero cap) on trainer state?
-   - Recommend no. They change the function the velocity was built for.
-7. The GUI `forceFloat32` resume override (`SessionController+Checkpoint.swift:935-1070`) is a resume-time precision setting, the kind the owner rejected.
-   - Recommend a separate decision: keep it for now, or retire it once derive covers trainer files. Sessions would need a session-level derive, which is out of scope.
-8. Dashboard registry: the fp32 continuation is a new lineage run whose totals continue.
-   - Recommend a registry entry `elitecyc-fp32` whose segment carries `cumstep_base` 384,964 and pins from E709's segment 13 record.
+1. New run or continue E709 in place: continue (OD-B).
+2. A precision change is a resume gap, two tokens (OD-A).
+3. Fingerprint: computed for the captured architecture (D6).
+4. Chained derives: allowed (OD-C).
+5. Pre-lineage trainer-state sources: refused.
+6. Other no-rewrite kinds on trainer state: no.
+7. GUI `forceFloat32`: kept; ROADMAP item (OD-D).
+8. Dashboard registry: the fp32 continuation is the next segment of E709, branching from segment 13 at 384,964 (a fork of the run, as the hilr fork was).
