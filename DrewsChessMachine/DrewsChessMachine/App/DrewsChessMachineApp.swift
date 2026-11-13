@@ -603,6 +603,7 @@ struct DrewsChessMachineApp: App {
             }
         }
         .commands {
+            AboutCommands()
             // File menu additions — Save / Load / reveal-in-Finder.
             // Placed after the standard "New" slot so they appear at
             // the top of the File menu alongside the other

@@ -43,6 +43,9 @@ struct LichessBotRootView: View {
                     Label(section.rawValue, systemImage: section.systemImage)
                         .tag(section)
                 }
+                .safeAreaInset(edge: .bottom) {
+                    LichessBotBuildInfoFooter()
+                }
                 .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 220)
             },
             detail: {
