@@ -36,6 +36,11 @@ R-replay stopped at trainer step 86,398 (2026-10-11, SIGINT save; branched to R-
 
 ## Finished
 
+- 2026-11-09 23:45 → 2026-11-12 20:11 — R-elitecyc-hilr: fork of R-elitecyc at 384,964 continuing the original
+  0.002 ↔ 0.02 cycle (`20261008-zlra-selfplay-lr/analysis-hilr-fork/`, E-0029), build 2663, stopped by the owner at 528,527
+  (abort save). Trails the main line's anneal at every 10k checkpoint from 400k: 10–33 pElo on the large puzzle set,
+  0.014–0.019 nats of held-out policy NLL. The high-LR phase was nearly spent when it was cut. R-elitecyc not restarted
+  (owner: "don't start the elitecyc yet").
 - 2026-10-22 00:34 → 01:52 — Core ML vs MPSGraph inference benchmark (`20261022-coreml-benchmark/`, E-0028): 4 models × 7 arms
   × batch 1–1024 × in-flight 1/4 on build 2607 Release. MPSGraph bf16 fastest from batch 128 up on every real-size model (Core ML at most
   0.79× at batch 256); Neural Engine wins only at batch 1 (0.42–0.54 ms vs 1.38–2.40 ms); four overlapping MPSGraph streams +36–52% at batch 64.

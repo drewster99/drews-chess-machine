@@ -52,6 +52,7 @@ See `eval_table.md` (held-out 1,943,073 positions, seen 1,781,574).
 1. **Not a data limit.** ~0.01 nats of memorization after ~5 passes.
 2. **Not shown to be a capacity limit either.** The model underfits, and held-out loss and puzzle pElo were still improving at high LR when the LR was cut; after the anneal both creep up slowly. What is exhausted is the low-LR phase, not necessarily the model.
 3. **The LR schedule is the most direct lever:** the high-LR phase was still paying, sharpness sits far below the stability bound, and the anneal's +35 pElo is a one-time gain. A longer (or higher-peak) high-LR phase before a later anneal is the cheapest test; a larger model is the second.
+   - **Tested 2026-11-12 (E-0029, `../20261008-zlra-selfplay-lr/analysis-hilr-fork/README.md`):** continuing the original cycle from 384,964 gained ~16 pElo in the next ~65k steps and nothing after; the main line's anneal over the same 143k steps gained ~32. The high-LR phase was nearly spent when it was cut.
 4. **gNorm rise:** weight-decay shrink of scale-invariant weights explains ~1.86× of the conv gradients' 3.1× (`../20261008-zlra-selfplay-lr/analysis-elitecyc-793k/weight_norms.md`); rising sharpness and gradient noise are consistent with the rest.
 
 ## Unexplained

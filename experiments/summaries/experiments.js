@@ -539,5 +539,23 @@ window.DCM_EXPERIMENTS = [
    "E-0011"
   ],
   "supersededBy": null
+ },
+ {
+  "id": "E-0029",
+  "date": "2026-11-09",
+  "file": "E-0029_2026-11-09_elitecyc-high-lr-fork.html",
+  "title": "Elite-corpus fork: keep the high-LR cycle vs anneal",
+  "status": "complete",
+  "tags": [
+   "lr-schedule",
+   "exact-resume",
+   "basic24",
+   "silu"
+  ],
+  "takeaway": "On R-elitecyc, the 0.002–0.02 cycle was nearly spent by step 384,964: continuing it gained ~16 pElo in 65k steps and then nothing, while annealing gained ~32 — anneal there, and test longer high-LR phases only with an anneal at their end.",
+  "related": [
+   "E-0026"
+  ],
+  "supersededBy": null
  }
 ];

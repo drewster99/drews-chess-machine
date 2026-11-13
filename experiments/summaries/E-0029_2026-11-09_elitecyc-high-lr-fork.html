@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dcm-id" content="E-0029">
+<meta name="dcm-date" content="2026-11-09">
+<meta name="dcm-title" content="Elite-corpus fork: keep the high-LR cycle vs anneal">
+<meta name="dcm-status" content="complete">
+<meta name="dcm-tags" content="lr-schedule, exact-resume, basic24, silu">
+<meta name="dcm-takeaway" content="On R-elitecyc, the 0.002–0.02 cycle was nearly spent by step 384,964: continuing it gained ~16 pElo in 65k steps and then nothing, while annealing gained ~32 — anneal there, and test longer high-LR phases only with an anneal at their end.">
+<meta name="dcm-related" content="E-0026">
+<meta name="dcm-superseded-by" content="">
+<title>E-0029 · Elite-corpus fork: keep the high-LR cycle vs anneal</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav class="dcm-nav"></nav>
+<header class="exp">
+<div class="exp-id"><span>E-0029</span><span>2026-11-09</span><span class="status complete">complete</span></div>
+<h1>Elite-corpus fork: keep the high-LR cycle vs anneal</h1>
+<div class="tags"><span class="tag">lr-schedule</span><span class="tag">exact-resume</span><span class="tag">basic24</span><span class="tag">silu</span></div>
+</header>
+
+<section>
+<h2>Question</h2>
+<p>At trainer step 384,964 R-elitecyc left its original learning-rate cycle (geometric cosine 0.002 ↔ 0.02, period 10,000) for a decaying keyframe schedule. A held-out study suggested the high-LR phase was still gaining when it was cut. Was it? A fork continued the original cycle from the same saved state.</p>
+</section>
+
+<section>
+<h2>Setup</h2>
+<dl class="setup">
+<dt>Runs / models</dt><dd>Fork R-elitecyc-hilr (model <code>20261110-1-lG5l</code>): exact resume of <code>20261011-zlra-elitecyc-latest-step384964.safetensors</code> under <code>parameters-zlra-elite-gentlecycle.json</code>, 143,563 steps to 528,527 (abort save). Main R-elitecyc from the same file under <code>parameters-zlra-elitecyc-decay.json</code>: peak 0.02 → 0.001 and trough 0.002 → 0.000447 over 386k–486k, then trough → 0.0001 by 586k. Same corpus, batch, momentum 0.90 and feed. 8.27M parameters: 5×5 stem, 3 blocks × 128 channels, 9×9 kernels, SiLU, bf16 (preset <code>v6</code>).</dd>
+<dt>Build</dt><dd>Fork: 2663 (<code>b1ed8b52</code>, adds only a log line). Main: 2620. Evaluations: 2663 (fork, main 520k held-out) and 2658 (main large probe).</dd>
+<dt>Data</dt><dd>Training: elite corpus <code>20260704-215145-op24Gp</code>. Puzzles: <code>lichess-large</code>, 90,378. Held-out: October 2026 elite games, corpus <code>20261108-100629-lahw9i</code>, first 20,000 games (1,943,073 positions).</dd>
+<dt>Method</dt><dd>Every 10k checkpoint of both lines (same phase of the 10k cycle) on the large puzzle set; held-out policy NLL at 450k, 500k and 520k.</dd>
+</dl>
+</section>
+
+<section>
+<h2>Findings</h2>
+<figure class="chart">
+<script type="application/json">{"x": {"label": "trainer step"}, "y": {"label": "pElo, lichess-large"}, "series": [{"name": "main (anneal)", "points": [[390000, 1765.1], [400000, 1755.0], [410000, 1767.6], [420000, 1780.0], [430000, 1777.2], [440000, 1788.8], [450000, 1797.3], [460000, 1794.3], [470000, 1788.9], [480000, 1795.0], [490000, 1793.8], [500000, 1793.0], [510000, 1793.6], [520000, 1797.0]]}, {"name": "fork (original cycle)", "dash": true, "points": [[390000, 1764.2], [400000, 1748.9], [410000, 1759.6], [420000, 1766.2], [430000, 1767.1], [440000, 1772.8], [450000, 1780.4], [460000, 1777.7], [470000, 1763.0], [480000, 1772.8], [490000, 1760.7], [500000, 1767.5], [510000, 1767.2], [520000, 1775.4]]}]}</script>
+<figcaption>Large puzzle set pElo at every 10k checkpoint. Checkpoint-to-checkpoint noise ≈ 3.5 pElo.</figcaption>
+</figure>
+<div class="tablewrap"><table>
+<caption>Held-out policy NLL (nats, lower is better); 380k is the shared state before the fork.</caption>
+<thead><tr><th>trainer step</th><th class="n">main</th><th class="n">fork</th><th class="n">fork − main</th></tr></thead>
+<tbody>
+<tr><td>380,000</td><td class="n">1.9598</td><td class="n">—</td><td class="n"></td></tr>
+<tr><td>450,000</td><td class="n">1.9415</td><td class="n">1.9551</td><td class="n">+0.0136</td></tr>
+<tr><td>500,000</td><td class="n">1.9373</td><td class="n">1.9565</td><td class="n">+0.0192</td></tr>
+<tr><td>520,000</td><td class="n">1.9354</td><td class="n">1.9525</td><td class="n">+0.0171</td></tr>
+</tbody>
+</table></div>
+<p>The fork trails at every checkpoint from 400k on: 10–17 pElo through 460k, 21–33 pElo from 470k. It gained ~16 pElo over the shared state, nearly all by 450k, then stayed flat; the main line gained ~32 by 450k and held it.</p>
+</section>
+
+<section>
+<h2>Interpretation</h2>
+<p>The original cycle had about run its course at 384,964: it paid for roughly another 65k steps, then nothing, while the anneal was worth twice as much over the same span. One seed per line, but the gap is several times the checkpoint noise from 420k on and the held-out NLL agrees in sign at every pair. This does not test a longer high-LR phase that ends in its own anneal, or model capacity.</p>
+</section>
+
+<section>
+<h2>Takeaway</h2>
+<p class="takeaway">On R-elitecyc, the 0.002–0.02 cycle was nearly spent by step 384,964: continuing it gained ~16 pElo in 65k steps and then nothing, while annealing gained ~32 — anneal there, and test longer high-LR phases only with an anneal at their end.</p>
+</section>
+
+<section>
+<h2>Artifacts</h2>
+<ul class="artifacts">
+<li><a href="../20261008-zlra-selfplay-lr/analysis-hilr-fork/README.md">experiments/20261008-zlra-selfplay-lr/analysis-hilr-fork/</a> — full tables, probe and held-out data, Reproduce section.</li>
+<li><a href="../20261008-zlra-selfplay-lr/README.md">experiments/20261008-zlra-selfplay-lr/README.md</a> — the fork's launch (2026-11-09) and stop (2026-11-12) sections.</li>
+<li><a href="../20261108-elitecyc-heldout/README.md">experiments/20261108-elitecyc-heldout/</a> — the main line's held-out and large-probe data, and the conclusion this tests.</li>
+</ul>
+</section>
+
+<section>
+<h2>Related</h2>
+<div id="related"></div>
+</section>
+<nav class="dcm-nav"></nav>
+</main>
+<script src="experiments.js"></script>
+<script src="summaries.js"></script>
+</body>
+</html>

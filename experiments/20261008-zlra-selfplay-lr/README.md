@@ -1019,3 +1019,17 @@ move pawn at fixed count) and writes `analysis/intervention_results.json`.
     - rolling stem: `20261109-zlra-elitecyc-hilr-latest`
   - Its lineage records it as run `E709F4EB…` segment 14, the same as the main line's segment 14. The two branches are told apart by out-model stem and model ID.
   - Question: was the high-LR phase still paying at 384,964? Compare with the main line from 384,964 on, by held-out NLL, large-set pElo and `[DYNAMICS]`.
+
+## 2026-11-12: R-elitecyc-hilr stopped at 528,527 — the original cycle no longer paid
+
+- Stopped by SIGINT on 2026-11-12 20:11 EST (owner: "Stop the fork"), abort save at trainer step 528,527
+  (`20261109-zlra-elitecyc-hilr-latest-step528527.safetensors`, 143,563 steps after the fork);
+  `results-elitecyc-hilr-seg0.json`, `train-elitecyc-hilr-seg0.stdout`. No GPU faults or non-finite values.
+- Result (E-0029; tables, data and Reproduce in `analysis-hilr-fork/README.md`): the fork trails the main line at every
+  10k checkpoint from 400k on — large puzzle set by 10–17 pElo through 460k and 21–33 pElo from 470k, held-out policy
+  NLL by 0.014–0.019 nats. The fork gained ~16 pElo and 0.005–0.007 nats over the shared 380k–390k state, nearly all in
+  its first ~65k steps, then stayed flat; the main line's decaying schedule gained ~32 pElo and 0.024 nats over the same
+  span.
+- So at 384,964 the original cycle had about run its course; the anneal was the better use of the steps. This narrows
+  conclusion 3 of `../20261108-elitecyc-heldout/README.md`: the high-LR phase was still paying for ~65k more steps, not
+  beyond.
