@@ -320,10 +320,18 @@ enum TrainVsUciRunner {
                     } else {
                         resumeGaps.append(.params)
                     }
-                    let environment = ResumeGap.environmentGaps(
-                        writtenBy: parentRecord, runningBuild: try .current, runningDevice: .current,
-                        runningFingerprint: try await BehaviorFingerprint.compute(
-                            for: .init(arch: arch)))
+                    // A start model whose precision a derive changed after
+                    // its trainer state was captured adds the
+                    // compute_data_type / policy_tail_precision gaps
+                    // (`TrainerStateCapture`).
+                    let environment: EnvironmentComparison
+                    do {
+                        environment = try await ResumeGap.environmentAndPrecisionGaps(
+                            writtenBy: parentRecord, fileArchitecture: arch, runningBuild: try .current,
+                            runningDevice: .current)
+                    } catch let error as TrainerStateCapture.CaptureError {
+                        throw CLIRunRefusal(message: "--resume-exact: \(fileName): \(error.localizedDescription)")
+                    }
                     for line in environment.logLines { emit(line) }
                     resumeGaps += environment.gaps
                 } else {

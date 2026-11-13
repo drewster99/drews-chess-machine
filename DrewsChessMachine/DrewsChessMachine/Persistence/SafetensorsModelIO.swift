@@ -257,31 +257,10 @@ enum SafetensorsModelIO {
         }
         if let schedule = metadata.trainerSchedule {
             guard includesVelocity else { throw IOError.trainerScheduleWithoutVelocity }
-            // The lineage total of a trainer-state file IS its trainer clock,
-            // and so is its `training_step` (format v11); values that could
-            // disagree would not be one source.
-            guard lineage.steps.cumTrainerStep == schedule.completedTrainSteps else {
-                throw IOError.lineageStepDisagreesWithTrainerClock(
-                    lineageStep: lineage.steps.cumTrainerStep, trainerClock: schedule.completedTrainSteps)
-            }
-            guard metadata.trainingStep == schedule.completedTrainSteps else {
-                throw IOError.trainingStepDisagreesWithTrainerClock(
-                    trainingStep: metadata.trainingStep, trainerClock: schedule.completedTrainSteps)
-            }
-            for (key, value) in try schedule.metadataEntries() { md[key] = value }
-            // The relative cap's history, when the writer has one (every
-            // production trainer-file writer does), must end at the clock the
-            // schedule states — the same one-source rule as the lineage step
-            // and `training_step` above.
-            if let history = metadata.trainerGradNormHistory {
-                try history.checkEnds(atTrainerClock: schedule.completedTrainSteps)
-                md[GradientNormHistory.metadataKey] = try history.metadataValue()
-            }
-            // The record's schedule keys are composed from this same value
-            // (gap 5's rule), so a disagreement is a writer that bypassed the
-            // rule; refused, never written.
-            if let parameters = lineage.parameters {
-                try checkScheduleAgrees(parameters, with: schedule)
+            for (key, value) in try trainerStateMetadataEntries(
+                schedule: schedule, gradNormHistory: metadata.trainerGradNormHistory,
+                trainingStep: metadata.trainingStep, lineage: lineage) {
+                md[key] = value
             }
         }
         // Every save marks the value head centered, so a file is recentered
@@ -295,6 +274,49 @@ enum SafetensorsModelIO {
         for (key, value) in try lineage.metadataEntries() { md[key] = value }
 
         return PreparedModelFile(weights: weights, names: names, plan: plan, metadata: md)
+    }
+
+    /// The `__metadata__` entries of a trainer-state file's trainer state —
+    /// its schedule (`trainer_*`, always in the current form) and, when the
+    /// writer has one, its gradient-norm history — after the checks that
+    /// make the file one source for its clock:
+    /// - the lineage total of a trainer-state file IS its trainer clock, and
+    ///   so is its `training_step` (format v11); values that could disagree
+    ///   would not be one source;
+    /// - the relative cap's history, when present (every production
+    ///   trainer-file writer has one), ends at that clock;
+    /// - the record's schedule keys are composed from this same schedule
+    ///   (gap 5's rule), so a disagreement is a writer that bypassed the
+    ///   rule; refused, never written.
+    ///
+    /// Shared by every trainer-file writer (`prepare`) and by the derive of a
+    /// trainer-state file (`ModelDerivation.derive`), which writes the
+    /// source's decoded trainer state into a file it encodes itself: one set
+    /// of checks, so a derived trainer file can never pass with state a
+    /// training save would have refused.
+    static func trainerStateMetadataEntries(
+        schedule: TrainerScheduleState,
+        gradNormHistory: GradientNormHistory?,
+        trainingStep: Int?,
+        lineage: LineageRecord
+    ) throws -> [String: String] {
+        guard lineage.steps.cumTrainerStep == schedule.completedTrainSteps else {
+            throw IOError.lineageStepDisagreesWithTrainerClock(
+                lineageStep: lineage.steps.cumTrainerStep, trainerClock: schedule.completedTrainSteps)
+        }
+        guard trainingStep == schedule.completedTrainSteps else {
+            throw IOError.trainingStepDisagreesWithTrainerClock(
+                trainingStep: trainingStep, trainerClock: schedule.completedTrainSteps)
+        }
+        var entries = try schedule.metadataEntries()
+        if let history = gradNormHistory {
+            try history.checkEnds(atTrainerClock: schedule.completedTrainSteps)
+            entries[GradientNormHistory.metadataKey] = try history.metadataValue()
+        }
+        if let parameters = lineage.parameters {
+            try checkScheduleAgrees(parameters, with: schedule)
+        }
+        return entries
     }
 
     /// Refuse a lineage snapshot whose schedule keys (`scheduleKeyIDs`) are not exactly

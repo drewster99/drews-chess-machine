@@ -46,7 +46,12 @@ enum DeriveModelCLI {
             "source's ModelID, and a derivation_history record listing every operation applied.",
             "Changes that would alter any tensor's name or shape are refused. Never overwrites.",
             "",
-            "  \(fromFlag) <path>      source model (.safetensors model file; not a trainer-state file)",
+            "  \(fromFlag) <path>      source model (.safetensors model file). A trainer-state file (optimizer",
+            "                   velocity + trainer schedule) is accepted only by "
+                + ModelDerivation.operationKinds.filter(\.acceptsTrainerStateSource).map(\.flag).joined(separator: " and ") + ":",
+            "                   the output carries its trainer state and lineage record, continues with",
+            "                   --resume-exact (the run's next segment), and the resume reports the changed",
+            "                   precision as the compute_data_type / policy_tail_precision gaps",
             "  \(outFlag) <path>       destination; must end in .safetensors and must not exist",
             "  \(groupFlag) <index>    0-based block group an operation applies to (repeatable);",
             "                   omitted = every group the operation applies to",
@@ -254,6 +259,15 @@ enum DeriveModelCLI {
             + "\(outURL.lastPathComponent) (\(modelID)); source sha256 \(result.record.sourceSHA256)"
         FileHandle.standardError.write(Data((header + "\n").utf8))
         SessionLogger.shared.log(header)
+        if let carried = result.record.trainerState {
+            // The [RUN] line above describes the carried record — the run
+            // and segment that captured the trainer state, not this derive.
+            let line = "[DERIVE]   trainer state carried: lineage run \(result.lineage.run.lineageRunID) segment "
+                + "\(result.lineage.run.segmentIndex) (\(carried.segmentID)) at trainer step \(carried.trainerCompletedSteps); "
+                + "the output keeps the source's lineage record and continues with --resume-exact"
+            FileHandle.standardError.write(Data((line + "\n").utf8))
+            SessionLogger.shared.log(line)
+        }
         for rewrite in result.rewrites {
             let line = "[DERIVE]   \(rewrite.operation): \(rewrite.tensorName) — \(rewrite.summary)"
             FileHandle.standardError.write(Data((line + "\n").utf8))

@@ -7,8 +7,9 @@
 //  `documentation/plans-active/POLICY_TAIL_ARCHITECTURE_PLAN.md` §5). The tail
 //  decides only where the policy head leaves the compute dtype for fp32 — no
 //  tensor depends on it — so every tensor is copied bit-exact, and the
-//  operation runs on a trained plain-model source (a trainer-state file is
-//  still refused by the engine's plain-source guardrail, like every derive).
+//  operation runs on a trained source, a trainer-state file included: the
+//  output carries its trainer state for `--resume-exact`, which reports the
+//  changed tail as the `policy_tail_precision` gap (`ModelDerivation.derive`).
 //  This is how a model gets a tail other than the one it was built or
 //  recorded with, now that the process-wide `--policy-tail-precision` launch
 //  flag is gone: derive the start model with the tail set.
@@ -32,7 +33,9 @@ struct SetPolicyTailPrecisionDeriveOperation: DeriveOperation {
             + "compute dtype, only the logits widened) or \(PolicyTailPrecisionSetting.float32FromPreBatchNorm.rawValue) "
             + "(fp32 from the pre-block's BatchNorm on) on a bf16 / fp16 model; "
             + "\(PolicyTailPrecisionSetting.doesNotApply.rawValue) is the only value an fp32 model holds. "
-            + "No tensor depends on it, so every tensor is copied bit-exact and a trained model is accepted.",
+            + "No tensor depends on it, so every tensor is copied bit-exact and a trained model is accepted, "
+            + "a trainer-state file too (its trainer state and lineage record are carried for --resume-exact, "
+            + "which reports the policy_tail_precision gap).",
         changedArchitectureFields: [NetworkArchitecture.CodingKeys.policyTailPrecision.rawValue],
         rewrittenTensorsDescription: "none",
         acceptsGroupSelection: false,
@@ -43,7 +46,10 @@ struct SetPolicyTailPrecisionDeriveOperation: DeriveOperation {
                     detail: "'\(value)' is not one of \(PolicyTailPrecisionSetting.allCases.map(\.rawValue).joined(separator: ", "))")
             }
             return SetPolicyTailPrecisionDeriveOperation(value: tail)
-        })
+        },
+        // The same function with another rounding of the policy tail: the
+        // velocity still belongs to it, so the trainer state is carried.
+        acceptsTrainerStateSource: true)
 
     var kindName: String { Self.kind.name }
 

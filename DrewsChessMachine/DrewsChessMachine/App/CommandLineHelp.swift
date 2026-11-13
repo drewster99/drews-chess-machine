@@ -178,7 +178,9 @@ enum CommandLineHelp {
                                       ReZero alpha tensor of those groups to the value),
                                       --set-rezero-alpha-cap <float > 0> (ReZero groups; no tensors);
                                       --group <0-based index>, repeatable, narrows them. Full list, with
-                                      what each rewrites: --derive-model --help.
+                                      what each rewrites: --derive-model --help. A trainer-state file is
+                                      accepted only by --set-compute-dtype / --set-policy-tail-precision;
+                                      its trainer state and lineage record are carried for --resume-exact.
       --describe-model <file> [<file> ...]
                                       Print each model file as this build reads it, one JSON line per
                                       file (header only): the resolved architecture (format-version rules

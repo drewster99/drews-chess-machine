@@ -20,9 +20,10 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
 ```
 
 - `--from`: the source model. It must be a model file (a fresh net or a champion), not a
-  trainer-state file. Files with `opt.*.velocity` tensors or `trainer_*` schedule
-  metadata are refused, because re-initialized weights would not match the saved
-  optimizer state. An operation that rewrites tensors (`--set-se-beta-init`,
+  trainer-state file, except for the two precision operations (see
+  [Trainer-state files](#trainer-state-files-precision-only)). Files with
+  `opt.*.velocity` tensors or `trainer_*` schedule metadata are otherwise refused,
+  because re-initialized weights would not match the saved optimizer state. An operation that rewrites tensors (`--set-se-beta-init`,
   `--set-rezero-alpha-init`, and every init-option operation) also needs an untrained source,
   because the rewrite would reset learned weights while the new file kept the source's
   training step and lineage. Any positive evidence of training refuses the source: a
@@ -55,6 +56,60 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
   is given. Accepted with `--graft-to` too.
 - The new file's path is printed on stdout. The rewritten tensors are listed on stderr
   and in the session log as `[DERIVE]` lines.
+
+## Trainer-state files (precision only)
+
+`--set-compute-dtype` and `--set-policy-tail-precision` also take a trainer-state file
+(a corpus-replay or train-vs-UCI checkpoint, or a session's `trainer.safetensors`).
+They change only the precision the same function is computed in, so the optimizer
+velocity still belongs to the weights. Every other operation, any request that mixes
+one in, and a graft still refuse a trainer-state file. Owner decisions and design:
+`documentation/plans-active/DERIVE_TRAINER_STATE_DTYPE_PLAN.md`.
+
+- **Carried bit-exact:** every tensor (the fp32 masters as stored, batch-norm
+  statistics, every `opt.<name>.velocity`), the trainer schedule (rewritten in the
+  current form; a file written before LR keyframes comes out converted), the
+  gradient-norm history, and `training_step` = the trainer clock. The writer's own
+  trainer-state checks run on the output (lineage step = clock = `training_step`,
+  history ends at the clock, the record's schedule keys match).
+- **The lineage record is the source's**, unchanged: run ID, segment, totals, corpus
+  position, random streams, dropout state, behavior fingerprint, parameters,
+  configuration, build and device. No new run is minted. Only two things change:
+  `derivation_history` gains this derivation, with a `trainer_state` entry (the
+  segment and clock it carried, and the source's architecture), and `model_naming`
+  follows the derive rule (`--name`; the preset marked `edited`). The file gets a new
+  ModelID and `parent_model_id` = the source's, like every derive; its
+  `content_sha256` equals the source's (same tensors).
+- **Resume:** continue it with `--replay-corpus … --resume-exact` (or
+  `--train-vs-uci --start-model <file> --resume-exact`). The resume is the run's next
+  segment. It reports the change as the `compute_data_type` and/or
+  `policy_tail_precision` gaps, on the same build, OS and Mac too, so it needs
+  `--accept-inexact compute_data_type,policy_tail_precision` (whichever apply) and is
+  recorded as not exact. The build / OS / device comparison uses a behavior
+  fingerprint computed for the architecture the trainer state was captured under.
+- **Chains** (bf16 → fp32 → fp16 …) are allowed: the resume walks back through the
+  derives to the save where training happened and compares with its architecture. A
+  chain that returns to the captured precision reports no precision gap.
+- **Refused:** a trainer-state file without a lineage record (written before format
+  v7: nothing to carry for an exact resume — branch from it instead), and one with
+  velocity but no trainer schedule (written before exact resume).
+- A GUI session's trainer file carries no corpus position, so corpus replay refuses
+  it (`noCorpusPosition`); a train-vs-UCI session's resumes with `buffer` too. The
+  output is a standalone file; it cannot be put back into a session.
+
+Example: continue R-elitecyc in fp32 from a bf16 save.
+
+```sh
+DrewsChessMachine --derive-model \
+  --from Models/20261011-zlra-elitecyc-latest-step384964.safetensors \
+  --set-compute-dtype float32 --out Models/20261112-zlra-elitecyc-fp32-start.safetensors
+DrewsChessMachine --replay-corpus 20260704-215145-op24Gp \
+  --start-model Models/20261112-zlra-elitecyc-fp32-start.safetensors \
+  --resume-exact --accept-inexact schedule,compute_data_type,policy_tail_precision …
+```
+
+Use an `--out` name without `-step<N>`, so it is never read as a step-enumerated
+checkpoint.
 
 ## Operations
 

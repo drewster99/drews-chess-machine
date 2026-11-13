@@ -24,7 +24,16 @@
 //    guardrails that do not depend on which operation ran:
 //      * the source must be a plain model file (no optimizer velocity, no
 //        trainer schedule — exact-resume state is meaningless once weights
-//        are re-initialized);
+//        are re-initialized), except for the kinds that only change the
+//        precision the same function is computed in
+//        (`DeriveOperationKind.acceptsTrainerStateSource`:
+//        `--set-compute-dtype`, `--set-policy-tail-precision`). Their output
+//        carries the source's trainer state and lineage record unchanged
+//        (velocity, schedule, gradient-norm history, corpus position,
+//        streams), so it continues with `--resume-exact`; the resume reports
+//        the changed precision as a gap (`TrainerStateCapture`). See
+//        `CarriedSourceTrainerState` below and
+//        `documentation/plans-active/DERIVE_TRAINER_STATE_DTYPE_PLAN.md`;
 //      * an operation that rewrites tensors needs an untrained source,
 //        because the rewrite would reset learned weights while the derived
 //        file still claims the source's training step and lineage. Any
@@ -114,6 +123,16 @@ struct DeriveOperationKind: Sendable {
     /// Builds the operation from the flag's value and the `--group` indices
     /// (nil when none were given). Throws on an unparseable value.
     let make: @Sendable (_ value: String, _ groupIndices: [Int]?) throws -> any DeriveOperation
+    /// Whether this kind may be applied to a trainer-state file (optimizer
+    /// velocity and trainer schedule), whose trainer state the output then
+    /// carries for an exact resume. Only a kind that rewrites no tensor and
+    /// changes nothing but the precision the same function is computed in
+    /// qualifies: velocity accumulated for one function means nothing for
+    /// another (an activation or ReZero-cap change), and a rewritten tensor
+    /// would no longer be the weights the velocity belongs to. `false`
+    /// unless a kind opts in, so a new kind is refused on trainer state
+    /// until someone decides otherwise.
+    var acceptsTrainerStateSource = false
 }
 
 // MARK: - Engine
@@ -171,6 +190,13 @@ enum ModelDerivation {
         // second copy, refused on load at v12.
         SafetensorsModelIO.Key.trainerPolicyTailPrecision,
     ]).union(LineageRecord.MirrorKey.all)
+        // A trainer-state source's schedule and gradient-norm history are
+        // written from their decoded values, in the current form only
+        // (`SafetensorsModelIO.trainerStateMetadataEntries`): a legacy
+        // schedule key copied verbatim would be a form nothing writes. A
+        // plain source carries none of them.
+        .union(TrainerScheduleState.MetadataKey.all)
+        .union([GradientNormHistory.metadataKey])
 
     enum DeriveError: Error, CustomStringConvertible, Equatable {
         case noOperations
@@ -187,6 +213,9 @@ enum ModelDerivation {
         case sourceIsTrained(source: String, trainingStep: Int)
         case sourceIsTrainedByLineage(source: String, evidence: String)
         case malformedSourceTrainingStep(source: String, key: String, value: String)
+        case trainerStateSourceWithoutLineage(source: String)
+        case trainerStateSourceRewrite(operation: String, tensorName: String)
+        case trainerStateLayoutChanged(detail: String)
 
         var description: String {
             switch self {
@@ -195,7 +224,9 @@ enum ModelDerivation {
             case .sourceHasOptimizerState(let source, let detail):
                 return "\(source) carries optimizer/exact-resume state (\(detail)); derive from a model file "
                     + "(a fresh net or champion), not a trainer-state file — re-initialized weights would "
-                    + "not match the saved optimizer state"
+                    + "not match the saved optimizer state (only "
+                    + ModelDerivation.operationKinds.filter(\.acceptsTrainerStateSource).map(\.flag).joined(separator: " and ")
+                    + " take a trainer-state file)"
             case .sourceMissingModelID(let source):
                 return "\(source) has no model_id, so the derived file could not record its parent"
             case .operationNotApplicable(let operation, let detail):
@@ -226,6 +257,15 @@ enum ModelDerivation {
             case .malformedSourceTrainingStep(let source, let key, let value):
                 return "\(source) records \(key) '\(value)', which is not a non-negative integer; "
                     + "refusing to rewrite tensors without knowing whether the source is trained"
+            case .trainerStateSourceWithoutLineage(let source):
+                return "\(source) carries trainer state but no lineage record (written before format "
+                    + "v\(ArchitectureFormat.lineageRequiredFromVersion)): there is no run, corpus position or "
+                    + "random-stream state to carry for an exact resume — branch from it instead"
+            case .trainerStateSourceRewrite(let operation, let tensorName):
+                return "internal error: \(operation) declares a rewrite of '\(tensorName)' on a trainer-state "
+                    + "source; only kinds that rewrite no tensor may take one"
+            case .trainerStateLayoutChanged(let detail):
+                return "refused: the requested change would alter the optimizer velocity layout (\(detail))"
             }
         }
     }
@@ -289,6 +329,12 @@ enum ModelDerivation {
         let createdAtUnix: Int64
         let build: String
         let operations: [OperationRecord]
+        /// Written only by a derive of a trainer-state file, whose output
+        /// carries the source's trainer state; nil (and omitted when
+        /// encoded, so every other history reads and writes as before)
+        /// otherwise. What the resume reads to find the architecture the
+        /// trainer state was captured under (`TrainerStateCapture`).
+        var trainerState: CarriedTrainerState? = nil
 
         enum CodingKeys: String, CodingKey {
             case modelID = "model_id"
@@ -299,6 +345,51 @@ enum ModelDerivation {
             case createdAtUnix = "created_at_unix"
             case build
             case operations
+            case trainerState = "trainer_state"
+        }
+    }
+
+    /// The trainer state a derive carried from its source into its output.
+    ///
+    /// The output's lineage record is the source's (the run, segment and
+    /// clock that captured the trainer state), so `segmentID` and
+    /// `trainerCompletedSteps` repeat that record's; they are what ties this
+    /// entry to it. A resumed segment gets a new segment ID, so after the
+    /// next training save no entry matches its record any more — the
+    /// entries that match a record are exactly the derives made since its
+    /// trainer state was captured, and the first one's source architecture
+    /// is the architecture it was captured under, however many derives
+    /// followed.
+    struct CarriedTrainerState: Codable, Sendable, Equatable {
+        /// The lineage segment (`run.segment_id`) whose trainer state was carried.
+        let segmentID: String
+        /// The trainer clock of that state.
+        let trainerCompletedSteps: Int
+        /// The source's architecture as this build resolved it — a pre-v12
+        /// source's recorded policy tail included — encoded at
+        /// `sourceArchitectureFormatVersion`. Re-encoded rather than the
+        /// source's text, so it states the architecture the trainer was
+        /// built under without the source's other metadata.
+        let sourceArchitecture: String
+        let sourceArchitectureFormatVersion: Int
+
+        enum CodingKeys: String, CodingKey {
+            case segmentID = "segment_id"
+            case trainerCompletedSteps = "trainer_completed_steps"
+            case sourceArchitecture = "source_architecture"
+            case sourceArchitectureFormatVersion = "source_architecture_format_version"
+        }
+
+        /// The recorded source architecture, decoded under its format
+        /// version as any file's is.
+        func decodedSourceArchitecture() throws -> NetworkArchitecture {
+            try SafetensorsModelIO.decodeArchitecture(
+                fromMetadata: [
+                    SafetensorsModelIO.Key.architecture: sourceArchitecture,
+                    SafetensorsModelIO.Key.formatVersion: String(sourceArchitectureFormatVersion),
+                ],
+                source: "\(ModelDerivation.derivationHistoryKey) \(DerivationRecord.CodingKeys.trainerState.rawValue)")
+                .architecture
         }
     }
 
@@ -339,12 +430,32 @@ enum ModelDerivation {
         guard !operations.isEmpty else { throw DeriveError.noOperations }
 
         let (tensors, sourceMetadata) = try SafetensorsFile.decode(sourceData)
-        let parentModelID = try requirePlainModelSource(tensors: tensors, metadata: sourceMetadata, sourceName: sourceName)
+        // A trainer-state source is taken only by kinds that change nothing
+        // the velocity was accumulated for; any other kind in the request
+        // refuses the whole derive, as every derive did before.
+        let sourceTrainerStateEvidence = trainerStateEvidence(tensors: tensors, metadata: sourceMetadata)
+        if let sourceTrainerStateEvidence {
+            for operation in operations where !kind(named: operation.kindName).acceptsTrainerStateSource {
+                throw DeriveError.sourceHasOptimizerState(
+                    source: sourceName,
+                    detail: "\(sourceTrainerStateEvidence); \(operation.kindName) does not take a trainer-state file")
+            }
+        }
+        let parentModelID = try requireModelID(metadata: sourceMetadata, sourceName: sourceName)
 
         // The full loader must accept the source (plan, dims, value-head
-        // marker) — the derived file is only as loadable as its source.
+        // marker, trainer schedule and history) — the derived file is only
+        // as loadable as its source.
         let sourceDecoded = try SafetensorsModelIO.decode(sourceData, valueHead: .asStored, source: sourceName)
         let source = sourceDecoded.architecture
+        let sourceLineage = try SafetensorsModelIO.lineage(
+            fromMetadata: sourceMetadata, formatVersion: sourceDecoded.architectureFormat.formatVersion)
+        let carried: CarriedSourceTrainerState?
+        if sourceTrainerStateEvidence != nil {
+            carried = try CarriedSourceTrainerState(of: sourceDecoded, lineage: sourceLineage, sourceName: sourceName)
+        } else {
+            carried = nil
+        }
 
         var target = source
         for operation in operations {
@@ -356,6 +467,9 @@ enum ModelDerivation {
             throw DeriveError.invalidTargetArchitecture(detail: String(describing: error))
         }
         try requireSameTensorLayout(source: source, target: target)
+        if carried != nil {
+            try requireSameVelocityLayout(source: source, target: target)
+        }
 
         // Rewrite. Each operation's rewrites are computed against the
         // architecture it was applied to, in order.
@@ -368,6 +482,9 @@ enum ModelDerivation {
         for operation in operations {
             let stepTarget = try operation.apply(to: stepSource)
             let rewrites = try operation.tensorRewrites(source: stepSource, target: stepTarget)
+            if carried != nil, let rewrite = rewrites.first {
+                throw DeriveError.trainerStateSourceRewrite(operation: operation.kindName, tensorName: rewrite.tensorName)
+            }
             for rewrite in rewrites {
                 guard let index = byName[rewrite.tensorName] else {
                     throw DeriveError.missingTensor(name: rewrite.tensorName)
@@ -384,13 +501,10 @@ enum ModelDerivation {
                 outputTensors[index] = SafetensorsTensor(name: before.name, shape: before.shape, data: data)
                 appliedRewrites.append((operation.kindName, rewrite.tensorName, rewrite.summary))
             }
-            guard let kind = operationKinds.first(where: { $0.name == operation.kindName }) else {
-                preconditionFailure("derive operation '\(operation.kindName)' is not in ModelDerivation.operationKinds")
-            }
             operationRecords.append(OperationRecord(
                 operation: operation.kindName,
                 arguments: operation.recordedArguments,
-                changedArchitectureFields: kind.changedArchitectureFields,
+                changedArchitectureFields: kind(named: operation.kindName).changedArchitectureFields,
                 rewrittenTensors: rewrites.map(\.tensorName)))
             stepSource = stepTarget
         }
@@ -402,8 +516,6 @@ enum ModelDerivation {
         // (the decode above already put a pre-v11 source's legacy entry on
         // its format's log).
         let sourceStepReading = sourceDecoded.file.trainingStepReading
-        let sourceLineage = try SafetensorsModelIO.lineage(
-            fromMetadata: sourceMetadata, formatVersion: sourceDecoded.architectureFormat.formatVersion)
         let sourceParent = LineageTracker.ParentFile(
             modelID: parentModelID,
             contentSHA256: sourceMetadata[SafetensorsFile.contentHashKey],
@@ -422,7 +534,14 @@ enum ModelDerivation {
             sourceFormatVersion: sourceDecoded.architectureFormat.formatVersion,
             createdAtUnix: createdAtUnix,
             build: build,
-            operations: operationRecords)
+            operations: operationRecords,
+            trainerState: try carried.map { carried in
+                CarriedTrainerState(
+                    segmentID: carried.record.run.segmentID,
+                    trainerCompletedSteps: carried.schedule.completedTrainSteps,
+                    sourceArchitecture: String(decoding: try JSONEncoder().encode(source), as: UTF8.self),
+                    sourceArchitectureFormatVersion: ArchitectureFormat.currentVersion)
+            })
 
         var metadata = sourceMetadata.filter { !rewrittenMetadataKeys.contains($0.key) }
         metadata[SafetensorsModelIO.Key.formatVersion] = SafetensorsModelIO.formatVersion
@@ -432,26 +551,46 @@ enum ModelDerivation {
         metadata[SafetensorsModelIO.Key.parentModelID] = parentModelID
         metadata[SafetensorsModelIO.Key.notes] = notes(for: record)
         metadata[SafetensorsModelIO.Key.architecture] = String(decoding: try JSONEncoder().encode(target), as: UTF8.self)
-        if let step = sourceStepReading.trainerStepOrStatedStep {
-            metadata[SafetensorsModelIO.Key.trainingStep] = String(step)
+        let trainingStep = sourceStepReading.trainerStepOrStatedStep
+        if let trainingStep {
+            metadata[SafetensorsModelIO.Key.trainingStep] = String(trainingStep)
         }
-        // The derived model's lineage: a new run whose weights carry the
-        // source's history (totals continue from the source's record, or
-        // stay unrecorded for a source written before lineage). Its
-        // derivation history — the source's plus this step — is written
-        // by the record, with the flat `derivation_history` key as its
-        // mirror.
-        let sourceArchitectureAtDeparture = try LineageRecord.AncestorRun.ArchitectureAtDeparture.ifChanged(
-            from: source, to: target, sourceMetadata: sourceMetadata,
-            sourceFormatVersion: sourceDecoded.architectureFormat.formatVersion, sourceName: sourceName)
-        let lineage = try LineageTracker.untrainedCopyRecord(
-            source: sourceParent, derivation: record,
-            sourceArchitecture: sourceArchitectureAtDeparture,
-            naming: try ModelNaming.ofDerive(of: sourceLineage.record?.modelNaming ?? .unrecorded,
-                                             architectureChanged: sourceArchitectureAtDeparture != nil,
-                                             renamedTo: newName),
-            pathKind: .derive, argv: invocationArguments,
-            at: Date(timeIntervalSince1970: TimeInterval(createdAtUnix)))
+        let lineage: LineageRecord
+        if let carried {
+            // The output holds the source's trainer state, so it carries the
+            // source's record — the run, segment, clock, corpus position,
+            // streams, build and device that captured it — and the next
+            // `--resume-exact` continues that run as its next segment, the
+            // precision change reported as a gap (`TrainerStateCapture`).
+            // Only the derivation history and the naming change.
+            lineage = try carried.record.carryingTrainerState(
+                through: record,
+                naming: try ModelNaming.ofDerive(of: carried.record.modelNaming,
+                                                 architectureChanged: source != target, renamedTo: newName))
+            for (key, value) in try SafetensorsModelIO.trainerStateMetadataEntries(
+                schedule: carried.schedule, gradNormHistory: carried.gradNormHistory,
+                trainingStep: trainingStep, lineage: lineage) {
+                metadata[key] = value
+            }
+        } else {
+            // The derived model's lineage: a new run whose weights carry the
+            // source's history (totals continue from the source's record, or
+            // stay unrecorded for a source written before lineage). Its
+            // derivation history — the source's plus this step — is written
+            // by the record, with the flat `derivation_history` key as its
+            // mirror.
+            let sourceArchitectureAtDeparture = try LineageRecord.AncestorRun.ArchitectureAtDeparture.ifChanged(
+                from: source, to: target, sourceMetadata: sourceMetadata,
+                sourceFormatVersion: sourceDecoded.architectureFormat.formatVersion, sourceName: sourceName)
+            lineage = try LineageTracker.untrainedCopyRecord(
+                source: sourceParent, derivation: record,
+                sourceArchitecture: sourceArchitectureAtDeparture,
+                naming: try ModelNaming.ofDerive(of: sourceLineage.record?.modelNaming ?? .unrecorded,
+                                                 architectureChanged: sourceArchitectureAtDeparture != nil,
+                                                 renamedTo: newName),
+                pathKind: .derive, argv: invocationArguments,
+                at: Date(timeIntervalSince1970: TimeInterval(createdAtUnix)))
+        }
         for (key, value) in try lineage.metadataEntries() { metadata[key] = value }
         // The derived weights' own test-set results (the source's are not
         // copied: `rewrittenMetadataKeys`).
@@ -500,8 +639,69 @@ enum ModelDerivation {
             let arguments = op.arguments.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
             return "\(op.operation) [\(arguments)] rewrote \(op.rewrittenTensors.count) tensors"
         }
+        let carried = record.trainerState.map {
+            "; trainer state carried (lineage segment \($0.segmentID), trainer step \($0.trainerCompletedSteps))"
+        } ?? ""
         return "derived from \(record.parentModelID) (\(record.sourceFile), sha256 \(record.sourceSHA256)): "
-            + operations.joined(separator: "; ")
+            + operations.joined(separator: "; ") + carried
+    }
+
+    /// The catalog entry of a configured operation. Every operation is an
+    /// instance of a listed kind; one that is not is a programming error.
+    static func kind(named name: String) -> DeriveOperationKind {
+        guard let kind = operationKinds.first(where: { $0.name == name }) else {
+            preconditionFailure("derive operation '\(name)' is not in ModelDerivation.operationKinds")
+        }
+        return kind
+    }
+
+    /// The trainer state a trainer-state source carries into the derived
+    /// file, read through the loader's own decode: the schedule (the clock,
+    /// warmup and LR schedule an exact resume continues), the gradient-norm
+    /// history when the source has one, and the lineage record. A source
+    /// with velocity but no schedule (written before exact resume) cannot be
+    /// resumed exactly, and one without a lineage record has no run, corpus
+    /// position or streams to continue; both are refused.
+    struct CarriedSourceTrainerState {
+        let schedule: TrainerScheduleState
+        let gradNormHistory: GradientNormHistory?
+        let record: LineageRecord
+
+        init(of decoded: SafetensorsModelIO.Decoded, lineage: LineageRecord.Presence, sourceName: String) throws {
+            guard let schedule = decoded.file.metadata.trainerSchedule else {
+                throw DeriveError.sourceHasOptimizerState(
+                    source: sourceName,
+                    detail: "optimizer velocity without a trainer schedule (written before exact resume), "
+                        + "which no resume can continue")
+            }
+            guard let record = lineage.record else {
+                throw DeriveError.trainerStateSourceWithoutLineage(source: sourceName)
+            }
+            self.schedule = schedule
+            self.gradNormHistory = decoded.file.metadata.trainerGradNormHistory
+            self.record = record
+        }
+    }
+
+    /// What marks a source as a trainer-state file — an optimizer velocity
+    /// tensor or a trainer-schedule key (either form) — described for an
+    /// error; nil for a plain model file.
+    static func trainerStateEvidence(tensors: [SafetensorsTensor], metadata: [String: String]) -> String? {
+        if let velocity = tensors.first(where: { $0.name.hasPrefix("opt.") }) {
+            return "tensor '\(velocity.name)'"
+        }
+        if let scheduleKey = TrainerScheduleState.MetadataKey.all.first(where: { metadata[$0] != nil }) {
+            return "metadata '\(scheduleKey)'"
+        }
+        return nil
+    }
+
+    /// The source's ModelID, which the derived file records as its parent.
+    static func requireModelID(metadata: [String: String], sourceName: String) throws -> String {
+        guard let parentModelID = metadata[SafetensorsModelIO.Key.modelID], !parentModelID.isEmpty else {
+            throw DeriveError.sourceMissingModelID(source: sourceName)
+        }
+        return parentModelID
     }
 
     /// Refuse a source that is not a plain model file — one carrying
@@ -510,16 +710,10 @@ enum ModelDerivation {
     /// record as the parent. Returns that ModelID.
     static func requirePlainModelSource(tensors: [SafetensorsTensor], metadata: [String: String],
                                         sourceName: String) throws -> String {
-        if let velocity = tensors.first(where: { $0.name.hasPrefix("opt.") }) {
-            throw DeriveError.sourceHasOptimizerState(source: sourceName, detail: "tensor '\(velocity.name)'")
+        if let evidence = trainerStateEvidence(tensors: tensors, metadata: metadata) {
+            throw DeriveError.sourceHasOptimizerState(source: sourceName, detail: evidence)
         }
-        if let scheduleKey = TrainerScheduleState.MetadataKey.all.first(where: { metadata[$0] != nil }) {
-            throw DeriveError.sourceHasOptimizerState(source: sourceName, detail: "metadata '\(scheduleKey)'")
-        }
-        guard let parentModelID = metadata[SafetensorsModelIO.Key.modelID], !parentModelID.isEmpty else {
-            throw DeriveError.sourceMissingModelID(source: sourceName)
-        }
-        return parentModelID
+        return try requireModelID(metadata: metadata, sourceName: sourceName)
     }
 
     /// Refuse a tensor rewrite on a trained source. Any one piece of
@@ -589,6 +783,23 @@ enum ModelDerivation {
         for (before, after) in zip(sourcePlan, targetPlan) where before.name != after.name || before.shape != after.shape {
             throw DeriveError.shapeChangingRequest(
                 detail: "'\(before.name)' \(before.shape) -> '\(after.name)' \(after.shape)")
+        }
+    }
+
+    /// Refuse unless `target` trains exactly `source`'s trainables (names
+    /// and shapes), so every carried `opt.<name>.velocity` tensor still
+    /// belongs to the same trainable. Checked for a trainer-state source
+    /// beside the weight layout; the decode-back would catch a mismatch too,
+    /// but only after the work, and with a less direct message.
+    static func requireSameVelocityLayout(source: NetworkArchitecture, target: NetworkArchitecture) throws {
+        let sourcePlan = source.trainableTensorPlan()
+        let targetPlan = target.trainableTensorPlan()
+        guard sourcePlan.count == targetPlan.count else {
+            throw DeriveError.trainerStateLayoutChanged(detail: "trainable count \(sourcePlan.count) -> \(targetPlan.count)")
+        }
+        for (before, after) in zip(sourcePlan, targetPlan) where before.name != after.name || before.shape != after.shape {
+            throw DeriveError.trainerStateLayoutChanged(
+                detail: "trainable '\(before.name)' \(before.shape) -> '\(after.name)' \(after.shape)")
         }
     }
 

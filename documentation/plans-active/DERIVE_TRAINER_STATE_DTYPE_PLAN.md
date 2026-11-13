@@ -1,6 +1,6 @@
 # Derive a trainer-state file's precision (plan)
 
-Status: being implemented 2026-11-12 (design below). Owner decision 2026-11-12: `--derive-model` accepts a trainer-state file for operations that rewrite no tensor (`--set-compute-dtype`, `--set-policy-tail-precision`), and the output can be continued with `--replay-corpus --resume-exact`. Precision stays an architecture field in the file. A resume-time precision flag was rejected.
+Status: implemented 2026-11-12 (design below, as built; new tests written but not yet run — see Validation 2). Owner decision 2026-11-12: `--derive-model` accepts a trainer-state file for operations that rewrite no tensor (`--set-compute-dtype`, `--set-policy-tail-precision`), and the output can be continued with `--replay-corpus --resume-exact`. Precision stays an architecture field in the file. A resume-time precision flag was rejected.
 
 Owner decisions 2026-11-12 (second round), which replace the first draft's recommendations:
 

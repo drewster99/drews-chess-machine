@@ -1464,6 +1464,48 @@ struct LineageRecord: Codable, Equatable, Sendable {
             modelNaming: modelNaming)
     }
 
+    /// This record for a `--derive-model` output that carries the trainer
+    /// state this record's file holds (a precision-only derive of a
+    /// trainer-state file): the same record with `derivation` appended to
+    /// the derivation history and the derived model's `naming`, nothing
+    /// else changed.
+    ///
+    /// Why everything else stays (owner decision 2026-11-12, no new run at
+    /// a derive): the file still holds this segment's trainer state at this
+    /// clock, so the run, segment, totals, corpus position, streams, dropout
+    /// state and parameters still describe it, and the next `--resume-exact`
+    /// continues this run as its next segment, as every other resume does.
+    /// `build`, `device`, `invocation` and the behavior fingerprint stay the
+    /// process that captured the state: a resume compares itself with that
+    /// process, never with the derive, which trained nothing. `parent` stays
+    /// the file this segment trained from; the derived file's own parent is
+    /// the derivation record's. `configuration` states how this segment
+    /// trained (its policy tail included) and stays a fact about it; the
+    /// file's architecture states what a load now builds, and the resume
+    /// reports the difference (`TrainerStateCapture`).
+    ///
+    /// The result is at the current schema, like `withoutTrainerState`.
+    func carryingTrainerState(through derivation: ModelDerivation.DerivationRecord,
+                              naming: Recorded<ModelNaming>) throws -> LineageRecord {
+        try LineageRecord(
+            run: run,
+            parent: parent,
+            steps: steps,
+            fed: fed,
+            time: time,
+            parameters: parameters,
+            configuration: configuration,
+            runSeeds: runSeeds,
+            build: build,
+            invocation: invocation,
+            device: device,
+            rng: rng,
+            segments: segments,
+            ancestry: ancestry,
+            derivationHistory: derivationHistory + [derivation],
+            modelNaming: naming)
+    }
+
     /// The record as the compact, sorted-key JSON text stored in a file.
     func jsonText() throws -> String {
         let encoder = JSONEncoder()

@@ -1443,6 +1443,22 @@ and the public surface. No behavior change. Lower priority than Part A.
 
 ## Tech debt / migrations to remove
 
+- **The GUI session loader's `forceFloat32` duplicates precision-only derive**
+  *(added 2026-11-12, owner decision OD-D of
+  `documentation/plans-active/DERIVE_TRAINER_STATE_DTYPE_PLAN.md`)*. Loading a
+  session with `forceFloat32` (`App/SessionController+Checkpoint.swift`)
+  changes the trainer's compute dtype at resume time — a resume-time
+  precision setting, the kind the owner rejected for the CLI paths. Since
+  2026-11-12 `--derive-model --set-compute-dtype` /
+  `--set-policy-tail-precision` accept a trainer-state file, carry its
+  trainer state and lineage record, and the CLI `--resume-exact` reports the
+  change as the `compute_data_type` / `policy_tail_precision` gaps
+  (`TrainerStateCapture`). The GUI override stays untouched for now (OD-D);
+  later it should move onto a session-level derive (derive a `.dcmsession`'s
+  `trainer.safetensors` and `champion.safetensors` into a new session
+  folder), so precision is always an architecture field in the files and the
+  GUI resume reports the same gaps through the same rule.
+
 - **UNTESTED: the `--parameters` round-trip has never been empirically
   verified** *(added 2026-08-12, from the 2026-08-07 CLI audit)*. The chain
   `--create-parameters-file` → hand-edit the JSON → `--parameters <file>` is

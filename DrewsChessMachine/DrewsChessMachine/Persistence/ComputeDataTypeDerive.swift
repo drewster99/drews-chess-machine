@@ -6,8 +6,9 @@
 //  `compute_data_type` (the dtype the tower builds and runs in). Like
 //  `--set-policy-tail-precision`, no tensor depends on it — weights are always
 //  stored fp32 and cast to the compute dtype at load (`ChessNetwork`'s load
-//  path), so every tensor is copied bit-exact and a trained plain-model source
-//  is accepted. The motivating case is a same-weights fp32 / bf16 / fp16 A/B
+//  path), so every tensor is copied bit-exact and a trained source is
+//  accepted — a trainer-state file too, whose trainer state the output carries
+//  for `--resume-exact` (`ModelDerivation.derive`). The motivating case is a same-weights fp32 / bf16 / fp16 A/B
 //  for inference-speed or numerics comparison, which otherwise had no CLI path
 //  (Build New Model mints a fresh net; `withComputeDataType` was reachable only
 //  from the GUI and the numerics audit).
@@ -32,7 +33,9 @@ struct SetComputeDataTypeDeriveOperation: DeriveOperation {
         summary: "Set compute_data_type, the dtype the tower builds and runs in: "
             + "\(ComputeDataType.float32.rawValue), \(ComputeDataType.bFloat16.rawValue) or "
             + "\(ComputeDataType.float16.rawValue). Weights are stored fp32 and cast at load, so no tensor is "
-            + "rewritten and a trained model is accepted. To fp32 the policy tail becomes "
+            + "rewritten and a trained model is accepted, a trainer-state file too: its trainer state and "
+            + "lineage record are carried, so the output continues with --resume-exact, which reports the "
+            + "changed precision as the compute_data_type / policy_tail_precision gaps. To fp32 the policy tail becomes "
             + "\(PolicyTailPrecisionSetting.doesNotApply.rawValue); to bf16 / fp16 the source's tail is kept when "
             + "already reduced-precision, else \(PolicyTailPrecisionSetting.float32FromPreBatchNorm.rawValue).",
         changedArchitectureFields: [
@@ -48,7 +51,10 @@ struct SetComputeDataTypeDeriveOperation: DeriveOperation {
                     detail: "'\(value)' is not one of \(ComputeDataType.allCases.map(\.rawValue).joined(separator: ", "))")
             }
             return SetComputeDataTypeDeriveOperation(value: dtype)
-        })
+        },
+        // The same function in another precision: the velocity still
+        // belongs to it, so the trainer state is carried.
+        acceptsTrainerStateSource: true)
 
     var kindName: String { Self.kind.name }
 

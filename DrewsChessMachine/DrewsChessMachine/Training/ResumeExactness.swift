@@ -56,11 +56,13 @@ enum ResumeGap: String, CaseIterable, Sendable {
     /// carry the GPU core count, so two configurations of one chip compare
     /// equal.)
     case device
-    // (`policy_tail`, a policy-tail precision other than the checkpoint's,
-    // was removed with format v12: a resume builds the trainer from the
-    // file's own architecture, which carries the tail, so the two cannot
-    // differ. `--accept-inexact policy_tail` is refused as an unknown token;
-    // recorded `not_exact_items` strings naming it still decode.)
+    // (`policy_tail`, a resume-time policy-tail precision other than the
+    // checkpoint's, was removed with format v12: a resume builds the trainer
+    // from the file's own architecture, which carries the tail, so the two
+    // cannot differ. `--accept-inexact policy_tail` is refused as an unknown
+    // token; recorded `not_exact_items` strings naming it still decode. A
+    // file whose architecture a derive changed after its trainer state was
+    // captured is a different thing, `policyTailPrecision` below.)
     /// The checkpoint carries no relative gradient-cap history
     /// (`trainer_grad_norm_history`; every trainer file written before the
     /// relative cap) and the resumed run's cap mode is `clip`, so its first
@@ -73,6 +75,16 @@ enum ResumeGap: String, CaseIterable, Sendable {
     /// the configured one is used (owner decision O-4). Compared in behavior
     /// form (owner decision Q-5): an inert difference is not this gap.
     case schedule
+    /// The checkpoint's `compute_data_type` is not the one its trainer state
+    /// was captured under: a `--derive-model --set-compute-dtype` of a
+    /// trainer-state file (`TrainerStateCapture`). The state is restored
+    /// exactly; every later step computes in another precision, so the
+    /// trajectory is not the saved run's. Raised whenever the two differ, on
+    /// the same build, OS and Mac too (owner decision 2026-11-12).
+    case computeDataType = "compute_data_type"
+    /// The checkpoint's `policy_tail_precision` is not the one its trainer
+    /// state was captured under (a derive, as for `computeDataType`).
+    case policyTailPrecision = "policy_tail_precision"
 
     /// The token logged and recorded for this gap.
     var token: String { rawValue }
@@ -184,6 +196,145 @@ enum ResumeGap: String, CaseIterable, Sendable {
         func field(_ value: String?) -> String { value ?? "unreported" }
         return "hw_model=\(field(device.hardwareModel)) chip=\(field(device.cpu))"
             + " is_vm=\(field(device.isVirtualMachine.map(String.init))) gpu_name=\(field(device.gpu))"
+    }
+}
+
+extension ResumeGap {
+    /// The build / OS / device comparison and the precision comparison of a
+    /// CLI `--resume-exact` of a trainer-state file of `fileArchitecture`
+    /// (the architecture the resumed trainer is built from) whose record is
+    /// `record`. The behavior fingerprint is computed for the architecture
+    /// the trainer state was captured under (`TrainerStateCapture`), which
+    /// is the one the record's fingerprint describes. Throws
+    /// `TrainerStateCapture.CaptureError` for an inconsistent file.
+    static func environmentAndPrecisionGaps(writtenBy record: LineageRecord,
+                                            fileArchitecture: NetworkArchitecture,
+                                            runningBuild: LineageRecord.Build,
+                                            runningDevice: LineageRecord.Device) async throws -> EnvironmentComparison {
+        let capture = try TrainerStateCapture(fileArchitecture: fileArchitecture, record: record)
+        let environment = environmentGaps(
+            writtenBy: record, runningBuild: runningBuild, runningDevice: runningDevice,
+            runningFingerprint: try await BehaviorFingerprint.compute(for: .init(arch: capture.architecture)))
+        let precision = precisionGaps(capture: capture, runningArchitecture: fileArchitecture)
+        return EnvironmentComparison(gaps: environment.gaps + precision.gaps,
+                                     logLines: environment.logLines + precision.logLines)
+    }
+
+    /// `computeDataType` / `policyTailPrecision` when the architecture a
+    /// resume trains under (`running`, the checkpoint's own) computes in
+    /// another precision than the one its trainer state was captured under,
+    /// with one `[RESUME]` line per changed field naming both values and the
+    /// derive(s) that changed it. No gap and no line when they agree — a
+    /// training save, or derives that changed the precision and back.
+    static func precisionGaps(capture: TrainerStateCapture,
+                              runningArchitecture running: NetworkArchitecture) -> EnvironmentComparison {
+        let derives = capture.derivations.map(\.modelID).joined(separator: ", ")
+        var gaps: [ResumeGap] = []
+        var logLines: [String] = []
+        if capture.architecture.computeDataType != running.computeDataType {
+            gaps.append(.computeDataType)
+            logLines.append("[RESUME] \(ResumeGap.computeDataType.token): the trainer state was captured under "
+                + "\(capture.architecture.computeDataType.rawValue); this file computes in "
+                + "\(running.computeDataType.rawValue) (changed by derive \(derives))")
+        }
+        if capture.architecture.policyTailPrecision != running.policyTailPrecision {
+            gaps.append(.policyTailPrecision)
+            logLines.append("[RESUME] \(ResumeGap.policyTailPrecision.token): the trainer state was captured under "
+                + "\(capture.architecture.policyTailPrecision.rawValue); this file has "
+                + "\(running.policyTailPrecision.rawValue) (changed by derive \(derives))")
+        }
+        return EnvironmentComparison(gaps: gaps, logLines: logLines)
+    }
+}
+
+/// The architecture a trainer-state file's trainer state was captured
+/// under, and the derives that changed the file's architecture since — the
+/// one rule a `--resume-exact` uses to tell a training save from a
+/// precision-only derive of one (`--derive-model --set-compute-dtype` /
+/// `--set-policy-tail-precision` on a trainer-state file).
+///
+/// Such a derive carries the source's lineage record unchanged (the run,
+/// segment, clock, build, device and behavior fingerprint that captured the
+/// state) and appends a derivation entry whose `trainer_state` names that
+/// segment and clock and records the source's architecture. A resumed
+/// segment gets a new segment ID, so the entries naming the record's own
+/// segment are exactly the derives since the capture, oldest first, and the
+/// first one's source architecture is the architecture of the last save
+/// where training happened — however many derives were chained after it.
+/// With no such entry, the file is a training save and its own architecture
+/// is the captured one.
+///
+/// The captured architecture is what the behavior fingerprint is computed
+/// for (the record's fingerprint was computed for it), so `build` / `os` /
+/// `device` keep meaning "this build computes what the saved build computed
+/// for that state"; the precision change itself is `precisionGaps`.
+struct TrainerStateCapture: Equatable, Sendable {
+    /// The architecture the trainer state was captured under.
+    let architecture: NetworkArchitecture
+    /// The trainer-state derives since the capture, oldest first; empty for
+    /// a training save.
+    let derivations: [ModelDerivation.DerivationRecord]
+
+    enum CaptureError: Error, Equatable, LocalizedError {
+        case clockMismatch(derive: String, recorded: Int, recordClock: Int?)
+        case unreadableArchitecture(derive: String, detail: String)
+        case changedBeyondPrecision(derive: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .clockMismatch(let derive, let recorded, let recordClock):
+                return "derivation \(derive) carried the trainer state of this file's lineage segment at trainer step "
+                    + "\(recorded), but the record's clock is \(recordClock.map(String.init) ?? "unrecorded"); "
+                    + "the file is inconsistent and cannot be resumed exactly"
+            case .unreadableArchitecture(let derive, let detail):
+                return "derivation \(derive): the architecture its trainer state was captured under is unreadable: \(detail)"
+            case .changedBeyondPrecision(let derive):
+                return "derivation \(derive): the architecture the trainer state was captured under differs from this "
+                    + "file's in more than compute_data_type and policy_tail_precision; the trainer state does not "
+                    + "belong to this architecture"
+            }
+        }
+    }
+
+    /// The capture of the trainer state in a file of `fileArchitecture`
+    /// whose lineage record is `record`. Throws — never reads as "no gap" —
+    /// when a matching entry disagrees with the record's clock, its
+    /// architecture is unreadable, or it differs from the file's in anything
+    /// but the precision fields (no derive that carries trainer state can
+    /// change anything else).
+    init(fileArchitecture: NetworkArchitecture, record: LineageRecord) throws {
+        let since: [(derivation: ModelDerivation.DerivationRecord, state: ModelDerivation.CarriedTrainerState)] =
+            record.derivationHistory.compactMap { derivation in
+                guard let state = derivation.trainerState, state.segmentID == record.run.segmentID else { return nil }
+                return (derivation, state)
+            }
+        guard let first = since.first else {
+            self.architecture = fileArchitecture
+            self.derivations = []
+            return
+        }
+        for (derivation, state) in since where state.trainerCompletedSteps != record.steps.cumTrainerStep {
+            throw CaptureError.clockMismatch(derive: derivation.modelID, recorded: state.trainerCompletedSteps,
+                                             recordClock: record.steps.cumTrainerStep)
+        }
+        let captured: NetworkArchitecture
+        do {
+            captured = try first.state.decodedSourceArchitecture()
+        } catch {
+            throw CaptureError.unreadableArchitecture(derive: first.derivation.modelID, detail: String(describing: error))
+        }
+        let capturedAtFilePrecision: NetworkArchitecture
+        do {
+            capturedAtFilePrecision = try captured.withComputeDataType(
+                fileArchitecture.computeDataType, tail: fileArchitecture.policyTailPrecision)
+        } catch {
+            throw CaptureError.changedBeyondPrecision(derive: first.derivation.modelID)
+        }
+        guard capturedAtFilePrecision == fileArchitecture else {
+            throw CaptureError.changedBeyondPrecision(derive: first.derivation.modelID)
+        }
+        self.architecture = captured
+        self.derivations = since.map(\.derivation)
     }
 }
 
