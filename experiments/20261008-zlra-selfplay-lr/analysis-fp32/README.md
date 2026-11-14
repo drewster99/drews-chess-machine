@@ -124,6 +124,15 @@ convolution weight's gradient now matches bf16 at cos ≥ 0.998 (`conv1` was 0.4
 differed before the fix (`res_ln`, `stem.bn.bias`, cos 0.6–0.94) differ by exactly the same amounts after it: they sit
 before normalizations that cancel most of their gradient, so bf16 rounding is the likely difference; not yet proven.
 
+### R-elitecyc-fp32fix (restart on build 2675 with the workaround)
+
+Restarted from 384,964 under stem `20261114-zlra-elitecyc-fp32fix-latest`, same batches and schedule. Large puzzle set
+(`fp32fix_large_probe_step*.jsonl`, build 2675):
+
+| trainer step | bf16 pElo | fp32fix pElo | broken fp32 pElo | bf16 NLL | fp32fix NLL | broken fp32 NLL |
+|---:|---:|---:|---:|---:|---:|---:|
+| 390,000 | 1765.1 | 1764.4 | 1436.6 | 1.826 | 1.828 | 2.276 |
+
 ## Audit of earlier fp32 runs
 
 `audit_fp32_runs.py` over every model file (`--describe-model`, 5,748 safetensors + 21 legacy `.dcmmodel`) and every

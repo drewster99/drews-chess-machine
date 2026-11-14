@@ -1064,3 +1064,7 @@ move pawn at fixed count) and writes `analysis/intervention_results.json`.
   `train-elitecyc-fp32fix-seg0.stdout`. `[RESUME] NOT EXACT: schedule, compute_data_type, policy_tail_precision`. First
   lines match R-elitecyc on the same batches: 385,000 pLoss 2.5545 / gNorm 0.742 (bf16 2.5549 / 0.743; the broken fp32
   run 2.5638 / 0.850). ~4.1 s per step at the start.
+- Stopped by the owner 2026-11-14 14:05 CST (SIGINT; abort save and enumerated checkpoint at trainer step 398,310,
+  13,346 steps). Large puzzle set at 390,000: 1764.4 pElo / NLL 1.828 against bf16's 1765.1 / 1.826 (the broken run
+  1436.6 / 2.276), `analysis-fp32/fp32fix_large_probe_step390000.jsonl`. Speed: median 3.95 s per step against bf16's
+  1.1-1.25 s on uncontended segments.
