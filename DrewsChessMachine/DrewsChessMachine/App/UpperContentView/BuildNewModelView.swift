@@ -329,6 +329,12 @@ struct BuildNewModelView: View {
                         .foregroundStyle(guidance.verdict == .withinRecommendedSize
                                          ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
                 }
+                if let warning = model.convolutionWorkaroundWarning {
+                    Label(warning, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                }
                 Text(model.summary)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)

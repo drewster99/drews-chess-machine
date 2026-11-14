@@ -59,6 +59,13 @@ DrewsChessMachine --derive-model --help      # lists every operation this build 
 
 ## Trainer-state files (precision only)
 
+**fp32 outputs and MPSGraph's fp32 weight-gradient defect.** A derive whose output computes in fp32 (or carries the
+`fp32_from_pre_bn` policy tail) logs `[ARCH] fp32 conv weight-gradient workaround (--derive-model <file>)` naming the
+convolutions its training graphs will split over input channels (`ConvolutionWeightGradientWorkaround`; CLAUDE.md), and
+is refused before writing when an affected convolution cannot be split. R-elitecyc-fp32 (2026-11-12) trained a
+`--set-compute-dtype float32` output on a build without the split and lost 330–380 pElo
+(`experiments/20261008-zlra-selfplay-lr/analysis-fp32/`).
+
 `--set-compute-dtype` and `--set-policy-tail-precision` also take a trainer-state file
 (a corpus-replay or train-vs-UCI checkpoint, or a session's `trainer.safetensors`).
 They change only the precision the same function is computed in, so the optimizer

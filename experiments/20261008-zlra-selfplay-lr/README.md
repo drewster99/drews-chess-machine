@@ -1045,3 +1045,18 @@ move pawn at fixed count) and writes `analysis/intervention_results.json`.
 - Started 2026-11-12 23:45 CST, pid 81717; session log `dcm_log_20261112-234508.txt`; stdout `train-elitecyc-fp32-seg0.stdout`.
 - Speed: ~3.2 s per step in fp32 (bf16 runs of this model: ~1.25 s), about 1,100 steps/hour, so ~23 days to 1,000,000 at that rate.
 - Question: does fp32 compute change where the annealed line ends up? Compare with R-elitecyc (bf16) from 384,964 on: large puzzle set and held-out NLL at the same 10k checkpoints.
+
+## 2026-11-14: R-elitecyc-fp32 stopped at 413,778 — it trained on a wrong MPSGraph fp32 gradient
+
+- Stopped by the owner (SIGINT, abort save `20261112-zlra-elitecyc-fp32-latest-step413778.safetensors`) on 2026-11-13 ~23:2x
+  CST, 28,814 steps in. At 390k / 400k / 410k it was 329 / 324 / 376 pElo behind R-elitecyc on the large puzzle set.
+- Cause: MPSGraph computes a wrong fp32 convolution weight gradient once batch × 64 × C_in × k² passes 2³¹ and the
+  convolution's output has another consumer; every block's `conv1` (9×9 / 128, feeding bn2) at batch 4096 is past it
+  (relative error 0.75). Forward and input gradient are exact; bf16 is correct. Evidence, standalone repro, workaround
+  measurements, the audit of all earlier fp32 runs (only this one affected), the Apple report and a blog draft:
+  `analysis-fp32/`.
+- Fix: `ConvolutionWeightGradientWorkaround` (build 2672+) splits such convolutions over their input channels in fp32
+  training graphs. A 1-step fp32 resume of the same state now gives gNorm 0.745, equal to bf16 (was 0.877).
+- The run's files keep their stem; its results are not a measurement of fp32 training and must not be compared as such.
+- Restarted as R-elitecyc-fp32fix from the same start file on the fixed build: `launch/elitecyc_fp32fix_launch.sh`,
+  stem `20261114-zlra-elitecyc-fp32fix-latest`.

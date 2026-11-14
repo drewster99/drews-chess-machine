@@ -23,6 +23,7 @@ let args = CommandLine.arguments
 let n = Int(args[1])!
 let dt: MPSDataType = args[2] == "bf16" ? .bFloat16 : .float32
 let compiled = args.count > 3 && args[3] == "exe"
+let split = args.count > 4 ? Int(args[4])! : 1
 func conv(_ g: MPSGraph, _ x: MPSGraphTensor, _ w: MPSGraphTensor) -> MPSGraphTensor {
     let d = MPSGraphConvolution2DOpDescriptor(strideInX: 1, strideInY: 1, dilationRateInX: 1, dilationRateInY: 1, groups: 1, paddingStyle: .explicit, dataLayout: .NCHW, weightsLayout: .OIHW)!
     let p = (k - 1) / 2; d.paddingLeft = p; d.paddingRight = p; d.paddingTop = p; d.paddingBottom = p
@@ -46,7 +47,15 @@ for _ in 0..<3 {
     let W1 = g.variable(with: data(rb((0..<(C * C * k * k)).map { _ in r.n() * sd }), dt), shape: ws, dataType: dt, name: nil)
     let W2 = g.variable(with: data(rb((0..<(C * C * k * k)).map { _ in r.n() * sd }), dt), shape: ws, dataType: dt, name: nil)
     let x1 = silu(g, bn(g, h, g1, b1))
-    let z1 = conv(g, x1, W1)
+    var z1: MPSGraphTensor
+    if split == 1 { z1 = conv(g, x1, W1) } else {
+        let cg = C / split; var acc: MPSGraphTensor? = nil
+        for gi in 0..<split {
+            let part = conv(g, g.sliceTensor(x1, dimension: 1, start: gi * cg, length: cg, name: nil), g.sliceTensor(W1, dimension: 1, start: gi * cg, length: cg, name: nil))
+            acc = acc.map { g.addition($0, part, name: nil) } ?? part
+        }
+        z1 = acc!
+    }
     var t = silu(g, bn(g, z1, g2, b2))
     t = conv(g, t, W2)
     h = g.addition(h, g.multiplication(t, g.constant(0.5, dataType: dt), name: nil), name: nil)
@@ -61,6 +70,8 @@ if compiled {
     let cd = MPSGraphCompilationDescriptor(); cd.optimizationLevel = .level1
     let exe = g.compile(with: MPSGraphDevice(mtlDevice: device), feeds: [:], targetTensors: targets, targetOperations: nil, compilationDescriptor: cd)
     outs = exe.run(with: queue, inputs: [], results: nil, executionDescriptor: nil)
+    let t0 = Date(); for _ in 0..<5 { _ = exe.run(with: queue, inputs: [], results: nil, executionDescriptor: nil) }
+    print(String(format: "  exe time per run (5 runs, incl. readout targets): %.0f ms", Date().timeIntervalSince(t0) * 200))
 } else {
     let res = g.run(with: queue, feeds: [:], targetTensors: targets, targetOperations: nil); outs = targets.map { res[$0]! }
 }
@@ -78,5 +89,5 @@ for b in 0..<3 {
             err += pow(Double(dW[idx]) - s, 2); ref += s * s
         }}
     }
-    print(String(format: "%@ n=%d %@ block %d: graph dW1 vs corr(X1,dZ1) rel err = %.3e", args[2], n, compiled ? "exe" : "run", b, sqrt(err / ref)))
+    print(String(format: "split=\(split) %@ n=%d %@ block %d: graph dW1 vs corr(X1,dZ1) rel err = %.3e", args[2], n, compiled ? "exe" : "run", b, sqrt(err / ref)))
 }

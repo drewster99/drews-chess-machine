@@ -527,6 +527,11 @@ final class ChessNetwork: @unchecked Sendable {
     /// `dataType` for now — per-model precision is a later phase.
     let arch: NetworkArchitecture
 
+    /// The convolutions this graph builds split over their input channels to
+    /// avoid MPSGraph's wrong fp32 weight gradient
+    /// (`ConvolutionWeightGradientWorkaround`). Empty on inference graphs.
+    let convolutionWeightGradientSplit: ConvolutionWeightGradientWorkaround.Plan
+
     /// How this network's random-init tensors got their first values: a
     /// seeded draw (the init seed is readable here, for logging and
     /// recording), or none at all because loaded weights replace them.
@@ -590,6 +595,12 @@ final class ChessNetwork: @unchecked Sendable {
          analysisTaps: Bool = false,
          graphRecorder: InferenceGraphRecorder? = nil) throws {
         try arch.validate()
+        // Training graphs split the convolutions MPSGraph's fp32 weight gradient
+        // gets wrong; inference graphs have no weight gradient and are never
+        // split. Decided before anything is built, so an architecture that
+        // cannot be worked around fails here.
+        let convolutionSplit: ConvolutionWeightGradientWorkaround.Plan =
+            bnMode == .training ? try ConvolutionWeightGradientWorkaround.plan(for: arch) : .none
         // A recording describes the inference forward pass; a training-mode
         // graph computes batch statistics and dropout instead, so recording one
         // would describe a different network.
@@ -614,6 +625,10 @@ final class ChessNetwork: @unchecked Sendable {
         // sees exactly the graph that is built. See `ForwardGraphOps`.
         let ops = ForwardGraphOps(graph: g, recorder: graphRecorder)
         self.arch = arch
+        self.convolutionWeightGradientSplit = convolutionSplit
+        if let notice = convolutionSplit.notice(event: "training graph") {
+            SessionLogger.shared.log(notice)
+        }
         self.initialization = initialization
         self.awaitingWeightLoad = SyncBox(initialization == .overwrittenByLoad)
         // macOS 27 / Xcode 27 b1 made automatic NCHW->NHWC layout conversion for
@@ -707,12 +722,9 @@ final class ChessNetwork: @unchecked Sendable {
         )
         trainables.append(stemWeights)
         shouldDecay.append(true)
-        var x = ops.convolution2D(
-            computeInput,
-            weights: stemWeights,
-            descriptor: stemConvDescriptor,
-            name: "stem_conv"
-        )
+        var x = try Self.convolution(
+            ops: ops, computeInput, weights: stemWeights, descriptor: stemConvDescriptor,
+            name: "stem_conv", weightName: "stem.conv.weight", bnMode: bnMode, split: convolutionSplit)
         x = Self.batchNorm(
             ops: ops, input: x, channels: stemOutC, gammaInitValue: Self.standardBatchNormGamma, name: "stem_bn", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
             variableDataType: computeDType,
@@ -839,6 +851,7 @@ final class ChessNetwork: @unchecked Sendable {
                 inChannels: towerInC + blockSkipExtra,
                 blockIndex: i,
                 bnMode: bnMode,
+                convolutionSplit: convolutionSplit,
                 taps: taps,
                 variableDataType: computeDType,
                 initializer: initializer,
@@ -920,8 +933,9 @@ final class ChessNetwork: @unchecked Sendable {
                 dataType: computeDType, name: "feature_skip_conv_weights")
             trainables.append(fusionConvW)
             shouldDecay.append(true)
-            var f = ops.convolution2D(
-                concat, weights: fusionConvW, descriptor: conv1x1, name: "feature_skip_conv")
+            var f = try Self.convolution(
+                ops: ops, concat, weights: fusionConvW, descriptor: conv1x1, name: "feature_skip_conv",
+                weightName: "feature_skip.conv.weight", bnMode: bnMode, split: convolutionSplit)
             f = Self.batchNorm(
                 ops: ops, input: f, channels: towerC, gammaInitValue: Self.standardBatchNormGamma, name: "feature_skip_bn", taps: taps, bnMode: bnMode,
                 dataType: Self.mpsDataType(for: arch), variableDataType: computeDType,
@@ -945,7 +959,8 @@ final class ChessNetwork: @unchecked Sendable {
 
         let policy = try Self.policyHead(
             ops: ops, arch: arch, input: policyHeadInput, inputChannels: arch.policyHeadInputChannels,
-            descriptor: conv1x1, bnMode: bnMode, taps: taps, tailPrecision: arch.policyTailPrecision,
+            descriptor: conv1x1, bnMode: bnMode, convolutionSplit: convolutionSplit,
+            taps: taps, tailPrecision: arch.policyTailPrecision,
             variableDataType: computeDType,
             initializer: initializer,
             trainables: &trainables,
@@ -962,7 +977,7 @@ final class ChessNetwork: @unchecked Sendable {
 
         let valueHeadOut = try Self.valueHead(
             ops: ops, arch: arch, input: valueHeadInput, inputChannels: arch.valueHeadInputChannels,
-            descriptor: conv1x1, bnMode: bnMode, taps: taps,
+            descriptor: conv1x1, bnMode: bnMode, convolutionSplit: convolutionSplit, taps: taps,
             variableDataType: computeDType,
             initializer: initializer,
             trainables: &trainables,
@@ -2386,6 +2401,72 @@ final class ChessNetwork: @unchecked Sendable {
         return desc
     }
 
+    /// One of the network's convolutions: a single `convolution2D`, or — in a
+    /// training graph, for a convolution `split` names — the sum of
+    /// convolutions over input-channel groups,
+    /// Y = Σ_g conv(X[:, g], W[:, g]). The two are the same function and the
+    /// split's weight gradient is the true one, slice for slice; the split exists
+    /// only because MPSGraph computes a wrong fp32 weight gradient for some large
+    /// convolutions (`ConvolutionWeightGradientWorkaround`).
+    ///
+    /// Every convolution goes through here so the plan is checked where the
+    /// graph is actually built: a training-graph convolution that runs in fp32,
+    /// has a shape the rule covers, and is not in the plan is an error — the plan
+    /// decides fp32 placement from the architecture, and this catches any
+    /// convolution where the two disagree instead of building it unsplit.
+    ///
+    /// The split ops are built on the raw graph: a plan is non-empty only on
+    /// training graphs, which never carry an `InferenceGraphRecorder`
+    /// (`ChessNetwork.init` refuses one), so nothing is left unrecorded.
+    private static func convolution(
+        ops: ForwardGraphOps,
+        _ input: MPSGraphTensor,
+        weights: MPSGraphTensor,
+        descriptor: MPSGraphConvolution2DOpDescriptor,
+        name: String,
+        weightName: String,
+        bnMode: BNMode,
+        split: ConvolutionWeightGradientWorkaround.Plan
+    ) throws -> MPSGraphTensor {
+        guard let shape = weights.shape, shape.count == 4 else {
+            throw ConvolutionWeightGradientWorkaround.WorkaroundError.weightShapeUnknown(weightName: weightName)
+        }
+        // OIHW: [C_out, C_in, k, k].
+        let inputChannels = shape[1].intValue
+        let kernelSize = shape[2].intValue
+        let groups = split.groups(forWeight: weightName)
+        guard groups > 1 else {
+            if bnMode == .training, input.dataType == .float32,
+               ConvolutionWeightGradientWorkaround.isAffected(inputChannels: inputChannels, kernelSize: kernelSize) {
+                throw ConvolutionWeightGradientWorkaround.WorkaroundError.unplannedAffectedConvolution(
+                    weightName: weightName, inputChannels: inputChannels, kernelSize: kernelSize)
+            }
+            return ops.convolution2D(input, weights: weights, descriptor: descriptor, name: name)
+        }
+        precondition(inputChannels % groups == 0,
+                     "ConvolutionWeightGradientWorkaround.plan gives a divisor of the input channels")
+        let width = inputChannels / groups
+        let graph = ops.graph
+        var sum: MPSGraphTensor?
+        for group in 0..<groups {
+            let inputSlice = graph.sliceTensor(input, dimension: 1, start: group * width, length: width,
+                                               name: "\(name)_input_group\(group)")
+            let weightSlice = graph.sliceTensor(weights, dimension: 1, start: group * width, length: width,
+                                                name: "\(name)_weights_group\(group)")
+            let partial = graph.convolution2D(inputSlice, weights: weightSlice, descriptor: descriptor,
+                                              name: "\(name)_group\(group)")
+            if let running = sum {
+                sum = graph.addition(running, partial, name: group == groups - 1 ? name : nil)
+            } else {
+                sum = partial
+            }
+        }
+        guard let output = sum else {
+            preconditionFailure("a split convolution has at least two groups")
+        }
+        return output
+    }
+
     /// SiLU = `x*sigmoid(x)`; GELU exact (erf-based); leaky ReLU with the
     /// fixed `ActivationFunction.leakyReLUNegativeSlope`. Every hidden site
     /// passes its own field: a block group its `activationFunction` /
@@ -2742,6 +2823,7 @@ final class ChessNetwork: @unchecked Sendable {
         inChannels: Int,
         blockIndex: Int,
         bnMode: BNMode,
+        convolutionSplit: ConvolutionWeightGradientWorkaround.Plan,
         taps: AnalysisTapRecorder?,
         variableDataType: MPSDataType,
         initializer: TensorInitializer,
@@ -2894,7 +2976,8 @@ final class ChessNetwork: @unchecked Sendable {
             skipProjInput = h
             let conv1W = try makeConvWeight("\(prefix)_conv1", planName: "\(planPrefix).conv1.weight", spec.conv1KernelSize, inC, outC)
             trainables.append(conv1W); shouldDecay.append(true)
-            h = ops.convolution2D(h, weights: conv1W, descriptor: conv1Desc, name: "\(prefix)_conv1")
+            h = try Self.convolution(ops: ops, h, weights: conv1W, descriptor: conv1Desc, name: "\(prefix)_conv1",
+                                     weightName: "\(planPrefix).conv1.weight", bnMode: bnMode, split: convolutionSplit)
             h = batchNorm(ops: ops, input: h, channels: outC, gammaInitValue: Self.standardBatchNormGamma, name: "\(prefix)_bn2", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 variableDataType: variableDataType,
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
@@ -2903,11 +2986,13 @@ final class ChessNetwork: @unchecked Sendable {
             h = try applyChannelDropout(h)
             let conv2W = try makeConvWeight("\(prefix)_conv2", planName: "\(planPrefix).conv2.weight", spec.conv2KernelSize, outC, outC)
             trainables.append(conv2W); shouldDecay.append(true)
-            z = ops.convolution2D(h, weights: conv2W, descriptor: conv2Desc, name: "\(prefix)_conv2")
+            z = try Self.convolution(ops: ops, h, weights: conv2W, descriptor: conv2Desc, name: "\(prefix)_conv2",
+                                     weightName: "\(planPrefix).conv2.weight", bnMode: bnMode, split: convolutionSplit)
         case .post:
             let conv1W = try makeConvWeight("\(prefix)_conv1", planName: "\(planPrefix).conv1.weight", spec.conv1KernelSize, inC, outC)
             trainables.append(conv1W); shouldDecay.append(true)
-            var h = ops.convolution2D(input, weights: conv1W, descriptor: conv1Desc, name: "\(prefix)_conv1")
+            var h = try Self.convolution(ops: ops, input, weights: conv1W, descriptor: conv1Desc, name: "\(prefix)_conv1",
+                                         weightName: "\(planPrefix).conv1.weight", bnMode: bnMode, split: convolutionSplit)
             h = batchNorm(ops: ops, input: h, channels: outC, gammaInitValue: Self.standardBatchNormGamma, name: "\(prefix)_bn1", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 variableDataType: variableDataType,
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
@@ -2916,7 +3001,8 @@ final class ChessNetwork: @unchecked Sendable {
             h = try applyChannelDropout(h)
             let conv2W = try makeConvWeight("\(prefix)_conv2", planName: "\(planPrefix).conv2.weight", spec.conv2KernelSize, outC, outC)
             trainables.append(conv2W); shouldDecay.append(true)
-            h = ops.convolution2D(h, weights: conv2W, descriptor: conv2Desc, name: "\(prefix)_conv2")
+            h = try Self.convolution(ops: ops, h, weights: conv2W, descriptor: conv2Desc, name: "\(prefix)_conv2",
+                                     weightName: "\(planPrefix).conv2.weight", bnMode: bnMode, split: convolutionSplit)
             z = batchNorm(ops: ops, input: h, channels: outC, gammaInitValue: Self.lastBranchBatchNormGamma(spec), name: "\(prefix)_bn2", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
                 variableDataType: variableDataType,
                 trainables: &trainables, shouldDecay: &shouldDecay, runningStats: &runningStats,
@@ -3010,10 +3096,10 @@ final class ChessNetwork: @unchecked Sendable {
                 name: "\(prefix)_skip_proj_weights")
             skipProjWeight = projW
             let projDesc = try makeConvDescriptor(kernelSize: 1)
-            skipSource = ops.convolution2D(
-                skipProjInput, weights: projW, descriptor: projDesc,
-                name: "\(prefix)_skip_proj"
-            )
+            skipSource = try Self.convolution(
+                ops: ops, skipProjInput, weights: projW, descriptor: projDesc,
+                name: "\(prefix)_skip_proj", weightName: "\(planPrefix).skip_proj.weight",
+                bnMode: bnMode, split: convolutionSplit)
         }
 
         // Merge with the skip.
@@ -3165,6 +3251,7 @@ final class ChessNetwork: @unchecked Sendable {
         inputChannels: Int,
         descriptor: MPSGraphConvolution2DOpDescriptor,
         bnMode: BNMode,
+        convolutionSplit: ConvolutionWeightGradientWorkaround.Plan,
         taps: AnalysisTapRecorder?,
         tailPrecision: PolicyTailPrecisionSetting,
         variableDataType: MPSDataType,
@@ -3209,11 +3296,14 @@ final class ChessNetwork: @unchecked Sendable {
             switch tailPrecision {
             case .float32FromPreBatchNorm:
                 let tailInput = widenToHeadTail(input, ops: ops, name: "policy_tail_input_f32")
-                x = ops.convolution2D(
-                    tailInput, weights: widenToHeadTail(convW, ops: ops, name: nil),
-                    descriptor: descriptor, name: "policy_conv")
+                x = try Self.convolution(
+                    ops: ops, tailInput, weights: widenToHeadTail(convW, ops: ops, name: nil),
+                    descriptor: descriptor, name: "policy_conv", weightName: "policy.conv.weight",
+                    bnMode: bnMode, split: convolutionSplit)
             case .mixedFinalProjection, .doesNotApply:
-                x = ops.convolution2D(input, weights: convW, descriptor: descriptor, name: "policy_conv")
+                x = try Self.convolution(
+                    ops: ops, input, weights: convW, descriptor: descriptor, name: "policy_conv",
+                    weightName: "policy.conv.weight", bnMode: bnMode, split: convolutionSplit)
                 x = widenToHeadTail(x, ops: ops, name: "policy_conv_output_f32")
             }
             x = ops.addition(x, widenToHeadTail(convBias, ops: ops, name: nil), name: "policy_conv_bias_add")
@@ -3234,7 +3324,9 @@ final class ChessNetwork: @unchecked Sendable {
                 shape: [NSNumber(value: pK), NSNumber(value: channels), 1, 1],
                 dataType: variableDataType, name: "policy_pre_conv_weights")
             trainables.append(preConvW); shouldDecay.append(true)
-            var x = ops.convolution2D(input, weights: preConvW, descriptor: descriptor, name: "policy_pre_conv")
+            var x = try Self.convolution(
+                ops: ops, input, weights: preConvW, descriptor: descriptor, name: "policy_pre_conv",
+                weightName: "policy.pre_conv.weight", bnMode: bnMode, split: convolutionSplit)
             switch tailPrecision {
             case .float32FromPreBatchNorm:
                 x = widenToHeadTail(x, ops: ops, name: "policy_tail_input_f32")
@@ -3265,11 +3357,14 @@ final class ChessNetwork: @unchecked Sendable {
             trainables.append(convBias); shouldDecay.append(false)
             switch tailPrecision {
             case .float32FromPreBatchNorm:
-                x = ops.convolution2D(
-                    x, weights: widenToHeadTail(convW, ops: ops, name: nil),
-                    descriptor: descriptor, name: "policy_conv")
+                x = try Self.convolution(
+                    ops: ops, x, weights: widenToHeadTail(convW, ops: ops, name: nil),
+                    descriptor: descriptor, name: "policy_conv", weightName: "policy.conv.weight",
+                    bnMode: bnMode, split: convolutionSplit)
             case .mixedFinalProjection, .doesNotApply:
-                x = ops.convolution2D(x, weights: convW, descriptor: descriptor, name: "policy_conv")
+                x = try Self.convolution(
+                    ops: ops, x, weights: convW, descriptor: descriptor, name: "policy_conv",
+                    weightName: "policy.conv.weight", bnMode: bnMode, split: convolutionSplit)
                 x = widenToHeadTail(x, ops: ops, name: "policy_conv_output_f32")
             }
             x = ops.addition(x, widenToHeadTail(convBias, ops: ops, name: nil), name: "policy_conv_bias_add")
@@ -3286,7 +3381,9 @@ final class ChessNetwork: @unchecked Sendable {
                 shape: [NSNumber(value: pK), NSNumber(value: channels), 1, 1],
                 dataType: variableDataType, name: "policy_pre_conv_weights")
             trainables.append(preConvW); shouldDecay.append(true)
-            var x = ops.convolution2D(input, weights: preConvW, descriptor: descriptor, name: "policy_pre_conv")
+            var x = try Self.convolution(
+                ops: ops, input, weights: preConvW, descriptor: descriptor, name: "policy_pre_conv",
+                weightName: "policy.pre_conv.weight", bnMode: bnMode, split: convolutionSplit)
             switch tailPrecision {
             case .float32FromPreBatchNorm:
                 x = widenToHeadTail(x, ops: ops, name: "policy_tail_input_f32")
@@ -3369,6 +3466,7 @@ final class ChessNetwork: @unchecked Sendable {
         inputChannels: Int,
         descriptor: MPSGraphConvolution2DOpDescriptor,
         bnMode: BNMode,
+        convolutionSplit: ConvolutionWeightGradientWorkaround.Plan,
         taps: AnalysisTapRecorder?,
         variableDataType: MPSDataType,
         initializer: TensorInitializer,
@@ -3395,9 +3493,9 @@ final class ChessNetwork: @unchecked Sendable {
         )
         trainables.append(convW)
         shouldDecay.append(true)
-        var x = ops.convolution2D(
-            input, weights: convW, descriptor: descriptor, name: "value_conv"
-        )
+        var x = try Self.convolution(
+            ops: ops, input, weights: convW, descriptor: descriptor, name: "value_conv",
+            weightName: "value.conv.weight", bnMode: bnMode, split: convolutionSplit)
         x = batchNorm(
             ops: ops, input: x, channels: convChannels, gammaInitValue: Self.standardBatchNormGamma, name: "value_bn", taps: taps, bnMode: bnMode, dataType: Self.mpsDataType(for: arch),
             variableDataType: variableDataType,

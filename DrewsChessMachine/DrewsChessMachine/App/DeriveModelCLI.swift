@@ -243,6 +243,16 @@ enum DeriveModelCLI {
         }
         result.sourceArchitectureFormat.logLegacyResolutions()
         SessionLogger.shared.log(RunProvenanceLine.line(record: result.lineage, seed: nil))
+        // An output whose fp32 training graph could not avoid MPSGraph's wrong
+        // fp32 weight gradient is refused before it is written.
+        let workaroundPlan: ConvolutionWeightGradientWorkaround.Plan
+        do {
+            workaroundPlan = try ConvolutionWeightGradientWorkaround.plan(for: result.targetArchitecture)
+        } catch {
+            SessionLogger.shared.log("[DERIVE] refused \(sourceURL.lastPathComponent): \(error.localizedDescription)")
+            SessionLogger.shared.shutdown()
+            fail(error.localizedDescription, 97)
+        }
 
         do {
             try FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -282,6 +292,12 @@ enum DeriveModelCLI {
             .logLine(event: "--derive-model \(outURL.lastPathComponent)")
         FileHandle.standardError.write(Data((sizeGuidanceLine + "\n").utf8))
         SessionLogger.shared.log(sizeGuidanceLine)
+        // Training this output splits the convolutions MPSGraph's fp32 weight
+        // gradient gets wrong; say so here, where the precision is chosen.
+        if let notice = workaroundPlan.notice(event: "--derive-model \(outURL.lastPathComponent)") {
+            FileHandle.standardError.write(Data((notice + "\n").utf8))
+            SessionLogger.shared.log(notice)
+        }
 
         // The path on stdout is the deliverable — reuse via --start-model.
         print(outURL.path)
@@ -356,6 +372,20 @@ enum DeriveModelCLI {
             SessionLogger.shared.log("[DERIVE] graft refused onto \(targetLabel): \(error)")
             SessionLogger.shared.shutdown()
             fail("\(graftToFlag) \(targetValue): \(error)", 97)
+        }
+        // The fp32 conv weight-gradient workaround, as for a new model: noted when
+        // the target's fp32 training graph splits convolutions, refused when it
+        // could not.
+        do {
+            let workaroundPlan = try ConvolutionWeightGradientWorkaround.plan(for: named.architecture)
+            if let notice = workaroundPlan.notice(event: "--derive-model graft onto \(targetLabel)") {
+                FileHandle.standardError.write(Data((notice + "\n").utf8))
+                SessionLogger.shared.log(notice)
+            }
+        } catch {
+            SessionLogger.shared.log("[DERIVE] graft refused onto \(targetLabel): \(error.localizedDescription)")
+            SessionLogger.shared.shutdown()
+            fail("\(graftToFlag) \(targetValue): \(error.localizedDescription)", 97)
         }
 
         let sourceData: Data

@@ -595,6 +595,9 @@ final class BuildNewModelModel {
             try arch.validate()
             try ModelSizeGuidance(parameterCount: arch.parameterCount, physicalMemoryBytes: physicalMemoryBytes)
                 .requireTrainingStateFitsInPhysicalMemory()
+            // An fp32 architecture whose training graph could not avoid MPSGraph's
+            // wrong fp32 weight gradient is not built.
+            _ = try ConvolutionWeightGradientWorkaround.plan(for: arch)
             return nil
         } catch {
             return String(describing: error)
@@ -608,6 +611,25 @@ final class BuildNewModelModel {
     var sizeGuidance: ModelSizeGuidance? {
         guard isValid else { return nil }
         return ModelSizeGuidance(parameterCount: architecture.parameterCount, physicalMemoryBytes: physicalMemoryBytes)
+    }
+
+    /// The warning shown when training the current architecture splits
+    /// convolutions to avoid MPSGraph's wrong fp32 weight gradient
+    /// (`ConvolutionWeightGradientWorkaround`); nil when it splits none or the
+    /// architecture is invalid (`validationError` then says why).
+    var convolutionWorkaroundWarning: String? {
+        guard isValid else { return nil }
+        let plan: ConvolutionWeightGradientWorkaround.Plan
+        do {
+            plan = try ConvolutionWeightGradientWorkaround.plan(for: architecture)
+        } catch {
+            return nil
+        }
+        guard !plan.isEmpty else { return nil }
+        let names = plan.splits.map(\.weightName).joined(separator: ", ")
+        return "fp32 training splits \(plan.splits.count) convolution(s) over their input channels: MPSGraph computes a "
+            + "wrong fp32 weight gradient once batch × 64 × input channels × kernel² passes 2³¹. Same network and "
+            + "gradients, somewhat slower training. \(names)"
     }
 
     /// The Init seed field, read.

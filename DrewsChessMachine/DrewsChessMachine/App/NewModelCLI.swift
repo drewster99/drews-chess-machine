@@ -64,6 +64,22 @@ enum NewModelCLI {
             SessionLogger.shared.shutdown()
             Darwin.exit(71)
         }
+        // fp32 conv weight-gradient workaround (`ConvolutionWeightGradientWorkaround`):
+        // noted when this model's fp32 training graph splits convolutions,
+        // refused when an affected convolution could not be split.
+        do {
+            let workaroundPlan = try ConvolutionWeightGradientWorkaround.plan(for: arch)
+            if let notice = workaroundPlan.notice(event: "--new-model \(name)") {
+                FileHandle.standardError.write(Data((notice + "\n").utf8))
+                SessionLogger.shared.log(notice)
+            }
+        } catch {
+            FileHandle.standardError.write(Data(
+                "error: --new-model: architecture '\(name)': \(error.localizedDescription)\n".utf8
+            ))
+            SessionLogger.shared.shutdown()
+            Darwin.exit(71)
+        }
 
         // Resolve the destination BEFORE the (slower) build so a bad path fails
         // fast. Default lands in the curated Models dir with a name that records

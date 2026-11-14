@@ -1212,6 +1212,11 @@ final class SessionController {
             let sizeGuidance = ModelSizeGuidance.forThisMac(parameterCount: arch.parameterCount)
             SessionLogger.shared.log(sizeGuidance.logLine(event: "Build Network"))
             try sizeGuidance.requireTrainingStateFitsInPhysicalMemory()
+            // fp32 conv weight-gradient workaround: logged when this model's fp32
+            // training graph splits convolutions; refused when it could not.
+            if let notice = try ConvolutionWeightGradientWorkaround.plan(for: arch).notice(event: "Build Network") {
+                SessionLogger.shared.log(notice)
+            }
         } catch {
             onRefuseMenuAction("This architecture can't be built: \(error)")
             return

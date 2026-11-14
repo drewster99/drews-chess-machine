@@ -79,6 +79,70 @@ pre-activation tower: fp32 batch 4096 `conv1` dW error 73–80%, batch 512 4·10
 
 Measured on macOS 27.2 (26B123), Apple M5 Max. Not yet checked on another macOS version.
 
+### What is and isn't affected (fp32, batch 4096, 9×9, 128 channels)
+
+| quantity | relative error |
+|---|---:|
+| forward output Y | 1.4·10⁻⁶ (also at batch 8192) |
+| input gradient dX | 1.3·10⁻⁶ |
+| **weight gradient dW, output also read** | **0.747** |
+| weight gradient dW, output read only by the loss | 5·10⁻⁶ |
+
+Only the weight gradient is wrong, so inference (no gradients) is correct. `repro/conv_forward_and_input_gradient.swift`.
+
+### Why bf16 is correct
+
+| dtype | batch 4096 (2.7·10⁹ elements) | batch 8192 (5.4·10⁹, past 2³²) |
+|---|---|---|
+| fp32 | 0.75 | MPS aborts allocating a 43,486,543,872-byte buffer |
+| bf16 | 1.6·10⁻³ | 1.7·10⁻³ |
+| fp16 | 1.8·10⁻⁴ | 1.9·10⁻⁴ |
+
+43,486,543,872 bytes is exactly 8 bytes per element of batch × 64 × C_in × k²: for fp32 MPS materializes a buffer of that
+product for the weight gradient, and its indexing breaks past 2³¹ elements. bf16 and fp16 stay right past 2³², so they use a
+different kernel without that buffer. The fp32 kernel is chosen only when the convolution's output has another consumer.
+
+### Workarounds (`repro/conv_weight_gradient_workarounds.swift`)
+
+| form (fp32, output also read) | batch 4096 | batch 8192 |
+|---|---:|---:|
+| plain | 0.747 | abort (40.5 GiB) |
+| identity op on the second reader | 0.747 (optimized away) | |
+| `+ 0` on the output | 0.747 (optimized away) | |
+| batch split in 2 / 4, concatenated | 5.0·10⁻⁶ / 3.8·10⁻⁶ | 5.2·10⁻⁶ (4) |
+| **input-channel split in 2, summed** | **7.5·10⁻⁶** | **8.7·10⁻⁶** |
+
+Input-channel split, also at batch 16,384 (1.4·10⁻⁵) and 32,768 (1.9·10⁻⁵), and inside the real 3-block structure
+(`repro/block_conv1_weight_gradient.swift`, 4th argument 2: 7·10⁻⁶ against 0.76 unsplit, ~19% slower in that
+microbenchmark). The batch axis is dynamic in DCM's graphs, so the app uses the input-channel split
+(`ConvolutionWeightGradientWorkaround`, build 2672+; `documentation/plans-active/FP32_CONV_WEIGHT_GRADIENT_WORKAROUND_PLAN.md`).
+
+### Fix validated on the real model
+
+1-step fp32 resume of the 384,964 state on build 2672: gNorm 0.745 (bf16 0.745; build 2669 fp32 0.877). Every
+convolution weight's gradient now matches bf16 at cos ≥ 0.998 (`conv1` was 0.42–0.57). The small-gradient tensors that
+differed before the fix (`res_ln`, `stem.bn.bias`, cos 0.6–0.94) differ by exactly the same amounts after it: they sit
+before normalizations that cancel most of their gradient, so bf16 rounding is the likely difference; not yet proven.
+
+## Audit of earlier fp32 runs
+
+`audit_fp32_runs.py` over every model file (`--describe-model`, 5,748 safetensors + 21 legacy `.dcmmodel`) and every
+`[RUN]` line in 10,227 session logs:
+
+| line | precision | convs | batch | over 2³¹ from batch | affected |
+|---|---|---|---:|---:|---|
+| R-elitecyc-fp32 (E709 seg after 384,964; 32 files) | fp32 | 9×9 / 128 | 4096 | 3,237 | **yes** |
+| v3 8-block 3×3 line (30 files, 2026-06, no lineage record) | fp32 | 3×3 / 128 | not recorded | 29,128 | no (no run used ≥ 29k) |
+| KbHZ and legacy 8/16-block 3×3 `.dcmmodel` (17 files) | fp32 | 3×3 / 128 | ≤ 4096 | 29,128 | no |
+| 2026-10-19 inference-dtype speed arm (GUI `--train`, 55 s) | fp32 | — | — | — | no training step |
+| `--sharpness` (E-heldout, fp32 compute) | fp32 | 9×9 / 128 | 256 | 3,237 | no |
+
+Every other model file (5,686 safetensors, 4 `.dcmmodel`) is bf16. The `[RUN]` lines that name a precision
+(`policy_tail=does_not_apply` is fp32; the field exists from 2026-10-07) show five fp32 starts: the speed arm above (three
+launches) and R-elitecyc-fp32 (and its 1-step diagnostic). Runs from before `[RUN]` are covered by their saved files only; a
+deleted fp32 run with 9×9 kernels or a batch past the thresholds would be missed, but no 9×9 tower existed before the
+elite-corpus (bf16) runs. Only R-elitecyc-fp32 trained on the defect.
+
 ## Reproduce
 
 ```sh
