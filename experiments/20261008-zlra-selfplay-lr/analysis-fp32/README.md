@@ -133,6 +133,24 @@ Restarted from 384,964 under stem `20261114-zlra-elitecyc-fp32fix-latest`, same 
 |---:|---:|---:|---:|---:|---:|---:|
 | 390,000 | 1765.1 | 1764.4 | 1436.6 | 1.826 | 1.828 | 2.276 |
 
+### Speed: fp32 vs bf16 (2026-11-14, `speed/`)
+
+Corpus replay, batch 4096, elite corpus, ~2.7 min per arm (SIGINT), nothing else on the GPU (Lichess bot stopped
+13:44). Steady-state per-step ms from the `[REPLAY]` lines (first two lines dropped). Builds: 2675 (with the split),
+2669 (no split; its fp32 9×9 gradient is wrong, its timing is valid).
+
+| architecture | bf16 (2675) | fp32 split (2675) | fp32 unsplit (2669) | fp32 unsplit / bf16 | fp32 split / bf16 |
+|---|---:|---:|---:|---:|---:|
+| elitecyc 3 × 9×9 / 128 | 1,110 | 2,400 | 2,200 | 2.0× | 2.2× |
+| `v4_5block_7x7` 5 × 7×7 / 128 | 1,135 | 2,570 | — | — | 2.3× |
+| `v3_16block_3x3` 16 × 3×3 / 128 | 1,325 | 6,700 | 3,500 | 2.6× | 5.1× |
+
+- fp32 unsplit is 2.0× bf16 on the 9×9 model, as when bf16 was introduced (May 2026: 2.0× on 16 × 3×3).
+- The split costs ~10% on the 9×9 model but doubles the 3×3 net's step: the rule splits by the 65,536 batch ceiling,
+  so 3×3 / 128 convolutions are split although they break only from batch 29,128.
+- R-elitecyc-fp32fix's 2.85–3.95 s per step was above this run's 2.4 s; the short arms skip enumerated saves and
+  the long run shared the GPU with the bot and probes for most of its life.
+
 ## Audit of earlier fp32 runs
 
 `audit_fp32_runs.py` over every model file (`--describe-model`, 5,748 safetensors + 21 legacy `.dcmmodel`) and every
