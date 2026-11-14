@@ -170,6 +170,14 @@ launches) and R-elitecyc-fp32 (and its 1-step diagnostic). Runs from before `[RU
 deleted fp32 run with 9×9 kernels or a batch past the thresholds would be missed, but no 9×9 tower existed before the
 elite-corpus (bf16) runs. Only R-elitecyc-fp32 trained on the defect.
 
+Cross-checks (2026-11-14):
+- Every model ID in the repo's results HTML (82): 71 have files (69 bf16; fp32 KbHZ and wTp3, 3×3 / 128, batch ≤ 4096).
+  The 11 without files: May–June self-play runs, Core ML timing models (fp32 copies never trained), GUI sessions.
+- Everything before 2026-05-30 was fp32 (bf16 arrived in bb70ab84). The code of every build those logs name is 8 or
+  16 blocks of 3×3 / 128; batches in those logs are 4096, except a 2026-06-03 bf16 batch sweep (one step per size).
+- 2026-06-05 → 10-07 logs (8,345): the only fp32 lines are `[PROBE] layoutForwardDivergence` and the `[VTRAJ]`
+  diagnostic (batch 64, ≤ 120 steps); no training run.
+
 ## Reproduce
 
 ```sh
