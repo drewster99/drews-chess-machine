@@ -1068,3 +1068,7 @@ move pawn at fixed count) and writes `analysis/intervention_results.json`.
   13,346 steps). Large puzzle set at 390,000: 1764.4 pElo / NLL 1.828 against bf16's 1765.1 / 1.826 (the broken run
   1436.6 / 2.276), `analysis-fp32/fp32fix_large_probe_step390000.jsonl`. Speed: median 3.95 s per step against bf16's
   1.1-1.25 s on uncontended segments.
+- Segment 1 (owner 2026-11-14: "training needs to continue our fp32"): exact resume of the 398,310 abort save,
+  started 15:47 CST on build 2678 (`FrozenBuilds/DCM-2678-2c1e8bb2.app`), `launch/elitecyc_fp32fix_seg1_launch.sh`,
+  `--accept-inexact build` (the build plans the split for batch 4096: the 9×9 convolutions stay split, the 5×5 stem
+  no longer is — same function). Same stem; stdout `train-elitecyc-fp32fix-seg1.stdout`. Target trainer step 1,000,000.
