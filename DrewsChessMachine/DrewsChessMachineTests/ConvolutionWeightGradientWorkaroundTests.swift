@@ -6,16 +6,16 @@ import XCTest
 /// Pure: no GPU.
 final class ConvolutionWeightGradientWorkaroundTests: XCTestCase {
 
-    /// One pre-activation block of 9×9 / 128 channels on a 5×5 stem over the
-    /// 24-plane input, 1×1 heads: the shape of the convolutions R-elitecyc
-    /// trains, in the compute dtype given.
+    /// One pre-activation block of 128 channels (9×9 by default: the shape of
+    /// the convolutions R-elitecyc trains) on a 5×5 stem over the 24-plane
+    /// input, 1×1 heads, in the compute dtype given.
     private func architecture(_ dtype: ComputeDataType, tail: PolicyTailPrecisionSetting? = nil,
-                              policyPreConvChannels: Int = 32) throws -> NetworkArchitecture {
+                              policyPreConvChannels: Int = 32, blockKernelSize: Int = 9) throws -> NetworkArchitecture {
         var arch = NetworkArchitecture(
             inputEncoding: .basic24, channels: 128, numBlocks: 1, stemConvKernelSize: 5,
             activationFunction: .relu, blockActivationStyle: .pre,
             blockSkipMerge: .cleanAdd, blockUseRezero: false, rezeroAlphaInit: 0.5,
-            blockConv1KernelSize: 9, blockConv2KernelSize: 9,
+            blockConv1KernelSize: blockKernelSize, blockConv2KernelSize: blockKernelSize,
             blockSeStyle: .none, blockSeReductionRatio: 4,
             policyHeadStyle: .intermediateConv, policyPreConvChannels: policyPreConvChannels,
             valueHeadStyle: .wdlSoftmax, valueHeadConvChannels: 4, valueHeadHiddenUnits: 16,
@@ -30,14 +30,14 @@ final class ConvolutionWeightGradientWorkaroundTests: XCTestCase {
     }
 
     /// Protects: an fp32 architecture splits exactly the convolutions whose
-    /// element count can pass 2³¹ at the batch ceiling, each into two groups.
+    /// element count passes 2³¹ at the planned batch (4096), each into two
+    /// groups; the 5×5 / 24-channel stem passes only from batch 55,925 and is
+    /// left alone.
     /// Fails if: a qualifying convolution is left out (its fp32 gradient would be
-    /// wrong), a 1×1 head convolution is split needlessly, or the group count
-    /// changes.
-    func testFloat32ArchitectureSplitsEveryConvolutionThatCanPassTheLimit() throws {
+    /// wrong), a convolution is split needlessly, or the group count changes.
+    func testFloat32ArchitectureSplitsEveryConvolutionThatPassesTheLimitAtThePlannedBatch() throws {
         let plan = try ConvolutionWeightGradientWorkaround.plan(for: architecture(.float32))
         XCTAssertEqual(plan.splits, [
-            .init(weightName: "stem.conv.weight", inputChannels: 24, kernelSize: 5, groups: 2),
             .init(weightName: "blocks.0.conv1.weight", inputChannels: 128, kernelSize: 9, groups: 2),
             .init(weightName: "blocks.0.conv2.weight", inputChannels: 128, kernelSize: 9, groups: 2),
         ])
@@ -53,6 +53,7 @@ final class ConvolutionWeightGradientWorkaroundTests: XCTestCase {
                               (.float16, .float32FromPreBatchNorm)] {
             let plan = try ConvolutionWeightGradientWorkaround.plan(for: architecture(dtype, tail: tail))
             XCTAssertTrue(plan.isEmpty, "\(dtype) / \(tail): \(plan.splits)")
+            XCTAssertEqual(plan.batchLimit, .everyAcceptedBatch, "\(dtype) / \(tail)")
         }
     }
 
@@ -62,7 +63,7 @@ final class ConvolutionWeightGradientWorkaroundTests: XCTestCase {
     /// is not.
     /// Fails if: the rule looks only at the model's compute dtype.
     func testFloat32PolicyTailConvolutionInAReducedPrecisionNetworkIsCovered() throws {
-        let wide = 520   // 1×1 over 520 channels: 520 > 512
+        let wide = 8194   // 1×1 over 8194 channels: 4096 × 64 × 8194 > 2³¹ − 1
         let fp32Tail = try ConvolutionWeightGradientWorkaround.plan(
             for: architecture(.bFloat16, tail: .float32FromPreBatchNorm, policyPreConvChannels: wide))
         XCTAssertEqual(fp32Tail.splits, [
@@ -73,18 +74,18 @@ final class ConvolutionWeightGradientWorkaroundTests: XCTestCase {
         XCTAssertTrue(mixedTail.isEmpty, "\(mixedTail.splits)")
     }
 
-    /// Protects: the size boundary. At the 65,536 batch ceiling an 8×8
-    /// convolution passes 2³¹ − 1 exactly when C_in·k² > 512.
-    /// Fails if: the limit, the ceiling or the board size changes, or the
+    /// Protects: the size boundary. At the planned batch (4096) an 8×8
+    /// convolution passes 2³¹ − 1 exactly when C_in·k² ≥ 8192.
+    /// Fails if: the limit, the planned batch or the board size changes, or the
     /// comparison becomes ≥.
-    func testAffectedExactlyWhenInputChannelsTimesKernelAreaExceed512() {
-        XCTAssertEqual(ConvolutionWeightGradientWorkaround.batchCeiling, 65_536)
+    func testAffectedExactlyWhenInputChannelsTimesKernelAreaReach8192() {
+        XCTAssertEqual(ConvolutionWeightGradientWorkaround.plannedTrainingBatchSize, 4096)
         let cases: [(inputChannels: Int, kernelSize: Int, affected: Bool)] = [
-            (512, 1, false), (513, 1, true),
-            (56, 3, false), (57, 3, true),       // 504 / 513
-            (20, 5, false), (21, 5, true),       // 500 / 525
-            (10, 7, false), (11, 7, true),       // 490 / 539
-            (6, 9, false), (7, 9, true),         // 486 / 567
+            (8191, 1, false), (8192, 1, true),
+            (910, 3, false), (911, 3, true),     // 8190 / 8199
+            (327, 5, false), (328, 5, true),     // 8175 / 8200
+            (167, 7, false), (168, 7, true),     // 8183 / 8232
+            (101, 9, false), (102, 9, true),     // 8181 / 8262
         ]
         for c in cases {
             XCTAssertEqual(ConvolutionWeightGradientWorkaround.isAffected(inputChannels: c.inputChannels, kernelSize: c.kernelSize),
@@ -122,13 +123,14 @@ final class ConvolutionWeightGradientWorkaroundTests: XCTestCase {
         }
     }
 
-    /// Protects: the notice names every split convolution and its event, and
-    /// there is none without splits.
-    func testNoticeNamesEverySplitAndTheEvent() throws {
+    /// Protects: the notice names every split convolution, its event and the
+    /// batch limit, and there is none for a plan that neither splits nor limits.
+    func testNoticeNamesEverySplitTheEventAndTheBatchLimit() throws {
         let plan = try ConvolutionWeightGradientWorkaround.plan(for: architecture(.float32))
         let notice = try XCTUnwrap(plan.notice(event: "--new-model test"))
-        XCTAssertTrue(notice.hasPrefix("[ARCH] fp32 conv weight-gradient workaround (--new-model test): 3 convolution(s)"),
+        XCTAssertTrue(notice.hasPrefix("[ARCH] fp32 conv weight-gradient workaround (--new-model test): 2 convolution(s)"),
                       notice)
+        XCTAssertTrue(notice.contains("Training refuses batches above 32768"), notice)
         for split in plan.splits {
             XCTAssertTrue(notice.contains(split.weightName), "\(split.weightName) missing from \(notice)")
         }
@@ -141,5 +143,66 @@ final class ConvolutionWeightGradientWorkaroundTests: XCTestCase {
         let plan = try ConvolutionWeightGradientWorkaround.plan(for: architecture(.float32))
         XCTAssertEqual(plan.groups(forWeight: "blocks.0.conv1.weight"), 2)
         XCTAssertEqual(plan.groups(forWeight: "value.conv.weight"), 1)
+    }
+
+    /// Protects: the first batch at which a shape passes the limit, for the
+    /// three tower shapes in use (9×9, 7×7, 3×3 at 128 channels).
+    /// Fails if: `firstWrongBatch` is off by one or computes another product.
+    func testFirstWrongBatchForTheTowerShapesInUse() {
+        XCTAssertEqual(ConvolutionWeightGradientWorkaround.firstWrongBatch(inputChannels: 128, kernelSize: 9), 3237)
+        XCTAssertEqual(ConvolutionWeightGradientWorkaround.firstWrongBatch(inputChannels: 128, kernelSize: 7), 5350)
+        XCTAssertEqual(ConvolutionWeightGradientWorkaround.firstWrongBatch(inputChannels: 128, kernelSize: 3), 29_128)
+        for (cin, k) in [(128, 9), (128, 7), (128, 3), (24, 5), (1, 1)] {
+            let first = ConvolutionWeightGradientWorkaround.firstWrongBatch(inputChannels: cin, kernelSize: k)
+            XCTAssertLessThanOrEqual(
+                ConvolutionWeightGradientWorkaround.elementCount(batch: first - 1, inputChannels: cin, kernelSize: k),
+                ConvolutionWeightGradientWorkaround.elementLimit, "\(cin) / \(k)")
+            XCTAssertGreaterThan(
+                ConvolutionWeightGradientWorkaround.elementCount(batch: first, inputChannels: cin, kernelSize: k),
+                ConvolutionWeightGradientWorkaround.elementLimit, "\(cin) / \(k)")
+        }
+    }
+
+    /// Protects: a plan with splits covers batches up to the batch the split
+    /// was measured correct at, and refuses the next one.
+    /// Fails if: the limit is dropped, moved, or the comparison becomes ≥.
+    func testPlanWithSplitsRefusesBatchesAboveTheMeasuredSplitRange() throws {
+        let plan = try ConvolutionWeightGradientWorkaround.plan(for: architecture(.float32))
+        XCTAssertEqual(plan.batchLimit, .upTo(largestCorrectBatch: 32_768, source: .splitConvolutionsUnmeasured))
+        XCTAssertNoThrow(try plan.requireCorrectWeightGradients(batchSize: 4096))
+        XCTAssertNoThrow(try plan.requireCorrectWeightGradients(batchSize: 32_768))
+        XCTAssertThrowsError(try plan.requireCorrectWeightGradients(batchSize: 32_769)) { error in
+            XCTAssertEqual(error as? ConvolutionWeightGradientWorkaround.WorkaroundError,
+                           .batchAboveCorrectLimit(batchSize: 32_769, largestCorrectBatch: 32_768,
+                                                   source: .splitConvolutionsUnmeasured))
+        }
+    }
+
+    /// Protects: an fp32 3×3 / 128 tower is not split at the planned batch
+    /// (it passes the limit only from 29,128), and a step at 29,128 — where
+    /// its unsplit gradient would be wrong — is refused, naming the convolution.
+    /// Fails if: the guard ignores unsplit convolutions, or uses the wrong one.
+    func testUnsplitPlanRefusesTheFirstBatchItsConvolutionsGetWrong() throws {
+        let plan = try ConvolutionWeightGradientWorkaround.plan(for: architecture(.float32, blockKernelSize: 3))
+        XCTAssertTrue(plan.isEmpty, "\(plan.splits)")
+        let source = ConvolutionWeightGradientWorkaround.BatchLimitSource.unsplitConvolution(
+            weightName: "blocks.0.conv1.weight", inputChannels: 128, kernelSize: 3)
+        XCTAssertEqual(plan.batchLimit, .upTo(largestCorrectBatch: 29_127, source: source))
+        XCTAssertNoThrow(try plan.requireCorrectWeightGradients(batchSize: 29_127))
+        XCTAssertThrowsError(try plan.requireCorrectWeightGradients(batchSize: 29_128)) { error in
+            XCTAssertEqual(error as? ConvolutionWeightGradientWorkaround.WorkaroundError,
+                           .batchAboveCorrectLimit(batchSize: 29_128, largestCorrectBatch: 29_127, source: source))
+        }
+        let notice = try XCTUnwrap(plan.notice(event: "x"))
+        XCTAssertTrue(notice.contains("no convolution needs splitting at the planned batch 4096"), notice)
+        XCTAssertTrue(notice.contains("Training refuses batches above 29127"), notice)
+    }
+
+    /// Protects: a network with no fp32 convolution never refuses a batch.
+    /// Fails if: the guard fires on bf16 networks.
+    func testReducedPrecisionPlanAcceptsEveryBatch() throws {
+        let plan = try ConvolutionWeightGradientWorkaround.plan(for: architecture(.bFloat16, tail: .mixedFinalProjection))
+        XCTAssertNoThrow(try plan.requireCorrectWeightGradients(batchSize: ConvolutionWeightGradientWorkaround.batchCeiling))
+        XCTAssertNil(plan.notice(event: "x"))
     }
 }

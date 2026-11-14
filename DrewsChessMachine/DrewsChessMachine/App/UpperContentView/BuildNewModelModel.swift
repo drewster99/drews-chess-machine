@@ -613,10 +613,10 @@ final class BuildNewModelModel {
         return ModelSizeGuidance(parameterCount: architecture.parameterCount, physicalMemoryBytes: physicalMemoryBytes)
     }
 
-    /// The warning shown when training the current architecture splits
-    /// convolutions to avoid MPSGraph's wrong fp32 weight gradient
-    /// (`ConvolutionWeightGradientWorkaround`); nil when it splits none or the
-    /// architecture is invalid (`validationError` then says why).
+    /// The warning shown when training the current architecture in fp32 splits
+    /// convolutions or limits the batch, to avoid MPSGraph's wrong fp32 weight
+    /// gradient (`ConvolutionWeightGradientWorkaround`); nil when it does
+    /// neither or the architecture is invalid (`validationError` then says why).
     var convolutionWorkaroundWarning: String? {
         guard isValid else { return nil }
         let plan: ConvolutionWeightGradientWorkaround.Plan
@@ -625,11 +625,13 @@ final class BuildNewModelModel {
         } catch {
             return nil
         }
-        guard !plan.isEmpty else { return nil }
+        guard let limit = plan.batchLimitSentence else { return nil }
+        let cause = "MPSGraph computes a wrong fp32 weight gradient once batch × 64 × input channels × kernel² passes 2³¹."
+        guard !plan.isEmpty else { return "\(cause) \(limit)" }
         let names = plan.splits.map(\.weightName).joined(separator: ", ")
-        return "fp32 training splits \(plan.splits.count) convolution(s) over their input channels: MPSGraph computes a "
-            + "wrong fp32 weight gradient once batch × 64 × input channels × kernel² passes 2³¹. Same network and "
-            + "gradients. \(ConvolutionWeightGradientWorkaround.speedPenaltyNote) \(names)"
+        return "fp32 training splits \(plan.splits.count) convolution(s) over their input channels for batch "
+            + "\(ConvolutionWeightGradientWorkaround.plannedTrainingBatchSize): \(cause) Same network and gradients. "
+            + "\(limit) \(ConvolutionWeightGradientWorkaround.speedPenaltyNote) \(names)"
     }
 
     /// The Init seed field, read.

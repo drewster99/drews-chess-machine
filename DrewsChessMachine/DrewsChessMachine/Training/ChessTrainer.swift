@@ -7127,14 +7127,12 @@ final class ChessTrainer: @unchecked Sendable {
         klProbeStepIndex: Int,
         gradientCap: GradientCapDecision
     ) throws -> TrainStepTiming {
-        // The fp32 conv weight-gradient workaround decides which convolutions to
-        // split for batches up to the declared training-batch ceiling (the graph's
-        // batch axis is dynamic, so the plan can't see the batch). A larger step
-        // on a network with an fp32 convolution is outside what it covers.
-        if batchSize > ConvolutionWeightGradientWorkaround.batchCeiling,
-           ConvolutionWeightGradientWorkaround.anyConvolutionRunsInFloat32(network.arch) {
-            throw ConvolutionWeightGradientWorkaround.WorkaroundError.batchAboveCeiling(batchSize: batchSize)
-        }
+        // The fp32 conv weight-gradient workaround splits convolutions for the
+        // planned batch; the graph's batch axis is dynamic, so the plan can't see
+        // the batch actually fed. A step above the largest batch the graph's fp32
+        // weight gradients are correct for stops training here instead of
+        // training on a wrong gradient.
+        try network.convolutionWeightGradientSplit.requireCorrectWeightGradients(batchSize: batchSize)
         // The training step is the ONE execution that applies dropout, so it is
         // the one that binds the live rate; every other consumer of this graph
         // binds the preallocated zero (see `dropoutRateFeedPlaceholder`).

@@ -2411,7 +2411,7 @@ final class ChessNetwork: @unchecked Sendable {
     ///
     /// Every convolution goes through here so the plan is checked where the
     /// graph is actually built: a training-graph convolution that runs in fp32,
-    /// has a shape the rule covers, and is not in the plan is an error — the plan
+    /// passes the limit at the planned batch, and is not in the plan is an error — the plan
     /// decides fp32 placement from the architecture, and this catches any
     /// convolution where the two disagree instead of building it unsplit.
     ///

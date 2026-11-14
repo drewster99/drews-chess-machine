@@ -63,3 +63,23 @@ real block structure, against 0.76 unsplit; exact at batches 4096–32768).
 
 - Audit every earlier fp32 training run against the rule.
 - Apple Feedback report and blog-post draft from the repro.
+
+## Revision 2026-11-14: plan for batch 4096, refuse what isn't covered (owner decision)
+
+Splitting by the 65,536 ceiling split convolutions that only break at batches nobody uses, and doubled a 16-block
+3×3 net's step time (`analysis-fp32/README.md` "Speed"). Now:
+
+- **Split** only the fp32 convolutions that pass 2³¹ − 1 at `plannedTrainingBatchSize` (4096): C_in·k² ≥ 8192
+  (9×9 / 128 splits; 7×7 and 3×3 / 128 do not).
+- **Guard:** each `Plan` records `TrainingBatchLimit` — the largest batch whose fp32 weight gradients are right: one
+  below the first failing batch of any unsplit fp32 convolution, and at most 32,768 where it splits (the largest
+  batch the split was measured at). `ChessTrainer.runPreparedStep` calls `requireCorrectWeightGradients(batchSize:)`
+  before every SGD step (one integer comparison) and throws `batchAboveCorrectLimit`, naming the convolution.
+  A network with no fp32 convolution, or none that fails below the 65,536 ceiling, is never limited.
+- **Notices:** the `[ARCH]` line and Build New Model's warning appear for every fp32 network the plan splits or
+  limits, with the limit (`Training refuses batches above N`).
+- **Later, if needed:** build graphs per batch size in use, or raise the planned batch. Expected to be revisited
+  when Apple fixes the defect (re-run the gated bug-map test).
+- Tests: `ConvolutionWeightGradientWorkaroundTests` rewritten for the planned batch (8192 boundary, split / unsplit
+  limits, refusal at the first wrong batch). Not yet run.
+
