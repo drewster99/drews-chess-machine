@@ -1,0 +1,72 @@
+[REPLAY] starting offline corpus replay over 1 corpus path(s)
+[REPLAY] start-model: 20261112-zlra-elitecyc-fp32-start.safetensors modelID=20261113-2-1pxF encoding=basic24 policy_tail=does_not_apply
+[REPLAY-ARCH] (start-model) in basic24(24) -> stem 128 (5x5) . 3x[9x9+9x9 @128, no-SE, silu/pre, clean_add, no-ReZero, out:layer_norm, drop*1] . act silu . policy intermediate_conv(4864) . value WDL(24->FC128) . float32 . 8,271,279 params
+[RESUME] schedule: lr_momentum_cycle checkpoint=[lr=^10000st cnt=0 inv=false mom=off momFollow=off kf=[0:2.00e-02/2.00e-03 m0.850/0.950]] configured=[lr=^10000st cnt=0 inv=false mom=off momFollow=off kf=[0:2.00e-02/2.00e-03 m0.900/0.900, 386000:2.00e-02/2.00e-03 m0.900/0.900, 486000:1.00e-03/4.47e-04 m0.900/0.900, 586000:1.00e-03/1.00e-04 m0.900/0.900]]
+[REPLAY-HPARAMS] lr=0.002 batch=4096 wd=0.0003 momentum=0.9 gradClip=15 entropyBonus=0 drawPenalty=0 policyW=1 valueW=1 illegalW=1 pLabelSmooth=0.1 pLabelSmoothMode=fixed_total pLabelSmoothPerMove=0.0033 pLabelSmoothPerMoveCap=0.5 vLabelSmooth=0.013 dropout=0 lrWarmup=1000 bufCap=1000000 replayRatio=0.48 minPrefill=500000 complementCE=on sqrtBatchLR=off batchStats=10 klProbe=100 relClip=clip/k3/N1000/W100/floor0.75 stepLineSec=180 sampling=(maxPerGame=10 maxDrawPct=100 targetLen=999 stratify=off applied=on)
+[GRAD-CLIP] config mode=clip k=3 N=1000 W=100 floor=0.75 hardMax=15
+[REPLAY] trainer-model output: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261114-zlra-elitecyc-fp32fix-latest.safetensors (new file)
+[REPLAY] enumerated checkpoints: /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261114-zlra-elitecyc-fp32fix-latest-step385000.safetensors and siblings (never overwritten)
+[REPLAY] corpus 20260704-215145-op24Gp: 42 sealed shard(s)
+[RESUME-DIFF] lr_cycle_keyframes: parent=[0:0.02/0.002 m0.85/0.95] this_run=[0:0.02/0.002 m0.9/0.9, 386000:0.02/0.002 m0.9/0.9, 486000:0.001/0.00044721359549995795 m0.9/0.9, 586000:0.001/0.0001 m0.9/0.9]
+[RESUME] build changed (2523 a242b7ad → 2675 bfd93a95), behavior fingerprint matches
+[RESUME] OS changed (Version 27.2 (Build 26B118) → Version 27.2 (Build 26B123)), behavior fingerprint matches
+[RESUME] compute_data_type: the trainer state was captured under bfloat16; this file computes in float32 (changed by derive 20261113-2-1pxF)
+[RESUME] policy_tail_precision: the trainer state was captured under fp32_from_pre_bn; this file has does_not_apply (changed by derive 20261113-2-1pxF)
+[RESUME] NOT EXACT: schedule, compute_data_type, policy_tail_precision
+[PARAM] random_seed_mode and random_seed=0 not used: an exact resume keeps the run's seed
+[REPLAY] building network + trainer (encoding=basic24)
+[NUMERICS] policy_tail_precision=does_not_apply source=architecture
+[RESUME] rng: sampler=restored
+[RESUME] rng: dropout stream=restored
+[REPLAY] start-model trainer state restored exactly (fp32 masters, velocity, trainerStep=384964) + feeder net (base tensors=61)
+[REPLAY-CYCLE] lr=^10000st cnt=0 inv=false mom=off momFollow=off kf=[0:2.00e-02/2.00e-03 m0.900/0.900, 386000:2.00e-02/2.00e-03 m0.900/0.900, 486000:1.00e-03/4.47e-04 m0.900/0.900, 586000:1.00e-03/1.00e-04 m0.900/0.900] origin=trainerStep 384964 cycleStep 383964 cycleLR=1.5805e-02 cycleMom=static (exact resume of 20261113-2-1pxF)
+[REPLAY] step lines: every 50 trainer steps through 1000, every 1000, and the first diagnostics step ≥ 180 s after the previous line; saves at trainer-step multiples of 1000 (next: 385000)
+[RUN] path=replay run=E709F4EB-1D95-4166-90FA-F0D31002BB89 seg=14 (resume of 20261113-2-1pxF sha=343a3569db74, not exact: schedule, compute_data_type, policy_tail_precision) build=2675 git=bfd93a95 dirty=false git_diff=none device="Apple M5 Max" vm=false os="Version 27.2 (Build 26B123)" seed=16308727193092630423 mode=resumed(drawn) derivation=v1 params_sha=7cd23b5c3681 policy_tail=does_not_apply cum_step=384964 cum_games=37772534 cum_train_sec=759235.9555639029 argv="/Users/andrew/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2675-bfd93a95.app/Contents/MacOS/DrewsChessMachine --replay-corpus 20260704-215145-op24Gp --start-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261112-zlra-elitecyc-fp32-start.safetensors --resume-exact --accept-inexact schedule,compute_data_type,policy_tail_precision --parameters /Users/andrew/cursor/drews-chess-machine/experiments/20261008-zlra-selfplay-lr/parameters-zlra-elitecyc-decay.json --out-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261114-zlra-elitecyc-fp32fix-latest.safetensors --epochs 7 --training-step-limit 615036 --enumerate-checkpoints --output /Users/andrew/cursor/drews-chess-machine/experiments/20261008-zlra-selfplay-lr/results-elitecyc-fp32fix-seg0.json"
+[HEALTH] config enabled=true interval=1000 grace=1000 warmup=1000 momentum=0.9 legalMassStall=0.99x8 path=replay actions=non_finite:log,dead_channels:log,value_fc1_zero_velocity:log,illegal_mass:log,gradient_collapse:log,loss_spike:log,policy_offset_drift:log,bn_running_variance_runaway:log,gradient_spike:log,divergence:log,value_saturation:log,value_draw_saturation:log,legal_mass_stall:log,bn_running_variance_jump:log value_fc1_zero_velocity=not_applicable(activation=silu)
+[REPLAY] batchSize=4096 reuse=0.48 K=8533 minPrefill=500000 stepLimit=615036 epochLimit=7
+[REPLAY] pre-filled: bufCount=1000000 positionsFed=1491981 gamesFed=17242 rejected=0 skipped=0
+[REPLAY] step=1 loss=3.3753 pLoss=2.5439 vLoss=0.8310 pEnt=-- pIllM=0.0004 playedP=-- pW=-- pD=-- pL=-- vAbs=-- pLogitMean=-- vLogitMean=-- gNorm=0.745 lr=0.0158 ms=2649.1 buf=1000000 plies=1500571 games=17334 rejected=0 skipped=0 epoch=2 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.7454 clips=0 gCap=2.1995 trainerStep=384965
+[LAYER-HEALTH] live trainerStep=384965 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=487.6@blocks.2.bn1[13] rvOver10xMedian=45 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[BATCH-HASH] trainerStep=385000 batchHash=53dbd08105a51172 batchChain=partial
+[REPLAY] step=36 loss=3.3887 pLoss=2.5545 vLoss=0.8337 pEnt=2.807 pIllM=0.0005 playedP=0.204 pW=0.453 pD=0.107 pL=0.440 vAbs=0.293 pLogitMean=-9.0970 vLogitMean=0.6053 gNorm=0.742 lr=0.0161 ms=3311.7 buf=1000000 plies=1799245 games=20784 rejected=0 skipped=0 epoch=2 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.8410 clips=0 gCap=2.2026 trainerStep=385000
+[LAYER-HEALTH] live trainerStep=385000 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=487.4@blocks.2.bn1[13] rvOver10xMedian=45 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[HEALTH] rule value_fc1_zero_velocity does not apply: value FC1 activation is silu, not relu
+[HEALTH] check trainerStep=385000 generation=0 evaluations=1 live=1 checkpoint=0 stale=0 truncated=0 cost_ms=0.2 train_ms=96107.5 liveReadFailed=0 lossMaxRatio=-- lossMedianRatio=-- gradMaxRatio=-- rvRiseMax=-- rvOutliers=45/-- nodata=loss_spike:1,gradient_spike:1 active=none
+[REPLAY] saved trainer model (autosave) step=36 trainerStep=385000 nextGame=10700513 shard=29 epoch=2 -> 20261114-zlra-elitecyc-fp32fix-latest.safetensors
+[LAYER-HEALTH] checkpoint replay-autosave step=36 trainerStep=385000 scope=all_tensors reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=487.4@blocks.2.bn1[13] rvOver10xMedian=45 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none seZeroVel=none valueFC1ZeroVel=0/128 maxAbs=28.84@blocks.1.bn1.running_var
+[LAYER-HEALTH]   batch-norm sites — β/|γ|: dead < -3.00, mostly off < -2.00, always on > +3.00; classified for relu/leaky_relu only
+[LAYER-HEALTH]     site            act            ch   dead    off     on  zeroγ nonfin  min β/|γ| [ch]     max β/|γ| [ch]     rv max/median [ch]  rv≥10x
+[LAYER-HEALTH]     stem.bn         -             128    n/a    n/a    n/a      0      0     -1.69 [116]        +1.71 [96]            4.2 [23]           0
+[LAYER-HEALTH]     blocks.0.bn1    [ALARM] health raise rule=policy_offset_drift severity=warning trainerStep=385050 value=medianAbs=9.1013 threshold=medianAbs>=3 action=log lr=0.0164 mom=0.9
+silu          128    n/a    n/a    n/a      0      0     -2.67 [16]         +0.02 [41]           18.2 [58]           4
+[LAYER-HEALTH]     blocks.0.bn2    silu          128    n/a    n/a    n/a      0      0     -1.29 [21]        +12.27 [116]          10.1 [81]           1
+[LAYER-HEALTH]     blocks.1.bn1    silu          128    n/a    n/a    n/a      0      0     -2.16 [46]         -0.39 [23]          283.5 [58]          18
+[LAYER-HEALTH]     blocks.1.bn2    silu          128    n/a    n/a    n/a      0      0     -1.74 [48]         -0.43 [58]           10.2 [37]           1
+[LAYER-HEALTH]     blocks.2.bn1    silu          128    n/a    n/a    n/a      0      0     -2.32 [83]         +0.61 [8]           487.4 [13]          18
+[LAYER-HEALTH]     blocks.2.bn2    silu          128    n/a    n/a    n/a      0      0     -2.10 [20]         +0.13 [97]            2.9 [21]           0
+[LAYER-HEALTH]     tower_final_bn  silu          128    n/a    n/a    n/a      0      0     -0.86 [111]        +1.63 [88]           35.9 [13]           3
+[LAYER-HEALTH]     policy.pre_bn   silu          128    n/a    n/a    n/a      0      0     -1.23 [32]         +2.00 [65]            8.1 [40]           0
+[LAYER-HEALTH]     value.bn        silu           24    n/a    n/a    n/a      0      0     -1.50 [23]         +0.59 [2]             4.3 [16]           0
+[LAYER-HEALTH]   parked channels — every activation: pass-through P = E|f'(γz+β)|, z ~ N(0,1); parked when P above its floor < 0.00135 of the range (Φ(-3)), mostly off < 0.02275 (Φ(-2)); equals dead / off for relu/leaky_relu
+[LAYER-HEALTH]     site            act            ch parked    off       min P   median P
+[LAYER-HEALTH]     blocks.0.bn1    silu          128      0      0    0.114196   0.326369
+[LAYER-HEALTH]     blocks.0.bn2    silu          128      0      0    0.157354   0.316798
+[LAYER-HEALTH]     blocks.1.bn1    silu          128      0      0    0.094659   0.218227
+[LAYER-HEALTH]     blocks.1.bn2    silu          128      0      0    0.090692   0.237516
+[LAYER-HEALTH]     blocks.2.bn1    silu          128      0      0    0.059225   0.195932
+[LAYER-HEALTH]     blocks.2.bn2    silu          128      0      0    0.062763   0.283805
+[LAYER-HEALTH]     tower_final_bn  silu          128      0      0    0.251194   0.508772
+[LAYER-HEALTH]     policy.pre_bn   silu          128      0      0    0.182816   0.590407
+[LAYER-HEALTH]     value.bn        silu           24      0      0    0.129744   0.162776
+[LAYER-HEALTH]   FC hidden-unit velocity — zero: every weight-velocity entry exactly 0; low: nonzero but < 5% of the layer's p90 unit norm
+[LAYER-HEALTH]     value.fc1.weight  silu  units 128  zero 0  low 3  median unit norm 0.008421
+[LAYER-HEALTH]     (no SE blocks)
+[LAYER-HEALTH]   ReZero: none
+[LAYER-HEALTH]   non-finite: 0 values in 0 of 102 tensors (16540206 values examined)
+[LAYER-HEALTH]   largest |value|: blocks.1.bn1.running_var 28.84, blocks.2.bn1.running_var 19.89, blocks.0.bn1.running_var 10.86, tower_final_bn.running_var 8.054, blocks.1.bn1.running_mean 7.023
+[REPLAY] enumerated checkpoint -> 20261114-zlra-elitecyc-fp32fix-latest-step385000.safetensors
+[REPLAY] step=86 loss=3.3340 pLoss=2.5215 vLoss=0.8120 pEnt=2.810 pIllM=0.0004 playedP=0.200 pW=0.444 pD=0.106 pL=0.450 vAbs=0.284 pLogitMean=-9.1013 vLogitMean=0.6053 gNorm=0.753 lr=0.0164 ms=4094.0 buf=1000000 plies=2225935 games=25774 rejected=0 skipped=0 epoch=2 mom=0.9000 lrCyc[pk=2.0e-02,tr=2.0e-03] gNormMax=0.7968 clips=0 gCap=2.2052 trainerStep=385050
+[LAYER-HEALTH] live trainerStep=385050 scope=batch_norm_state_only reluSites=0/10 dead=n/a off=n/a alwaysOn=n/a (no relu/leaky_relu BN sites) rvMaxOverMedian=487.7@blocks.2.bn1[13] rvOver10xMedian=43 rezero=none nonFinite=0 parkedSites=9/10 parkedCh=1048 parked=0 parkedOff=0 parkedBy=none
+[ALARM] health raise rule=policy_offset_drift severity=warning trainerStep=385050 value=medianAbs=9.1013 threshold=medianAbs>=3 action=log lr=0.0164 mom=0.9
+[BATCH-HASH] trainerStep=385100 batchHash=469ca34d0544c191 batchChain=fde38be590b1a834
+[REPLAY] step=136 loss=3.3379 pLoss=2.5277

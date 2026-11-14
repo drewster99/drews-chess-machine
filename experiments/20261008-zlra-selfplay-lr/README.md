@@ -1060,3 +1060,7 @@ move pawn at fixed count) and writes `analysis/intervention_results.json`.
 - The run's files keep their stem; its results are not a measurement of fp32 training and must not be compared as such.
 - Restarted as R-elitecyc-fp32fix from the same start file on the fixed build: `launch/elitecyc_fp32fix_launch.sh`,
   stem `20261114-zlra-elitecyc-fp32fix-latest`.
+- Started 2026-11-14 00:31 CST, build 2675 (`FrozenBuilds/DCM-2675-bfd93a95.app`), pid 88325; stdout
+  `train-elitecyc-fp32fix-seg0.stdout`. `[RESUME] NOT EXACT: schedule, compute_data_type, policy_tail_precision`. First
+  lines match R-elitecyc on the same batches: 385,000 pLoss 2.5545 / gNorm 0.742 (bf16 2.5549 / 0.743; the broken fp32
+  run 2.5638 / 0.850). ~4.1 s per step at the start.
