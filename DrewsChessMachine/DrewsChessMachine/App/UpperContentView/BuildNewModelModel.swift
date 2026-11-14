@@ -629,7 +629,7 @@ final class BuildNewModelModel {
         let names = plan.splits.map(\.weightName).joined(separator: ", ")
         return "fp32 training splits \(plan.splits.count) convolution(s) over their input channels: MPSGraph computes a "
             + "wrong fp32 weight gradient once batch × 64 × input channels × kernel² passes 2³¹. Same network and "
-            + "gradients, somewhat slower training. \(names)"
+            + "gradients. \(ConvolutionWeightGradientWorkaround.speedPenaltyNote) \(names)"
     }
 
     /// The Init seed field, read.

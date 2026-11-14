@@ -53,6 +53,15 @@ enum ConvolutionWeightGradientWorkaround {
     /// The largest training batch any path accepts.
     static let batchCeiling = TrainingBatchSize.declaredClosedRange.upperBound
 
+    /// What a split costs in training speed, said wherever the split is announced
+    /// (the `[ARCH]` notice and Build New Model's warning) so nobody trains in fp32
+    /// without knowing the price. The cost depends on the shape and is not modeled;
+    /// these are the measured cases (corpus replay, batch 4096, macOS 27.2,
+    /// M5 Max; `experiments/20261008-zlra-selfplay-lr/analysis-fp32/README.md`
+    /// "Speed"). Re-measure when the rule or MPSGraph changes.
+    static let speedPenaltyNote = "Splitting costs training speed: measured at batch 4096, about +10% per step on 3 blocks "
+        + "of 9x9 / 128 channels and about 2x on 16 blocks of 3x3 / 128 channels (fp32 unsplit is already about 2x bf16)."
+
     /// One convolution the training graph splits.
     struct SplitConvolution: Equatable, Sendable {
         /// The weight's plan (safetensors) name, e.g. `blocks.0.conv1.weight`.
@@ -88,7 +97,7 @@ enum ConvolutionWeightGradientWorkaround {
             return "[ARCH] fp32 conv weight-gradient workaround (\(event)): \(splits.count) convolution(s) are split over their "
                 + "input channels in training graphs, because MPSGraph computes a wrong fp32 weight gradient once "
                 + "batch x 64 x C_in x k^2 passes 2^31 (batch ceiling \(batchCeiling)): \(list). Same function and "
-                + "gradients; inference graphs are unchanged."
+                + "gradients; inference graphs are unchanged. \(ConvolutionWeightGradientWorkaround.speedPenaltyNote)"
         }
     }
 
