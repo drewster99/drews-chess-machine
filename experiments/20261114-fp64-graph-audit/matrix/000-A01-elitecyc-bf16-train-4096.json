@@ -1,0 +1,13 @@
+{
+ "memory_limit_gib": 30,
+ "chunk_bytes": 1073741824,
+ "cases": [
+  {
+   "label": "A01-elitecyc-bf16-train-4096",
+   "mode": "training",
+   "batch": 4096,
+   "seed": 1,
+   "model": "/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261011-zlra-elitecyc-latest-step384964.safetensors"
+  }
+ ]
+}

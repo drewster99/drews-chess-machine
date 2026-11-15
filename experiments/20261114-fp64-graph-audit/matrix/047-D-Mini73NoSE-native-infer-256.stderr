@@ -1,0 +1,4 @@
+[GRAPH-AUDIT] case D-Mini73NoSE-native-infer-256 start
+[GRAPH-AUDIT] D-Mini73NoSE-native-infer-256: 59 ops, batch 256, inference, 0 gradient tensors
+[GRAPH-AUDIT] D-Mini73NoSE-native-infer-256: chunk 1/1 ops 0-58 (3.1 s, footprint 2087 MB)
+[GRAPH-AUDIT] done: 1 case(s)

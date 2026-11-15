@@ -1,0 +1,4 @@
+[GRAPH-AUDIT] case D-test_SE_attenuate-only-native-infer-256 start
+[GRAPH-AUDIT] D-test_SE_attenuate-only-native-infer-256: 104 ops, batch 256, inference, 0 gradient tensors
+[GRAPH-AUDIT] D-test_SE_attenuate-only-native-infer-256: chunk 1/1 ops 0-103 (6.3 s, footprint 2434 MB)
+[GRAPH-AUDIT] done: 1 case(s)

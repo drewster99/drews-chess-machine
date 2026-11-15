@@ -1,0 +1,2 @@
+[GRAPH-AUDIT] case C-test_22_skinny_48-native-train-4096 start
+[GRAPH-AUDIT] C-test_22_skinny_48-native-train-4096: 883 ops, batch 4096, training, 671 gradient tensors

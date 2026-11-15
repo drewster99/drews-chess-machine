@@ -1,7 +1,9 @@
-# fp64 audit of the training and inference graphs (proposal, 2026-11-14)
+# fp64 audit of the training and inference graphs (2026-11-14)
 
-**Status: proposed, not started.** Waits for the owner's go, and for the macOS / Xcode / tools update (the audit
-measures MPSGraph, so it should run on the OS we will train on).
+**Status: forward and backward graph audit implemented and run (owner's go 2026-11-14, on macOS 27.2 before the
+update); results in `experiments/20261114-fp64-graph-audit/README.md`: no defect beyond the known fp32 conv weight
+gradient. Not done: the trainer's loss subgraph (`buildTrainingOps`' raw ops) and the optimizer update; a re-run on
+the updated OS.**
 
 ## Why
 

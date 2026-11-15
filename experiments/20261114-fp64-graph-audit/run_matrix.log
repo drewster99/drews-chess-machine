@@ -1,0 +1,117 @@
+== 20:50:23 matrix/000-A01-elitecyc-bf16-train-4096.json
+exit=0
+== 20:58:28 matrix/001-A02-elitecyc-fp32fix-train-4096.json
+exit=0
+== 21:07:58 matrix/002-A03-elitecyc-bf16-infer-256.json
+exit=0
+== 21:08:10 matrix/003-A04-elitecyc-bf16-infer-1.json
+exit=0
+== 21:08:13 matrix/004-A05-elitecyc-fp32fix-infer-256.json
+exit=0
+== 21:08:25 matrix/005-A06-elitecyc-fp16-train-4096.json
+exit=0
+== 21:16:55 matrix/006-A07-elitecyc-bf16tailfp32-train-4096.json
+exit=0
+== 21:24:57 matrix/007-B-v4_5block_7x7-fp32-train-4096.json
+exit=0
+== 21:35:21 matrix/008-B-v3_16block_3x3-fp32-train-4096.json
+exit=0
+== 21:49:40 matrix/009-B-v5_5block_7x7_lnout-fp32-train-4096.json
+exit=0
+== 22:00:46 matrix/010-B-nt8y_15x15stem-fp32-train-4096.json
+exit=0
+== 22:05:32 matrix/011-B-test_1_15x15_98-fp32-train-4096.json
+exit=0
+== 22:10:24 matrix/012-B-test_1_fatty_216-fp32-train-4096.json
+exit=0
+== 22:14:32 matrix/013-B-v4_5block_7x7-fp16-train-4096.json
+exit=0
+== 22:24:43 matrix/014-B-v3_16block_3x3-fp16-train-4096.json
+exit=0
+== 22:40:30 matrix/015-B-v4_5block_7x7-bf16tailfp32-train-4096.json
+exit=0
+== 22:50:08 matrix/016-C-v3_8block_3x3-native-train-4096.json
+exit=0
+== 22:56:07 matrix/017-C-v3_16block_3x3-native-train-4096.json
+exit=0
+== 23:10:08 matrix/018-C-v4_12block_3x3-native-train-4096.json
+exit=0
+== 23:20:26 matrix/019-C-v4_5block_7x7-native-train-4096.json
+exit=0
+== 23:29:49 matrix/020-C-v4_8block_3x3-native-train-4096.json
+exit=0
+== 23:36:27 matrix/021-C-v4_4block_3x3_fp32-native-train-4096.json
+exit=0
+== 23:39:55 matrix/022-C-v4_5block_7x7_fusion-native-train-4096.json
+exit=0
+== 23:49:28 matrix/023-C-v5_5block_7x7_lnout-native-train-4096.json
+exit=0
+== 23:59:27 matrix/024-C-nt8y_3x3stem-native-train-4096.json
+exit=0
+== 00:03:50 matrix/025-C-nt8y_15x15stem-native-train-4096.json
+exit=0
+== 00:08:27 matrix/026-C-Mini73NoSE-native-train-4096.json
+exit=0
+== 00:11:25 matrix/027-C-nt8y-native-train-4096.json
+exit=0
+== 00:15:35 matrix/028-C-qeu8_1blk_128-native-train-4096.json
+exit=0
+== 00:21:58 matrix/029-C-test_1_15x15_98-native-train-4096.json
+exit=0
+== 00:26:14 matrix/030-C-test_1_fatty_216-native-train-4096.json
+exit=0
+== 00:29:45 matrix/031-C-test_1_fatty_224_3x3stem-native-train-4096.json
+exit=0
+== 00:33:25 matrix/032-C-test_22_skinny_48-native-train-4096.json
+exit=137
+== 00:50:09 matrix/033-C-test_SE_attenuate-only-native-train-4096.json
+exit=0
+== 00:55:58 matrix/034-C-test_SE_none-native-train-4096.json
+exit=0
+== 01:01:33 matrix/035-C-test_SE_scale+bias-native-train-4096.json
+exit=0
+== 01:07:23 matrix/036-C-v6-native-train-4096.json
+exit=0
+== 01:15:43 matrix/037-D-v3_8block_3x3-native-infer-256.json
+exit=0
+== 01:15:52 matrix/038-D-v3_16block_3x3-native-infer-256.json
+exit=0
+== 01:16:04 matrix/039-D-v4_12block_3x3-native-infer-256.json
+exit=0
+== 01:16:16 matrix/040-D-v4_5block_7x7-native-infer-256.json
+exit=0
+== 01:16:28 matrix/041-D-v4_8block_3x3-native-infer-256.json
+exit=0
+== 01:16:37 matrix/042-D-v4_4block_3x3_fp32-native-infer-256.json
+exit=0
+== 01:16:43 matrix/043-D-v4_5block_7x7_fusion-native-infer-256.json
+exit=0
+== 01:16:55 matrix/044-D-v5_5block_7x7_lnout-native-infer-256.json
+exit=0
+== 01:17:10 matrix/045-D-nt8y_3x3stem-native-infer-256.json
+exit=0
+== 01:17:19 matrix/046-D-nt8y_15x15stem-native-infer-256.json
+exit=0
+== 01:17:28 matrix/047-D-Mini73NoSE-native-infer-256.json
+exit=0
+== 01:17:35 matrix/048-D-nt8y-native-infer-256.json
+exit=0
+== 01:17:41 matrix/049-D-qeu8_1blk_128-native-infer-256.json
+exit=0
+== 01:17:50 matrix/050-D-test_1_15x15_98-native-infer-256.json
+exit=0
+== 01:17:59 matrix/051-D-test_1_fatty_216-native-infer-256.json
+exit=0
+== 01:18:05 matrix/052-D-test_1_fatty_224_3x3stem-native-infer-256.json
+exit=0
+== 01:18:11 matrix/053-D-test_22_skinny_48-native-infer-256.json
+exit=0
+== 01:18:32 matrix/054-D-test_SE_attenuate-only-native-infer-256.json
+exit=0
+== 01:18:41 matrix/055-D-test_SE_none-native-infer-256.json
+exit=0
+== 01:18:50 matrix/056-D-test_SE_scale+bias-native-infer-256.json
+exit=0
+== 01:18:59 matrix/057-D-v6-native-infer-256.json
+exit=0
+MATRIX DONE 01:19:11

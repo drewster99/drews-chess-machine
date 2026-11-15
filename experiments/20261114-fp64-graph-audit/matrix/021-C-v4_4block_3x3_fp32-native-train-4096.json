@@ -1,0 +1,13 @@
+{
+ "memory_limit_gib": 30,
+ "chunk_bytes": 1073741824,
+ "cases": [
+  {
+   "label": "C-v4_4block_3x3_fp32-native-train-4096",
+   "mode": "training",
+   "batch": 4096,
+   "seed": 1,
+   "architecture": "v4_4block_3x3_fp32"
+  }
+ ]
+}

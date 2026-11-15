@@ -1,0 +1,4 @@
+[GRAPH-AUDIT] case A05-elitecyc-fp32fix-infer-256 start
+[GRAPH-AUDIT] A05-elitecyc-fp32fix-infer-256: 63 ops, batch 256, inference, 0 gradient tensors
+[GRAPH-AUDIT] A05-elitecyc-fp32fix-infer-256: chunk 1/1 ops 0-62 (8.9 s, footprint 3117 MB)
+[GRAPH-AUDIT] done: 1 case(s)

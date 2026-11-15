@@ -1,0 +1,6 @@
+[GRAPH-AUDIT] case D-v4_12block_3x3-native-infer-256 start
+[GRAPH-AUDIT] D-v4_12block_3x3-native-infer-256: 341 ops, batch 256, inference, 0 gradient tensors
+[GRAPH-AUDIT] D-v4_12block_3x3-native-infer-256: chunk 1/3 ops 0-157 (4.3 s, footprint 1994 MB)
+[GRAPH-AUDIT] D-v4_12block_3x3-native-infer-256: chunk 2/3 ops 158-313 (4.1 s, footprint 1988 MB)
+[GRAPH-AUDIT] D-v4_12block_3x3-native-infer-256: chunk 3/3 ops 314-340 (0.6 s, footprint 1406 MB)
+[GRAPH-AUDIT] done: 1 case(s)

@@ -1,0 +1,5 @@
+[GRAPH-AUDIT] case D-v4_5block_7x7-native-infer-256 start
+[GRAPH-AUDIT] D-v4_5block_7x7-native-infer-256: 159 ops, batch 256, inference, 0 gradient tensors
+[GRAPH-AUDIT] D-v4_5block_7x7-native-infer-256: chunk 1/2 ops 0-140 (9.4 s, footprint 2924 MB)
+[GRAPH-AUDIT] D-v4_5block_7x7-native-infer-256: chunk 2/2 ops 141-158 (0.2 s, footprint 1240 MB)
+[GRAPH-AUDIT] done: 1 case(s)

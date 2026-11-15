@@ -1,0 +1,14 @@
+{
+ "memory_limit_gib": 30,
+ "chunk_bytes": 1073741824,
+ "cases": [
+  {
+   "label": "B-v5_5block_7x7_lnout-fp32-train-4096",
+   "mode": "training",
+   "batch": 4096,
+   "seed": 1,
+   "architecture": "v5_5block_7x7_lnout",
+   "compute_data_type": "float32"
+  }
+ ]
+}

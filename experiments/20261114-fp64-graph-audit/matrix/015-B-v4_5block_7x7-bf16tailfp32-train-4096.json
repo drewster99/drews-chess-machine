@@ -1,0 +1,15 @@
+{
+ "memory_limit_gib": 30,
+ "chunk_bytes": 1073741824,
+ "cases": [
+  {
+   "label": "B-v4_5block_7x7-bf16tailfp32-train-4096",
+   "mode": "training",
+   "batch": 4096,
+   "seed": 1,
+   "architecture": "v4_5block_7x7",
+   "compute_data_type": "bfloat16",
+   "policy_tail_precision": "fp32_from_pre_bn"
+  }
+ ]
+}

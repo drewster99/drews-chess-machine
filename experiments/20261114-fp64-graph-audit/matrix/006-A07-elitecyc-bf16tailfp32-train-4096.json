@@ -1,0 +1,15 @@
+{
+ "memory_limit_gib": 30,
+ "chunk_bytes": 1073741824,
+ "cases": [
+  {
+   "label": "A07-elitecyc-bf16tailfp32-train-4096",
+   "mode": "training",
+   "batch": 4096,
+   "seed": 1,
+   "model": "/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261011-zlra-elitecyc-latest-step384964.safetensors",
+   "compute_data_type": "bfloat16",
+   "policy_tail_precision": "fp32_from_pre_bn"
+  }
+ ]
+}

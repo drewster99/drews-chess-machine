@@ -1,0 +1,13 @@
+{
+ "memory_limit_gib": 30,
+ "chunk_bytes": 1073741824,
+ "cases": [
+  {
+   "label": "A05-elitecyc-fp32fix-infer-256",
+   "mode": "inference",
+   "batch": 256,
+   "seed": 1,
+   "model": "/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261114-zlra-elitecyc-fp32fix-latest-step400000.safetensors"
+  }
+ ]
+}

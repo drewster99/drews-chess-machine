@@ -1,0 +1,4 @@
+[GRAPH-AUDIT] case D-v4_4block_3x3_fp32-native-infer-256 start
+[GRAPH-AUDIT] D-v4_4block_3x3_fp32-native-infer-256: 127 ops, batch 256, inference, 0 gradient tensors
+[GRAPH-AUDIT] D-v4_4block_3x3_fp32-native-infer-256: chunk 1/1 ops 0-126 (3.0 s, footprint 2105 MB)
+[GRAPH-AUDIT] done: 1 case(s)

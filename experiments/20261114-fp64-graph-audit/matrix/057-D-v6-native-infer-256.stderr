@@ -1,0 +1,4 @@
+[GRAPH-AUDIT] case D-v6-native-infer-256 start
+[GRAPH-AUDIT] D-v6-native-infer-256: 74 ops, batch 256, inference, 0 gradient tensors
+[GRAPH-AUDIT] D-v6-native-infer-256: chunk 1/1 ops 0-73 (8.5 s, footprint 2616 MB)
+[GRAPH-AUDIT] done: 1 case(s)

@@ -1,0 +1,4 @@
+[GRAPH-AUDIT] case D-nt8y-native-infer-256 start
+[GRAPH-AUDIT] D-nt8y-native-infer-256: 116 ops, batch 256, inference, 0 gradient tensors
+[GRAPH-AUDIT] D-nt8y-native-infer-256: chunk 1/1 ops 0-115 (4.6 s, footprint 2171 MB)
+[GRAPH-AUDIT] done: 1 case(s)

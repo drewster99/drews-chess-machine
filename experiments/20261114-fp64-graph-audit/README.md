@@ -35,6 +35,35 @@ Chunks are sized from real tensor shapes (1 GiB of float64 by default); the proc
 
 The audit finds the known defect, so its silence elsewhere means something.
 
+## Matrix results (2026-11-14 20:50 → 11-15 01:19, frozen build `DCM-2686-85443e2f-audit`)
+
+58 cases (`matrix/*.json`, run by `run_matrix.sh`): A = the real R-elitecyc models (bf16 and fp32fix at 400k, training
+4096, inference 256 and 1, the bf16 model rebuilt fp16 and with an fp32 policy tail); B = fp32 / fp16 / fp32-tail
+overrides on presets; C = every preset in its own precision, training 4096; D = every preset, inference 256.
+Table: `python3 matrix_table.py matrix/*.jsonl` (worst `scale_rel_err` of fp32-only checks vs checks with a 16-bit
+operand).
+
+**No MPSGraph defect beyond the known fp32 conv weight-gradient one.**
+
+- **fp32 (14 cases incl. the fp32fix model with its split convolutions at 4096):** worst forward 2.0e-7, worst gradient
+  1.4e-7 — rounding. The split fp32fix graph's conv weight gradients are exact (1.1e-7), confirming the workaround.
+- **bf16 (40 cases):** worst forward 4.5e-3, worst gradient 4.0e-3: bf16 rounding (8 significant bits, 3.9e-3 per
+  element), far under the 3e-2 threshold. The fp32 policy tail changes nothing measurable.
+- **Two fp16 flags, both fp16's range, not MPSGraph:**
+  - `A06` (9×9 bf16 model rebuilt fp16, training 4096): the backward pass overflows to inf from `block2_bn1`'s
+    variance gradient back. Its exact fp64 value reaches 5.56e4 (fp16 max 65,504), because the audit loss sums over
+    the 4,096 positions where training averages them (gradients 4,096× larger). An audit artifact.
+  - `B-v4_5block_7x7-fp16`: one forward multiply at 3.2e-2 on values ~1e-6, below fp16's smallest normal (6.1e-5);
+    the error equals the subnormal rounding floor.
+- **`032-C-test_22_skinny_48` training (22 blocks × 48 channels, bf16, 883 ops / 671 gradient tensors) is not
+  audited.** Both attempts were SIGKILLed (exit 137) before the first chunk wrote a record. The first was jetsam
+  (`JetsamEvent-2026-11-15-005019.ips`, reason low swap): the audit process held 17,114,014 pages × 16 KiB = 261 GiB,
+  mostly compressed, while `ps` RSS read ~16 GB (`matrix/032-rerun.mem.log`, the rerun's samples: RSS peak 38.6 GB in
+  the first 3 min). The rerun died at 18 min the same way without a jetsam report. This is the audit's own memory on a
+  graph this deep (the in-process footprint check runs only after a chunk completes; the outside guard reads free
+  memory, which compression keeps up), not a finding about the model. Its inference case (`D`) is clean. The preset
+  trains nowhere.
+
 ## Reproduce
 
 ```sh

@@ -1,0 +1,14 @@
+{
+ "memory_limit_gib": 30,
+ "chunk_bytes": 1073741824,
+ "cases": [
+  {
+   "label": "B-test_1_15x15_98-fp32-train-4096",
+   "mode": "training",
+   "batch": 4096,
+   "seed": 1,
+   "architecture": "test_1_15x15_98",
+   "compute_data_type": "float32"
+  }
+ ]
+}

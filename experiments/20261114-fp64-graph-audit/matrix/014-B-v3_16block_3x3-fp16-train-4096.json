@@ -1,0 +1,15 @@
+{
+ "memory_limit_gib": 30,
+ "chunk_bytes": 1073741824,
+ "cases": [
+  {
+   "label": "B-v3_16block_3x3-fp16-train-4096",
+   "mode": "training",
+   "batch": 4096,
+   "seed": 1,
+   "architecture": "v3_16block_3x3",
+   "compute_data_type": "float16",
+   "policy_tail_precision": "mixed_final_projection"
+  }
+ ]
+}

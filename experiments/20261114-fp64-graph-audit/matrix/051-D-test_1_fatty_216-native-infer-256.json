@@ -1,0 +1,13 @@
+{
+ "memory_limit_gib": 30,
+ "chunk_bytes": 1073741824,
+ "cases": [
+  {
+   "label": "D-test_1_fatty_216-native-infer-256",
+   "mode": "inference",
+   "batch": 256,
+   "seed": 1,
+   "architecture": "test_1_fatty_216"
+  }
+ ]
+}

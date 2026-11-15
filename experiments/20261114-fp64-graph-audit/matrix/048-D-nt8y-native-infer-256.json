@@ -1,0 +1,13 @@
+{
+ "memory_limit_gib": 30,
+ "chunk_bytes": 1073741824,
+ "cases": [
+  {
+   "label": "D-nt8y-native-infer-256",
+   "mode": "inference",
+   "batch": 256,
+   "seed": 1,
+   "architecture": "nt8y"
+  }
+ ]
+}

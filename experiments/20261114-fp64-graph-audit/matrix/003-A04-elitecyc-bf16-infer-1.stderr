@@ -1,0 +1,4 @@
+[GRAPH-AUDIT] case A04-elitecyc-bf16-infer-1 start
+[GRAPH-AUDIT] A04-elitecyc-bf16-infer-1: 74 ops, batch 1, inference, 0 gradient tensors
+[GRAPH-AUDIT] A04-elitecyc-bf16-infer-1: chunk 1/1 ops 0-73 (0.8 s, footprint 592 MB)
+[GRAPH-AUDIT] done: 1 case(s)
