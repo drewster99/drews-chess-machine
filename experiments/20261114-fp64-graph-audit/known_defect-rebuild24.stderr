@@ -1,0 +1,12 @@
+[GRAPH-AUDIT] case v4_7x7-fp32-train-b5376 start
+[GRAPH-AUDIT] v4_7x7-fp32-train-b5376: 323 ops, batch 5376, training, 274 gradient tensors
+[GRAPH-AUDIT] v4_7x7-fp32-train-b5376: chunk 1/123 ops 0-0 (13.5 s, footprint 13305 MB)
+[GRAPH-AUDIT] v4_7x7-fp32-train-b5376: chunk 2/123 ops 1-2 (3.9 s, footprint 13897 MB)
+[GRAPH-AUDIT] v4_7x7-fp32-train-b5376: chunk 3/123 ops 3-10 (1.5 s, footprint 13543 MB)
+[GRAPH-AUDIT] v4_7x7-fp32-train-b5376: chunk 4/123 ops 11-11 (3.6 s, footprint 14235 MB)
+[GRAPH-AUDIT] v4_7x7-fp32-train-b5376: chunk 5/123 ops 12-13 (3.9 s, footprint 13563 MB)
+[GRAPH-AUDIT] v4_7x7-fp32-train-b5376: chunk 6/123 ops 14-21 (1.5 s, footprint 13713 MB)
+[GRAPH-AUDIT] v4_7x7-fp32-train-b5376: chunk 7/123 ops 22-22 (3.6 s, footprint 13901 MB)
+[GRAPH-AUDIT] v4_7x7-fp32-train-b5376: chunk 8/123 ops 23-23 (2.4 s, footprint 14386 MB)
+[GRAPH-AUDIT] case v4_7x7-fp32-train-b5376 FAILED: process footprint 30689 MB at chunk 9 GPU results is above the limit 24576 MB; case stopped (lower the batch or chunk_bytes)
+1 case(s) failed: v4_7x7-fp32-train-b5376

@@ -369,6 +369,7 @@ enum GPUStage: String, Sendable, CaseIterable {
     case dropoutStateWrite = "dropout state write"
     case dropoutStateRead = "dropout state read"
     case dropoutStateDerive = "dropout state derivation"
+    case graphAudit = "fp64 graph audit"
 }
 
 /// An `NSError` from Metal or MPSGraph, kept as the facts a log line and a

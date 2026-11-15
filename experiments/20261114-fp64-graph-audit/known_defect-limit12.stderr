@@ -1,0 +1,4 @@
+[GRAPH-AUDIT] case v4_7x7-fp32-train-b5376 start
+[GRAPH-AUDIT] v4_7x7-fp32-train-b5376: 323 ops, batch 5376, training, 274 gradient tensors
+[GRAPH-AUDIT] case v4_7x7-fp32-train-b5376 FAILED: process footprint 13303 MB at op 0 (convolution2D) is above the limit 12288 MB; case stopped (lower the batch or chunk_bytes)
+1 case(s) failed: v4_7x7-fp32-train-b5376

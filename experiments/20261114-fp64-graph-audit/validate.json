@@ -1,0 +1,5 @@
+{"cases": [
+ {"label": "zlra9x9-fp32-train-b64", "model": "/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261112-zlra-elitecyc-fp32-start.safetensors", "mode": "training", "batch": 64},
+ {"label": "zlra9x9-bf16-train-b64", "model": "/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261011-zlra-elitecyc-latest-step384964.safetensors", "mode": "training", "batch": 64},
+ {"label": "zlra9x9-bf16-infer-b64", "model": "/Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261011-zlra-elitecyc-latest-step384964.safetensors", "mode": "inference", "batch": 64}
+]}

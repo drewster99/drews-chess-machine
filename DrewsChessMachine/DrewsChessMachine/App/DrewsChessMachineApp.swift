@@ -210,6 +210,11 @@ struct DrewsChessMachineApp: App {
         // checkpoint. Read-only; exits before SwiftUI / Metal GUI init.
         SharpnessCLI.handleIfRequested(rawArgs: rawArgs)
 
+        // Pre-flight: the fp64 graph audit (--graph-audit, --graph-audit-selftest).
+        // Every op of the network's own MPSGraph, inference or training mode,
+        // checked against float64 references; one JSON line per check.
+        GraphAuditCLI.handleIfRequested(rawArgs: rawArgs)
+
         // Pre-flight: headless numerics audit (--analyze-numerics). Checks a
         // checkpoint's (or a folder of checkpoints') weights and activations
         // against fp32 / bf16 / fp16, writing JSON per checkpoint. Exits

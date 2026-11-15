@@ -134,6 +134,16 @@ enum CommandLineHelp {
                                       the same per ply bucket, and skipped games by reason. --eval-out must
                                       not exist unless --eval-out-overwrite is given, and is never a model.
                                       Exits non-zero after the sweep if any model failed.
+      --graph-audit <config.json> --graph-audit-out <new file>
+                                      fp64 audit of the network's own MPSGraph: every forward op (inference or
+                                      training mode, at the config's batch sizes) recomputed in float64 from
+                                      the operands MPSGraph held, and every tensor's gradient from its
+                                      consumers'. One JSON line per check; the output file must not exist.
+                                      Config: {"cases": [{"label", "model" | "architecture",
+                                      "compute_data_type", "policy_tail_precision", "mode", "batch", "seed"}]}
+                                      (documentation/plans-active/FP64_GRAPH_AUDIT_PLAN.md).
+      --graph-audit-selftest          Check the audit's float64 backward references against finite
+                                      differences; prints one line per check, exit 0 when all pass.
       --sharpness --sharpness-model <file> [--sharpness-model <file> ...] --sharpness-corpus <corpus id or folder>
                          [--sharpness-corpus-start-game <n>] [--sharpness-buffer-positions <n>] [--sharpness-batches <k>]
                          [--sharpness-batch-size <n>]

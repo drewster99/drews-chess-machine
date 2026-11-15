@@ -601,10 +601,11 @@ final class ChessNetwork: @unchecked Sendable {
         // cannot be worked around fails here.
         let convolutionSplit: ConvolutionWeightGradientWorkaround.Plan =
             bnMode == .training ? try ConvolutionWeightGradientWorkaround.plan(for: arch) : .none
-        // A recording describes the inference forward pass; a training-mode
-        // graph computes batch statistics and dropout instead, so recording one
-        // would describe a different network.
-        if graphRecorder != nil, bnMode != .inference {
+        // An export recording describes the inference forward pass; a
+        // training-mode graph computes batch statistics and dropout instead, so
+        // recording one would describe a different network. An audit recording
+        // (`GraphAudit`) records whichever graph is built, op by op.
+        if let graphRecorder, graphRecorder.purpose == .inferenceExport, bnMode != .inference {
             throw ChessNetworkError.inferenceGraphRecordingOfTrainingGraph
         }
         guard let mtlDevice = MTLCreateSystemDefaultDevice() else {
@@ -1032,7 +1033,7 @@ final class ChessNetwork: @unchecked Sendable {
         // name, which is what the per-tensor init seeds are keyed on.
         try initializer.verifyEveryRandomTensorInitialized()
         randomTensorRoles = initializer.randomTensorRoles
-        if let graphRecorder {
+        if let graphRecorder, graphRecorder.purpose == .inferenceExport {
             recordedInferenceGraph = try graphRecorder.finish(
                 persistentVariables: trainables + runningStats, plan: arch.weightTensorPlan(),
                 outputs: [(.policy, policyOutput), (.value, valueOutput), (.valueProbabilities, valueProbs)])
@@ -2415,9 +2416,9 @@ final class ChessNetwork: @unchecked Sendable {
     /// decides fp32 placement from the architecture, and this catches any
     /// convolution where the two disagree instead of building it unsplit.
     ///
-    /// The split ops are built on the raw graph: a plan is non-empty only on
-    /// training graphs, which never carry an `InferenceGraphRecorder`
-    /// (`ChessNetwork.init` refuses one), so nothing is left unrecorded.
+    /// The split ops go through `ops` like every other forward op, so an audit
+    /// recording (`GraphAudit`) checks each group's convolution, slices and
+    /// sum; without a recorder `ops` builds exactly what the raw graph would.
     private static func convolution(
         ops: ForwardGraphOps,
         _ input: MPSGraphTensor,
@@ -2446,17 +2447,16 @@ final class ChessNetwork: @unchecked Sendable {
         precondition(inputChannels % groups == 0,
                      "ConvolutionWeightGradientWorkaround.plan gives a divisor of the input channels")
         let width = inputChannels / groups
-        let graph = ops.graph
         var sum: MPSGraphTensor?
         for group in 0..<groups {
-            let inputSlice = graph.sliceTensor(input, dimension: 1, start: group * width, length: width,
-                                               name: "\(name)_input_group\(group)")
-            let weightSlice = graph.sliceTensor(weights, dimension: 1, start: group * width, length: width,
-                                                name: "\(name)_weights_group\(group)")
-            let partial = graph.convolution2D(inputSlice, weights: weightSlice, descriptor: descriptor,
-                                              name: "\(name)_group\(group)")
+            let inputSlice = ops.sliceTensor(input, dimension: 1, start: group * width, length: width,
+                                             name: "\(name)_input_group\(group)")
+            let weightSlice = ops.sliceTensor(weights, dimension: 1, start: group * width, length: width,
+                                              name: "\(name)_weights_group\(group)")
+            let partial = ops.convolution2D(inputSlice, weights: weightSlice, descriptor: descriptor,
+                                            name: "\(name)_group\(group)")
             if let running = sum {
-                sum = graph.addition(running, partial, name: group == groups - 1 ? name : nil)
+                sum = ops.addition(running, partial, name: group == groups - 1 ? name : nil)
             } else {
                 sum = partial
             }

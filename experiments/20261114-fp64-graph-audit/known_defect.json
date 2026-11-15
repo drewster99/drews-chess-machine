@@ -1,0 +1,3 @@
+{"memory_limit_gib": 36, "chunk_bytes": 1073741824, "cases": [
+ {"label": "v4_7x7-fp32-train-b5376", "architecture": "v4_5block_7x7", "compute_data_type": "float32", "mode": "training", "batch": 5376, "seed": 1}
+]}

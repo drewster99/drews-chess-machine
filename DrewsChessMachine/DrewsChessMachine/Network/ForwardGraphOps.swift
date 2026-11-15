@@ -287,10 +287,27 @@ final class InferenceGraphRecorder {
         }
     }
 
+    /// What a recording is for.
+    enum Purpose {
+        /// The inference forward pass the Core ML exporter translates: every
+        /// operand must come from a recorded op, and `finish` checks the
+        /// recording is complete.
+        case inferenceExport
+        /// The fp64 graph audit (`GraphAudit`): every forward op of an
+        /// inference or training graph, each with the MPSGraph tensors it read
+        /// and produced, so each op can be recomputed from its own operands. A
+        /// tensor no recorded op produced — the output of a training-only op
+        /// built on the raw graph (dropout) — is registered as an external
+        /// operand instead of failing the recording. Never finished.
+        case audit
+    }
+
     private enum TensorRole {
         case input
         case weight
         case operation
+        /// An audit operand no recorded op produced.
+        case external
     }
 
     private var idsByTensor: [ObjectIdentifier: (id: String, role: TensorRole)] = [:]
@@ -304,7 +321,25 @@ final class InferenceGraphRecorder {
     /// The id of the board input in every recording.
     static let inputID = "board"
 
-    init() {}
+    let purpose: Purpose
+    private var tensorsByID: [String: MPSGraphTensor] = [:]
+    private var externalCount = 0
+
+    init(purpose: Purpose = .inferenceExport) {
+        self.purpose = purpose
+    }
+
+    /// The recorded operations, in build order (audit recordings read them
+    /// directly; an export recording reads them through `finish`).
+    var recordedOperations: [GraphOperation] { operations }
+
+    /// The MPSGraph tensor behind a recorded id: an op's output, the input, a
+    /// weight, or (audit) an external operand.
+    func tensor(forID id: String) -> MPSGraphTensor? { tensorsByID[id] }
+
+    /// The first failure the recording met, if any (an audit recording is
+    /// never finished, so the audit reads it here).
+    var recordingFailure: RecordingError? { failure }
 
     /// A tensor's static shape, `[]` when MPSGraph gives none (a scalar constant).
     static func shape(of tensor: MPSGraphTensor) -> [Int] {
@@ -333,8 +368,16 @@ final class InferenceGraphRecorder {
     /// failure (and returns a placeholder id) when it was never recorded.
     func operand(_ tensor: MPSGraphTensor, consumer: String?) -> String {
         if let known = idsByTensor[ObjectIdentifier(tensor)] { return known.id }
-        fail(.unrecordedTensor(consumer: consumer ?? "an unnamed operation", producer: tensor.operation.name))
-        return "unrecorded"
+        switch purpose {
+        case .inferenceExport:
+            fail(.unrecordedTensor(consumer: consumer ?? "an unnamed operation", producer: tensor.operation.name))
+            return "unrecorded"
+        case .audit:
+            let id = "x\(externalCount)"
+            externalCount += 1
+            register(tensor, id: id, role: .external)
+            return id
+        }
     }
 
     func record(_ tensor: MPSGraphTensor, label: String?, _ kind: GraphOperationKind) {
@@ -363,6 +406,7 @@ final class InferenceGraphRecorder {
     private func register(_ tensor: MPSGraphTensor, id: String, role: TensorRole) {
         retained.append(tensor)
         idsByTensor[ObjectIdentifier(tensor)] = (id: id, role: role)
+        tensorsByID[id] = tensor
     }
 
     /// The finished recording, or the reason it is incomplete.
@@ -374,6 +418,7 @@ final class InferenceGraphRecorder {
     ///   - outputs: the tensors the inference targets read.
     func finish(persistentVariables: [MPSGraphTensor], plan: [WeightTensorSpec],
                 outputs: [(InferenceGraphOutputName, MPSGraphTensor)]) throws -> InferenceGraph {
+        precondition(purpose == .inferenceExport, "an audit recording is read directly, never finished")
         if let failure { throw failure }
         guard let inputTensor else { throw RecordingError.noInput }
         guard inputCount == 1 else { throw RecordingError.multipleInputs }
