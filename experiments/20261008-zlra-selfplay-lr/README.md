@@ -1072,3 +1072,6 @@ move pawn at fixed count) and writes `analysis/intervention_results.json`.
   started 15:47 CST on build 2678 (`FrozenBuilds/DCM-2678-2c1e8bb2.app`), `launch/elitecyc_fp32fix_seg1_launch.sh`,
   `--accept-inexact build` (the build plans the split for batch 4096: the 9×9 convolutions stay split, the 5×5 stem
   no longer is — same function). Same stem; stdout `train-elitecyc-fp32fix-seg1.stdout`. Target trainer step 1,000,000.
+- Segment 1 ended at trainer step ~400,780 when the Mac crashed and rebooted (2026-11-14 17:30 CST), most likely from
+  memory exhaustion by an fp64 graph-audit run started 17:27:46. Last checkpoint 400,000: large set 1757.0 pElo /
+  NLL 1.831 (bf16 1755.0 / 1.835). Not restarted.

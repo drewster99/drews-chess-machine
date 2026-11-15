@@ -132,6 +132,7 @@ Restarted from 384,964 under stem `20261114-zlra-elitecyc-fp32fix-latest`, same 
 | trainer step | bf16 pElo | fp32fix pElo | broken fp32 pElo | bf16 NLL | fp32fix NLL | broken fp32 NLL |
 |---:|---:|---:|---:|---:|---:|---:|
 | 390,000 | 1765.1 | 1764.4 | 1436.6 | 1.826 | 1.828 | 2.276 |
+| 400,000 | 1755.0 | 1757.0 | 1430.9 | 1.835 | 1.831 | 2.273 |
 
 ### Speed: fp32 vs bf16 (2026-11-14, `speed/`)
 
