@@ -1,0 +1,418 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Leela Network 42850</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single reading column of engineering notes, with full-width
+   schematic plates (inline SVG) and comparison tables that scroll on their own. */
+:root {
+  --paper: #f3f4f1;        /* faintly green-grey drafting paper */
+  --sheet: #fbfbf9;        /* plates and tables */
+  --ink: #1d2320;          /* body text */
+  --ink-soft: #55605a;     /* secondary text */
+  --rule: #cfd5cf;         /* hairlines */
+  --leela: #2f6f57;        /* Lc0: tournament-board green */
+  --leela-tint: #e1ece6;
+  --dcm: #8a5a1c;          /* DCM: walnut */
+  --dcm-tint: #f1e7d8;
+  --yes: #2f6f57;
+  --part: #9a6b12;
+  --no: #a23b3b;
+  --font-display: "Archivo Narrow", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #151917; --sheet: #1c211f; --ink: #e3e7e3; --ink-soft: #9ba59f; --rule: #333b37;
+    --leela: #7cc3a3; --leela-tint: #1f3229; --dcm: #e0a85a; --dcm-tint: #3a2c19;
+    --yes: #7cc3a3; --part: #e0b45a; --no: #ec8a8a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #151917; --sheet: #1c211f; --ink: #e3e7e3; --ink-soft: #9ba59f; --rule: #333b37;
+  --leela: #7cc3a3; --leela-tint: #1f3229; --dcm: #e0a85a; --dcm-tint: #3a2c19;
+  --yes: #7cc3a3; --part: #e0b45a; --no: #ec8a8a; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--paper); color: var(--ink);
+  font-family: var(--font-body); font-size: 18px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 80px;
+}
+main { max-width: 980px; margin: 0 auto; display: grid; gap: 56px; }
+.prose { max-width: 68ch; }
+h1, h2, h3 { font-family: var(--font-display); line-height: 1.1; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2.4rem, 6vw, 4rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: clamp(1.7rem, 3.4vw, 2.3rem); font-weight: 700; }
+h3 { font-size: 1.3rem; font-weight: 600; }
+p { margin: 0; }
+section { display: grid; gap: 18px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-soft); }
+.lede { font-size: 1.2rem; color: var(--ink-soft); max-width: 62ch; }
+code, .mono { font-family: var(--font-mono); font-size: 0.86em; }
+.tag { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 8px; border-radius: 3px; white-space: nowrap; }
+.tag.leela { background: var(--leela-tint); color: var(--leela); }
+.tag.dcm { background: var(--dcm-tint); color: var(--dcm); }
+.part-head { display: grid; gap: 10px; border-top: 2px solid var(--ink); padding-top: 18px; }
+
+/* Spec strip: the network's identity card */
+.spec { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); border-top: 1px solid var(--rule); border-left: 1px solid var(--rule); }
+.spec div { padding: 12px 14px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); background: var(--sheet); display: grid; gap: 2px; min-width: 0; }
+.spec dt { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); }
+.spec dd { margin: 0; font-family: var(--font-display); font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.spec dd small { font-family: var(--font-body); font-size: 0.85rem; font-weight: 400; color: var(--ink-soft); display: block; }
+
+.plate { background: var(--sheet); border: 1px solid var(--rule); padding: 20px; display: grid; gap: 12px; }
+.plate figcaption { font-size: 0.92rem; color: var(--ink-soft); }
+.scroll { overflow-x: auto; }
+svg text { font-family: var(--font-mono); }
+.formula { font-family: var(--font-mono); font-size: 0.95rem; background: var(--sheet); border-left: 3px solid var(--leela); padding: 12px 16px; overflow-x: auto; white-space: pre; }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--rule); }
+th { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); font-weight: 500; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 0.86rem; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: none; }
+tfoot td { border-top: 2px solid var(--ink); border-bottom: none; font-weight: 600; }
+.tablewrap { background: var(--sheet); border: 1px solid var(--rule); overflow-x: auto; }
+.tablewrap table { min-width: 640px; }
+.cmp td:first-child { font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap; }
+.cmp th.leela { color: var(--leela); }
+.cmp th.dcm { color: var(--dcm); }
+.verdict { font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 500; white-space: nowrap; }
+.verdict.yes { color: var(--yes); } .verdict.part { color: var(--part); } .verdict.no { color: var(--no); }
+.verdict::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }
+
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+.cols > * { min-width: 0; }
+.note { font-size: 0.9rem; color: var(--ink-soft); }
+.callout { border: 1px solid var(--rule); border-left: 4px solid var(--dcm); background: var(--sheet); padding: 16px 18px; display: grid; gap: 8px; }
+.callout.leela { border-left-color: var(--leela); }
+ul { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+.sources { font-size: 0.85rem; color: var(--ink-soft); display: grid; gap: 6px; }
+a { color: var(--leela); }
+a:focus-visible { outline: 2px solid var(--leela); outline-offset: 2px; }
+@media (max-width: 520px) { body { font-size: 17px; } .plate { padding: 12px; } }
+</style>
+
+<main>
+  <header style="display:grid; gap:14px;">
+    <span class="eyebrow">Weights file <span class="mono">42850.pb.gz</span> · bundled with lc0 0.32.1 (Homebrew)</span>
+    <h1>Leela Network 42850</h1>
+    <p class="lede">A squeeze-excitation residual network of 15 blocks at 192 channels, with policy, win/draw/loss and moves-left heads. Every number below was read from the file, or from lc0 v0.32.1's own source; the second half compares it with what Drew's Chess Machine (DCM) trains today and what DCM's architecture options can build.</p>
+  </header>
+
+  <section>
+    <dl class="spec">
+      <div><dt>Body</dt><dd>15 × 192<small>residual blocks × channels</small></dd></div>
+      <div><dt>Trainable parameters</dt><dd>11,248,132<small>plus 7,520 batch-norm running statistics</small></dd></div>
+      <div><dt>Format</dt><dd>SE with head format<small>network enum 4, min engine 0.21.0</small></dd></div>
+      <div><dt>Inputs</dt><dd>112 planes<small>8 positions of history</small></dd></div>
+      <div><dt>Outputs</dt><dd>1,858 · W/D/L · moves left<small>policy, value, moves-left heads</small></dd></div>
+      <div><dt>Storage</dt><dd>LINEAR16<small>16-bit, per-layer min/max</small></dd></div>
+      <div><dt>Training record</dt><dd>7,466,000 steps<small>policy accuracy 67.8%, policy loss 1.69</small></dd></div>
+      <div><dt>Multiply-adds</dt><dd>≈ 680 M<small>per position, one forward pass</small></dd></div>
+    </dl>
+  </section>
+
+  <div class="part-head">
+    <span class="eyebrow">Part one</span>
+    <h2>The network</h2>
+  </div>
+
+  <section>
+    <h3>From board to three answers</h3>
+    <figure class="plate" style="margin:0">
+      <div class="scroll">
+      <svg viewBox="0 0 900 330" width="900" role="img" aria-label="Data flow: 112 input planes, a 3 by 3 stem, 15 residual blocks, then policy, value and moves-left heads">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-soft)"/></marker>
+        </defs>
+        <g font-size="12" fill="var(--ink)">
+          <rect x="10" y="125" width="120" height="80" fill="var(--sheet)" stroke="var(--rule)"/>
+          <text x="70" y="155" text-anchor="middle" font-weight="500">112 × 8 × 8</text>
+          <text x="70" y="173" text-anchor="middle" fill="var(--ink-soft)">input planes</text>
+
+          <rect x="170" y="125" width="120" height="80" fill="var(--leela-tint)" stroke="var(--leela)"/>
+          <text x="230" y="150" text-anchor="middle" font-weight="500">stem</text>
+          <text x="230" y="168" text-anchor="middle" fill="var(--ink-soft)">conv 3×3 → 192</text>
+          <text x="230" y="186" text-anchor="middle" fill="var(--ink-soft)">BN · ReLU</text>
+
+          <g>
+            <rect x="330" y="105" width="210" height="120" fill="var(--leela-tint)" stroke="var(--leela)"/>
+            <rect x="338" y="113" width="210" height="120" fill="none" stroke="var(--leela)" opacity="0.5"/>
+            <rect x="346" y="121" width="210" height="120" fill="none" stroke="var(--leela)" opacity="0.3"/>
+            <text x="435" y="150" text-anchor="middle" font-weight="500">residual block × 15</text>
+            <text x="435" y="170" text-anchor="middle" fill="var(--ink-soft)">2 × conv 3×3 · SE</text>
+            <text x="435" y="188" text-anchor="middle" fill="var(--ink-soft)">192 channels throughout</text>
+          </g>
+
+          <rect x="620" y="20" width="270" height="80" fill="var(--sheet)" stroke="var(--rule)"/>
+          <text x="755" y="44" text-anchor="middle" font-weight="500">policy → 1,858 logits</text>
+          <text x="755" y="62" text-anchor="middle" fill="var(--ink-soft)">conv 3×3 192 · BN · ReLU</text>
+          <text x="755" y="80" text-anchor="middle" fill="var(--ink-soft)">conv 3×3 → 80 (+bias) · gather</text>
+
+          <rect x="620" y="125" width="270" height="80" fill="var(--sheet)" stroke="var(--rule)"/>
+          <text x="755" y="149" text-anchor="middle" font-weight="500">value → win · draw · loss</text>
+          <text x="755" y="167" text-anchor="middle" fill="var(--ink-soft)">conv 1×1 → 32 · BN · ReLU</text>
+          <text x="755" y="185" text-anchor="middle" fill="var(--ink-soft)">FC 2048→128 · ReLU · FC→3 · softmax</text>
+
+          <rect x="620" y="230" width="270" height="80" fill="var(--sheet)" stroke="var(--rule)"/>
+          <text x="755" y="254" text-anchor="middle" font-weight="500">moves left → 1 number</text>
+          <text x="755" y="272" text-anchor="middle" fill="var(--ink-soft)">conv 1×1 → 8 · BN · ReLU</text>
+          <text x="755" y="290" text-anchor="middle" fill="var(--ink-soft)">FC 512→128 · ReLU · FC→1 · ReLU</text>
+        </g>
+        <g stroke="var(--ink-soft)" stroke-width="1.5" fill="none" marker-end="url(#arr)">
+          <path d="M130,165 L168,165"/>
+          <path d="M290,165 L328,165"/>
+          <path d="M556,165 C590,165 590,60 618,60"/>
+          <path d="M556,170 L618,165"/>
+          <path d="M556,175 C590,175 590,270 618,270"/>
+        </g>
+      </svg>
+      </div>
+      <figcaption>The 192-channel 8×8 feature map leaves the 15th block and feeds all three heads. There is no batch norm or activation at the end of the tower; the last block's own ReLU is the final step.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h3>Inside one residual block</h3>
+    <figure class="plate" style="margin:0">
+      <div class="scroll">
+      <svg viewBox="0 0 900 260" width="900" role="img" aria-label="Residual block: conv, BN, ReLU, conv, BN, SE, add skip, ReLU">
+        <defs>
+          <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-soft)"/></marker>
+        </defs>
+        <g font-size="12" fill="var(--ink)" text-anchor="middle">
+          <text x="30" y="104">x</text>
+          <rect x="60" y="80" width="90" height="40" fill="var(--sheet)" stroke="var(--rule)"/><text x="105" y="104">conv 3×3</text>
+          <rect x="170" y="80" width="50" height="40" fill="var(--sheet)" stroke="var(--rule)"/><text x="195" y="104">BN</text>
+          <rect x="240" y="80" width="60" height="40" fill="var(--sheet)" stroke="var(--rule)"/><text x="270" y="104">ReLU</text>
+          <rect x="320" y="80" width="90" height="40" fill="var(--sheet)" stroke="var(--rule)"/><text x="365" y="104">conv 3×3</text>
+          <rect x="430" y="80" width="50" height="40" fill="var(--sheet)" stroke="var(--rule)"/><text x="455" y="104">BN</text>
+          <rect x="500" y="80" width="110" height="40" fill="var(--leela-tint)" stroke="var(--leela)"/><text x="555" y="104" font-weight="500">SE</text>
+          <circle cx="650" cy="100" r="16" fill="var(--sheet)" stroke="var(--ink-soft)"/><text x="650" y="105" font-size="16">+</text>
+          <rect x="690" y="80" width="60" height="40" fill="var(--sheet)" stroke="var(--rule)"/><text x="720" y="104">ReLU</text>
+          <text x="800" y="104">out</text>
+
+          <rect x="470" y="170" width="250" height="72" fill="var(--sheet)" stroke="var(--leela)" stroke-dasharray="4 3"/>
+          <text x="595" y="190" fill="var(--ink-soft)">mean over 64 squares → FC 192→32 · ReLU</text>
+          <text x="595" y="208" fill="var(--ink-soft)">→ FC 32→384, split in two halves</text>
+          <text x="595" y="226" fill="var(--ink-soft)">σ(first 192) scales · last 192 shift</text>
+        </g>
+        <g stroke="var(--ink-soft)" stroke-width="1.4" fill="none" marker-end="url(#arr2)">
+          <path d="M40,100 L58,100"/><path d="M150,100 L168,100"/><path d="M220,100 L238,100"/>
+          <path d="M300,100 L318,100"/><path d="M410,100 L428,100"/><path d="M480,100 L498,100"/>
+          <path d="M610,100 L632,100"/><path d="M666,100 L688,100"/><path d="M750,100 L782,100"/>
+          <path d="M45,92 C45,30 650,30 650,82"/>
+        </g>
+        <path d="M555,120 L555,168" stroke="var(--leela)" stroke-dasharray="3 3" fill="none"/>
+        <text x="340" y="40" font-size="12" fill="var(--ink-soft)" text-anchor="middle" font-family="var(--font-mono)">identity skip, no projection</text>
+      </svg>
+      </div>
+      <figcaption>All 15 blocks are this exact shape (the file holds 15 identical-sized blocks). Order and math are from lc0's CPU backend, <span class="mono">network_blas.cc</span> and <span class="mono">se_unit.cc</span>.</figcaption>
+    </figure>
+    <div class="formula">h  = ReLU(BN₁(conv₁(x)))
+z  = BN₂(conv₂(h))
+s  = FC₂(ReLU(FC₁(mean₆₄(z))))          # 384 values per position
+y  = ReLU( σ(s[0:192]) · z  +  s[192:384]  +  x )</div>
+    <div class="cols">
+      <div class="prose" style="display:grid; gap:10px;">
+        <p><strong>Post-activation.</strong> The ReLU comes after the skip is added, so the residual stream between blocks is never negative. This is the original ResNet ordering, not the later pre-activation form where batch norm and ReLU come before each convolution.</p>
+        <p><strong>Scale-and-shift SE.</strong> The squeeze-excitation unit gives each channel a gate between 0 and 1 and also an additive offset, both computed from the whole board. The offset lets a block move a channel's level for every square at once.</p>
+      </div>
+      <div class="prose" style="display:grid; gap:10px;">
+        <p><strong>No branch scale.</strong> The branch is added at full strength. There is no ReZero-style learned scalar and no normalization after the add.</p>
+        <p><strong>Per block:</strong> two convolutions of 331,776 weights, four batch-norm vectors of 192, and an SE unit of 18,848 values: 683,168 trainable parameters. With an SE reduction ratio of 6, the bottleneck is 32 wide.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>The 112 input planes</h3>
+    <div class="cols">
+      <div class="tablewrap"><table>
+        <thead><tr><th>Planes</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td class="num">0–103</td><td>8 positions of history (now, 1 ply ago … 7 plies ago), 13 planes each: our 6 piece types, their 6 piece types, and a plane set when that position has occurred before</td></tr>
+          <tr><td class="num">104–107</td><td>castling rights: our queenside, our kingside, their queenside, their kingside</td></tr>
+          <tr><td class="num">108</td><td>all ones when black is to move</td></tr>
+          <tr><td class="num">109</td><td>fifty-move counter, raw half-move count</td></tr>
+          <tr><td class="num">110</td><td>all zeros (once a move counter)</td></tr>
+          <tr><td class="num">111</td><td>all ones; lc0's encoder comments it as there "to help NN find board edges"</td></tr>
+        </tbody>
+      </table></div>
+      <div class="prose" style="display:grid; gap:10px;">
+        <p>Boards are drawn from the side to move's point of view. There is no en-passant plane: the history shows the double pawn push that makes en passant possible.</p>
+        <p><strong>Early in a game</strong>, history frames that don't exist yet are left all zero. That is lc0's default (<span class="mono">HistoryFill = fen_only</span>): only a game that started from a set-up position gets its missing frames filled, with copies of the first position. <span class="mono">always</span> fills every game that way; <span class="mono">no</span> never does.</p>
+        <p>This network uses the oldest input format, <span class="mono">INPUT_CLASSICAL_112_PLANE</span>. lc0 0.32.1 also reads newer formats that canonicalize the board: once neither side can castle, the board is mirrored left to right so our king is on the e–h side, and with no pawns left it is also flipped top to bottom and transposed, putting our king in one fixed eighth of the board. History stops at the last change of castling rights. Networks trained on those formats get positions that differ only by symmetry collapsed into one input.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>The heads</h3>
+    <div class="cols">
+      <div class="prose" style="display:grid; gap:8px;">
+        <p><span class="tag leela">Policy</span></p>
+        <p>Two 3×3 convolutions: 192 → 192 with batch norm and ReLU, then 192 → 80 with a bias and no activation. Only the first 73 planes are read; with 64 squares they give 4,672 slots (56 queen-style, 8 knight, 9 underpromotion moves per square), and a fixed table gathers the 1,858 that can ever be legal. A queen promotion is an ordinary queen-style move here.</p>
+      </div>
+      <div class="prose" style="display:grid; gap:8px;">
+        <p><span class="tag leela">Value</span></p>
+        <p>A 1×1 convolution to 32 channels with batch norm and ReLU, flattened to 2,048, a 128-unit layer with ReLU, then 3 logits through a softmax: win, draw and loss for the side to move.</p>
+      </div>
+      <div class="prose" style="display:grid; gap:8px;">
+        <p><span class="tag leela">Moves left</span></p>
+        <p>A 1×1 convolution to 8 channels, flattened to 512, a 128-unit layer, then one output kept non-negative by a final ReLU: the predicted number of plies until the game ends. Search uses it to prefer quicker wins and slower losses.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>Where the 11.25 million parameters live</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Part</th><th>Layers</th><th class="num">Trainable</th><th class="num">Share</th></tr></thead>
+      <tbody>
+        <tr><td>Stem</td><td>conv 3×3 112→192, BN</td><td class="num">193,920</td><td class="num">1.7%</td></tr>
+        <tr><td>Residual tower</td><td>15 × (2 conv 3×3, 2 BN, SE)</td><td class="num">10,247,520</td><td class="num">91.1%</td></tr>
+        <tr><td>Policy head</td><td>conv 3×3 192→192, BN; conv 3×3 192→80 + bias</td><td class="num">470,480</td><td class="num">4.2%</td></tr>
+        <tr><td>Value head</td><td>conv 1×1 →32, BN; FC 2048→128; FC 128→3</td><td class="num">268,867</td><td class="num">2.4%</td></tr>
+        <tr><td>Moves-left head</td><td>conv 1×1 →8, BN; FC 512→128; FC 128→1</td><td class="num">67,345</td><td class="num">0.6%</td></tr>
+      </tbody>
+      <tfoot><tr><td>Total</td><td>batch-norm γ and β counted; running means and variances not</td><td class="num">11,248,132</td><td class="num">100%</td></tr></tfoot>
+    </table></div>
+  </section>
+
+  <section>
+    <h3>How the weights are stored</h3>
+    <div class="cols">
+      <div class="prose" style="display:grid; gap:10px;">
+        <p>The file is a Protocol Buffers message (<span class="mono">pblczero.Net</span>, defined in <span class="mono">lczero-common/proto/net.proto</span>). Each layer carries a float32 minimum, a float32 maximum and one unsigned 16-bit integer per value:</p>
+        <div class="formula">value = min + q / 65535 × (max − min)</div>
+        <p>That is fixed-point quantization: 65,536 evenly spaced levels across each layer's own range. Precision is absolute, so a weight far smaller than the layer's largest gets few significant bits. Lc0 expands every value to float when it loads the file.</p>
+        <p class="note">The field named <span class="mono">bn_stddivs</span> actually holds variances: the loader computes γ / √(variance + 10⁻⁵) and folds batch norm into the convolution weights and biases, so at run time each convolution is a plain convolution plus bias.</p>
+      </div>
+      <div style="display:grid; gap:10px; min-width:0;">
+        <div class="tablewrap"><table style="min-width:0">
+          <thead><tr><th>Layer</th><th class="num">Median bits</th><th class="num">Below fp16</th></tr></thead>
+          <tbody>
+            <tr><td>stem conv</td><td class="num">5.5</td><td class="num">99%</td></tr>
+            <tr><td>block 1, conv 1</td><td class="num">6.6</td><td class="num">98%</td></tr>
+            <tr><td>block 15, conv 2</td><td class="num">9.4</td><td class="num">92%</td></tr>
+            <tr><td>policy conv 2</td><td class="num">7.5</td><td class="num">98%</td></tr>
+            <tr><td>value FC 1</td><td class="num">9.7</td><td class="num">79%</td></tr>
+          </tbody>
+          <tfoot><tr><td>all 10.9 M weights</td><td class="num">8.9</td><td class="num">95%</td></tr></tfoot>
+        </table></div>
+        <p class="note">Effective significant bits = log₂(|w| / step), measured over this file. fp16 always has 11 and bf16 always 8. Across all weights: 10th percentile 6.0 bits, 90th 10.6; 30% fall below bf16. In practice the storage is closer to bf16 than to fp16. Batch-norm folding rescales each output channel uniformly, so it does not change these bit counts.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="part-head">
+    <span class="eyebrow">Part two</span>
+    <h2>Next to Drew's Chess Machine</h2>
+    <p class="lede">Two DCM networks for reference: the one the Lichess bot plays today (model <span class="mono">20261102-2-eBRM</span>, the R-elitecyc run at cumulative step 721,584) and the built-in default preset <span class="mono">v4_5block_7x7</span>.</p>
+  </div>
+
+  <section>
+    <h3>Side by side</h3>
+    <div class="tablewrap"><table class="cmp">
+      <thead><tr><th></th><th class="leela">Lc0 42850</th><th class="dcm">DCM eBRM (live bot)</th><th class="dcm">DCM v4_5block_7x7</th></tr></thead>
+      <tbody>
+        <tr><td>inputs</td><td>112 planes, 8 positions of history</td><td>basic24: one position + 4 repetition planes</td><td>basic30: one position + 10 repetition planes</td></tr>
+        <tr><td>stem</td><td>3×3 → 192, BN, ReLU</td><td>5×5 → 128, BN, no activation</td><td>7×7 → 128, BN, no activation</td></tr>
+        <tr><td>tower</td><td>15 blocks × 192</td><td>3 blocks × 128</td><td>5 blocks × 128</td></tr>
+        <tr><td>block kernels</td><td>3×3, 3×3</td><td>9×9, 9×9</td><td>7×7, 7×7</td></tr>
+        <tr><td>block order</td><td>post-activation: conv BN act conv BN SE, add, act</td><td>pre-activation: BN act conv BN act conv, add, LayerNorm</td><td>pre-activation: BN act conv BN act conv, SE, ×α, add</td></tr>
+        <tr><td>activation</td><td>ReLU</td><td>SiLU</td><td>ReLU</td></tr>
+        <tr><td>SE</td><td>scale and shift, ratio 6 (192→32)</td><td>none</td><td>scale and shift, ratio 4</td></tr>
+        <tr><td>branch scale</td><td>none</td><td>none</td><td>ReZero, α₀ = 1/√5</td></tr>
+        <tr><td>after the add</td><td>ReLU</td><td>LayerNorm</td><td>nothing (clean add)</td></tr>
+        <tr><td>tower end</td><td>nothing (last block ends in ReLU)</td><td>BN, SiLU</td><td>BN, ReLU</td></tr>
+        <tr><td>policy head</td><td>3×3 192→192, 3×3 →80, gather 1,858</td><td>1×1 →128, BN, SiLU, 1×1 →76 +bias, reshape to 4,864 (no gather)</td><td>1×1 →128, BN, ReLU, 1×1 →76 +bias, reshape to 4,864 (no gather)</td></tr>
+        <tr><td>policy space</td><td>73 planes (queen promotion = queen move)</td><td colspan="2">76 planes × 64 = 4,864 logits, 3 extra planes for queen promotions. All 4,864 leave the network; nothing is gathered. Play: the CPU reads only the legal moves' logits and softmaxes over them. Training: a per-position 4,864-wide legal-move mask is multiplied in, inside the loss</td></tr>
+        <tr><td>value head</td><td>1×1 →32, FC 128, W/D/L</td><td>1×1 →24, FC 128, W/D/L</td><td>1×1 →16, FC 128, W/D/L</td></tr>
+        <tr><td>moves-left head</td><td>yes</td><td colspan="2">no</td></tr>
+        <tr><td>parameters</td><td class="num">11,248,132</td><td class="num">8,271,279</td><td class="num">8,445,748</td></tr>
+        <tr><td>multiply-adds</td><td class="num">≈ 680 M</td><td class="num">≈ 516 M</td><td class="num">≈ 528 M</td></tr>
+        <tr><td>whole board seen after</td><td>stem + 3 blocks (7 convs of 3×3)</td><td>stem + first conv</td><td>stem + first conv</td></tr>
+        <tr><td>stored as</td><td>LINEAR16 protobuf</td><td colspan="2">float32 safetensors</td></tr>
+        <tr><td>computes in</td><td>backend's choice (fp16 on Metal)</td><td colspan="2">bfloat16</td></tr>
+        <tr><td>plays with</td><td>search (MCTS over the network)</td><td colspan="2">one forward pass per move, no search</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">A pre-activation tower leaves the stem without an activation, since each block starts with batch norm and its activation, and ends the tower with one more batch norm and activation for the heads; a post-activation tower does the reverse. Multiply-adds count convolutions and fully connected layers for one position. "Whole board seen" is the point where every square's features can depend on every other square: a 3×3 convolution reaches one square further, a 9×9 four squares, and corner to corner is seven. Lc0's Metal backend precision is from my reading of its defaults, not measured here.</p>
+    <div class="cols">
+      <div class="callout leela">
+        <h3>Deep and narrow</h3>
+        <p>Lc0 spends its budget on depth: 30 small convolutions in the tower, each adding one square of reach, with a nonlinearity after every one. A 3×3 convolution at 192 channels holds 331,776 weights.</p>
+      </div>
+      <div class="callout">
+        <h3>Shallow and wide-kerneled</h3>
+        <p>DCM's live model spends it on reach: six 9×9 convolutions, each holding 1,327,104 weights, four times one of Lc0's. It sees the whole board after one convolution but applies far fewer nonlinear steps.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>Could DCM build Lc0's network today?</h3>
+    <p class="prose">DCM's architecture is configured per block group, and most of Lc0's choices are already options. Checked against <span class="mono">NetworkArchitecture.swift</span> and the graph builder in <span class="mono">ChessNetwork.swift</span>:</p>
+    <div class="tablewrap"><table class="cmp">
+      <thead><tr><th>Lc0 component</th><th>Can DCM build it?</th><th>DCM setting, or what is missing</th></tr></thead>
+      <tbody>
+        <tr><td>residual block</td><td><span class="verdict yes">exactly</span></td><td><span class="mono">activation_style: post</span>, <span class="mono">skip_merge: activation_gated</span>, <span class="mono">relu</span>, <span class="mono">se_style: scale_and_bias</span>, <span class="mono">se_reduction_ratio: 6</span>, <span class="mono">use_rezero: false</span>, <span class="mono">output_norm: none</span>, kernels 3 and 3. DCM's SE also pools with a mean, adds biases in both layers, and takes the first half of FC2 as the sigmoid scale and the second half as the shift, the same split as Lc0.</td></tr>
+        <tr><td>15 × 192 tower</td><td><span class="verdict yes">yes</span></td><td>one block group, count 15, channels 192</td></tr>
+        <tr><td>stem</td><td><span class="verdict yes">yes</span></td><td>stem kernel 3; post-activation turns the stem ReLU on and the tower-end batch norm off, matching Lc0</td></tr>
+        <tr><td>value head</td><td><span class="verdict yes">yes</span></td><td><span class="mono">wdl_softmax</span>, value conv channels 32, hidden units 128, ReLU at both sites</td></tr>
+        <tr><td>policy head</td><td><span class="verdict part">partly</span></td><td>DCM's <span class="mono">intermediate_conv</span> uses 1×1 convolutions; Lc0's are 3×3. The move space also differs: Lc0 gathers 1,858 fixed slots from 73 planes; DCM keeps all 4,864 slots of 76 planes and masks per position (CPU at play, a mask in the training loss). Both end with the same set of legal moves.</td></tr>
+        <tr><td>moves-left head</td><td><span class="verdict no">no</span></td><td>no such head; DCM plays without search, so a moves-left estimate has no consumer</td></tr>
+        <tr><td>112-plane input</td><td><span class="verdict no">no</span></td><td>nearest is <span class="mono">full10ply200</span>: 10 plies of history, but 20 planes per frame from DCM's own layout, a normalized fifty-move plane, an en-passant plane and no repetition flag per frame</td></tr>
+        <tr><td>LINEAR16 storage</td><td><span class="verdict no">no</span></td><td>DCM stores float32; nothing here needs 16-bit storage</td></tr>
+      </tbody>
+    </table></div>
+    <div class="callout">
+      <h3>DCM has trained this block before, minus one detail</h3>
+      <p>DCM's early presets <span class="mono">v3_8block_3x3</span> and <span class="mono">v3_16block_3x3</span> used exactly Lc0's ordering: post-activation, ReLU after the add, SE before the add, no ReZero. The difference was the SE style: <span class="mono">attenuate_only</span> (scale without the shift) at ratio 4, at 128 channels. An "Lc0-shaped" DCM model is that recipe with <span class="mono">scale_and_bias</span>, 192 channels, 15 blocks, ratio 6 and a 32-channel value convolution. By the same counting as above, that build would have about 10.6 million parameters; it has not been built.</p>
+    </div>
+  </section>
+
+  <div class="part-head">
+    <span class="eyebrow">Part three</span>
+    <h2>What DCM might borrow</h2>
+    <p class="lede">Hypotheses, not findings. Each is something Lc0 does that DCM doesn't, with what it would cost and how to test it. DCM plays without search, so anything that only pays off inside a search tree is left out.</p>
+  </div>
+
+  <section>
+    <div class="tablewrap"><table class="cmp">
+      <thead><tr><th>Idea</th><th>Why it might help</th><th>Cost and how to test</th></tr></thead>
+      <tbody>
+        <tr><td>spatial policy head</td><td>Lc0 gives its policy head two 3×3 convolutions, about 30 M multiply-adds, 4.4% of its forward pass. DCM's live head is two 1×1 convolutions, about 1.7 M, 0.3%. A 1×1 head scores each square's moves from that square's features alone; a 3×3 head can compare neighbouring squares before deciding. With no search, the policy is DCM's whole move choice.</td><td>A kernel-size option for the policy head. Paired corpus-replay runs from the same seed; compare puzzle Elo and top-1 accuracy.</td></tr>
+        <tr><td>a fixed mask of impossible moves</td><td>Lc0 computes 80 planes and keeps the 1,858 slots that can ever be legal. DCM computes all 4,864 and masks per position on the CPU. By my count about 1,880 of DCM's slots can ever be legal (Lc0's 1,858 plus 22 queen-promotion slots), so about 61% never can. The compute is small, but the training loss's illegal-mass term keeps spending gradient pushing those slots down.</td><td>A constant mask in the training graph, applied before the illegal-mass term. Check that the illegal-mass number drops at once and the policy loss is unchanged.</td></tr>
+        <tr><td>an all-ones plane</td><td>DCM's convolutions pad with zeros and no DCM input plane is constant. A plane of ones turns into zeros exactly in the padding, so the first layer can tell edge squares apart. DCM's castling planes are all ones while castling rights last, so its edge signal may fade once castling rights are gone, which is every endgame.</td><td>A one-plane input variant. Compare endgame-theme puzzle scores against today's encoding.</td></tr>
+        <tr><td>history with repetition flags</td><td>Lc0 sees 8 positions, each with its own repetition flag. DCM's <span class="mono">full10ply200</span> already stacks 10 plies of history but without repetition flags per frame, and the live model uses single-position <span class="mono">basic24</span>.</td><td>Existing encodings can be compared now; a per-frame repetition flag would be a new encoding.</td></tr>
+        <tr><td>symmetry canonicalization</td><td>With no castling rights, a position and its left-right mirror are the same problem; with no pawns, eight board symmetries are. Collapsing them shows the network fewer distinct positions to learn.</td><td>Apply the transform in the encoder and invert it on the policy. A replay run should reach the same loss in fewer steps if it works.</td></tr>
+        <tr><td>Lc0's residual block</td><td>Post-activation with a scale-and-shift SE and no ReZero is buildable in DCM today. DCM's v3 runs used this order with a scale-only SE.</td><td>No code needed: one block-group setting change. A/B against the live recipe at equal parameters.</td></tr>
+        <tr><td>moves-left head, training only</td><td>Its prediction can add a tempo term to the policy's advantage weighting: finishing a won game sooner than predicted, or losing later, scores better. Today a quick win and a drift toward a 50-move draw look alike until the draw happens.</td><td>A new head, new loss weights and a new architecture format. Three arms: baseline, head only, head plus tempo term.</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Left out: LINEAR16 storage (DCM stores float32 and has no file-size problem), and anything whose value comes from search.</p>
+  </section>
+
+  <section>
+    <h3>Sources</h3>
+    <div class="sources">
+      <p>The weights file: <span class="mono">/opt/homebrew/Cellar/lc0/0.32.1/libexec/42850.pb.gz</span>, decoded with <span class="mono">protoc --decode_raw</span> and a small parser that read every layer's size and quantization range.</p>
+      <p>Lc0 v0.32.1 source: <a href="https://github.com/LeelaChessZero/lczero-common/blob/master/proto/net.proto">net.proto</a>, <a href="https://github.com/LeelaChessZero/lc0/blob/v0.32.1/src/neural/backends/blas/network_blas.cc">network_blas.cc</a>, <a href="https://github.com/LeelaChessZero/lc0/blob/v0.32.1/src/neural/backends/blas/se_unit.cc">se_unit.cc</a>, <a href="https://github.com/LeelaChessZero/lc0/blob/v0.32.1/src/neural/network_legacy.cc">network_legacy.cc</a>, <a href="https://github.com/LeelaChessZero/lc0/blob/v0.32.1/src/utils/weights_adapter.cc">weights_adapter.cc</a>, <a href="https://github.com/LeelaChessZero/lc0/blob/v0.32.1/src/neural/encoder.cc">encoder.cc</a>.</p>
+      <p>DCM: <span class="mono">--describe-model</span> on <span class="mono">20261011-zlra-elitecyc-latest-step721584.safetensors</span>; presets and graph builder in the repository at commit <span class="mono">694a5e16</span>.</p>
+    </div>
+  </section>
+</main>
+
+
+</body></html>
