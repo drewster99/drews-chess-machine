@@ -212,7 +212,7 @@ def main():
     we_started = False
     crashes = []
     seen_ckpts = {s for s in [latest_step()] if s}
-    for p in MODELS.glob(f"{STEM}-step*0000.safetensors"):
+    for p in MODELS.glob(f"{STEM}-step*000.safetensors"):
         m = re.search(r"-step(\d+)\.", p.name)
         if m:
             seen_ckpts.add(int(m.group(1)))
@@ -227,8 +227,8 @@ def main():
             found = conflicts(rows, me)
             dire_reasons = dire()
 
-            # checkpoints worth comparing (every 10k)
-            for p in MODELS.glob(f"{STEM}-step*0000.safetensors"):
+            # checkpoints to report (every 1000 trainer steps; owner 2026-11-19)
+            for p in MODELS.glob(f"{STEM}-step*000.safetensors"):
                 m = re.search(r"-step(\d+)\.safetensors$", p.name)
                 if m and int(m.group(1)) not in seen_ckpts:
                     seen_ckpts.add(int(m.group(1)))
