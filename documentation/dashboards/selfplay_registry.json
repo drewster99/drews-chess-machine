@@ -505,6 +505,76 @@
    "arch_blocks": "v5 pre · 2×[15×15+15×15 @64, SE+/4, clean_add, ReZero(0.5), out:layer_norm]",
    "arch_heads": "policy intermediate_conv · value WDL(16→FC64)",
    "note": "Run 2 of the Ejp0 self-play fork (session sjIy), 2026-08-08 17:40 → 2026-08-30 14:11, STOPPED by user (Stop button, paused for a macOS update), then RESUMED once on 2026-09-17 17:02 → 19:02 (build 2105, still the near-greedy τ 0.2→0.01) from the 08-30 13:59 post-promotion save of Ejp0-66 at step 1,183,795 (the 08-30 log's 1,183,795-1,184,817 tail is cut). That resume ran arenas #929-#935 and promoted once (#930, +21, step 1,186,322 → champion Ejp0-67, saved as 20260917-223317-…-sjIy-promote); it ended at step 1,192,765 with trainer Ejp0-68. 67 promotions, but only the first 41 (through step ~959,500) were measured under the arena schedule τ 0.6→0.2 with 399-400/400-unique arenas: at 2026-08-28 19:12 both self-play and arena τ were set to 0.2→0.01, arena game diversity fell to as low as 64/400 unique, and the remaining 26 promotions (Ejp0-42..-66 in ~43h to 08-30, plus Ejp0-67 on 09-17) were scored by that degraded instrument. Started as a FRESH fork from the same qeu8 meta-1300000 seed as run1 — NOT a continuation of run1, which is why the two are separate runs here. Both runs used lr + momentum cycling (run 1 from its segment 3 on), so cycling is not what separates them. Segments 1-3 are resumes (step counter continues), so the cumulative step axis is exact; each earlier launch is cut at the step the next one resumed from (log_kept_to). pElo/nll here are the in-app WIDE (4,435-pos) lichess probe on the recording build's scale; the narrow 200-pos probe in the same logs reads ~60-120 HIGHER and is not what is tracked. The probe scores argmax top-1 and is blind to policy diffuseness, so it can disagree with the sampled arena by construction (established 2026-08-07: soft self-play sampling diffuses the trainer's policy, the arena samples that policy, and the argmax probe cannot see the difference)."
+  },
+  "AgG3": {
+   "label": "AgG3 — 12.20M GUI self-play, SiLU 3-blk 11×11 (4 promo, 2.3h)",
+   "color": "#ffd8b1",
+   "type": "selfplay",
+   "trainset": "self-play",
+   "params": 12203439,
+   "base_modelID": "20261007-50-AgG3",
+   "final_modelID": "20261007-50-AgG3-5",
+   "promotions": 4,
+   "arch_summary": "self-play trainer 20261007-50-AgG3-5 · 12,203,439 params",
+   "arch_stem": "basic24 → stem 5×5→128",
+   "arch_blocks": "3× @128, 11×11+11×11, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+   "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads",
+   "logs": [
+    "dcm_log_20261007-084445.txt"
+   ],
+   "probe_from_log": true,
+   "note": "GUI Play-and-Train from a fresh SiLU network (lineage 21A8B877), build 2390, 2026-10-07 08:51 → 11:04; 4 promotions; ended at step 5,257 when the app quit. Used as the GUI fixture of the BN running-variance jump alarm (documentation/training-health-alarms.md). pElo/NLL: the in-app wide probe ticks."
+  },
+  "ZlrA": {
+   "label": "ZlrA — 8.27M GUI self-play on the 0.001–1.0 LR cycle (19 promo, 17h)",
+   "color": "#aaffc3",
+   "type": "selfplay",
+   "trainset": "self-play",
+   "params": 8271279,
+   "base_modelID": "20261007-60-ZlrA",
+   "final_modelID": "20261007-60-ZlrA-20",
+   "promotions": 19,
+   "arch_summary": "self-play trainer 20261007-60-ZlrA-20 · 8,271,279 params",
+   "arch_stem": "basic24 → stem 5×5→128",
+   "arch_blocks": "3× @128, 9×9+9×9, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+   "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads",
+   "logs": [
+    "dcm_log_20261007-164741.txt"
+   ],
+   "probe_from_log": true,
+   "note": "E-0025 (experiments/20261008-zlra-selfplay-lr): GUI self-play on the 0.001–1.0 LR cycle (lineage 716F996A), build 2415, 2026-10-07 16:55 → 2026-10-08 09:41 (SIGUSR2 save); stopped by the owner at 51,136 steps. Wide pElo flat near 540 from 20k. pElo/NLL: the in-app wide probe ticks."
+  },
+  "Ew5t": {
+   "label": "Ew5t — R-fixedlr, 8.27M GUI self-play, LR 0.01 fixed (43 promo)",
+   "color": "#dcbeff",
+   "type": "selfplay",
+   "trainset": "self-play",
+   "params": 8271279,
+   "base_modelID": "20261008-4-Ew5t",
+   "final_modelID": "20261008-4-Ew5t-44",
+   "promotions": 43,
+   "arch_summary": "self-play trainer 20261008-4-Ew5t-44 · 8,271,279 params",
+   "arch_stem": "basic24 → stem 5×5→128",
+   "arch_blocks": "3× @128, 9×9+9×9, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+   "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads",
+   "logs": [
+    "dcm_log_20261008-094623.txt",
+    "dcm_log_20261010-113351.txt",
+    "dcm_log_20261010-224411.txt",
+    "dcm_log_20261012-161833.txt",
+    "dcm_log_20261024-023842.txt",
+    "dcm_log_20261102-101606.txt"
+   ],
+   "log_kept_to": {
+    "dcm_log_20261010-113351.txt": 66602,
+    "dcm_log_20261012-161833.txt": 87218
+   },
+   "excluded_logs": {
+    "dcm_log_20261014-140421.txt": "loaded the 87,218 promote save (20261012-212641) on build 2545 and quit by SIGTERM within two minutes; nothing saved",
+    "dcm_log_20261015-102200.txt": "loaded the 87,218 promote save again (build 2561), paused at ~87,768 by the owner (three trainers did not fit in memory); its 565 steps were never saved"
+   },
+   "probe_from_log": true,
+   "note": "R-fixedlr (experiments/20261008-zlra-selfplay-lr): GUI self-play from the zlra start file (model 20261008-4-Ew5t, lineage A2599216), LR 0.01 / momentum 0.90 fixed; champion line 20261008-7-peGM. Six kept launches: 10-08 (build 2440) to the 10-10 SIGUSR2 save; 10-10 11:34 (build 2491) halted by the 21:15 GPU reset at 70,283 (cut at 66,602, the save the next launch resumed from); 10-10 22:44 (build 2501) to the 10-12 manual save; 10-12 16:19 (build 2523) cut at its 87,218 promote save; 10-24 02:39 (build 2590) from 87,218 to the 109,210 SIGUSR2 save; 11-02 10:17 (build 2590) to 286,235 (manual save 2026-11-05 19:06), stopped by the owner. Every resume NOT EXACT only in the replay buffer. pElo/NLL: the in-app wide probe ticks."
   }
  }
 }

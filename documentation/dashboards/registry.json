@@ -797,6 +797,1369 @@
       ],
       "trainset": "std-2026-05",
       "params": 5208050
+    },
+    "ejp0hf": {
+      "label": "ejp0hf — Ejp0 head-fix phase 2 — 3.93M (branch of qeu8 resume3 @681k)",
+      "color": "#7f7f7f",
+      "n_blocks": 2,
+      "params": 3929393,
+      "arch_summary": "Branch of 20260702-Qeu8-resume3-replay-step681000 (model 20260727-1-Ejp0, the self-play Ejp0 seed) for 20,000 steps of corpus replay: bf16 head-offset fix, phase 2 (documentation/research/bf16-head-offset/). Build 2264. Steps count from the branch.",
+      "arch_stem": "basic30 → stem 7×7→64",
+      "arch_blocks": "2× @64, 15×15+15×15, SE scale+bias/4, ReLU/pre, ReZero cap 0.5, LN-out",
+      "arch_heads": "policy intermediate_conv (pre-conv 512) · value WDL(16→FC64)",
+      "out_model": "20261001-headfix-phase2-Ejp0-replay-latest.safetensors",
+      "frozen_glob": "20261001-headfix-phase2-Ejp0-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261001-015706.txt",
+          "date": "20261001",
+          "cumstep_base": 0,
+          "label": "branch of qeu8 resume3 step 681,000",
+          "enum_stem": "20261001-headfix-phase2-Ejp0"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "fc1leaky": {
+      "label": "fc1leaky — R4 SE scale+bias, leaky ReLU in SE FC1 — 5.21M (3-blk 7×7 @128)",
+      "color": "#08519c",
+      "n_blocks": 3,
+      "params": 5208050,
+      "arch_summary": "R4 (experiments/20261001-se-fc1-leaky): the SE scale+bias net with leaky ReLU in each SE block's FC1. Build 2275.",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, SE scale+bias/4 (FC1 leaky ReLU), ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261001-test_SE_scale+bias-fc1leaky-replay-latest.safetensors",
+      "frozen_glob": "20261001-test_SE_scale+bias-fc1leaky-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261001-151822.txt",
+          "date": "20261001",
+          "cumstep_base": 0,
+          "label": "run",
+          "enum_stem": "20261001-test_SE_scale+bias-fc1leaky"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "nose1": {
+      "label": "nose1 — R7 no SE, no ReZero, seed 1 — 5.17M (3-blk 7×7 @128)",
+      "color": "#006d2c",
+      "n_blocks": 3,
+      "params": 5170319,
+      "arch_summary": "R7 (experiments/20261002-noSE-noReZero): the SE experiment's 3-block net without SE or ReZero. Build 2275.",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, ReLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261002-bench_v5s3_noSE_noReZero-replay-latest.safetensors",
+      "frozen_glob": "20261002-bench_v5s3_noSE_noReZero-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261002-011124.txt",
+          "date": "20261002",
+          "cumstep_base": 0,
+          "label": "run",
+          "enum_stem": "20261002-bench_v5s3_noSE_noReZero"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "nose2": {
+      "label": "nose2 — R8 no SE, no ReZero, seed 2 — 5.17M (3-blk 7×7 @128)",
+      "color": "#a1d99b",
+      "n_blocks": 3,
+      "params": 5170319,
+      "arch_summary": "R8 (experiments/20261002-noSE-noReZero): R7 with a second random init. Build 2275.",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, ReLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261002-bench_v5s3_noSE_noReZero-seed2-replay-latest.safetensors",
+      "frozen_glob": "20261002-bench_v5s3_noSE_noReZero-seed2-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261002-035513.txt",
+          "date": "20261002",
+          "cumstep_base": 0,
+          "label": "run",
+          "enum_stem": "20261002-bench_v5s3_noSE_noReZero-seed2"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lsC": {
+      "label": "lsC — R10 label smoothing C (policy ε 0.03) — 5.21M (3-blk 7×7 @128)",
+      "color": "#6a51a3",
+      "n_blocks": 3,
+      "params": 5208050,
+      "arch_summary": "R10 (experiments/20261002-label-smoothing-C): policy label smoothing ε 0.1 → 0.03; same start weights as se_sb (R1).",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261002-label-smoothing-C-replay-latest.safetensors",
+      "frozen_glob": "20261002-label-smoothing-C-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261002-061425.txt",
+          "date": "20261002",
+          "cumstep_base": 0,
+          "label": "run",
+          "enum_stem": "20261002-label-smoothing-C"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lsC2": {
+      "label": "lsC2 — R11 label smoothing C seed 2 — 5.21M (stopped @31,906)",
+      "color": "#bcbddc",
+      "n_blocks": 3,
+      "params": 5208050,
+      "arch_summary": "R11 (experiments/20261002-label-smoothing-C, probes-seed2): label smoothing C from the seed-2 start (se_sb2's weights); stopped by the owner at 31,906.",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261002-label-smoothing-C-seed2-replay-latest.safetensors",
+      "frozen_glob": "20261002-label-smoothing-C-seed2-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261003-033152.txt",
+          "date": "20261003",
+          "cumstep_base": 0,
+          "label": "run",
+          "enum_stem": "20261002-label-smoothing-C-seed2"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lsD": {
+      "label": "lsD — R12 label smoothing D (value ε 0) — 5.21M (3-blk 7×7 @128)",
+      "color": "#9e9ac8",
+      "n_blocks": 3,
+      "params": 5208050,
+      "arch_summary": "R12 (experiments/20261002-label-smoothing-D): value label smoothing 0.013 → 0; same start weights as se_sb (R1).",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, SE scale+bias/4, ReLU/pre, ReZero α0.447 (tanh cap 0.447), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261002-label-smoothing-D-replay-latest.safetensors",
+      "frozen_glob": "20261002-label-smoothing-D-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261003-002816.txt",
+          "date": "20261003",
+          "cumstep_base": 0,
+          "label": "run",
+          "enum_stem": "20261002-label-smoothing-D"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "rz0": {
+      "label": "rz0 — R9 zero-init ReZero (no SE) — 5.17M (3-blk 7×7 @128)",
+      "color": "#41ab5d",
+      "n_blocks": 3,
+      "params": 5170322,
+      "arch_summary": "R9 (experiments/20261002-rezero-zero-init): no SE, ReZero α initialised to 0 with cap 1; same start weights as se_none (R5) except α.",
+      "arch_stem": "basic30 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, ReLU/pre, ReZero α0 (tanh cap 1), clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261002-rezero-zero-init-replay-latest.safetensors",
+      "frozen_glob": "20261002-rezero-zero-init-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261002-202430.txt",
+          "date": "20261002",
+          "cumstep_base": 0,
+          "label": "run",
+          "enum_stem": "20261002-rezero-zero-init"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "fatty216": {
+      "label": "fatty216 — R13 fatty 1-blk 7×7 @216 — 5.07M",
+      "color": "#8c6d31",
+      "n_blocks": 1,
+      "params": 5066767,
+      "arch_summary": "R13 (experiments/20261003-fatty-1x7x7-216): one 7×7 block at 216 channels, no SE / ReZero; same parameter budget as R7/R8.",
+      "arch_stem": "basic30 → stem 7×7→216",
+      "arch_blocks": "1× @216, 7×7+7×7, no SE, ReLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261003-fatty216-b2275-replay-latest.safetensors",
+      "frozen_glob": "20261003-fatty216-b2275-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261003-204412.txt",
+          "date": "20261003",
+          "cumstep_base": 0,
+          "label": "run",
+          "enum_stem": "20261003-fatty216-b2275"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "fatty224": {
+      "label": "fatty224 — R15 slim-neck fatty (3×3 stem) 1-blk 7×7 @224 — 5.16M",
+      "color": "#bd9e39",
+      "n_blocks": 1,
+      "params": 5155983,
+      "arch_summary": "R15 (experiments/20261003-fatty224-3x3stem): fatty with a 3×3 stem, one 7×7 block at 224 channels.",
+      "arch_stem": "basic30 → stem 3×3→224",
+      "arch_blocks": "1× @224, 7×7+7×7, no SE, ReLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261003-fatty224s3-b2275-replay-latest.safetensors",
+      "frozen_glob": "20261003-fatty224s3-b2275-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261003-231825.txt",
+          "date": "20261003",
+          "cumstep_base": 0,
+          "label": "run",
+          "enum_stem": "20261003-fatty224s3-b2275"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "fatconv98": {
+      "label": "fatconv98 — R16 fatconv 15×15 stem, 1-blk 15×15 @98 — 5.14M",
+      "color": "#e7ba52",
+      "n_blocks": 1,
+      "params": 5141143,
+      "arch_summary": "R16 (experiments/20261004-fatconv-1x15x15-98): 15×15 stem and one 15×15 block at 98 channels, to 33,000 (build 2275); then continued on an LR cycle to 39,093 (parameters-continue.json, build 2320; E-0008).",
+      "arch_stem": "basic30 → stem 15×15→98",
+      "arch_blocks": "1× @98, 15×15+15×15, no SE, ReLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261004-fatconv98-cont-replay-latest.safetensors",
+      "frozen_glob": "20261004-fatconv98-cont-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261004-015804.txt",
+          "date": "20261004",
+          "cumstep_base": 0,
+          "label": "run",
+          "enum_stem": "20261004-fatconv98-b2275"
+        },
+        {
+          "log": "dcm_log_20261004-210810.txt",
+          "label": "LR-cycle continuation (resume of the 33,000 save)",
+          "model_id": "20261005-1-1vVl",
+          "cumstep_base": 33000,
+          "lineage_run_id": "FAE5AB97-416F-4813-9339-F832EA525C66",
+          "segment_id": "A270A617-E517-4158-958A-C03B27D6830E",
+          "date": "20261004",
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lrA": {
+      "label": "lrA — LR arm A, constant 0.01 — 5.13M (R7 shape, basic24)",
+      "color": "#3182bd",
+      "n_blocks": 3,
+      "params": 5132687,
+      "arch_summary": "LR schedule A/B/C (experiments/20261005-lr-schedule-ab, E-0017): fresh basic24 R7-shape net, constant LR 0.01; to 36,000, then an exact resume to 40,000.",
+      "arch_stem": "basic24 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, ReLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261005-lrA-const01-r1-replay-latest.safetensors",
+      "frozen_glob": "20261005-lrA-const01-r1-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261005-013220-2.txt",
+          "label": "run",
+          "model_id": "20261005-23-TD5N",
+          "lineage_run_id": "2C66BFD0-B02B-441C-B26E-C0A74158821C",
+          "segment_id": "693DA389-DC0A-44CD-8A15-FFC39DF4AD87",
+          "date": "20261005",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261005-171451.txt",
+          "label": "exact resume to 40,000",
+          "model_id": "20261005-27-0zJw",
+          "lineage_run_id": "2C66BFD0-B02B-441C-B26E-C0A74158821C",
+          "segment_id": "EC7BF4FE-9EE4-4C58-B7CF-7E4172BA2E9E",
+          "date": "20261005",
+          "cumstep_base": 36000,
+          "games_base": 4638717,
+          "elapsed_base_sec": 54140.327379107475,
+          "wall_base_sec": 56541.48158097267,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lrB": {
+      "label": "lrB — LR arm B, cycle 1.0 ↔ 0.001 — 5.13M (R7 shape, basic24)",
+      "color": "#e6550d",
+      "n_blocks": 3,
+      "params": 5132687,
+      "arch_summary": "LR schedule arm B (E-0017): same start as lrA, LR cycling 1.0 ↔ 0.001 with a 10k period; to 36,000, then an exact resume to 40,000.",
+      "arch_stem": "basic24 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, ReLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261005-lrB-cyc1-r1-replay-latest.safetensors",
+      "frozen_glob": "20261005-lrB-cyc1-r1-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261005-013235.txt",
+          "label": "run",
+          "model_id": "20261005-24-qx7x",
+          "lineage_run_id": "9249756B-D845-4102-BE55-1C94D88BE5BB",
+          "segment_id": "103DE62E-A2FF-422A-8A4C-F3295545DC89",
+          "date": "20261005",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261005-171541.txt",
+          "label": "exact resume to 40,000",
+          "model_id": "20261005-28-gGnA",
+          "lineage_run_id": "9249756B-D845-4102-BE55-1C94D88BE5BB",
+          "segment_id": "A3150543-0F03-4054-8BD4-00462F987670",
+          "date": "20261005",
+          "cumstep_base": 36000,
+          "games_base": 4638717,
+          "elapsed_base_sec": 54205.71630132198,
+          "wall_base_sec": 56581.55385398865,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lrC": {
+      "label": "lrC — LR arm C, cycle 10 ↔ 0.01 (diverged) — 5.13M",
+      "color": "#a50f15",
+      "n_blocks": 3,
+      "params": 5132687,
+      "arch_summary": "LR schedule arm C (E-0017): same start as lrA, LR cycling 10 ↔ 0.01; diverged at about step 300, stopped at 513, exact resume to 6,116.",
+      "arch_stem": "basic24 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, ReLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128)",
+      "out_model": "20261005-lrC-cyc10-r1-replay-latest.safetensors",
+      "frozen_glob": "20261005-lrC-cyc10-r1-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261005-090417.txt",
+          "label": "run (to 513)",
+          "model_id": "20261005-25-9z5b",
+          "lineage_run_id": "E67A96F2-52A0-40F9-BCCA-9EFB5B960E3E",
+          "segment_id": "CD56449A-4F2D-4AC9-9852-6F09E41DF596",
+          "date": "20261005",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261005-121841.txt",
+          "label": "exact resume",
+          "model_id": "20261005-26-o0LE",
+          "lineage_run_id": "E67A96F2-52A0-40F9-BCCA-9EFB5B960E3E",
+          "segment_id": "76BA9B6C-F5A6-471F-8B68-C5854884D81D",
+          "date": "20261005",
+          "cumstep_base": 513,
+          "games_base": 69822,
+          "elapsed_base_sec": 1035.1691023111343,
+          "wall_base_sec": 1076.691279053688,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lrBleaky": {
+      "label": "lrBleaky — B with leaky value head — 5.13M",
+      "color": "#fd8d3c",
+      "n_blocks": 3,
+      "params": 5132687,
+      "arch_summary": "B-leaky (E-0019): arm B with leaky ReLU in the value head (conv + FC1), to 40,000.",
+      "arch_stem": "basic24 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, ReLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128) · value conv + FC1 leaky ReLU",
+      "out_model": "20261005-lrBleaky-cyc1-replay-latest.safetensors",
+      "frozen_glob": "20261005-lrBleaky-cyc1-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261005-204108.txt",
+          "label": "run",
+          "model_id": "20261006-6-Xxvl",
+          "lineage_run_id": "783BF744-5FCB-4869-BBE8-7126EDD0C72B",
+          "segment_id": "685E7668-B5BC-4F21-AD2F-E5A7C981C69A",
+          "date": "20261005",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lrBleakyall": {
+      "label": "lrBleakyall — B with leaky ReLU everywhere — 5.13M",
+      "color": "#fdd0a2",
+      "n_blocks": 3,
+      "params": 5132687,
+      "arch_summary": "B-leakyall (E-0022): arm B with leaky ReLU at every activation, to 40,000.",
+      "arch_stem": "basic24 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, leaky ReLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128) · leaky ReLU",
+      "out_model": "20261005-lrBleakyall-cyc1-replay-latest.safetensors",
+      "frozen_glob": "20261005-lrBleakyall-cyc1-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261005-234434.txt",
+          "label": "run",
+          "model_id": "20261006-43-a89C",
+          "lineage_run_id": "A41BEB12-0CAF-4F19-8B67-1D91D708B90C",
+          "segment_id": "8360B4B4-E308-47DE-96A0-225B6F055E2D",
+          "date": "20261005",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lrBsilu": {
+      "label": "lrBsilu — B with SiLU tower, leaky heads (blew up @20.6k) — 5.13M",
+      "color": "#7a0177",
+      "n_blocks": 3,
+      "params": 5132687,
+      "arch_summary": "B-silu (E-0021, E-0020): SiLU tower and leaky heads on arm B's cycle at gradient cap 15; blew up at 20,600; stopped by the owner at 36,066.",
+      "arch_stem": "basic24 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128) · leaky ReLU heads",
+      "out_model": "20261005-lrBsilu-cyc1-replay-latest.safetensors",
+      "frozen_glob": "20261005-lrBsilu-cyc1-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261005-234437.txt",
+          "label": "run",
+          "model_id": "20261006-44-8ipq",
+          "lineage_run_id": "085EF48A-CD92-47F9-AE00-512F86091177",
+          "segment_id": "ED5D8D19-D5D2-4C33-970A-DF7B34695DCD",
+          "date": "20261005",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lrBsilu_clip1": {
+      "label": "lrBsilu_clip1 — B-silu fork @18k, grad clip 1.0 — 5.13M",
+      "color": "#c51b8a",
+      "n_blocks": 3,
+      "params": 5132687,
+      "arch_summary": "B-silu-clip1 (E-0020): exact resume of B-silu at 18,000 with grad_clip_max_norm 1.0, to 40,000. Shares B-silu's step axis (fork of the same lineage run).",
+      "arch_stem": "basic24 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128) · leaky ReLU heads",
+      "out_model": "20261006-lrBsilu-clip1-replay-latest.safetensors",
+      "frozen_glob": "20261006-lrBsilu-clip1-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261006-170000.txt",
+          "label": "fork of B-silu at 18,000",
+          "model_id": "20261006-56-L1gS",
+          "lineage_run_id": "085EF48A-CD92-47F9-AE00-512F86091177",
+          "segment_id": "C59B5777-6FD7-4F63-AF60-40E8ADB891C6",
+          "date": "20261006",
+          "cumstep_base": 18000,
+          "games_base": 2323995,
+          "elapsed_base_sec": 40841.48844122887,
+          "wall_base_sec": 42165.173553943634,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lrBsilu_clip2": {
+      "label": "lrBsilu_clip2 — B-silu fork @18k, grad clip 2.0 — 5.13M",
+      "color": "#f768a1",
+      "n_blocks": 3,
+      "params": 5132687,
+      "arch_summary": "B-silu-clip2 (E-0023): exact resume of B-silu at 18,000 with grad_clip_max_norm 2.0, to 23,000. Shares B-silu's step axis (fork of the same lineage run).",
+      "arch_stem": "basic24 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128) · leaky ReLU heads",
+      "out_model": "20261006-lrBsilu-clip2-replay-latest.safetensors",
+      "frozen_glob": "20261006-lrBsilu-clip2-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261007-035017-2.txt",
+          "label": "fork of B-silu at 18,000",
+          "model_id": "20261007-38-EHwm",
+          "lineage_run_id": "085EF48A-CD92-47F9-AE00-512F86091177",
+          "segment_id": "3218F961-C972-435C-B929-FA0C4D5A6A51",
+          "date": "20261007",
+          "cumstep_base": 18000,
+          "games_base": 2323995,
+          "elapsed_base_sec": 40841.48844122887,
+          "wall_base_sec": 42165.173553943634,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "lrBsilu_clip5": {
+      "label": "lrBsilu_clip5 — B-silu fork @18k, grad clip 5.0 — 5.13M",
+      "color": "#fbb4b9",
+      "n_blocks": 3,
+      "params": 5132687,
+      "arch_summary": "B-silu-clip5 (E-0023): exact resume of B-silu at 18,000 with grad_clip_max_norm 5.0, to 23,000. Shares B-silu's step axis (fork of the same lineage run).",
+      "arch_stem": "basic24 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128) · leaky ReLU heads",
+      "out_model": "20261006-lrBsilu-clip5-replay-latest.safetensors",
+      "frozen_glob": "20261006-lrBsilu-clip5-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261007-035017.txt",
+          "label": "fork of B-silu at 18,000",
+          "model_id": "20261007-38-hdjU",
+          "lineage_run_id": "085EF48A-CD92-47F9-AE00-512F86091177",
+          "segment_id": "39D659C7-D064-48D5-A59D-BFDB55A92FA1",
+          "date": "20261007",
+          "cumstep_base": 18000,
+          "games_base": 2323995,
+          "elapsed_base_sec": 40841.48844122887,
+          "wall_base_sec": 42165.173553943634,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "bsiluall": {
+      "label": "bsiluall — B-siluall, SiLU everywhere, relative grad cap — 5.13M",
+      "color": "#54278f",
+      "n_blocks": 3,
+      "params": 5132687,
+      "arch_summary": "B-siluall (E-0027): SiLU in the tower and heads, relative gradient cap (clip, k = 3), arm B's 0.001–1.0 cycle; seven segments (all exact resumes) to 100,000.",
+      "arch_stem": "basic24 → stem 7×7→128",
+      "arch_blocks": "3× @128, 7×7+7×7, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(16→FC128) · SiLU heads",
+      "out_model": "20261008-lrBsiluall-relcap-replay-latest.safetensors",
+      "frozen_glob": "20261008-lrBsiluall-relcap-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261008-125718.txt",
+          "label": "run (to 40,000)",
+          "model_id": "20261008-9-DlVG",
+          "lineage_run_id": "66006003-5799-4FA0-B7AE-F3C19E6FD3A5",
+          "segment_id": "8455CDC8-4C70-47C4-A470-B7A932DFC0F2",
+          "date": "20261008",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261009-163612.txt",
+          "label": "resume (NaN halt ~45,975)",
+          "model_id": "20261009-2-14oI",
+          "lineage_run_id": "66006003-5799-4FA0-B7AE-F3C19E6FD3A5",
+          "segment_id": "9CC4EACB-1E16-4CC9-818D-6E34D4306154",
+          "date": "20261009",
+          "cumstep_base": 40000,
+          "games_base": 5152480,
+          "elapsed_base_sec": 95454.20327448845,
+          "wall_base_sec": 99397.5495929718,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261009-213842.txt",
+          "label": "resume from 45,000",
+          "model_id": "20261010-1-KqbZ",
+          "lineage_run_id": "66006003-5799-4FA0-B7AE-F3C19E6FD3A5",
+          "segment_id": "A273CA48-B492-414A-BDF7-A9E7B50797FD",
+          "date": "20261009",
+          "cumstep_base": 45000,
+          "games_base": 5789221,
+          "elapsed_base_sec": 109789.92811071873,
+          "wall_base_sec": 114650.7383480072,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261010-082147.txt",
+          "label": "resume (SIGINT 64,071)",
+          "model_id": "20261010-8-UqNY",
+          "lineage_run_id": "66006003-5799-4FA0-B7AE-F3C19E6FD3A5",
+          "segment_id": "0E0C4CFD-9FEA-443A-BE30-7ACF99A2AA4A",
+          "date": "20261010",
+          "cumstep_base": 60000,
+          "games_base": 7718944,
+          "elapsed_base_sec": 146823.6636376381,
+          "wall_base_sec": 153172.6788560152,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261010-111314.txt",
+          "label": "resume (GPU reset ~74,377)",
+          "model_id": "20261010-10-E9fy",
+          "lineage_run_id": "66006003-5799-4FA0-B7AE-F3C19E6FD3A5",
+          "segment_id": "EF7E6189-4AB9-44D5-8045-C90C8C963D64",
+          "date": "20261010",
+          "cumstep_base": 64071,
+          "games_base": 8240416,
+          "elapsed_base_sec": 156712.15803182125,
+          "wall_base_sec": 163446.74353897572,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261010-211711.txt",
+          "label": "resume from 74,000 (stopped 76,174)",
+          "model_id": "20261011-1-dVlQ",
+          "lineage_run_id": "66006003-5799-4FA0-B7AE-F3C19E6FD3A5",
+          "segment_id": "A7E7C395-0A5C-404D-BDBA-F0256F1C6D4C",
+          "date": "20261010",
+          "cumstep_base": 74000,
+          "games_base": 9513207,
+          "elapsed_base_sec": 189051.44187903404,
+          "wall_base_sec": 198318.87368905544,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261014-214445.txt",
+          "label": "resume to 100,000",
+          "model_id": "20261015-3-Tj2Y",
+          "lineage_run_id": "66006003-5799-4FA0-B7AE-F3C19E6FD3A5",
+          "segment_id": "4151686F-523A-42C2-92FD-A24DBACF7BE0",
+          "date": "20261014",
+          "cumstep_base": 76174,
+          "games_base": 9794890,
+          "elapsed_base_sec": 193616.862803936,
+          "wall_base_sec": 203083.9062770605,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "rreplay": {
+      "label": "rreplay — R-replay (zlra), 3-blk 9×9 SiLU — 8.27M",
+      "color": "#1b9e77",
+      "n_blocks": 3,
+      "params": 8271279,
+      "arch_summary": "R-replay (experiments/20261008-zlra-selfplay-lr): ZlrA's untrained start file 20261008-zlra-ab-fresh (model 20261008-4-Ew5t) on corpus w3aA5b, LR cycle 0.001–1.0 (period 10k); three segments to 86,398 (SIGINT, for the R-elite branch).",
+      "arch_stem": "basic24 → stem 5×5→128",
+      "arch_blocks": "3× @128, 9×9+9×9, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads · fp32 policy tail",
+      "out_model": "20261008-zlra-replay-latest.safetensors",
+      "frozen_glob": "20261008-zlra-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261008-094622.txt",
+          "label": "run (to 60,000)",
+          "model_id": "20261008-5-mIMw",
+          "lineage_run_id": "0EFE2DA3-070A-4EDF-954A-DB8EB92309B9",
+          "segment_id": "5866240B-C0B0-4D24-8229-E77E637CE0D9",
+          "date": "20261008",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261010-122003.txt",
+          "label": "exact resume (GPU reset ~67,237)",
+          "model_id": "20261010-12-Ea0A",
+          "lineage_run_id": "0EFE2DA3-070A-4EDF-954A-DB8EB92309B9",
+          "segment_id": "37F4E35A-D892-4159-83AA-F0D9ED5D4C61",
+          "date": "20261010",
+          "cumstep_base": 60000,
+          "games_base": 7722685,
+          "elapsed_base_sec": 174607.24365246296,
+          "wall_base_sec": 181960.1909890175,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261010-211714.txt",
+          "label": "exact resume from 67,000",
+          "model_id": "20261011-2-abM2",
+          "lineage_run_id": "0EFE2DA3-070A-4EDF-954A-DB8EB92309B9",
+          "segment_id": "4D30F82A-1797-4ED6-8A19-FFE8AC441F7F",
+          "date": "20261010",
+          "cumstep_base": 67000,
+          "games_base": 8614320,
+          "elapsed_base_sec": 203328.78844940662,
+          "wall_base_sec": 213117.73452305794,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "std-2026-05"
+    },
+    "relite": {
+      "label": "relite — R-elite, branch of R-replay @86,398 on elite, LR 0.002 — 8.27M",
+      "color": "#66a61e",
+      "n_blocks": 3,
+      "params": 8271279,
+      "arch_summary": "R-elite: R-replay's 86,398 save on the elite corpus op24Gp at a fixed LR 0.002; stopped at 21,006 for the R-elitecyc branch. Steps count from the branch.",
+      "arch_stem": "basic24 → stem 5×5→128",
+      "arch_blocks": "3× @128, 9×9+9×9, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads · fp32 policy tail",
+      "out_model": "20261011-zlra-elite-latest.safetensors",
+      "frozen_glob": "20261011-zlra-elite-latest-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261011-130546.txt",
+          "label": "branch of R-replay at 86,398",
+          "model_id": "20261011-4-btGW",
+          "lineage_run_id": "ACC058E9-15A5-49EA-8F60-9D1F254EAA4C",
+          "segment_id": "049AE8A5-04A1-41A6-8D36-1013FEDE4764",
+          "date": "20261011",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "elite-2021_2025"
+    },
+    "relitecyc": {
+      "label": "relitecyc — R-elitecyc, gentle LR cycle then decay (elite) — 8.27M",
+      "color": "#d95f02",
+      "n_blocks": 3,
+      "params": 8271279,
+      "arch_summary": "R-elitecyc (E-0026): R-elite's 21,006 save branched onto a 0.002–0.02 LR cycle on the elite corpus; 20 segments (exact resumes except segment 14's schedule change to a decay at 384,964); stopped at 883,503 for the hilr fork. Steps count from the branch. Its 1000-step files from 720k to 790k were thinned to every 10k; those rows take the writer's logged test-set result.",
+      "arch_stem": "basic24 → stem 5×5→128",
+      "arch_blocks": "3× @128, 9×9+9×9, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads · fp32 policy tail",
+      "out_model": "20261011-zlra-elitecyc-latest.safetensors",
+      "frozen_glob": "20261011-zlra-elitecyc-latest-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261011-213940.txt",
+          "label": "branch of R-elite at 21,006",
+          "model_id": "20261012-2-dMNh",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "A109532A-45B5-4822-8A31-4255ACE395E9",
+          "date": "20261011",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261012-153015.txt",
+          "label": "segment 1",
+          "model_id": "20261012-6-s0bd",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "D355C01D-9810-4443-AA2F-8FBA6C69B71D",
+          "date": "20261012",
+          "cumstep_base": 45467,
+          "games_base": 4501154,
+          "elapsed_base_sec": 60456.291033029556,
+          "wall_base_sec": 63930.60833001137,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261014-201112.txt",
+          "label": "segment 2",
+          "model_id": "20261015-1-KXNZ",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "85D5BE8D-E726-47DC-A04E-08018B92F284",
+          "date": "20261014",
+          "cumstep_base": 126222,
+          "games_base": 12292833,
+          "elapsed_base_sec": 242366.91912305355,
+          "wall_base_sec": 252735.91945898533,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261015-131635.txt",
+          "label": "segment 3",
+          "model_id": "20261015-4-VKg3",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "2BA43D5A-3EED-4F97-8777-B818106FDA2A",
+          "date": "20261015",
+          "cumstep_base": 127931,
+          "games_base": 12456410,
+          "elapsed_base_sec": 246501.97793114185,
+          "wall_base_sec": 257091.16502392292,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261015-230809.txt",
+          "label": "segment 4",
+          "model_id": "20261016-2-qGIj",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "EBF91749-F381-4F92-BFFA-0C90D0186097",
+          "date": "20261015",
+          "cumstep_base": 134247,
+          "games_base": 13106202,
+          "elapsed_base_sec": 264375.8329716921,
+          "wall_base_sec": 275636.1565389633,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261017-010300.txt",
+          "label": "segment 5",
+          "model_id": "20261017-1-hcu3",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "CDF54945-530B-4CDC-8AB2-903E37D3EE90",
+          "date": "20261017",
+          "cumstep_base": 194481,
+          "games_base": 19116510,
+          "elapsed_base_sec": 335390.93615317345,
+          "wall_base_sec": 350838.8850558996,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261017-182142-2.txt",
+          "label": "segment 6",
+          "model_id": "20261017-3-l4Ac",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "A337F443-5719-40D3-B966-1E5A7940E645",
+          "date": "20261017",
+          "cumstep_base": 234240,
+          "games_base": 22988151,
+          "elapsed_base_sec": 392474.22005593777,
+          "wall_base_sec": 411265.77577090263,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261017-201253.txt",
+          "label": "segment 7",
+          "model_id": "20261018-1-GTJW",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "E3DB2188-5C83-4089-8980-510AA54CEF58",
+          "date": "20261017",
+          "cumstep_base": 234700,
+          "games_base": 23033553,
+          "elapsed_base_sec": 395204.08714067936,
+          "wall_base_sec": 414285.591342926,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261017-235728.txt",
+          "label": "segment 8",
+          "model_id": "20261018-2-lEdz",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "348A260B-256B-40AB-A5B8-71A42F7BB1F2",
+          "date": "20261017",
+          "cumstep_base": 239101,
+          "games_base": 23465339,
+          "elapsed_base_sec": 407822.62244462967,
+          "wall_base_sec": 427372.0663509369,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261018-142539-2.txt",
+          "label": "segment 9",
+          "model_id": "20261018-3-SbX4",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "15FD5A54-7A61-469F-93F0-0E81DC0F12D7",
+          "date": "20261018",
+          "cumstep_base": 260410,
+          "games_base": 25494225,
+          "elapsed_base_sec": 454635.15312731266,
+          "wall_base_sec": 475819.7024329901,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261018-190000-2.txt",
+          "label": "segment 10",
+          "model_id": "20261019-1-TIVT",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "4CF039D4-5F49-402C-A817-E1B2C252C2BE",
+          "date": "20261018",
+          "cumstep_base": 262044,
+          "games_base": 25646877,
+          "elapsed_base_sec": 460713.7138233185,
+          "wall_base_sec": 482525.27951300144,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261019-230139.txt",
+          "label": "segment 11",
+          "model_id": "20261020-22-Irow",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "C5749D4A-8D55-445D-9A57-2C330A3A1AC4",
+          "date": "20261019",
+          "cumstep_base": 300300,
+          "games_base": 29468014,
+          "elapsed_base_sec": 547185.3900879622,
+          "wall_base_sec": 572341.7097519636,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261023-072629.txt",
+          "label": "segment 12",
+          "model_id": "20261023-3-7hX0",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "8B115156-1D30-4675-84F2-B9D3CBA34E15",
+          "date": "20261023",
+          "cumstep_base": 314767,
+          "games_base": 30888165,
+          "elapsed_base_sec": 576693.6183013916,
+          "wall_base_sec": 602846.2829369307,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261024-224808-2.txt",
+          "label": "to 384,964 (SIGINT; the forks start here)",
+          "model_id": "20261025-1-qyUf",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "F52785E6-19F2-4444-91A1-E782F29312F2",
+          "date": "20261024",
+          "cumstep_base": 361096,
+          "games_base": 35438959,
+          "elapsed_base_sec": 704817.595305562,
+          "wall_base_sec": 735642.3524729013,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261026-000416.txt",
+          "label": "decaying schedule (resume, schedule gap)",
+          "model_id": "20261026-1-qrwY",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "8AB06C75-E1F0-479A-B10B-4F4ED75D24A9",
+          "date": "20261026",
+          "cumstep_base": 384964,
+          "games_base": 37772534,
+          "elapsed_base_sec": 759235.9555639029,
+          "wall_base_sec": 791765.2441489697,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261026-133117.txt",
+          "label": "segment 15",
+          "model_id": "20261026-3-BUsk",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "1DF7B5AB-7DB5-4225-86D5-2B11543A32D3",
+          "date": "20261026",
+          "cumstep_base": 409608,
+          "games_base": 40126963,
+          "elapsed_base_sec": 792895.1313097477,
+          "wall_base_sec": 827097.615244031,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261026-165556.txt",
+          "label": "segment 16",
+          "model_id": "20261026-5-x0nN",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "33DAC1D0-4319-494B-93A2-19A0BA5592D0",
+          "date": "20261026",
+          "cumstep_base": 418000,
+          "games_base": 40923938,
+          "elapsed_base_sec": 802062.1448066235,
+          "wall_base_sec": 836799.1779770851,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261029-230847-2.txt",
+          "label": "segment 17",
+          "model_id": "20261030-1-zub8",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "C59622B6-3E3B-406A-9BA7-FAFD989CB1E8",
+          "date": "20261029",
+          "cumstep_base": 604000,
+          "games_base": 59268375,
+          "elapsed_base_sec": 1053859.814458251,
+          "wall_base_sec": 1101959.8279480934,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261101-193002-2.txt",
+          "label": "segment 18",
+          "model_id": "20261102-2-eBRM",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "D6F944ED-FCEE-41A3-A700-0EC145C260A6",
+          "date": "20261101",
+          "cumstep_base": 679774,
+          "games_base": 66685701,
+          "elapsed_base_sec": 1272209.3852431774,
+          "wall_base_sec": 1327479.109453082,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261106-011055.txt",
+          "label": "segment 19",
+          "model_id": "20261106-2-yeaX",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "AE879C79-4365-4E7E-A614-73370354F753",
+          "date": "20261106",
+          "cumstep_base": 721584,
+          "games_base": 70687668,
+          "elapsed_base_sec": 1322685.6888558865,
+          "wall_base_sec": 1380601.6246020794,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "elite-2021_2025"
+    },
+    "relitecyc_anneal": {
+      "label": "relitecyc_anneal — R-elitecyc-anneal, branch @384,964, LR annealed — 8.27M",
+      "color": "#e7298a",
+      "n_blocks": 3,
+      "params": 8271279,
+      "arch_summary": "R-elitecyc-anneal: R-elitecyc's 384,964 save, LR falling geometrically 0.002 → 0.0002 over 20,000 steps then held; to 30,000. Steps count from the branch.",
+      "arch_stem": "basic24 → stem 5×5→128",
+      "arch_blocks": "3× @128, 9×9+9×9, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads · fp32 policy tail",
+      "out_model": "20261025-zlra-elitecyc-anneal-latest.safetensors",
+      "frozen_glob": "20261025-zlra-elitecyc-anneal-latest-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261025-142424.txt",
+          "label": "branch of R-elitecyc at 384,964",
+          "model_id": "20261025-2-jVa3",
+          "lineage_run_id": "23DF16CB-51D2-4EB6-9FEE-3F22D1BA87D1",
+          "segment_id": "6BF76190-18C1-465A-A069-C4DF106E9E92",
+          "date": "20261025",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "elite-2021_2025"
+    },
+    "relitefresh": {
+      "label": "relitefresh — R-elitefresh, R-replay's start/params/seed on elite — 8.27M",
+      "color": "#7570b3",
+      "n_blocks": 3,
+      "params": 8271279,
+      "arch_summary": "R-elitefresh (E-0026): R-replay's untrained start file, parameters and seed, fed the elite corpus; 13 segments (exact resumes) to 353,933 (paused by the owner). The 2026-10-17 18:21 launch of segment 3 (dcm_log_20261017-182142) was abandoned and relaunched from the same save; it is left out.",
+      "arch_stem": "basic24 → stem 5×5→128",
+      "arch_blocks": "3× @128, 9×9+9×9, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads · fp32 policy tail",
+      "out_model": "20261012-zlra-elitefresh-latest.safetensors",
+      "frozen_glob": "20261012-zlra-elitefresh-latest-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261012-153151.txt",
+          "label": "run",
+          "model_id": "20261012-7-3xXB",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "CCE01A92-A134-4B52-8567-FE7AE524A3C0",
+          "date": "20261012",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261014-201112-2.txt",
+          "label": "segment 1",
+          "model_id": "20261015-1-nEcY",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "F74220B3-21FF-4577-B8D7-82F6C9698122",
+          "date": "20261014",
+          "cumstep_base": 80518,
+          "games_base": 8023292,
+          "elapsed_base_sec": 181850.84256279469,
+          "wall_base_sec": 188709.88314700127,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261017-145133.txt",
+          "label": "segment 2",
+          "model_id": "20261017-2-zSlK",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "F48E8839-7A2C-4407-9E02-E061A9BC988D",
+          "date": "20261017",
+          "cumstep_base": 111327,
+          "games_base": 11029784,
+          "elapsed_base_sec": 257801.16898095608,
+          "wall_base_sec": 268764.8747500181,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261017-201253-2.txt",
+          "label": "segment 3",
+          "model_id": "20261018-1-ozt4",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "08B7D97A-1AB3-4143-8EB4-4FFB87588563",
+          "date": "20261017",
+          "cumstep_base": 116369,
+          "games_base": 11516998,
+          "elapsed_base_sec": 268099.1506655216,
+          "wall_base_sec": 279478.7556260824,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261017-235728-2.txt",
+          "label": "segment 4",
+          "model_id": "20261018-2-jMEj",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "6F97A84B-1E3F-4180-A2D6-CDB4C9F2550D",
+          "date": "20261017",
+          "cumstep_base": 120754,
+          "games_base": 11944280,
+          "elapsed_base_sec": 280720.7181429863,
+          "wall_base_sec": 292563.5382120609,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261018-142539.txt",
+          "label": "segment 5",
+          "model_id": "20261018-3-Wq3s",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "16058CED-0B77-4614-AFC8-132DF8165C34",
+          "date": "20261018",
+          "cumstep_base": 142084,
+          "games_base": 13955945,
+          "elapsed_base_sec": 327520.04702842236,
+          "wall_base_sec": 341011.14199602604,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261018-190000.txt",
+          "label": "segment 6",
+          "model_id": "20261019-1-Lh4S",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "F4190664-A60F-40E3-B548-E756E056569A",
+          "date": "20261018",
+          "cumstep_base": 143756,
+          "games_base": 14115095,
+          "elapsed_base_sec": 333626.3365910053,
+          "wall_base_sec": 347716.7184510231,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261019-230141.txt",
+          "label": "segment 7",
+          "model_id": "20261020-23-PA3e",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "678F74C0-2356-4B03-9CAA-91B77ACEE178",
+          "date": "20261019",
+          "cumstep_base": 182041,
+          "games_base": 17981801,
+          "elapsed_base_sec": 420063.7702305317,
+          "wall_base_sec": 437533.1444519758,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261023-072631.txt",
+          "label": "segment 8",
+          "model_id": "20261023-4-GEJC",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "DCC51F6F-F8DA-43D9-BCCC-8EB184407444",
+          "date": "20261023",
+          "cumstep_base": 196491,
+          "games_base": 19383114,
+          "elapsed_base_sec": 449570.2509640455,
+          "wall_base_sec": 468035.7974989414,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261024-224808-3.txt",
+          "label": "segment 9",
+          "model_id": "20261025-1-rHid",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "07695BA8-60E9-4734-BC5A-7E968A4D0C57",
+          "date": "20261024",
+          "cumstep_base": 221457,
+          "games_base": 21863691,
+          "elapsed_base_sec": 514245.5607316494,
+          "wall_base_sec": 535208.8318380117,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261028-213703.txt",
+          "label": "segment 10",
+          "model_id": "20261029-1-ihwn",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "65E118AB-4C66-4AEE-814F-9481D9660FF0",
+          "date": "20261028",
+          "cumstep_base": 245158,
+          "games_base": 24153410,
+          "elapsed_base_sec": 568670.0069983006,
+          "wall_base_sec": 591311.8577749729,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261029-230847.txt",
+          "label": "segment 11",
+          "model_id": "20261030-1-tsQB",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "FF5CC981-9FE0-4827-9D3F-D85417F88D43",
+          "date": "20261029",
+          "cumstep_base": 278000,
+          "games_base": 27333415,
+          "elapsed_base_sec": 641798.7860927582,
+          "wall_base_sec": 666918.0641950369,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261101-193002.txt",
+          "label": "segment 12",
+          "model_id": "20261102-1-4DgX",
+          "lineage_run_id": "F79C7568-4DDB-443E-BFB4-8131DAB27F4A",
+          "segment_id": "AEF15985-914D-472C-B389-BC2B8E0437FF",
+          "date": "20261101",
+          "cumstep_base": 353776,
+          "games_base": 34829307,
+          "elapsed_base_sec": 860148.1630855799,
+          "wall_base_sec": 892437.3832631111,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "elite-2021_2025"
+    },
+    "relitecyc_hilr": {
+      "label": "relitecyc_hilr — R-elitecyc fork @384,964 keeping the 0.002↔0.02 cycle — 8.27M",
+      "color": "#a6761d",
+      "n_blocks": 3,
+      "params": 8271279,
+      "arch_summary": "R-elitecyc-hilr (E-0029): exact resume of R-elitecyc at 384,964 continuing the original cycle instead of the decay; stopped by the owner at 528,527. Shares R-elitecyc's step axis.",
+      "arch_stem": "basic24 → stem 5×5→128",
+      "arch_blocks": "3× @128, 9×9+9×9, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads · fp32 policy tail",
+      "out_model": "20261109-zlra-elitecyc-hilr-latest.safetensors",
+      "frozen_glob": "20261109-zlra-elitecyc-hilr-latest-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261109-234535.txt",
+          "label": "fork of R-elitecyc at 384,964",
+          "model_id": "20261110-1-lG5l",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "68477CB7-60AD-4A8E-8149-399EF2910909",
+          "date": "20261109",
+          "cumstep_base": 384964,
+          "games_base": 37772534,
+          "elapsed_base_sec": 759235.9555639029,
+          "wall_base_sec": 791765.2441489697,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "elite-2021_2025"
+    },
+    "relitecyc_fp32": {
+      "label": "relitecyc_fp32 — R-elitecyc fork @384,964 in fp32 (MPSGraph weight-gradient bug) — 8.27M",
+      "color": "#666666",
+      "n_blocks": 3,
+      "params": 8271279,
+      "arch_summary": "R-elitecyc-fp32: R-elitecyc at 384,964 in fp32 (derived start file 20261112-zlra-elitecyc-fp32-start), same parameters as the decay; 330–380 pElo behind bf16 by 390k–410k because MPSGraph computes a wrong fp32 conv weight gradient past 2^31 elements (analysis-fp32/); stopped at 413,778. Not a measurement of fp32 training.",
+      "arch_stem": "basic24 → stem 5×5→128",
+      "arch_blocks": "3× @128, 9×9+9×9, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads · fp32 throughout",
+      "out_model": "20261112-zlra-elitecyc-fp32-latest.safetensors",
+      "frozen_glob": "20261112-zlra-elitecyc-fp32-latest-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261112-234508.txt",
+          "label": "fork of R-elitecyc at 384,964 (fp32)",
+          "model_id": "20261113-4-xB1R",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "CC9C2403-2188-44CA-AFB4-714706A85513",
+          "date": "20261112",
+          "cumstep_base": 384964,
+          "games_base": 37772534,
+          "elapsed_base_sec": 759235.9555639029,
+          "wall_base_sec": 791765.2441489697,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "elite-2021_2025"
+    },
+    "relitecyc_fp32fix": {
+      "label": "relitecyc_fp32fix — R-elitecyc fork @384,964 in fp32 with the workaround — 8.27M",
+      "color": "#1f1f1f",
+      "n_blocks": 3,
+      "params": 8271279,
+      "arch_summary": "R-elitecyc-fp32fix: same start and parameters as R-elitecyc-fp32, with the fp32 convolutions that pass 2^31 split over input channels (ConvolutionWeightGradientWorkaround); compare row for row with R-elitecyc. Running to 1,000,000 under the battery supervisor.",
+      "arch_stem": "basic24 → stem 5×5→128",
+      "arch_blocks": "3× @128, 9×9+9×9, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads · fp32 throughout",
+      "out_model": "20261114-zlra-elitecyc-fp32fix-latest.safetensors",
+      "frozen_glob": "20261114-zlra-elitecyc-fp32fix-latest-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261114-003038.txt",
+          "label": "fork of R-elitecyc at 384,964 (fp32, workaround); stopped 398,310",
+          "model_id": "20261114-4-hkkm",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "EC3F5D18-974C-46DC-A39E-C10CA02B80FE",
+          "date": "20261114",
+          "cumstep_base": 384964,
+          "games_base": 37772534,
+          "elapsed_base_sec": 759235.9555639029,
+          "wall_base_sec": 791765.2441489697,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261114-154717.txt",
+          "label": "resume (build gap), split re-planned for batch 4096",
+          "model_id": "20261114-26-Mkjm",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "2F4A860B-E91A-4B2F-8BCF-9961402473D8",
+          "date": "20261114",
+          "cumstep_base": 398310,
+          "games_base": 39069593,
+          "elapsed_base_sec": 806988.6702061892,
+          "wall_base_sec": 840634.4639549255,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261116-011436.txt",
+          "label": "exact resume from 400,000",
+          "model_id": "20261116-1-2p5j",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "B5620193-993C-4C81-A55C-232988C01C36",
+          "date": "20261116",
+          "cumstep_base": 400000,
+          "games_base": 39230034,
+          "elapsed_base_sec": 810970.963896513,
+          "wall_base_sec": 844741.9515990019,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261119-191618.txt",
+          "label": "exact resume from 424,550",
+          "model_id": "20261120-1-yZeL",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "40CA1231-D005-4B4B-8088-381469761C76",
+          "date": "20261119",
+          "cumstep_base": 424550,
+          "games_base": 41552647,
+          "elapsed_base_sec": 870539.283403635,
+          "wall_base_sec": 905843.210302949,
+          "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261121-164043.txt",
+          "label": "exact resume from 428,652",
+          "model_id": "20261121-1-0nTA",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "87AF7344-48FE-4253-AB05-52BC845850A7",
+          "date": "20261121",
+          "cumstep_base": 428652,
+          "games_base": 41964441,
+          "elapsed_base_sec": 890770.3370534182,
+          "wall_base_sec": 926489.6214379072,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "elite-2021_2025"
     }
+  },
+  "excluded_lineage_runs": {
+    "1AFCF318-868F-45DD-85E4-A6E491576EE3": "V-3 (lrB-relcapV3): 3,000-step validation rerun, byte-identical to lrB (E-0024)",
+    "C378E0D2-0F13-490A-BE6A-FD44F9D78A0C": "seg-resume-check: 2,000-step resume test",
+    "E62E827B-BEEB-4A88-9FE5-F8B1116A1FA2": "LR arm C-leaky: ran away at 1,175 steps"
+  },
+  "excluded_segments": {
+    "8136FF98-0199-4743-B202-E48CAD933865": "B-silu-ctl15: control fork that reproduces lrBsilu bit for bit through 22,030 (E-0020)",
+    "B937F350-0468-44E7-AB87-43998AE8102E": "V-1 (lrBsilu-relcapV1): log-only rerun of lrBsilu 18,000-21,000, byte-identical (E-0024)"
   }
 }
