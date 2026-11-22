@@ -21,14 +21,10 @@ def step_lines(pat):
     return out
 
 def bf16_wide():
-    h = open(f"{X}/tables/training_tables.html").read()
-    sec = h[h.index("R-elitecyc <span"):h.index("R-elitecyc-anneal <span")]
-    out = {}
-    for tr in re.findall(r"<tr>(.*?)</tr>", sec, re.S):
-        c = [re.sub("<[^>]+>", "", x).strip() for x in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.S)]
-        if c and re.fullmatch(r"[\d,]+", c[0]) and c[2]:
-            out[int(c[0].replace(",", ""))] = (float(c[2]), float(c[3]))
-    return out
+    # R-elitecyc's own key in the step tables' record (wide pElo/NLL per checkpoint, kept after thinning).
+    # Never parse the rendered page: its sections change as runs are added.
+    rec = json.load(open(f"{X}/tables/wide_pelo_record.json"))["elitecyc"]
+    return {int(k): (v[0], v[1]) for k, v in rec.items()}
 
 def fp32_wide(s):
     fn = f"{M}20261114-zlra-elitecyc-fp32fix-latest-step{s}.safetensors"
@@ -52,7 +48,7 @@ print("| " + " | ".join(cols) + " |"); print("|" + "---:|" * len(cols))
 for s in sorted(k for k in F if LO <= k <= HI):
     f, b, fw, bw = F[s], B.get(s), fp32_wide(s), BW.get(s)
     p, q = large(f"{X}/analysis-fp32/fp32fix_large_probe_step{s}.jsonl"), BL.get(s)
-    row = [f"{s:,}", v(fw and fw[0], ".1f"), v(bw and bw[0], ".0f"), v(fw[0] - bw[0] if fw and bw else None, "+.1f"),
+    row = [f"{s:,}", v(fw and fw[0], ".1f"), v(bw and bw[0], ".1f"), v(fw[0] - bw[0] if fw and bw else None, "+.1f"),
            v(fw and fw[1], ".3f"), v(bw and bw[1], ".3f"),
            v(p and p["pElo"], ".1f"), v(q and q["pElo"], ".1f"), v(p["pElo"] - q["pElo"] if p and q else None, "+.1f"),
            v(p and p["nll"], ".4f"), v(p and p["argmaxCorrect"], ","), v(p and p["top5Correct"], ","),
