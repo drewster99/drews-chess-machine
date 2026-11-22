@@ -1,0 +1,2 @@
+cum_step,meta_step,segment,elapsed_train_sec,wallclock_iso,ms_per_step,pElo,nll,loss,pLoss,vLoss,legalMass,pIllM,bn1Mean,gNorm,sae2,eff_alpha,pLogit_mean,pLogit_peak,frozen_file,note,wall_sec,games_fed,probe_build,train_step_sec
+1000,1000,0,853.6,2026-11-22T12:13:27,708.3,654.6,3.9137,4.5607,3.4713,0.8989,0.8094,0.1906,0.0277,1.021,,,11.41,14.705829620361328,20261122-lsmode-C-latest-step1000.safetensors,probe-backfill,853.6,109064,DCM-2687-d8afa524.app@sha256:951cbf7d4692,767.814

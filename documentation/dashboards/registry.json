@@ -2185,7 +2185,10 @@
           "games_base": 0,
           "elapsed_base_sec": 0.0,
           "wall_base_sec": 0.0,
-          "device": "M5 Max"
+          "device": "M5 Max",
+          "model_id": "20261122-116-xAvB",
+          "lineage_run_id": "EFDC6B27-7532-40E1-9B01-98715A078FC1",
+          "segment_id": "13177D1F-499A-4433-AD66-055EC439310E"
         }
       ],
       "trainset": "elite-2021_2025"
@@ -2210,7 +2213,10 @@
           "games_base": 0,
           "elapsed_base_sec": 0.0,
           "wall_base_sec": 0.0,
-          "device": "M5 Max"
+          "device": "M5 Max",
+          "model_id": "20261122-116-Ovmi",
+          "lineage_run_id": "A3A90A9A-03D5-41E1-A034-CB5978AF3A53",
+          "segment_id": "68096748-1CF5-46E8-948E-C158F15E2D4B"
         }
       ],
       "trainset": "elite-2021_2025"
@@ -2235,7 +2241,10 @@
           "games_base": 0,
           "elapsed_base_sec": 0.0,
           "wall_base_sec": 0.0,
-          "device": "M5 Max"
+          "device": "M5 Max",
+          "model_id": "20261122-116-sZqV",
+          "lineage_run_id": "9BAA39EC-4E77-4E7C-80EF-E3608D851E64",
+          "segment_id": "62005ABB-C06F-4FE0-AC57-7AF6A976544B"
         }
       ],
       "trainset": "elite-2021_2025"
