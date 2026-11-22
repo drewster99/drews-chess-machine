@@ -62,5 +62,7 @@ and used 15.5 GB.
 1. One training executable whose diagnostics and KL stash are switched by feeds instead of separate compiled
    variants: ≈ 8 GiB less GPU memory per run.
 2. Stream the corpus shard, or store its moves compactly (e.g. 2-byte move codes): ≈ 1.3 GB less per run.
-3. Smaller `replay_buffer_capacity` for small-model tests (500k saves ≈ 3 GB); bit-packed boards would save
+   Owner 2026-11-22: stream it, or memory-map it with a sequential-access hint, so it needs no fixed allocation.
+3. Smaller `replay_buffer_capacity` for small-model tests (500k saves ≈ 3 GB; owner 2026-11-22 chose 200k for
+   the label-smoothing arms from step 10,000); bit-packed boards would save
    ~5.9 GB but adds an unpack to every batch (the fp32 layout was chosen for speed).
