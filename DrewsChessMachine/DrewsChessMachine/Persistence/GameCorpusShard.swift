@@ -24,6 +24,11 @@ enum GameCorpusError: LocalizedError {
     /// that would have replaced it — something else (a writer finishing its
     /// source) rewrote it in between — so it was left as found.
     case metadataChangedSinceRead(path: String)
+    /// A sealed shard that verified when it was opened failed the streamed
+    /// read that followed: the file changed in between, or a read failed.
+    /// The games already returned were the verified content; the rest of the
+    /// shard is not read.
+    case streamedReadFailedAfterVerification(shard: String, detail: String)
 
     var errorDescription: String? {
         switch self {
@@ -44,6 +49,8 @@ enum GameCorpusError: LocalizedError {
                 + "keeps the games written before it, recoverable with --validate-corpus --fix"
         case .metadataChangedSinceRead(let path):
             return "Corpus metadata \(path) changed after it was read; it was left as found"
+        case let .streamedReadFailedAfterVerification(shard, detail):
+            return "Corpus shard \(shard) verified at open but failed its streamed read (\(detail))"
         }
     }
 }
@@ -248,6 +255,14 @@ enum GameCorpusShardFormat {
         let len = Int(try r.readUInt32LE())
         let payload = try r.readData(len)
         let crc = try r.readUInt32LE()
+        return try decodeCheckedPayload(payload, crc: crc)
+    }
+
+    /// One framed record's payload, after checking it against the CRC its
+    /// frame carries. The one CRC check and decode every reader of a framed
+    /// record goes through (the in-memory `readFramedRecord` and the streamed
+    /// `SealedShardBodyCursor`).
+    static func decodeCheckedPayload(_ payload: Data, crc: UInt32) throws -> GameRecord {
         guard crc == CRC32.checksum(payload) else { throw GameCorpusError.recordCRCMismatch }
         var pr = CorpusByteReader(payload)
         return try decodeRecordPayload(&pr)
@@ -473,46 +488,318 @@ enum GameCorpusShardIO {
     }
 
     /// Read and fully verify a sealed shard (trailer magic, SHA-256, and every
-    /// record's CRC), returning all games in order.
+    /// record's CRC), returning all games in order. Holds every decoded game
+    /// at once; corpus replay reads through `SealedShardGameStream` instead,
+    /// which verifies the same way and then returns the games one at a time.
     static func readSealed(at url: URL) throws -> SealedShard {
-        let data: Data
-        do { data = try Data(contentsOf: url) }
-        catch { throw GameCorpusError.ioFailed("read \(url.lastPathComponent): \(error.localizedDescription)") }
-
-        let frontSize = GameCorpusShardFormat.frontHeaderSize
-        let trailerSize = GameCorpusShardFormat.trailerSize
-        guard data.count >= frontSize + trailerSize else { throw GameCorpusError.truncatedHeader }
-
-        let base = data.startIndex
-        let header = try GameCorpusShardFormat.decodeFrontHeader(data.subdata(in: base..<(base + frontSize)))
-        let bodyEnd = data.count - trailerSize
-
-        let trailer = try GameCorpusShardFormat.decodeTrailer(data.subdata(in: (base + bodyEnd)..<data.endIndex))
-        let gameCount = trailer.gameCount
-        let computed = Data(SHA256.hash(data: data.subdata(in: base..<(base + bodyEnd))))
-        guard computed == trailer.sha256 else { throw GameCorpusError.shardSHAMismatch }
-
-        var rr = CorpusByteReader(data.subdata(in: (base + frontSize)..<(base + bodyEnd)))
+        let opened = try OpenedSealedShard(url: url)
         var games: [GameRecord] = []
-        games.reserveCapacity(gameCount)
-        while rr.remaining > 0 {
-            games.append(try GameCorpusShardFormat.readFramedRecord(&rr))
-        }
-        guard games.count == gameCount else {
-            throw GameCorpusError.gameCountMismatch(expected: gameCount, got: games.count)
-        }
-        return SealedShard(header: header,
-                           gameCount: gameCount,
-                           plyCount: trailer.plyCount,
-                           sealUnix: trailer.sealUnix,
+        try opened.verifyBody { games.append($0) }
+        return SealedShard(header: opened.header,
+                           gameCount: opened.trailer.gameCount,
+                           plyCount: opened.trailer.plyCount,
+                           sealUnix: opened.trailer.sealUnix,
                            games: games)
+    }
+
+    /// A sealed shard opened for reading: its handle, front header and
+    /// trailer. Every verified read of a sealed shard starts here, so the
+    /// all-at-once read and the stream check the same things in the same
+    /// order. Closes its handle when released.
+    final class OpenedSealedShard {
+        let url: URL
+        let handle: FileHandle
+        let header: GameCorpusShardFormat.FrontHeader
+        let trailer: GameCorpusShardFormat.Trailer
+        /// File offset of the trailer: the end of the bytes the trailer's
+        /// SHA-256 covers (front header + records).
+        let bodyEnd: UInt64
+
+        /// Open the shard and decode its front header and trailer. The checks
+        /// run in the order the all-at-once read always ran them: size, front
+        /// header, trailer. The body is not read.
+        init(url: URL) throws {
+            let handle: FileHandle
+            do { handle = try FileHandle(forReadingFrom: url) }
+            catch { throw GameCorpusError.ioFailed("read \(url.lastPathComponent): \(error.localizedDescription)") }
+            do {
+                let trailerBlock = try GameCorpusShardIO.readTrailerBlock(handle: handle, url: url)
+                let bodyEnd = try handle.offset() - UInt64(GameCorpusShardFormat.trailerSize)
+                try handle.seek(toOffset: 0)
+                let frontSize = GameCorpusShardFormat.frontHeaderSize
+                guard let front = try handle.read(upToCount: frontSize), front.count == frontSize else {
+                    throw GameCorpusError.truncatedHeader
+                }
+                self.header = try GameCorpusShardFormat.decodeFrontHeader(front)
+                self.trailer = try GameCorpusShardFormat.decodeTrailer(trailerBlock)
+                self.bodyEnd = bodyEnd
+            } catch let corpusError as GameCorpusError {
+                GameCorpusShardIO.closeAfterRead(handle, url: url, what: "header")
+                throw corpusError
+            } catch {
+                GameCorpusShardIO.closeAfterRead(handle, url: url, what: "header")
+                throw GameCorpusError.ioFailed("read \(url.lastPathComponent): \(error.localizedDescription)")
+            }
+            self.url = url
+            self.handle = handle
+        }
+
+        deinit {
+            GameCorpusShardIO.closeAfterRead(handle, url: url, what: "shard")
+        }
+
+        /// One streamed pass over the whole body that verifies it exactly as
+        /// the shard's integrity has always been judged — the SHA-256 first,
+        /// then the first bad record, then the game count — handing each
+        /// decoded game to `onGame` as it goes. A bad record stops the
+        /// decoding but not the hashing, so a shard whose hash also fails
+        /// reports the hash, as the all-at-once check (hash, then records)
+        /// did. `onGame` may have seen games of a shard that then fails; the
+        /// caller discards them with the error.
+        func verifyBody(_ onGame: (GameRecord) -> Void) throws {
+            do {
+                var cursor = try SealedShardBodyCursor(shard: self)
+                var decodedCount = 0
+                var recordError: Error? = nil
+                do {
+                    while let game = try cursor.nextGame() {
+                        onGame(game)
+                        decodedCount += 1
+                    }
+                } catch let readFailure as SealedShardBodyCursor.ReadFailure {
+                    throw readFailure
+                } catch {
+                    recordError = error
+                }
+                let digest = try cursor.finishHashing()
+                guard digest == trailer.sha256 else { throw GameCorpusError.shardSHAMismatch }
+                if let recordError { throw recordError }
+                guard decodedCount == trailer.gameCount else {
+                    throw GameCorpusError.gameCountMismatch(expected: trailer.gameCount, got: decodedCount)
+                }
+            } catch let readFailure as SealedShardBodyCursor.ReadFailure {
+                throw readFailure.error
+            }
+        }
+    }
+
+    /// A sealed shard's games one at a time, read sequentially through a
+    /// bounded window instead of decoded whole — corpus replay's read, so a
+    /// shard costs the feed about `SealedShardBodyCursor.readChunkByteCount`
+    /// of memory rather than every game it holds (one 64 MiB shard's 368,840
+    /// games decoded to 1.36 GB of `[ChessMove]`).
+    ///
+    /// Opening verifies the whole shard first, exactly as `readSealed` does
+    /// (`OpenedSealedShard.verifyBody`), so a shard that fails any check
+    /// throws before it returns a single game — the guarantee the replay's
+    /// skip-or-refuse handling of an unreadable shard rests on. The games are
+    /// then read in a second streamed pass over the same open file, which
+    /// checks every record's CRC again and, at the end, the SHA-256 and the
+    /// game count (the front header at its start): the file was verified, not
+    /// held, so a change made in between (the shard is sealed; nothing the app
+    /// does rewrites it) or a failed read is thrown as
+    /// `streamedReadFailedAfterVerification` instead of feeding content that
+    /// was never verified. The second pass reads from the page cache the
+    /// first one filled.
+    ///
+    /// Single-threaded; owned by one reader.
+    final class SealedShardGameStream {
+        private let shard: OpenedSealedShard
+        private var cursor: SealedShardBodyCursor
+        private var failure: GameCorpusError? = nil
+        private var finished = false
+        /// Games returned (or skipped) so far.
+        private(set) var gamesRead = 0
+
+        /// Games the shard holds (verified at open).
+        var gameCount: Int { shard.trailer.gameCount }
+
+        /// Open and fully verify the sealed shard at `url`; throws the same
+        /// errors as `readSealed` for a shard that fails verification.
+        init(verifyingSealedShardAt url: URL) throws {
+            let shard = try OpenedSealedShard(url: url)
+            try shard.verifyBody { _ in }
+            let cursor: SealedShardBodyCursor
+            do {
+                cursor = try SealedShardBodyCursor(shard: shard)
+            } catch {
+                throw Self.failedAfterVerification(shard: shard, gamesRead: 0, error)
+            }
+            guard cursor.header == shard.header else {
+                throw Self.failedAfterVerification(
+                    shard: shard, gamesRead: 0,
+                    GameCorpusError.corruptMetadata("front header differs from the one verified"))
+            }
+            self.shard = shard
+            self.cursor = cursor
+        }
+
+        /// The next game in shard order, or nil after the last one (once the
+        /// end-of-shard checks pass). After a failure every call rethrows it.
+        func nextGame() throws -> GameRecord? {
+            if let failure { throw failure }
+            if finished { return nil }
+            do {
+                if let game = try cursor.nextGame() {
+                    gamesRead += 1
+                    return game
+                }
+                let digest = try cursor.finishHashing()
+                guard digest == shard.trailer.sha256 else {
+                    throw GameCorpusError.shardSHAMismatch
+                }
+                guard gamesRead == shard.trailer.gameCount else {
+                    throw GameCorpusError.gameCountMismatch(expected: shard.trailer.gameCount, got: gamesRead)
+                }
+                finished = true
+                return nil
+            } catch {
+                let failed = Self.failedAfterVerification(shard: shard, gamesRead: gamesRead, error)
+                failure = failed
+                throw failed
+            }
+        }
+
+        /// Read past the next `count` games without returning them (a resume
+        /// that starts part-way into the shard). Throws if the shard ends
+        /// first.
+        func skipGames(_ count: Int) throws {
+            for skipped in 0..<count {
+                guard try nextGame() != nil else {
+                    throw GameCorpusError.gameCountMismatch(expected: count, got: skipped)
+                }
+            }
+        }
+
+        private static func failedAfterVerification(
+            shard: OpenedSealedShard, gamesRead: Int, _ error: Error
+        ) -> GameCorpusError {
+            let underlying = (error as? SealedShardBodyCursor.ReadFailure)?.error ?? error
+            return .streamedReadFailedAfterVerification(
+                shard: shard.url.lastPathComponent,
+                detail: "after \(gamesRead) of \(shard.trailer.gameCount) games: \(underlying.localizedDescription)")
+        }
+    }
+
+    /// A sequential reader over one sealed shard's hashed bytes (front header
+    /// and records), from offset 0 to the trailer, through a window of about
+    /// `readChunkByteCount` bytes. Every byte is fed to a running SHA-256 as
+    /// it is read; `finishHashing` reads and hashes whatever the caller did
+    /// not consume, so the digest always covers exactly the bytes the
+    /// trailer's hash covers.
+    struct SealedShardBodyCursor {
+        /// The read size. A record larger than this is read whole (the window
+        /// grows to hold it); the bytes left before the trailer bound every
+        /// read.
+        static let readChunkByteCount = 1 << 20
+
+        /// An I/O failure, as opposed to a content check, kept apart so a
+        /// verification pass never reports it as a bad record.
+        struct ReadFailure: Error {
+            let error: GameCorpusError
+        }
+
+        private let handle: FileHandle
+        private let url: URL
+        private let bodyEnd: UInt64
+        /// File offset of the next byte not yet read into `window`.
+        private var fileOffset: UInt64 = 0
+        private var window: [UInt8] = []
+        /// Index in `window` of the next unconsumed byte.
+        private var windowStart = 0
+        private var hasher = SHA256()
+        private var hashFinished = false
+        /// The front header as this pass read it.
+        private(set) var header: GameCorpusShardFormat.FrontHeader? = nil
+
+        /// Start a pass at the beginning of the file; the front header is
+        /// read (and hashed) here.
+        init(shard: OpenedSealedShard) throws {
+            self.handle = shard.handle
+            self.url = shard.url
+            self.bodyEnd = shard.bodyEnd
+            do { try handle.seek(toOffset: 0) }
+            catch { throw ReadFailure(error: .ioFailed("seek \(url.lastPathComponent): \(error.localizedDescription)")) }
+            let front = try take(GameCorpusShardFormat.frontHeaderSize)
+            self.header = try GameCorpusShardFormat.decodeFrontHeader(front)
+        }
+
+        private var buffered: Int { window.count - windowStart }
+        private var unreadInFile: UInt64 { bodyEnd - fileOffset }
+
+        /// The next framed record's game, or nil at the end of the body.
+        mutating func nextGame() throws -> GameRecord? {
+            if buffered == 0 && unreadInFile == 0 { return nil }
+            let length = Int(Self.uint32LE(try take(4)))
+            let payload = try take(length)
+            let crc = Self.uint32LE(try take(4))
+            return try GameCorpusShardFormat.decodeCheckedPayload(payload, crc: crc)
+        }
+
+        /// Hash the rest of the body without decoding it and return the
+        /// digest of every byte from offset 0 to the trailer.
+        mutating func finishHashing() throws -> Data {
+            precondition(!hashFinished, "SealedShardBodyCursor: finishHashing called twice")
+            window = []
+            windowStart = 0
+            while unreadInFile > 0 {
+                _ = try readChunk(atLeast: 1)
+            }
+            hashFinished = true
+            return Data(hasher.finalize())
+        }
+
+        /// Consume exactly `count` bytes. Bytes the body does not have are
+        /// `truncatedRecord`, as for the in-memory reader.
+        private mutating func take(_ count: Int) throws -> Data {
+            guard count >= 0, UInt64(count) <= UInt64(buffered) + unreadInFile else {
+                throw GameCorpusError.truncatedRecord
+            }
+            if buffered < count {
+                // Drop consumed bytes before growing the window, so it holds
+                // at most one chunk plus one record.
+                window.removeSubrange(0..<windowStart)
+                windowStart = 0
+                while buffered < count {
+                    window.append(contentsOf: try readChunk(atLeast: count - buffered))
+                }
+            }
+            let bytes = Data(window[windowStart..<(windowStart + count)])
+            windowStart += count
+            return bytes
+        }
+
+        /// Read the next chunk of the body (at least `minimum` bytes, at most
+        /// what is left before the trailer) and hash it.
+        private mutating func readChunk(atLeast minimum: Int) throws -> Data {
+            let count = Int(min(UInt64(max(minimum, Self.readChunkByteCount)), unreadInFile))
+            let read: Data?
+            do {
+                read = try handle.read(upToCount: count)
+            } catch {
+                throw ReadFailure(error: .ioFailed("read \(url.lastPathComponent): \(error.localizedDescription)"))
+            }
+            guard let data = read, data.count == count else {
+                throw ReadFailure(error: .ioFailed(
+                    "read \(url.lastPathComponent): \(read?.count ?? 0) of \(count) bytes at offset \(fileOffset)"))
+            }
+            hasher.update(data: data)
+            fileOffset += UInt64(count)
+            return data
+        }
+
+        private static func uint32LE(_ bytes: Data) -> UInt32 {
+            var value: UInt32 = 0
+            for (shift, byte) in bytes.enumerated() { value |= UInt32(byte) << (8 * shift) }
+            return value
+        }
     }
 
     /// Seek to the fixed-size trailer of the sealed shard open on `handle`
     /// and return its bytes, after checking the file is large enough to hold
     /// a front header and a trailer. The one seek-and-read the cheap trailer
     /// readers share.
-    private static func readTrailerBlock(handle: FileHandle, url: URL) throws -> Data {
+    fileprivate static func readTrailerBlock(handle: FileHandle, url: URL) throws -> Data {
         let trailerSize = GameCorpusShardFormat.trailerSize
         let size = try handle.seekToEnd()
         guard size >= UInt64(GameCorpusShardFormat.frontHeaderSize + trailerSize) else {
@@ -528,7 +815,7 @@ enum GameCorpusShardIO {
     /// Close a handle a cheap read opened. Nothing was written through it,
     /// so a failed close loses nothing; it is logged, never thrown over the
     /// read's own result or error.
-    private static func closeAfterRead(_ handle: FileHandle, url: URL, what: String) {
+    fileprivate static func closeAfterRead(_ handle: FileHandle, url: URL, what: String) {
         do {
             try handle.close()
         } catch {

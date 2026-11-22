@@ -447,8 +447,9 @@ final class GameCorpus {
 
     /// Read every game from every sealed shard, in shard order.
     ///
-    /// Loads all games into memory — for true replay the feeder streams
-    /// shard-by-shard; this convenience is for tests and small corpora.
+    /// Loads all games into memory — corpus replay streams each shard game by
+    /// game (`GameCorpusShardIO.SealedShardGameStream`); this convenience is
+    /// for tests and small corpora.
     func allGames() throws -> [GameRecord] {
         var games: [GameRecord] = []
         for url in try sealedShardURLs() {
