@@ -4623,11 +4623,100 @@ final class ChessTrainer: @unchecked Sendable {
     /// + random labels + monotonically decreasing loss). The trainer's
     /// internal network is **not** the inference network, so these updates
     /// don't affect Play Game or Forward Pass.
+    ///
+    /// Runs with the full diagnostic readback (`includeDiagnostics: true`), so
+    /// its measured step matches historical sweeps.
     func trainStep(batchSize: Int) async throws -> TrainStepTiming {
+        try await trainStep(batchSize: batchSize, includeDiagnostics: true)
+    }
+
+    /// `trainStep(batchSize:)` with the diagnostic target set chosen by the
+    /// caller instead of always included.
+    ///
+    /// Exists for `--train-variant-benchmark`, which times each compiled
+    /// training-executable variant: the real-data step picks diagnostics from
+    /// the step-line schedule (`isDiagnosticsStep`), which a benchmark cannot
+    /// pin to one value, and this random-data step otherwise always includes
+    /// them. The KL-stash half of the variant needs no parameter: it follows
+    /// `klProbeInterval` exactly as in training (1 = every step, 0 = never).
+    /// Everything else is the production step (`runPreparedStep`).
+    func trainStep(batchSize: Int, includeDiagnostics: Bool) async throws -> TrainStepTiming {
         let dispatchedAt = CFAbsoluteTimeGetCurrent()
         return try await enqueue {
             let queueWaitMs = (CFAbsoluteTimeGetCurrent() - dispatchedAt) * 1000
-            return try self.internalTrainStep(batchSize: batchSize, queueWaitMs: queueWaitMs)
+            return try self.internalTrainStep(
+                batchSize: batchSize,
+                includeDiagnostics: includeDiagnostics,
+                queueWaitMs: queueWaitMs
+            )
+        }
+    }
+
+    /// What compiling one training-executable variant cost, measured around
+    /// the compile alone (`compileSyntheticTrainingExecutable`).
+    struct TrainingExecutableCompilation: Sendable {
+        /// The variant was already in the executable cache; nothing compiled,
+        /// so the time and allocation figures describe a cache hit.
+        let alreadyCompiled: Bool
+        /// Wall time of the compile, including the KL probe subgraph's
+        /// lazy build when this is the first KL-stash variant at this batch.
+        let compileMs: Double
+        /// `MTLDevice.currentAllocatedSize` just before the compile, after the
+        /// batch's synthetic feeds were staged (feed buffers are shared by
+        /// every variant at a batch size, so they are not charged to one).
+        let gpuAllocatedBytesBeforeCompile: UInt64
+        /// `MTLDevice.currentAllocatedSize` just after the compile.
+        let gpuAllocatedBytesAfterCompile: UInt64
+    }
+
+    /// Compile (and cache) the training executable the random-data step
+    /// `trainStep(batchSize:includeDiagnostics:)` would compile on its first
+    /// run with this `includeDiagnostics` and a KL-probe interval that does
+    /// (`includeKLStash`) or does not probe — without running a step.
+    ///
+    /// Exists for `--train-variant-benchmark`, which reports device memory
+    /// before compile, after compile and after the first run separately; a
+    /// step compiles and runs in one call, so the compile needs its own entry.
+    /// It goes through the production pieces — the synthetic feed staging,
+    /// `trainingStepFeeds`, `trainingStepTargets` and `trainingExecutable` —
+    /// so the cached executable is exactly the one the step then finds under
+    /// the same key (batch, diagnostics, KL stash); a separately assembled
+    /// feed or target list could cache a mismatched executable the real step
+    /// would then run. Changes no weights, optimizer or RNG state the training
+    /// math reads (the staged synthetic inputs are overwritten by every step).
+    func compileSyntheticTrainingExecutable(
+        batchSize: Int,
+        includeDiagnostics: Bool,
+        includeKLStash: Bool
+    ) async throws -> TrainingExecutableCompilation {
+        try await enqueue {
+            try self.network.requireLoadedWeights("compileSyntheticTrainingExecutable")
+            try self.network.convolutionWeightGradientSplit.requireCorrectWeightGradients(batchSize: batchSize)
+            let feeds = self.trainingStepFeeds(binding: self.stageSyntheticFeeds(batchSize: batchSize))
+            let targets = self.trainingStepTargets(includeDiagnostics: includeDiagnostics)
+            let key = TrainingExecutableKey(
+                batchSize: batchSize,
+                includeDiagnostics: includeDiagnostics,
+                includeKLStash: includeKLStash
+            )
+            let alreadyCompiled = self.trainingExecutables[key] != nil
+            let device = self.network.metalDevice
+            let before = UInt64(device.currentAllocatedSize)
+            let compileStart = CFAbsoluteTimeGetCurrent()
+            _ = try self.trainingExecutable(
+                batchSize: batchSize,
+                includeDiagnostics: includeDiagnostics,
+                includeKLStash: includeKLStash,
+                targets: targets,
+                feeds: feeds
+            )
+            let compileMs = (CFAbsoluteTimeGetCurrent() - compileStart) * 1000
+            return TrainingExecutableCompilation(
+                alreadyCompiled: alreadyCompiled,
+                compileMs: compileMs,
+                gpuAllocatedBytesBeforeCompile: before,
+                gpuAllocatedBytesAfterCompile: UInt64(device.currentAllocatedSize)
+            )
         }
     }
 
@@ -4828,7 +4917,11 @@ final class ChessTrainer: @unchecked Sendable {
             sqrtBatchScaling: sqrtBatchScalingForLR, sqrtScaleBaseBatchSize: Self.sqrtScaleBaseBatchSize)
     }
 
-    private func internalTrainStep(batchSize: Int, queueWaitMs: Double = 0) throws -> TrainStepTiming {
+    private func internalTrainStep(
+        batchSize: Int,
+        includeDiagnostics: Bool,
+        queueWaitMs: Double = 0
+    ) throws -> TrainStepTiming {
         try network.requireLoadedWeights("trainStep")
         let totalStart = CFAbsoluteTimeGetCurrent()
         let stepIndex = syntheticTrainStepCount
@@ -4837,6 +4930,27 @@ final class ChessTrainer: @unchecked Sendable {
         // --- Data prep: synthesize random boards, moves, outcomes ---
 
         let prepStart = CFAbsoluteTimeGetCurrent()
+        let feeds = stageSyntheticFeeds(batchSize: batchSize)
+        let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
+        return try runPreparedStep(
+            feeds: feeds,
+            prepMs: prepMs,
+            queueWaitMs: queueWaitMs,
+            totalStart: totalStart,
+            batchSize: batchSize,
+            includeDiagnostics: includeDiagnostics,
+            klProbeStepIndex: stepIndex,
+            gradientCap: .hardMaxOnly(hardMax: gradClipMaxNorm)
+        )
+    }
+
+    /// Fill the trainer-owned synthetic scratch with random boards, moves and
+    /// outcomes and stage them into this batch size's cached feeds — the
+    /// random-data step's inputs, shared by `internalTrainStep` and
+    /// `compileSyntheticTrainingExecutable` so a pre-compiled
+    /// executable is built from exactly the feeds (and feed shapes) the step
+    /// then runs with. Must run on `executionQueue`.
+    private func stageSyntheticFeeds(batchSize: Int) -> [MPSGraphTensor: MPSGraphTensorData] {
         let floatsPerBoard = arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
         let totalBoardFloats = batchSize * floatsPerBoard
         let totalMaskFloats = batchSize * ChessNetwork.policySize
@@ -4882,11 +4996,11 @@ final class ChessTrainer: @unchecked Sendable {
         // Unbox the cached arrays into raw pointers and feed
         // them through the shared pointer-based `buildFeeds` /
         // `runPreparedStep` pipeline.
-        return try syntheticBoards.withUnsafeBufferPointer { boardsBuf in
-            try syntheticMoves.withUnsafeBufferPointer { movesBuf in
-                try syntheticZs.withUnsafeBufferPointer { zsBuf in
-                    try syntheticVBaselines.withUnsafeBufferPointer { vBaseBuf in
-                        try syntheticLegalMasks.withUnsafeBufferPointer { legalMasksBuf in
+        return syntheticBoards.withUnsafeBufferPointer { boardsBuf in
+            syntheticMoves.withUnsafeBufferPointer { movesBuf in
+                syntheticZs.withUnsafeBufferPointer { zsBuf in
+                    syntheticVBaselines.withUnsafeBufferPointer { vBaseBuf in
+                        syntheticLegalMasks.withUnsafeBufferPointer { legalMasksBuf in
                             // The arrays were allocated just above
                             // with positive batch size, so their
                             // `baseAddress`es are guaranteed non-nil.
@@ -4901,7 +5015,7 @@ final class ChessTrainer: @unchecked Sendable {
                                     "ChessTrainer.trainStep(batchSize:): non-empty inputs should have baseAddress"
                                 )
                             }
-                            let feeds = buildFeeds(BatchFeedsInput(
+                            return buildFeeds(BatchFeedsInput(
                                 batchSize: batchSize,
                                 boards: boardsBase,
                                 moves: movesBase,
@@ -4913,19 +5027,6 @@ final class ChessTrainer: @unchecked Sendable {
                                 // applies.
                                 gradientCapFeed: gradClipMaxNorm
                             ))
-                            let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
-                            return try runPreparedStep(
-                                feeds: feeds,
-                                prepMs: prepMs,
-                                queueWaitMs: queueWaitMs,
-                                totalStart: totalStart,
-                                batchSize: batchSize,
-                                // Random-data sweep: keep the full readback so
-                                // its measured step matches historical sweeps.
-                                includeDiagnostics: true,
-                                klProbeStepIndex: stepIndex,
-                                gradientCap: .hardMaxOnly(hardMax: gradClipMaxNorm)
-                            )
                         }
                     }
                 }
@@ -7175,6 +7276,57 @@ final class ChessTrainer: @unchecked Sendable {
         return executable
     }
 
+    /// The training step's feeds: the caller's, with the live dropout rate
+    /// bound over the zero `ChessNetwork` bakes into its own feed dicts (see
+    /// `runPreparedStep` for why the binding lives at this chokepoint). Shared
+    /// by `runPreparedStep` and the benchmark's compile-only path so the
+    /// executable's feed shapes are the same either way.
+    private func trainingStepFeeds(
+        binding incomingFeeds: [MPSGraphTensor: MPSGraphTensorData]
+    ) -> [MPSGraphTensor: MPSGraphTensorData] {
+        var feeds = incomingFeeds
+        if let ratePlaceholder = network.dropoutRateFeedPlaceholder,
+           let liveRate = network.dropoutRateLiveTensorData {
+            feeds[ratePlaceholder] = liveRate
+        }
+        return feeds
+    }
+
+    /// The training executable's target tensors for one diagnostics choice —
+    /// the one definition `runPreparedStep` and the benchmark's compile-only
+    /// path both use, so an executable compiled ahead of a step is the one the
+    /// step would have compiled.
+    private func trainingStepTargets(includeDiagnostics: Bool) -> [MPSGraphTensor] {
+        // Lean outputs (loss components + grad-norm) are on the weight-update
+        // path and read back every step. The diagnostic reductions — several
+        // over the full [batch, policySize] logit tensor — are extra graph work
+        // that only feeds the periodic [STATS] line and charts, so on non-stats
+        // steps we omit them from the target list and MPSGraph never encodes
+        // them. `assignOps` still forces the full forward+backward+optimizer,
+        // so this trims diagnostic reductions, not the core step. See
+        // GPU_UTILIZATION_PLAN.md (Phase 1).
+        let leanTargets: [MPSGraphTensor] = [
+            totalLoss, policyLossTensor, valueLossTensor,
+            illegalMassPenaltyTensor, gradGlobalNormTensor,
+            parameterDynamicsTensor, advantageMeanSquareTensor
+        ]
+        let diagnosticTargets: [MPSGraphTensor] = [
+            policyEntropyTensor, policyNonNegCountTensor, policyNonNegIllegalCountTensor,
+            valueMeanTensor, valueAbsMeanTensor,
+            valueProbWinTensor, valueProbDrawTensor, valueProbLossTensor,
+            policyHeadWeightNormTensor,
+            policyLogitAbsMaxTensor, playedMoveProbTensor,
+            playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
+            advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
+            advantageFracPosTensor, advantageFracSmallTensor,
+            advantageRawTensor,
+            policyLossWinTensor, policyLossLossTensor,
+            velocityGlobalNormTensor,
+            policyLogitMeanTensor, valueLogitMeanTensor
+        ]
+        return includeDiagnostics ? leanTargets + diagnosticTargets : leanTargets
+    }
+
     /// Run the forward + backward + SGD update graph with the given feeds
     /// and read the loss scalar back. The two public `trainStep` entry
     /// points share this so they produce identical timing breakdowns.
@@ -7214,10 +7366,9 @@ final class ChessTrainer: @unchecked Sendable {
         // Attaching it at this chokepoint also means both `runPreparedStep`
         // entry points get it, and the feed shapes derived below carry it into
         // the compiled executable automatically.
-        var feeds = incomingFeeds
+        let feeds = trainingStepFeeds(binding: incomingFeeds)
         if let ratePlaceholder = network.dropoutRateFeedPlaceholder,
            let liveRate = network.dropoutRateLiveTensorData {
-            feeds[ratePlaceholder] = liveRate
             // Record that this step bound the LIVE rate rather than the zero.
             // An identity compare plus one unfair-lock write, i.e. nanoseconds
             // against a ~660 ms step. It exists because nothing else can see
@@ -7240,34 +7391,7 @@ final class ChessTrainer: @unchecked Sendable {
         // more time in deferred Obj-C releases.
         return try autoreleasepool {
         let gpuStart = CFAbsoluteTimeGetCurrent()
-        // Lean outputs (loss components + grad-norm) are on the weight-update
-        // path and read back every step. The diagnostic reductions — several
-        // over the full [batch, policySize] logit tensor — are extra graph work
-        // that only feeds the periodic [STATS] line and charts, so on non-stats
-        // steps we omit them from the target list and MPSGraph never encodes
-        // them. `assignOps` still forces the full forward+backward+optimizer,
-        // so this trims diagnostic reductions, not the core step. See
-        // GPU_UTILIZATION_PLAN.md (Phase 1).
-        let leanTargets: [MPSGraphTensor] = [
-            totalLoss, policyLossTensor, valueLossTensor,
-            illegalMassPenaltyTensor, gradGlobalNormTensor,
-            parameterDynamicsTensor, advantageMeanSquareTensor
-        ]
-        let diagnosticTargets: [MPSGraphTensor] = [
-            policyEntropyTensor, policyNonNegCountTensor, policyNonNegIllegalCountTensor,
-            valueMeanTensor, valueAbsMeanTensor,
-            valueProbWinTensor, valueProbDrawTensor, valueProbLossTensor,
-            policyHeadWeightNormTensor,
-            policyLogitAbsMaxTensor, playedMoveProbTensor,
-            playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
-            advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
-            advantageFracPosTensor, advantageFracSmallTensor,
-            advantageRawTensor,
-            policyLossWinTensor, policyLossLossTensor,
-            velocityGlobalNormTensor,
-            policyLogitMeanTensor, valueLogitMeanTensor
-        ]
-        let targets = includeDiagnostics ? leanTargets + diagnosticTargets : leanTargets
+        let targets = trainingStepTargets(includeDiagnostics: includeDiagnostics)
         // Decided once, here, because the executable variant and the probe
         // block below must agree: the stash runs as a target operation of the
         // training executable, so a step that stashes and a step that probes

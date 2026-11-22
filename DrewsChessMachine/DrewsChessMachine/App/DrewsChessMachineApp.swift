@@ -210,6 +210,13 @@ struct DrewsChessMachineApp: App {
         // checkpoint. Read-only; exits before SwiftUI / Metal GUI init.
         SharpnessCLI.handleIfRequested(rawArgs: rawArgs)
 
+        // Pre-flight: headless training-executable variant benchmark
+        // (--train-variant-benchmark). Times each compiled training-step
+        // variant (plain / diagnostics / KL stash / both) solo on a throwaway
+        // trainer and reports device allocation per compile and first step.
+        // Exits before SwiftUI / Metal GUI init.
+        TrainVariantBenchmarkCLI.handleIfRequested(rawArgs: rawArgs)
+
         // Pre-flight: the fp64 graph audit (--graph-audit, --graph-audit-selftest).
         // Every op of the network's own MPSGraph, inference or training mode,
         // checked against float64 references; one JSON line per check.

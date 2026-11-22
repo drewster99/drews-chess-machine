@@ -108,6 +108,15 @@ enum CommandLineHelp {
                                       selects weights (default: latest saved session's trainer).
       --sweep [--sweep-sizes <csv>] [--sweep-seconds <n>]
                                       Batch-size throughput sweep; print the table and exit.
+      --train-variant-benchmark [--architecture <preset|file> | --start-model <file>] [--batch <n>]
+                         [--seconds-per-variant <s>] [--warmup <n>] [--json-out <new file>]
+                                      Step time and device memory of each compiled training-step variant
+                                      (plain, diagnostics, kl-stash, diagnostics+kl-stash), one after another
+                                      on a throwaway trainer with random data (default: current preset, batch
+                                      4096, 5 untimed warm-up steps, 120 s timed per variant). Prints steps/s,
+                                      median/p10/p90 total and GPU ms, readback and KL-probe ms, and the
+                                      allocation before compile, after compile and after the first step;
+                                      one [BENCH] log line per variant. --json-out must not exist.
       --analyze-replay-buffer <path>  Analyze a replay_buffer.bin (or a .dcmsession dir); print JSON,
                                       human summary to stderr, and exit.
       --probe-model <path> [--probe-set 200|wide|both | --probe-set-file <set.json>] [--probe-out <file>]

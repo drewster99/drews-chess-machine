@@ -79,6 +79,7 @@ CLI:
 - `--help` / `-h` prints usage to stdout, exit 0.
 - `--show-default-parameters` — flat snake_case JSON to stdout, descriptions to stderr; no GUI.
 - `--show-lr-schedule [--parameters <file>] [--from <step>] [--to <step>] [--buckets <n>] [--csv <path>]` — the LR and momentum a run would be fed (declared defaults overridden by the file; never the saved settings), per step bucket: peak, trough, fed LR min/max/last, momentum min/max; `--csv` writes a new file (`FileSafety`). Computed through `LRMomentumCycleReadout`, the trainer's own feed function (`App/ShowLRScheduleCLI.swift`).
+- `--train-variant-benchmark [--architecture <preset|file> | --start-model <file>] [--batch <n>] [--seconds-per-variant <s>] [--warmup <n>] [--json-out <new file>]` — step time (median/p10/p90 total and GPU ms, steps/s) and device allocation (before/after compile, after first step) of each compiled training-step variant (plain, diagnostics, KL stash, both), run solo one after another on a throwaway random-data trainer through the production step; `[BENCH]` log lines (`App/TrainVariantBenchmarkCLI.swift`).
 
 ### LR schedule: keyframes (owner decisions 2026-10-12, `documentation/plans-active/LR_KEYFRAMES_PLAN.md`)
 
