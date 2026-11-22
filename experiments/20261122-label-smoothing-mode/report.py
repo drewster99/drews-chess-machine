@@ -9,6 +9,8 @@ BIN = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Frozen
 LARGE = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/OpsScripts/lichess_probes_large.json")
 sys.path.insert(0, "/Users/andrew/cursor/drews-chess-machine/scripts"); import dcm_arch
 ARMS = ["A", "B", "C"]
+# Session logs (stdout is block-buffered, so the step lines show up there late).
+LOGS = {"A": "dcm_log_20261122-115904-2.txt", "B": "dcm_log_20261122-115904-3.txt", "C": "dcm_log_20261122-115904.txt"}
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 LO, HI = (int(args[0]) if args else 1000), (int(args[1]) if len(args) > 1 else 10**9)
 PROBE = "--no-probe" not in sys.argv
@@ -42,8 +44,8 @@ def large(arm, s, f):
 
 def step_lines(arm):
     out = {}
-    for l in open(f"{X}/train-{arm}.stdout", errors="replace"):
-        if l.startswith("[REPLAY] step=") and (m := re.search(r"trainerStep=(\d+)", l)) and int(m.group(1)) % 1000 == 0:
+    for l in open(os.path.expanduser(f"~/Library/Logs/DrewsChessMachine/{LOGS[arm]}"), errors="replace"):
+        if "[REPLAY] step=" in l and (m := re.search(r"trainerStep=(\d+)", l)) and int(m.group(1)) % 1000 == 0:
             out[int(m.group(1))] = dict(re.findall(r"(\w+)=([-\d.e+]+)", l))
     return out
 
