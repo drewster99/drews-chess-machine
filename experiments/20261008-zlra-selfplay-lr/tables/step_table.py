@@ -5,9 +5,12 @@ kv=lambda l,k:(m.group(1) if (m:=re.search(r"(?<![\w.])"+re.escape(k)+r"=([^\s)]
 def f(x,d=3):
     try: return f"{float(x):.{d}f}"
     except: return ""
+RECORD=os.path.join(os.path.dirname(os.path.abspath(__file__)),"wide_pelo_record.json")
 def wide(fn):
-    r=json.loads(dcm_arch.read_header(fn)[0]["__metadata__"]["dcm_test_set_results"])
-    w=[s for s in r["sets"] if s["id"]=="lichess-wide"][0]; return w["pelo"],w["nll"]
+    # None when the file records no lichess-wide result (failed evaluation, or a file without test-set results).
+    r=json.loads(dcm_arch.read_header(fn)[0]["__metadata__"].get("dcm_test_set_results","null") or "null")
+    w=[s for s in (r or {}).get("sets",[]) if s.get("id")=="lichess-wide"]
+    return (w[0]["pelo"],w[0]["nll"]) if w and w[0].get("pelo") is not None else None
 def overwrite(out,step):
     # A pass that goes back to `step` overwrites what earlier passes logged from `step` on: keep only the latest.
     while out and out[-1][0]>=step: out.pop()
@@ -34,9 +37,15 @@ def replay(logs,glob_):
     lines=[]; stamps=[]; segstart=[]
     for log in logs:
         ls=open(L+log,errors="replace").read().splitlines(); segstart.append(len(lines)); lines+=ls; stamps+=dated(log,ls)
-    rv=rvs(lines); pe={}
+    rv=rvs(lines)
+    # Checkpoint files get thinned (1000-step files deleted, 10k kept), so every value read from a file is
+    # recorded in wide_pelo_record.json and the record supplies the steps whose files are gone.
+    rec=json.load(open(RECORD)); runrec=rec.setdefault(which,{})
     for fn in glob.glob(M+glob_):
-        pe[int(re.search(r"step(\d+)",fn).group(1))]=wide(fn)
+        w=wide(fn)
+        if w: runrec[str(int(re.search(r"step(\d+)",fn).group(1)))]=[w[0],w[1]]
+    tmp=RECORD+".tmp"; json.dump(rec,open(tmp,"w"),indent=0,sort_keys=True); os.replace(tmp,RECORD)
+    pe={int(s):tuple(v) for s,v in runrec.items()}
     rows={}; seg={}
     for i,l in enumerate(lines):
         if "[REPLAY] step=" not in l: continue
@@ -84,7 +93,10 @@ which=sys.argv[1]
 if which=="replay": replay(["dcm_log_20261008-094622.txt","dcm_log_20261010-122003.txt","dcm_log_20261010-211714.txt"],"Models/20261008-zlra-replay-step*.safetensors")
 if which=="silu": replay(["dcm_log_20261008-125718.txt","dcm_log_20261009-163612.txt","dcm_log_20261009-213842.txt","dcm_log_20261010-082147.txt","dcm_log_20261010-111314.txt","dcm_log_20261010-211711.txt","dcm_log_20261014-214445.txt"],"Models/20261008-lrBsiluall-relcap-replay-step*.safetensors")
 if which=="elite": replay("dcm_log_20261011-130546.txt","Models/20261011-zlra-elite-latest-step*.safetensors")
-if which=="elitecyc": replay(["dcm_log_20261011-213940.txt","dcm_log_20261012-153015.txt","dcm_log_20261014-201112.txt","dcm_log_20261015-131635.txt","dcm_log_20261015-230809.txt","dcm_log_20261017-010300.txt","dcm_log_20261017-182142-2.txt","dcm_log_20261017-201253.txt","dcm_log_20261017-235728.txt","dcm_log_20261018-142539-2.txt","dcm_log_20261018-190000-2.txt","dcm_log_20261019-230139.txt","dcm_log_20261023-072629.txt","dcm_log_20261024-224808-2.txt","dcm_log_20261026-000416.txt","dcm_log_20261026-133117.txt","dcm_log_20261026-165556.txt","dcm_log_20261029-230847-2.txt","dcm_log_20261101-193002-2.txt"],"Models/20261011-zlra-elitecyc-latest-step*.safetensors")
+if which=="elitecyc": replay(["dcm_log_20261011-213940.txt","dcm_log_20261012-153015.txt","dcm_log_20261014-201112.txt","dcm_log_20261015-131635.txt","dcm_log_20261015-230809.txt","dcm_log_20261017-010300.txt","dcm_log_20261017-182142-2.txt","dcm_log_20261017-201253.txt","dcm_log_20261017-235728.txt","dcm_log_20261018-142539-2.txt","dcm_log_20261018-190000-2.txt","dcm_log_20261019-230139.txt","dcm_log_20261023-072629.txt","dcm_log_20261024-224808-2.txt","dcm_log_20261026-000416.txt","dcm_log_20261026-133117.txt","dcm_log_20261026-165556.txt","dcm_log_20261029-230847-2.txt","dcm_log_20261101-193002-2.txt","dcm_log_20261106-011055.txt"],"Models/20261011-zlra-elitecyc-latest-step*.safetensors")
+if which=="hilr": replay("dcm_log_20261109-234535.txt","Models/20261109-zlra-elitecyc-hilr-latest-step*.safetensors")
+if which=="fp32": replay("dcm_log_20261112-234508.txt","Models/20261112-zlra-elitecyc-fp32-latest-step*.safetensors")
+if which=="fp32fix": replay(["dcm_log_20261114-003038.txt","dcm_log_20261114-154717.txt","dcm_log_20261116-011436.txt","dcm_log_20261119-191618.txt","dcm_log_20261121-164043.txt"],"Models/20261114-zlra-elitecyc-fp32fix-latest-step*.safetensors")
 if which=="anneal": replay("dcm_log_20261025-142424.txt","Models/20261025-zlra-elitecyc-anneal-latest-step*.safetensors")
 if which=="elitefresh": replay(["dcm_log_20261012-153151.txt","dcm_log_20261014-201112-2.txt","dcm_log_20261017-145133.txt","dcm_log_20261017-201253-2.txt","dcm_log_20261017-235728-2.txt","dcm_log_20261018-142539.txt","dcm_log_20261018-190000.txt","dcm_log_20261019-230141.txt","dcm_log_20261023-072631.txt","dcm_log_20261024-224808-3.txt","dcm_log_20261028-213703.txt","dcm_log_20261029-230847.txt","dcm_log_20261101-193002.txt"],"Models/20261012-zlra-elitefresh-latest-step*.safetensors")
 if which=="fixed": gui(["dcm_log_20261008-094623.txt","dcm_log_20261010-113351.txt","dcm_log_20261010-224411.txt","dcm_log_20261012-161833.txt","dcm_log_20261014-140421.txt","dcm_log_20261015-102200.txt","dcm_log_20261024-023842.txt"],"A2599216")
