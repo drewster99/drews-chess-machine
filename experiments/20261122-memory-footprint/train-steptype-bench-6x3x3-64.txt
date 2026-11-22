@@ -1,0 +1,18 @@
+Training step-type benchmark: one training executable (diagnostics and KL stash always computed; random data, training-mode BN)
+  source: --start-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261122-lsmode-A-latest-step9000.safetensors   compute: bfloat16   batch: 4096   warmup: 5   window: 120 s per step type
+  in basic25(25) -> stem 64 (5x5) . 6x[3x3+3x3 @64, no-SE, silu/pre, clean_add, no-ReZero, out:layer_norm, drop*1] . act silu . policy intermediate_conv(4864) . value WDL(24->FC128) . bfloat16 policy-tail fp32_from_pre_bn . 694,767 params
+
+Step time (ms; median / p10 / p90 over each step type's window)
+  step type               steps  steps/s    total med     p10     p90  vs plain     gpu med     p10     p90   readback  kl probe
+  plain                     313    2.605        383.2   380.3   386.6    1.000x       368.6   366.2   373.0        0.0         -
+  diagnostics               315    2.620        381.1   378.9   383.7    0.995x       367.6   365.4   370.1        0.1         -
+  probe                     302    2.512        397.3   396.2   399.2    1.037x       368.5   367.4   370.4        0.1      15.1
+
+Device allocation (MB = 1024^2 B; currentAllocatedSize, cumulative across step types in this order; one executable serves every type)
+  step type              compile ms   before  +compile  +first step  after window  footprint  thermal
+  plain                          33      126        +0        +4325          4449       4931  nominal->nominal
+  diagnostics                     0*    4449        +0           +0          4449       4941  nominal->fair
+  probe                           0*    4449        +0         +485          4933       5397  fair->fair
+  * already compiled (cache hit): no compile was measured
+
+  wrote /Users/andrew/cursor/drews-chess-machine/experiments/20261122-memory-footprint/train-steptype-bench-6x3x3-64.json

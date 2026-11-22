@@ -1,0 +1,190 @@
+{
+  "architecture_summary" : "in basic25(25) -> stem 64 (5x5) . 6x[3x3+3x3 @64, no-SE, silu\/pre, clean_add, no-ReZero, out:layer_norm, drop*1] . act silu . policy intermediate_conv(4864) . value WDL(24->FC128) . bfloat16 policy-tail fp32_from_pre_bn . 694,767 params",
+  "batch_size" : 4096,
+  "build" : 2693,
+  "compute_data_type" : "bfloat16",
+  "git" : "f3abcda4",
+  "git_dirty" : false,
+  "policy_tail_precision" : "fp32_from_pre_bn",
+  "seconds_per_variant" : 120,
+  "source" : "--start-model \/Users\/andrew\/Library\/Application Support\/DrewsChessMachine\/Models\/20261122-lsmode-A-latest-step9000.safetensors",
+  "training_executables" : "one per batch size (diagnostics and KL stash always computed)",
+  "variants" : [
+    {
+      "already_compiled" : false,
+      "compile_ms" : 32.905936241149902,
+      "data_prep_ms" : {
+        "count" : 313,
+        "max" : 19.81198787689209,
+        "mean" : 14.205623358583297,
+        "median" : 13.688921928405762,
+        "min" : 13.005971908569336,
+        "p10" : 13.303995132446289,
+        "p90" : 15.883350372314453
+      },
+      "first_step_ms" : 986.0910177230835,
+      "footprint_bytes_after_window" : 5170693728,
+      "gpu_allocated_bytes_after_compile" : 131858432,
+      "gpu_allocated_bytes_after_first_step" : 4666720256,
+      "gpu_allocated_bytes_after_window" : 4664623104,
+      "gpu_allocated_bytes_before_compile" : 131858432,
+      "gpu_run_ms" : {
+        "count" : 313,
+        "max" : 379.73904609680176,
+        "mean" : 369.13160965465511,
+        "median" : 368.57700347900391,
+        "min" : 365.28599262237549,
+        "p10" : 366.18533134460449,
+        "p90" : 372.97120094299316
+      },
+      "include_diagnostics" : false,
+      "kl_probe_ms" : null,
+      "readback_ms" : {
+        "count" : 313,
+        "max" : 0.022053718566894531,
+        "mean" : 0.013687359258389702,
+        "median" : 0.013947486877441406,
+        "min" : 0.010967254638671875,
+        "p10" : 0.012040138244628906,
+        "p90" : 0.015020370483398438
+      },
+      "runs_kl_probe" : false,
+      "steps" : 313,
+      "steps_per_sec" : 2.6052679965952086,
+      "thermal_at_end" : "nominal",
+      "thermal_at_start" : "nominal",
+      "total_ms" : {
+        "count" : 313,
+        "max" : 393.38505268096924,
+        "mean" : 383.35379129781512,
+        "median" : 383.15999507904053,
+        "min" : 378.87191772460938,
+        "p10" : 380.26635646820068,
+        "p90" : 386.56857013702393
+      },
+      "variant" : "plain",
+      "warmup_steps" : 5,
+      "window_sec" : 120.14119100570679
+    },
+    {
+      "already_compiled" : true,
+      "compile_ms" : 0.00095367431640625,
+      "data_prep_ms" : {
+        "count" : 315,
+        "max" : 18.229007720947266,
+        "mean" : 13.54796432313465,
+        "median" : 13.319969177246094,
+        "min" : 13.23997974395752,
+        "p10" : 13.266348838806152,
+        "p90" : 14.154577255249023
+      },
+      "first_step_ms" : 384.1099739074707,
+      "footprint_bytes_after_window" : 5181097568,
+      "gpu_allocated_bytes_after_compile" : 4664623104,
+      "gpu_allocated_bytes_after_first_step" : 4664623104,
+      "gpu_allocated_bytes_after_window" : 4664623104,
+      "gpu_allocated_bytes_before_compile" : 4664623104,
+      "gpu_run_ms" : {
+        "count" : 315,
+        "max" : 377.42996215820312,
+        "mean" : 367.63716425214494,
+        "median" : 367.55096912384033,
+        "min" : 364.77291584014893,
+        "p10" : 365.36636352539062,
+        "p90" : 370.08578777313232
+      },
+      "include_diagnostics" : true,
+      "kl_probe_ms" : null,
+      "readback_ms" : {
+        "count" : 315,
+        "max" : 0.074982643127441406,
+        "mean" : 0.056780330718509735,
+        "median" : 0.056028366088867188,
+        "min" : 0.051975250244140625,
+        "p10" : 0.054001808166503906,
+        "p90" : 0.059008598327636719
+      },
+      "runs_kl_probe" : false,
+      "steps" : 315,
+      "steps_per_sec" : 2.6197534843141987,
+      "thermal_at_end" : "fair",
+      "thermal_at_start" : "nominal",
+      "total_ms" : {
+        "count" : 315,
+        "max" : 390.76793193817139,
+        "mean" : 381.24459357488723,
+        "median" : 381.07693195343018,
+        "min" : 378.09598445892334,
+        "p10" : 378.85200977325439,
+        "p90" : 383.6669921875
+      },
+      "variant" : "diagnostics",
+      "warmup_steps" : 5,
+      "window_sec" : 120.2403210401535
+    },
+    {
+      "already_compiled" : true,
+      "compile_ms" : 0.00095367431640625,
+      "data_prep_ms" : {
+        "count" : 302,
+        "max" : 15.228986740112305,
+        "mean" : 13.316834209770557,
+        "median" : 13.284027576446533,
+        "min" : 13.217926025390625,
+        "p10" : 13.249039649963379,
+        "p90" : 13.370895385742188
+      },
+      "first_step_ms" : 472.38302230834961,
+      "footprint_bytes_after_window" : 5659510368,
+      "gpu_allocated_bytes_after_compile" : 4664623104,
+      "gpu_allocated_bytes_after_first_step" : 5172805632,
+      "gpu_allocated_bytes_after_window" : 5172805632,
+      "gpu_allocated_bytes_before_compile" : 4664623104,
+      "gpu_run_ms" : {
+        "count" : 302,
+        "max" : 373.27694892883301,
+        "mean" : 368.73915337568877,
+        "median" : 368.53146553039551,
+        "min" : 366.31596088409424,
+        "p10" : 367.42218732833862,
+        "p90" : 370.36738395690918
+      },
+      "include_diagnostics" : true,
+      "kl_probe_ms" : {
+        "count" : 302,
+        "max" : 15.56706428527832,
+        "mean" : 15.130159475945479,
+        "median" : 15.121996402740479,
+        "min" : 15.033960342407227,
+        "p10" : 15.082001686096191,
+        "p90" : 15.182018280029297
+      },
+      "readback_ms" : {
+        "count" : 302,
+        "max" : 0.073075294494628906,
+        "mean" : 0.054616012320613229,
+        "median" : 0.054955482482910156,
+        "min" : 0.050067901611328125,
+        "p10" : 0.051975250244140625,
+        "p90" : 0.056028366088867188
+      },
+      "runs_kl_probe" : true,
+      "steps" : 302,
+      "steps_per_sec" : 2.5122580078655119,
+      "thermal_at_end" : "fair",
+      "thermal_at_start" : "fair",
+      "total_ms" : {
+        "count" : 302,
+        "max" : 402.13096141815186,
+        "mean" : 397.52042254075309,
+        "median" : 397.29148149490356,
+        "min" : 394.96302604675293,
+        "p10" : 396.17475271224976,
+        "p90" : 399.16386604309082
+      },
+      "variant" : "probe",
+      "warmup_steps" : 5,
+      "window_sec" : 120.21058309078217
+    }
+  ]
+}

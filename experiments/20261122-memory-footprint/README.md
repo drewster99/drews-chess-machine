@@ -85,3 +85,18 @@ build from DerivedData; nothing else training). Files: `train-variant-bench-6x3x
   ~15 ms is the KL probe's own forward pass, which runs only on probe steps.
 - So one executable that always computes diagnostics and the stash would cost ≈ 1% per step (GPU 369.7 vs 366.3 ms)
   and save the other heaps (≈ 8 GB in a run using three variants).
+
+## After: one training executable (commit f3abcda4), same benchmark (2026-11-22 15:02)
+
+Same weights, batch, 120 s per step type, Release build at f3abcda4. Files: `train-steptype-bench-6x3x3-64.{txt,json,stderr}`.
+
+| step type | steps/s | total ms med | GPU ms med | KL probe ms | GPU memory added | old variant (total / GPU ms) |
+|---|---|---|---|---|---|---|
+| plain | 2.605 | 383.2 | 368.6 | — | +4,325 MB (compile+first step) | 379.7 / 366.3 |
+| diagnostics | 2.620 | 381.1 | 367.6 | — | +0 | 381.4 / 368.0 |
+| probe | 2.512 | 397.3 | 368.5 | 15.1 | +485 MB (the KL probe subgraph, once) | 398.4 / 369.7 |
+
+- GPU memory with every step type run: **4.93 GB, down from 17.2 GB** with the four old variants (≈ 13 GB with the three
+  a normal run uses).
+- Plain steps cost +3.5 ms (+0.9%), as predicted from the old diagnostics+stash variant's GPU time. Diagnostics and probe
+  steps are unchanged within noise.
