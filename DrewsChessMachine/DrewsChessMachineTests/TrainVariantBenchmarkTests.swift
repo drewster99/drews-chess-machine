@@ -1,35 +1,37 @@
 import XCTest
 @testable import DrewsChessMachine
 
-/// Pure logic behind `--train-variant-benchmark`: the variant → executable-key
-/// mapping, the percentile summary its table reports, the signed allocation
-/// delta, and the argument parser.
+/// Pure logic behind `--train-variant-benchmark`: the step types it times,
+/// the percentile summary its table reports, the signed allocation delta,
+/// and the argument parser.
 final class TrainVariantBenchmarkTests: XCTestCase {
 
-    // MARK: - Variants
+    // MARK: - Step types
 
-    /// Protects: the four variants are exactly the four executable keys
-    /// (diagnostics × KL stash) at a batch size, each once.
-    /// Fails if: a variant maps to another's flags (two rows would time the
-    /// same executable and one variant would go unmeasured).
-    func testVariantsCoverEachDiagnosticsAndKLStashCombinationOnce() {
-        let combinations = TrainingExecutableVariant.allCases.map { [$0.includeDiagnostics, $0.includeKLStash] }
-        XCTAssertEqual(Set(combinations), [[false, false], [true, false], [false, true], [true, true]])
-        XCTAssertEqual(combinations.count, 4)
+    /// Protects: the three step types are the three distinct kinds of step
+    /// the one training executable serves: no readback, diagnostics readback,
+    /// and diagnostics readback plus the KL probe (a production probe step is
+    /// also a diagnostics step).
+    /// Fails if: two types map to the same flags (two rows would time the same
+    /// step and one kind would go unmeasured), or the probe type stops reading
+    /// diagnostics back.
+    func testStepTypesCoverPlainDiagnosticsAndProbeOnce() {
+        let combinations = TrainingStepType.allCases.map { [$0.includeDiagnostics, $0.runsKLProbe] }
+        XCTAssertEqual(combinations, [[false, false], [true, false], [true, true]])
     }
 
-    /// Protects: the KL-probe interval the benchmark sets makes every step
-    /// stash (1) or none (0), through the production schedule
-    /// `ChessTrainer.isKLProbeStep`.
-    /// Fails if: the interval for a stash variant stops probing some steps,
-    /// or a non-stash variant probes.
-    func testKLProbeIntervalSelectsTheStashOnEveryStepOrNone() {
-        for variant in TrainingExecutableVariant.allCases {
+    /// Protects: the KL-probe interval the benchmark sets makes every step of
+    /// the probe type run the probe (1) and no step of the others (0),
+    /// through the production schedule `ChessTrainer.isKLProbeStep`.
+    /// Fails if: the interval for the probe type stops probing some steps, or
+    /// another type probes.
+    func testKLProbeIntervalSelectsTheProbeOnEveryStepOrNone() {
+        for stepType in TrainingStepType.allCases {
             for stepIndex in [0, 1, 2, 7, 1000, 1001] {
                 XCTAssertEqual(
-                    ChessTrainer.isKLProbeStep(stepIndex: stepIndex, interval: variant.klProbeInterval),
-                    variant.includeKLStash,
-                    "\(variant.label) step \(stepIndex)")
+                    ChessTrainer.isKLProbeStep(stepIndex: stepIndex, interval: stepType.klProbeInterval),
+                    stepType.runsKLProbe,
+                    "\(stepType.label) step \(stepIndex)")
             }
         }
     }

@@ -3,57 +3,63 @@ import Foundation
 
 /// `--train-variant-benchmark [--architecture <preset|file> | --start-model <file>]
 /// [--batch <n>] [--seconds-per-variant <s>] [--warmup <n>] [--json-out <new file>]`:
-/// what each of the four compiled training-step executables
-/// (`TrainingExecutableVariant`: plain, diagnostics, KL stash, both) costs in
-/// step time and device memory, then exit (no GUI).
+/// what each kind of training step (`TrainingStepType`: plain, diagnostics,
+/// probe) costs in step time, and what the one compiled training executable
+/// costs in device memory, then exit (no GUI).
 ///
-/// Why it exists (owner request 2026-11-22): a training run mixes the variants
-/// — diagnostics on step-line steps (`ChessTrainer.isDiagnosticsStep`), the
-/// KL stash on probe steps (`ChessTrainer.isKLProbeStep`) — so its log can't
-/// say what each one costs, or what compiling and holding each one resident
-/// costs in memory.
+/// Why it exists (owner request 2026-11-22): a training run mixes the step
+/// types — the diagnostic readback on step-line steps
+/// (`ChessTrainer.isDiagnosticsStep`), the KL probe's forward on probe steps
+/// (`ChessTrainer.isKLProbeStep`) — so its log can't say what each costs.
+/// It first measured the four executables training used to compile per batch
+/// size (plain / diagnostics / KL stash / both: ~4.1–4.6 GB of GPU heap each,
+/// experiments/20261122-memory-footprint); training now compiles one that
+/// always computes the diagnostics and the stash
+/// (`ChessTrainer.trainingExecutables`), and this measures that system. The
+/// output keeps the old format (one row per step type where there was one
+/// per variant) so the two runs compare side by side.
 ///
 /// **Production code only.** One throwaway `ChessTrainer` built in this
 /// process (never a live trainer; no saved state, setting or file is read for
 /// training or written, apart from the optional `--json-out` file, which must
 /// be new) runs the random-data step `--sweep` uses
 /// (`trainStep(batchSize:includeDiagnostics:)` → `runPreparedStep`, the step
-/// every path runs). The variant is selected through the step's own inputs:
+/// every path runs). The step type is selected through the step's own inputs:
 /// `includeDiagnostics` (the one parameter added for this benchmark; the
-/// random-data step otherwise always includes diagnostics) and
-/// `klProbeInterval` (1 = every step stashes and probes, 0 = never), the
-/// knob training itself uses. Hyperparameters are the declared defaults, as
-/// in `--sweep`; none of them change the compiled graph's shape.
+/// random-data step otherwise always reads diagnostics back) and
+/// `klProbeInterval` (1 = every step probes, 0 = never), the knob training
+/// itself uses. Hyperparameters are the declared defaults, as in `--sweep`;
+/// none of them change the compiled graph's shape.
 ///
-/// **Per variant, one after another** (plain, diagnostics, KL stash, both;
-/// owner spec 2026-11-22: solo and continuous, not interleaved):
-///   1. reload the starting weights with zero velocity, so every variant
-///      starts from the same weights (random-data SGD drifts them);
-///   2. compile its executable alone (`compileSyntheticTrainingExecutable`),
-///      reading `MTLDevice.currentAllocatedSize` before and after;
-///   3. one first step (compiles nothing now; pays first-encode pipeline
-///      work), then the allocation again;
+/// **Per step type, one after another** (plain, diagnostics, probe; owner spec
+/// 2026-11-22: solo and continuous, not interleaved):
+///   1. reload the starting weights with zero velocity, so every type starts
+///      from the same weights (random-data SGD drifts them);
+///   2. compile the executable (`compileSyntheticTrainingExecutable`),
+///      reading `MTLDevice.currentAllocatedSize` before and after — a real
+///      compile for the first type, a cache hit (`*`) for the others, since
+///      every type runs the same executable;
+///   3. one first step, then the allocation again (the executable's heap
+///      appears at its first run, so only the first type's row shows it);
 ///   4. the remaining `--warmup` steps, untimed;
 ///   5. steps back to back for `--seconds-per-variant` wall seconds (the last
 ///      step may overrun; the window is the measured wall time), recording
 ///      each step's `TrainStepTiming`.
 ///
 /// **What the numbers mean.** `totalMs` is the whole step (data prep, the
-/// executable, readback and, on KL-stash variants, the KL probe's forward
-/// pass and the dropout-RNG advance); `gpuRunMs` is the training executable
-/// alone; `klProbeMs` the probe's extra pass. The data is random, so the step
-/// lacks the real-data path's value-baseline forward pass; the differences
-/// between variants are what this measures. Device allocation is a point
-/// reading of live allocations (`currentAllocatedSize`), not a peak: MPSGraph
-/// may allocate and free transient buffers inside a step. Allocation deltas
-/// are cumulative across variants — the second variant's compile delta is
-/// what it adds beside the first's resident executable. The KL probe
-/// subgraph (its stash variable) is built once per batch size, by the first
-/// KL-stash variant's compile. Variants run in a fixed order, so thermal drift
-/// lands on the later ones; each record carries the thermal state at the
-/// window's start and end.
+/// executable, the dropout-RNG advance, readback and, on probe steps, the KL
+/// probe's forward pass); `gpuRunMs` is the training executable plus, except
+/// on probe steps, the dropout-RNG advance (a probe step advances after its
+/// probe, outside `gpuRunMs`); `klProbeMs` the probe's extra pass. The data is
+/// random, so the step lacks the real-data path's value-baseline forward pass;
+/// the differences between step types are what this measures. Device
+/// allocation is a point reading of live allocations (`currentAllocatedSize`),
+/// not a peak: MPSGraph may allocate and free transient buffers inside a step.
+/// Allocation deltas are cumulative across rows. Step types run in a fixed
+/// order, so thermal drift lands on the later ones; each record carries the
+/// thermal state at the window's start and end.
 ///
-/// Output: a fixed-width table on stdout, one `[BENCH]` line per variant in
+/// Output: a fixed-width table on stdout, one `[BENCH]` line per step type in
 /// the session log, and with `--json-out` one JSON document. Build
 /// configuration matters for CPU-side time (data prep, readback); the
 /// executable's GPU time does not depend on it.
@@ -102,9 +108,9 @@ enum TrainVariantBenchmarkCLI {
         var errorDescription: String? { message }
     }
 
-    /// One variant's measurements.
+    /// One step type's measurements.
     struct VariantResult {
-        let variant: TrainingExecutableVariant
+        let variant: TrainingStepType
         let compilation: ChessTrainer.TrainingExecutableCompilation
         let firstStepMs: Double
         let gpuAllocatedBytesAfterFirstStep: UInt64
@@ -114,7 +120,7 @@ enum TrainVariantBenchmarkCLI {
         let gpuRunMs: TimingDistribution
         let readbackMs: TimingDistribution
         let dataPrepMs: TimingDistribution
-        /// Nil on variants without the KL stash (the probe never runs).
+        /// Nil on step types that don't run the KL probe.
         let klProbeMs: TimingDistribution?
         let gpuAllocatedBytesAfterWindow: UInt64
         /// `phys_footprint` after the window; nil when `task_info` refused.
@@ -242,10 +248,10 @@ enum TrainVariantBenchmarkCLI {
         SessionLogger.shared.logArchitecture(event: "train-variant-benchmark", arch: architecture)
         SessionLogger.shared.log(architecture.policyTailLogLine)
 
-        print("Training-executable variant benchmark (random data, training-mode BN)")
+        print("Training step-type benchmark: one training executable (diagnostics and KL stash always computed; random data, training-mode BN)")
         print("  source: \(describe(options.source))   compute: \(architecture.computeDataType.rawValue)"
               + "   batch: \(options.batchSize)   warmup: \(options.warmupSteps)"
-              + String(format: "   window: %.0f s per variant", options.secondsPerVariant))
+              + String(format: "   window: %.0f s per step type", options.secondsPerVariant))
         print("  " + architecture.architectureSummary)
         print("")
 
@@ -272,12 +278,12 @@ enum TrainVariantBenchmarkCLI {
                 fail("error: writing \(jsonOutFlag) \(jsonOutURL.path): \(error)", code: .outputWriteFailed)
             }
         }
-        SessionLogger.shared.log("[BENCH] train-variant-benchmark done variants=\(results.count)")
+        SessionLogger.shared.log("[BENCH] train-variant-benchmark done stepTypes=\(results.count)")
         SessionLogger.shared.shutdown()
         Darwin.exit(0)
     }
 
-    /// Build the trainer, then measure every variant in order. Each GPU
+    /// Build the trainer, then measure every step type in order. Each GPU
     /// operation is one `runBlocking` (the trainer's work runs on its own
     /// serial queue behind continuations), so nothing long runs in a `Task`.
     private static func measureAll(
@@ -308,16 +314,12 @@ enum TrainVariantBenchmarkCLI {
         let batchSize = options.batchSize
 
         var results: [VariantResult] = []
-        for variant in TrainingExecutableVariant.allCases {
+        for variant in TrainingStepType.allCases {
             progress("\(variant.label): compiling")
             trainer.klProbeInterval = variant.klProbeInterval
             try runBlocking { try await trainer.loadBaseWeightsResetVelocity(startingWeights) }
             let compilation = try runBlocking {
-                try await trainer.compileSyntheticTrainingExecutable(
-                    batchSize: batchSize,
-                    includeDiagnostics: variant.includeDiagnostics,
-                    includeKLStash: variant.includeKLStash
-                )
+                try await trainer.compileSyntheticTrainingExecutable(batchSize: batchSize)
             }
             let firstStep = try runBlocking {
                 try await trainer.trainStep(batchSize: batchSize, includeDiagnostics: variant.includeDiagnostics)
@@ -367,9 +369,9 @@ enum TrainVariantBenchmarkCLI {
                 gpuRunMs: gpuRunMs,
                 readbackMs: readbackMs,
                 dataPrepMs: dataPrepMs,
-                // A KL-stash step whose probe failed reports 0 (logged
+                // A probe step whose probe failed reports 0 (logged
                 // `[KL-PROBE] skipped`); those are kept, not hidden.
-                klProbeMs: variant.includeKLStash ? TimingDistribution(samples: timings.map(\.klProbeMs)) : nil,
+                klProbeMs: variant.runsKLProbe ? TimingDistribution(samples: timings.map(\.klProbeMs)) : nil,
                 gpuAllocatedBytesAfterWindow: UInt64(device.currentAllocatedSize),
                 footprintBytesAfterWindow: footprint,
                 thermalAtStart: thermalAtStart,
@@ -399,8 +401,8 @@ enum TrainVariantBenchmarkCLI {
 
     private static func printTable(_ results: [VariantResult]) {
         let plainMedian = results.first(where: { $0.variant == .plain })?.totalMs.median
-        print("Step time (ms; median / p10 / p90 over each variant's window)")
-        print("  " + "variant".padding(toLength: 22, withPad: " ", startingAt: 0)
+        print("Step time (ms; median / p10 / p90 over each step type's window)")
+        print("  " + "step type".padding(toLength: 22, withPad: " ", startingAt: 0)
               + rightAligned("steps", 7) + rightAligned("steps/s", 9)
               + rightAligned("total med", 13) + rightAligned("p10", 8) + rightAligned("p90", 8)
               + rightAligned("vs plain", 10)
@@ -419,8 +421,9 @@ enum TrainVariantBenchmarkCLI {
             ))
         }
         print("")
-        print("Device allocation (MB = 1024^2 B; currentAllocatedSize, cumulative across variants in this order)")
-        print("  " + "variant".padding(toLength: 22, withPad: " ", startingAt: 0)
+        print("Device allocation (MB = 1024^2 B; currentAllocatedSize, cumulative across step types in this order;"
+              + " one executable serves every type)")
+        print("  " + "step type".padding(toLength: 22, withPad: " ", startingAt: 0)
               + rightAligned("compile ms", 11) + " "
               + rightAligned("before", 8) + rightAligned("+compile", 10) + rightAligned("+first step", 13)
               + rightAligned("after window", 14) + rightAligned("footprint", 11) + "  thermal")
@@ -447,7 +450,7 @@ enum TrainVariantBenchmarkCLI {
         let c = r.compilation
         let kl = r.klProbeMs.map { String(format: "%.1f", $0.median) } ?? "none"
         return String(
-            format: "[BENCH] variant=%@ batch=%d steps=%d window=%.1fs stepsPerSec=%.3f "
+            format: "[BENCH] stepType=%@ batch=%d steps=%d window=%.1fs stepsPerSec=%.3f "
                 + "totalMs=med:%.1f/p10:%.1f/p90:%.1f gpuRunMs=med:%.1f/p10:%.1f/p90:%.1f "
                 + "readbackMs=med:%.1f dataPrepMs=med:%.1f klProbeMs=med:%@ firstStepMs=%.0f "
                 + "compileMs=%.0f%@ gpuAlloc=before:%@MB compile:%@MB firstStep:%@MB afterWindow:%@MB "
@@ -480,7 +483,7 @@ enum TrainVariantBenchmarkCLI {
             var record: [String: Any] = [
                 "variant": r.variant.label,
                 "include_diagnostics": r.variant.includeDiagnostics,
-                "include_kl_stash": r.variant.includeKLStash,
+                "runs_kl_probe": r.variant.runsKLProbe,
                 "steps": r.steps,
                 "window_sec": r.windowSeconds,
                 "steps_per_sec": r.stepsPerSecond,
@@ -513,6 +516,7 @@ enum TrainVariantBenchmarkCLI {
             "policy_tail_precision": architecture.policyTailPrecision.rawValue,
             "batch_size": options.batchSize,
             "seconds_per_variant": options.secondsPerVariant,
+            "training_executables": "one per batch size (diagnostics and KL stash always computed)",
             "variants": variants,
         ]
     }

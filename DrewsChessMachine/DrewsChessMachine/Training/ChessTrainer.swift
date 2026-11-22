@@ -1978,18 +1978,19 @@ final class ChessTrainer: @unchecked Sendable {
     /// Scalar batch mean of the value head's per-position mean logit,
     /// before centering. Same role as `policyLogitMeanTensor`.
     private var valueLogitMeanTensor: MPSGraphTensor
-    private var assignOps: [MPSGraphOperation]
-    /// `assignOps` WITHOUT the dropout-RNG advance.
+    /// The training step's assigns (SGD weights, velocities, masters, BN
+    /// running stats) — everything except the dropout-RNG advance, which
+    /// every step issues as its own pass (`advanceDropoutRNG`).
     ///
-    /// The KL probe needs both of its forward passes to draw the *same*
-    /// dropout mask, otherwise the divergence it reports mixes the weight
-    /// update with a mask change and there is no way to separate them. The
-    /// mask comes from an RNG state variable that the training executable
-    /// normally advances as part of its own assigns — so on probe steps we
-    /// compile this variant instead and run the advance *after* the probe's
-    /// forward. Each step still advances exactly once; only the ordering
-    /// moves, and only on probe steps.
-    private var assignOpsWithoutDropoutAdvance: [MPSGraphOperation]
+    /// The advance stays out of the training executable because the KL
+    /// probe's forward, which runs after the step on probe steps, has to draw
+    /// the *same* dropout mask the training forward drew; otherwise the
+    /// divergence it reports mixes the weight update with a mask change. With
+    /// one executable serving every step (`trainingExecutable`), the advance
+    /// is issued right after the step on ordinary steps and after the probe on
+    /// probe steps: exactly once per step either way, so the mask sequence is
+    /// the same on every step type (`DropoutRNGStateTests`).
+    private var trainingStepAssignOps: [MPSGraphOperation]
 
     /// The run's `dropout` random stream. Each time a graph is built (here
     /// and on a network reset) the next draw seeds the graph's Philox state,
@@ -2105,36 +2106,30 @@ final class ChessTrainer: @unchecked Sendable {
     }
     private var feedCache: [Int: BatchFeeds] = [:]
 
-    /// Compiled training-step executables, keyed by batch size and whether the
-    /// diagnostic targets are included (Phase 1's two target sets → up to two
-    /// executables per batch size). Built lazily on first use for each key and
-    /// reused for the trainer network's lifetime; `resetNetwork` clears them
-    /// alongside `feedCache`. Accessed only on `executionQueue` (same as
-    /// `feedCache`), so no extra locking. See GPU_UTILIZATION_PLAN.md (Phase 2).
-    private struct TrainingExecutableKey: Hashable {
-        let batchSize: Int
-        let includeDiagnostics: Bool
-        /// Whether this variant also stashes the pre-update policy for the KL
-        /// probe.
-        ///
-        /// A separate variant so the stash is paid only on probe steps: it
-        /// materializes the whole `[batch, policySize]` masked softmax into a
-        /// variable, which is work the other steps have no use for. Keying it
-        /// here rather than compiling it in unconditionally is what lets the
-        /// probe interval actually reduce the cost.
-        ///
-        /// Note the combinatorics: this key is
-        /// `batchSize × includeDiagnostics × includeKLStash`, so enabling the
-        /// probe can double the number of compiled training graphs held for a
-        /// given batch size. Each is a separate MPSGraph compile (seconds) and
-        /// a separate resident executable.
-        let includeKLStash: Bool
-    }
-    private var trainingExecutables: [TrainingExecutableKey: MPSGraphExecutable] = [:]
+    /// Compiled training-step executables, one per batch size. Built lazily on
+    /// first use and reused for the trainer network's lifetime;
+    /// `resetNetwork` clears them alongside `feedCache`. Accessed only on
+    /// `executionQueue` (same as `feedCache`), so no extra locking. See
+    /// GPU_UTILIZATION_PLAN.md (Phase 2).
+    ///
+    /// One executable serves every step type. It always computes the
+    /// diagnostic reductions and always writes the KL probe's stash; which
+    /// steps read the diagnostics back (`isDiagnosticsStep`) and which run the
+    /// probe's forward (`isKLProbeStep`) is decided per step, outside the
+    /// executable. It used to be one executable per (batch, diagnostics,
+    /// KL stash) — up to four — and each compiled MPSGraph executable keeps
+    /// its own heap for its intermediates, allocated at its first run and
+    /// never returned: 4.1–4.6 GB each for a 6×3×3@64 net at batch 4096, so a
+    /// run using three variants paid the training graph's working memory
+    /// three times (≈ 12.5 GB). Measured with `--train-variant-benchmark`
+    /// (experiments/20261122-memory-footprint): always computing the
+    /// diagnostics costs ≈ 1.7 ms of GPU per step and the stash ≈ 0.5 ms
+    /// (≈ 0.9 % together, 366.3 → 369.7 ms), for ≈ 8 GB less GPU memory.
+    private var trainingExecutables: [Int: MPSGraphExecutable] = [:]
     /// Training-executable compiles awaiting their first step, for the
     /// `[GPU-ALLOC]` line each writes. Same `executionQueue` discipline as
     /// `trainingExecutables`, and cleared with it.
-    private var trainingAllocationLedger = GPUAllocationFirstRunLedger<TrainingExecutableKey>()
+    private var trainingAllocationLedger = GPUAllocationFirstRunLedger<Int>()
     /// KL-probe subgraphs (per batch size) awaiting their first probe run.
     private var klProbeAllocationLedger = GPUAllocationFirstRunLedger<Int>()
 
@@ -2413,13 +2408,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.parameterDynamicsTensor = built.parameterDynamics
         self.policyLogitMeanTensor = built.policyLogitMean
         self.valueLogitMeanTensor = built.valueLogitMean
-        self.assignOps = built.assignOps
-        self.assignOpsWithoutDropoutAdvance = built.assignOps
-        // Advance the dropout RNG stream exactly once per training step,
-        // compiled into the same executable as the SGD assigns.
-        if let advance = net.dropoutRngAdvanceOp {
-            self.assignOps.append(advance)
-        }
+        self.trainingStepAssignOps = built.assignOps
         // Experiment: when the working-weight sync is split out of the fused
         // executable, build the separate `working = cast(master)` assigns here
         // (no-op / empty unless splitWorkingWeightSync && bf16).
@@ -2650,13 +2639,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.parameterDynamicsTensor = built.parameterDynamics
         self.policyLogitMeanTensor = built.policyLogitMean
         self.valueLogitMeanTensor = built.valueLogitMean
-        self.assignOps = built.assignOps
-        self.assignOpsWithoutDropoutAdvance = built.assignOps
-        // Advance the dropout RNG stream exactly once per training step
-        // (same as the designated init).
-        if let advance = network.dropoutRngAdvanceOp {
-            self.assignOps.append(advance)
-        }
+        self.trainingStepAssignOps = built.assignOps
         // Rebuild the split working-sync ops against the fresh network (stale
         // ops from the previous net must not be reused).
         self.workingSyncOps = splitWorkingWeightSync
@@ -4644,16 +4627,16 @@ final class ChessTrainer: @unchecked Sendable {
         try await trainStep(batchSize: batchSize, includeDiagnostics: true)
     }
 
-    /// `trainStep(batchSize:)` with the diagnostic target set chosen by the
-    /// caller instead of always included.
+    /// `trainStep(batchSize:)` with the diagnostic readback chosen by the
+    /// caller instead of always done.
     ///
-    /// Exists for `--train-variant-benchmark`, which times each compiled
-    /// training-executable variant: the real-data step picks diagnostics from
-    /// the step-line schedule (`isDiagnosticsStep`), which a benchmark cannot
-    /// pin to one value, and this random-data step otherwise always includes
-    /// them. The KL-stash half of the variant needs no parameter: it follows
-    /// `klProbeInterval` exactly as in training (1 = every step, 0 = never).
-    /// Everything else is the production step (`runPreparedStep`).
+    /// Exists for `--train-variant-benchmark`, which times each step type: the
+    /// real-data step picks diagnostics from the step-line schedule
+    /// (`isDiagnosticsStep`), which a benchmark cannot pin to one value, and
+    /// this random-data step otherwise always reads them. Whether the step
+    /// runs the KL probe needs no parameter: it follows `klProbeInterval`
+    /// exactly as in training (1 = every step, 0 = never). Everything else is
+    /// the production step (`runPreparedStep`).
     func trainStep(batchSize: Int, includeDiagnostics: Bool) async throws -> TrainStepTiming {
         let dispatchedAt = CFAbsoluteTimeGetCurrent()
         return try await enqueue {
@@ -4666,18 +4649,17 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
-    /// What compiling one training-executable variant cost, measured around
-    /// the compile alone (`compileSyntheticTrainingExecutable`).
+    /// What compiling the training executable cost, measured around the
+    /// compile alone (`compileSyntheticTrainingExecutable`).
     struct TrainingExecutableCompilation: Sendable {
-        /// The variant was already in the executable cache; nothing compiled,
-        /// so the time and allocation figures describe a cache hit.
+        /// The executable was already in the cache; nothing compiled, so the
+        /// time and allocation figures describe a cache hit.
         let alreadyCompiled: Bool
-        /// Wall time of the compile, including the KL probe subgraph's
-        /// lazy build when this is the first KL-stash variant at this batch.
+        /// Wall time of the compile, including the KL probe subgraph's lazy
+        /// build (its stash is compiled into the executable).
         let compileMs: Double
         /// `MTLDevice.currentAllocatedSize` just before the compile, after the
-        /// batch's synthetic feeds were staged (feed buffers are shared by
-        /// every variant at a batch size, so they are not charged to one).
+        /// batch's synthetic feeds were staged.
         let gpuAllocatedBytesBeforeCompile: UInt64
         /// `MTLDevice.currentAllocatedSize` just after the compile.
         let gpuAllocatedBytesAfterCompile: UInt64
@@ -4685,44 +4667,28 @@ final class ChessTrainer: @unchecked Sendable {
 
     /// Compile (and cache) the training executable the random-data step
     /// `trainStep(batchSize:includeDiagnostics:)` would compile on its first
-    /// run with this `includeDiagnostics` and a KL-probe interval that does
-    /// (`includeKLStash`) or does not probe — without running a step.
+    /// run at `batchSize` — without running a step.
     ///
     /// Exists for `--train-variant-benchmark`, which reports device memory
     /// before compile, after compile and after the first run separately; a
     /// step compiles and runs in one call, so the compile needs its own entry.
     /// It goes through the production pieces — the synthetic feed staging,
     /// `trainingStepFeeds`, `trainingStepTargets` and `trainingExecutable` —
-    /// so the cached executable is exactly the one the step then finds under
-    /// the same key (batch, diagnostics, KL stash); a separately assembled
-    /// feed or target list could cache a mismatched executable the real step
-    /// would then run. Changes no weights, optimizer or RNG state the training
-    /// math reads (the staged synthetic inputs are overwritten by every step).
-    func compileSyntheticTrainingExecutable(
-        batchSize: Int,
-        includeDiagnostics: Bool,
-        includeKLStash: Bool
-    ) async throws -> TrainingExecutableCompilation {
+    /// so the cached executable is exactly the one the step then finds; a
+    /// separately assembled feed or target list could cache a mismatched
+    /// executable the real step would then run. Changes no weights, optimizer
+    /// or RNG state the training math reads (the staged synthetic inputs are
+    /// overwritten by every step).
+    func compileSyntheticTrainingExecutable(batchSize: Int) async throws -> TrainingExecutableCompilation {
         try await enqueue {
             try self.network.requireLoadedWeights("compileSyntheticTrainingExecutable")
             try self.network.convolutionWeightGradientSplit.requireCorrectWeightGradients(batchSize: batchSize)
             let feeds = self.trainingStepFeeds(binding: self.stageSyntheticFeeds(batchSize: batchSize))
-            let targets = self.trainingStepTargets(includeDiagnostics: includeDiagnostics)
-            let key = TrainingExecutableKey(
-                batchSize: batchSize,
-                includeDiagnostics: includeDiagnostics,
-                includeKLStash: includeKLStash
-            )
-            let alreadyCompiled = self.trainingExecutables[key] != nil
+            let targets = self.trainingStepTargets()
+            let alreadyCompiled = self.trainingExecutables[batchSize] != nil
             let compileStart = CFAbsoluteTimeGetCurrent()
             let (_, allocation) = try GPUAllocationChange.measure(on: self.network.metalDevice) {
-                try self.trainingExecutable(
-                    batchSize: batchSize,
-                    includeDiagnostics: includeDiagnostics,
-                    includeKLStash: includeKLStash,
-                    targets: targets,
-                    feeds: feeds
-                )
+                try self.trainingExecutable(batchSize: batchSize, targets: targets, feeds: feeds)
             }
             let compileMs = (CFAbsoluteTimeGetCurrent() - compileStart) * 1000
             return TrainingExecutableCompilation(
@@ -7041,9 +7007,10 @@ final class ChessTrainer: @unchecked Sendable {
     /// Live-tunable and seeded from `TrainingParameters.klProbeInterval`, the
     /// same shape as `batchStatsInterval`: the training loop re-reads it on its
     /// reconcile pass, so turning the probe on or off mid-run takes effect on
-    /// the next step rather than the next session. Flipping it on compiles a
-    /// second training-executable variant on first use (the one that stashes);
-    /// flipping it off simply stops selecting that variant.
+    /// the next step rather than the next session. Every step writes the
+    /// stash (one executable serves every step type; see
+    /// `trainingExecutables`), so the interval decides only which steps run the
+    /// probe's forward.
     var klProbeInterval: Int = 0
 
     /// Per-batch-size KL probe subgraph: the stash variable, the assign that
@@ -7053,7 +7020,8 @@ final class ChessTrainer: @unchecked Sendable {
     /// concrete shape, while the graph's own tensors carry a `-1` batch dim.
     ///
     /// One stash variable is allocated per distinct batch size ever trained at
-    /// and is never released — the graph owns it for the trainer's lifetime.
+    /// (whether or not the probe is on: every step writes it) and is never
+    /// released — the graph owns it for the trainer's lifetime.
     /// Steady-state training uses a single batch size, so that is one
     /// allocation; a harness that sweeps sizes pays for each.
     private struct KLProbeGraph {
@@ -7083,16 +7051,16 @@ final class ChessTrainer: @unchecked Sendable {
     /// policy never used cannot blow it up.
     ///
     /// **Both forwards draw the same dropout mask, by construction.** The
-    /// mask comes from an RNG state variable that the training executable
-    /// normally advances as one of its `assignOps`. Left alone, that would
-    /// mean the probe's forward — which runs after the step — draws a
-    /// *different* mask, and the reported divergence would be the weight
-    /// change plus a mask change with no way to separate them. So on probe
-    /// steps the training executable is compiled from
-    /// `assignOpsWithoutDropoutAdvance`, and the advance is issued separately
-    /// once the probe's forward is done. Both passes therefore see identical
-    /// masks and the KL isolates the weight update, at any dropout rate; the
-    /// stream still advances exactly once per step, so training is unchanged.
+    /// mask comes from an RNG state variable advanced once per step. Advanced
+    /// inside the training executable, the probe's forward — which runs after
+    /// the step — would draw a *different* mask, and the reported divergence
+    /// would be the weight change plus a mask change with no way to separate
+    /// them. So the training executable leaves the advance out
+    /// (`trainingStepAssignOps`) and every step issues it separately
+    /// (`advanceDropoutRNG`): on a probe step once the probe's forward is
+    /// done. Both passes therefore see identical masks and the KL isolates the
+    /// weight update, at any dropout rate; the stream still advances exactly
+    /// once per step, so training is unchanged.
     /// (At rate 0 the question is moot anyway — every dropout node is an exact
     /// identity; see `ChessNetwork.dropoutRateFeedPlaceholder`.) The
     /// `[KL-PROBE]` line still reports the live rate as context.
@@ -7211,29 +7179,25 @@ final class ChessTrainer: @unchecked Sendable {
         return leaves
     }
 
-    /// Return the compiled training-step executable for `(batchSize,
-    /// includeDiagnostics)`, compiling and caching it on first use. Must run on
-    /// `executionQueue` (same discipline as `feedCache`/`trainingExecutables`).
+    /// Return the compiled training-step executable for `batchSize`,
+    /// compiling and caching it on first use. Must run on `executionQueue`
+    /// (same discipline as `feedCache`/`trainingExecutables`).
     ///
     /// The concrete feed shapes are derived from the live feed tensor data
     /// (`feeds`) — the graph placeholders carry `-1` batch dims, but the
     /// executable is specialized to this batch size, which is the whole point
-    /// (no per-call shape re-specialization). `assignOps` are compiled in as
-    /// target operations so the SGD weight update runs as part of the
-    /// executable, exactly as it did under `graph.run`.
+    /// (no per-call shape re-specialization). `trainingStepAssignOps` are
+    /// compiled in as target operations so the SGD weight update runs as part
+    /// of the executable, exactly as it did under `graph.run`; the targets are
+    /// every output any step reads (`trainingStepTargets`), and the KL stash
+    /// assign is compiled in too, so every step type runs this one executable
+    /// (see `trainingExecutables` for why).
     private func trainingExecutable(
         batchSize: Int,
-        includeDiagnostics: Bool,
-        includeKLStash: Bool = false,
         targets: [MPSGraphTensor],
         feeds: [MPSGraphTensor: MPSGraphTensorData]
     ) throws -> MPSGraphExecutable {
-        let key = TrainingExecutableKey(
-            batchSize: batchSize,
-            includeDiagnostics: includeDiagnostics,
-            includeKLStash: includeKLStash
-        )
-        if let existing = trainingExecutables[key] {
+        if let existing = trainingExecutables[batchSize] {
             return existing
         }
         var feedShapes: [MPSGraphTensor: MPSGraphShapedType] = [:]
@@ -7260,12 +7224,8 @@ final class ChessTrainer: @unchecked Sendable {
                 des.reducedPrecisionFastMath = MPSGraphReducedPrecisionFastMath(rawValue: reducedPrecisionFastMathRaw)
             }
         }
-        // Compile on the large-stack thread too: like autodiff, MPSGraph's
-        // compile traverses the full op DAG (now including the gradient ops),
-        // so a deep tower can overflow the default dispatch-worker stack here as
-        // well. See `withLargeBuildStack`.
-        // With the KL probe enabled, the training step additionally stashes
-        // its pre-update masked softmax.
+        // Every step stashes its pre-update masked softmax for the KL probe,
+        // which reads it only on probe steps.
         //
         // Ordering is guaranteed by dataflow, not by luck: the stash's input
         // is `policySoftmaxLegal`, a value computed during the forward from
@@ -7274,15 +7234,16 @@ final class ChessTrainer: @unchecked Sendable {
         // forward has read the weights. The stashed distribution is therefore
         // always the pre-update one, whatever order MPSGraph picks for the
         // assign itself.
-        // On probe steps, compile the variant that does NOT advance the
-        // dropout RNG: the probe's forward has to draw the same mask the
-        // training forward drew, or the KL it reports is the weight change
-        // plus a mask change. The advance is issued separately once the probe
-        // has run, so the per-step count is unchanged.
-        var targetOps = includeKLStash ? self.assignOpsWithoutDropoutAdvance : self.assignOps
-        if includeKLStash {
-            targetOps.append(klProbeGraph(batchSize: batchSize).stashAssign)
-        }
+        //
+        // The dropout-RNG advance is not a target: the probe's forward has to
+        // draw the same mask the training forward drew, so the advance is
+        // issued after the step (after the probe on probe steps;
+        // `advanceDropoutRNG`).
+        let targetOps = self.trainingStepAssignOps + [klProbeGraph(batchSize: batchSize).stashAssign]
+        // Compile on the large-stack thread too: like autodiff, MPSGraph's
+        // compile traverses the full op DAG (now including the gradient ops),
+        // so a deep tower can overflow the default dispatch-worker stack here as
+        // well. See `withLargeBuildStack`.
         let (executable, compileAllocation) = try GPUAllocationChange.measure(on: network.metalDevice) {
             try withLargeBuildStack {
                 self.network.graph.compile(
@@ -7294,12 +7255,56 @@ final class ChessTrainer: @unchecked Sendable {
                 )
             }
         }
-        trainingExecutables[key] = executable
-        trainingAllocationLedger.recordCompile(of: key, compileAllocation)
+        trainingExecutables[batchSize] = executable
+        trainingAllocationLedger.recordCompile(of: batchSize, compileAllocation)
         SessionLogger.shared.log(
-            "[EXEC] compiled training executable batch=\(batchSize) diagnostics=\(includeDiagnostics) klStash=\(includeKLStash) targets=\(targets.count)"
+            "[EXEC] compiled training executable batch=\(batchSize) targets=\(targets.count) (diagnostics and KL stash included)"
         )
         return executable
+    }
+
+    /// Advance the dropout RNG once: the pass every training step issues after
+    /// its executable (which leaves the advance out; see
+    /// `trainingStepAssignOps`) — right after the step on an ordinary step,
+    /// after the KL probe's forward on a probe step. Nothing to do for an
+    /// architecture without dropout. A GPU failure of the advance throws: the
+    /// Philox state may then hold garbage, so the step fails as a GPU fault
+    /// like the step's own submission. Must run on `executionQueue`.
+    private func advanceDropoutRNG(feeds: [MPSGraphTensor: MPSGraphTensorData], batchSize: Int) throws {
+        guard let advance = network.dropoutRngAdvanceOp,
+              let stateVariable = network.dropoutRngStateVariable else { return }
+        // `advance`'s value (`finalState` in ChessNetwork's builder) is chained
+        // through `g.shapeOf(input, ...)` to size each block's dropout mask,
+        // which makes it depend on `network.inputPlaceholder` even though only
+        // its *shape* matters, not its contents. `feeds: [:]` left that
+        // placeholder unfed — the runtime then tried to execute the bare
+        // placeholder node itself and aborted (`failed assertion 'Unsupported
+        // MPS operation mps.placeholder'`). Feeding this step's own board input
+        // (rather than some dummy) also keeps the batch size the mask shapes
+        // are computed against equal to the batch size that actually consumed
+        // randomness this step, so the RNG stream advances by the right amount.
+        //
+        // Uncompiled `graph.encode`, like the probe: compiling a pruned
+        // subgraph of the training graph is what produced that same
+        // placeholder assertion for the KL probe.
+        guard let inputData = feeds[network.inputPlaceholder] else {
+            // The step that just ran consumed this feed, so its absence is a
+            // defect here, not a property of the data.
+            preconditionFailure("ChessTrainer.advanceDropoutRNG: the step's feeds have no board input")
+        }
+        let advanceSubmission = try GPUSubmission(queue: network.commandQueue, stage: .dropoutAdvance, work: .positions(batchSize))
+        network.weightAccessLock.wait()
+        _ = network.graph.encode(
+            to: advanceSubmission.commandBuffer,
+            feeds: [network.inputPlaceholder: inputData],
+            targetTensors: [stateVariable],
+            targetOperations: [advance],
+            executionDescriptor: advanceSubmission.graphExecutionDescriptor
+        )
+        advanceSubmission.commit()
+        advanceSubmission.waitUntilCompleted()
+        network.weightAccessLock.signal()
+        try advanceSubmission.verify()
     }
 
     /// The training step's feeds: the caller's, with the live dropout rate
@@ -7318,19 +7323,18 @@ final class ChessTrainer: @unchecked Sendable {
         return feeds
     }
 
-    /// The training executable's target tensors for one diagnostics choice —
-    /// the one definition `runPreparedStep` and the benchmark's compile-only
-    /// path both use, so an executable compiled ahead of a step is the one the
-    /// step would have compiled.
-    private func trainingStepTargets(includeDiagnostics: Bool) -> [MPSGraphTensor] {
+    /// The training executable's target tensors — the one definition
+    /// `runPreparedStep` and the benchmark's compile-only path both use, so an
+    /// executable compiled ahead of a step is the one the step would have
+    /// compiled.
+    private func trainingStepTargets() -> [MPSGraphTensor] {
         // Lean outputs (loss components + grad-norm) are on the weight-update
         // path and read back every step. The diagnostic reductions — several
-        // over the full [batch, policySize] logit tensor — are extra graph work
-        // that only feeds the periodic [STATS] line and charts, so on non-stats
-        // steps we omit them from the target list and MPSGraph never encodes
-        // them. `assignOps` still forces the full forward+backward+optimizer,
-        // so this trims diagnostic reductions, not the core step. See
-        // GPU_UTILIZATION_PLAN.md (Phase 1).
+        // over the full [batch, policySize] logit tensor — feed only the
+        // periodic [STATS] line and charts; they are computed on every step
+        // (≈ 1.7 ms of GPU at batch 4096, measured) so one executable serves
+        // every step (`trainingExecutables`), and read back only on
+        // diagnostics steps.
         let leanTargets: [MPSGraphTensor] = [
             totalLoss, policyLossTensor, valueLossTensor,
             illegalMassPenaltyTensor, gradGlobalNormTensor,
@@ -7350,7 +7354,7 @@ final class ChessTrainer: @unchecked Sendable {
             velocityGlobalNormTensor,
             policyLogitMeanTensor, valueLogitMeanTensor
         ]
-        return includeDiagnostics ? leanTargets + diagnosticTargets : leanTargets
+        return leanTargets + diagnosticTargets
     }
 
     /// Run the forward + backward + SGD update graph with the given feeds
@@ -7417,19 +7421,17 @@ final class ChessTrainer: @unchecked Sendable {
         // more time in deferred Obj-C releases.
         return try autoreleasepool {
         let gpuStart = CFAbsoluteTimeGetCurrent()
-        let targets = trainingStepTargets(includeDiagnostics: includeDiagnostics)
-        // Decided once, here, because the executable variant and the probe
-        // block below must agree: the stash runs as a target operation of the
-        // training executable, so a step that stashes and a step that probes
-        // have to be the same step.
+        let targets = trainingStepTargets()
+        // Decided once, here: the probe block below and the dropout advance's
+        // placement (after the probe on a probe step, right after the step
+        // otherwise) must agree.
         let klStepIndex = klProbeStepIndex
-        // Snapshot once: this is live-tunable, and the executable choice and
-        // the probe block below must agree on a single value even if the
-        // parameter changes mid-step.
+        // Snapshot once: this is live-tunable, and both uses below must agree
+        // on a single value even if the parameter changes mid-step.
         let klInterval = klProbeInterval
         let isKLProbeStep = Self.isKLProbeStep(stepIndex: klStepIndex, interval: klInterval)
-        // Phase 2: run through a compiled MPSGraphExecutable (cached per
-        // batchSize × target set) rather than `graph.run`, which re-derives the
+        // Phase 2: run through a compiled MPSGraphExecutable (one per batch
+        // size, serving every step type) rather than `graph.run`, which re-derives the
         // execution plan each call. The executable shares the graph's weight
         // variables — bidirectional, proven in
         // MPSGraphExecutableVariableSemanticsTests — so loadWeights / promotion
@@ -7437,13 +7439,7 @@ final class ChessTrainer: @unchecked Sendable {
         // vice versa. The compiled step is numerically identical to graph.run
         // (MPSGraphExecutableTrainingEquivalenceTests). See
         // GPU_UTILIZATION_PLAN.md (Phase 2).
-        let executable = try trainingExecutable(
-            batchSize: batchSize,
-            includeDiagnostics: includeDiagnostics,
-            includeKLStash: isKLProbeStep,
-            targets: targets,
-            feeds: feeds
-        )
+        let executable = try trainingExecutable(batchSize: batchSize, targets: targets, feeds: feeds)
         // Bind inputs in the executable's OWN feed order (ordering-safe: we map
         // each of the executable's feed tensors to its bound data rather than
         // guessing positions).
@@ -7482,10 +7478,7 @@ final class ChessTrainer: @unchecked Sendable {
         // gpuWaitMs is commit + GPU execution + wait. Their ratio decides the
         // Phase 3 architecture. The executable was already compiled by
         // `trainingExecutable` above, so no compile cost is folded into encodeMs.
-        let firstRunAllocation = trainingAllocationLedger.beginFirstRun(
-            of: TrainingExecutableKey(batchSize: batchSize, includeDiagnostics: includeDiagnostics,
-                                      includeKLStash: isKLProbeStep),
-            device: network.metalDevice)
+        let firstRunAllocation = trainingAllocationLedger.beginFirstRun(of: batchSize, device: network.metalDevice)
         let encodeStart = CFAbsoluteTimeGetCurrent()
         let resultArray = executable.encode(
             to: stepSubmission.commandBuffer,
@@ -7521,9 +7514,7 @@ final class ChessTrainer: @unchecked Sendable {
         // (crash dump, then abort).
         try stepSubmission.verify()
         try network.verifyPendingValueBaseline()
-        firstRunAllocation?.finish(
-            owner: network.gpuOwnerName, graph: "training",
-            key: "batch=\(batchSize) diagnostics=\(includeDiagnostics) klStash=\(isKLProbeStep)")
+        firstRunAllocation?.finish(owner: network.gpuOwnerName, graph: "training", key: "batch=\(batchSize)")
         // Split working-weight sync (bf16 stomp workaround; see
         // `splitWorkingWeightSync`): the main executable updated the fp32 masters
         // but did NOT re-derive the bf16 working weights. Do that now in a
@@ -7559,6 +7550,14 @@ final class ChessTrainer: @unchecked Sendable {
             syncSubmission.waitUntilCompleted()
             network.weightAccessLock.signal()
             try syncSubmission.verify()
+        }
+        // An ordinary step advances the dropout RNG now — the point where the
+        // advance used to run inside the step's own executable, so it is timed
+        // with the step as before and precedes every later read (the
+        // non-finite halt below, a save, a crash dump). A probe step advances
+        // after its probe instead.
+        if !isKLProbeStep {
+            try advanceDropoutRNG(feeds: feeds, batchSize: batchSize)
         }
         let gpuWaitMs = (CFAbsoluteTimeGetCurrent() - gpuWaitStart) * 1000
         encodeMsTimes.append(encodeMs)
@@ -7868,57 +7867,16 @@ final class ChessTrainer: @unchecked Sendable {
                 klStdDev = nil
             }
 
-            // Issue the dropout-RNG advance the probe-step executable left
-            // out, so this step still advances the stream exactly once and the
+            // The dropout-RNG advance this step's executable left out, issued
+            // now that the probe's forward has drawn the training forward's
+            // mask, so the step still advances the stream exactly once and the
             // NEXT step draws a fresh mask.
             //
             // Outside the do/catch on purpose: if the probe failed we lose the
             // metric, but the RNG must still move or the next step silently
             // reuses this step's mask — a correctness bug in training, caused
-            // by telemetry, which is precisely what must not happen. A GPU
-            // failure of the advance itself throws: the Philox state may then
-            // hold garbage, so the step fails as a GPU fault like the step's
-            // own submission.
-            if let advance = network.dropoutRngAdvanceOp,
-               let stateVariable = network.dropoutRngStateVariable {
-                // `advance`'s value (`finalState` in ChessNetwork's builder)
-                // is chained through `g.shapeOf(input, ...)` to size each
-                // block's dropout mask, which makes it depend on
-                // `network.inputPlaceholder` even though only its *shape*
-                // matters, not its contents. `feeds: [:]` left that
-                // placeholder unfed — the runtime then tried to execute the
-                // bare placeholder node itself and aborted (`failed assertion
-                // 'Unsupported MPS operation mps.placeholder'`). Feeding this
-                // step's own board input (rather than some dummy) also keeps
-                // the batch size the mask shapes are computed against equal
-                // to the batch size that actually consumed randomness this
-                // step, so the RNG stream advances by the right amount.
-                //
-                // Unlike `advance`/`stateVariable` being nil (a legitimate
-                // "this architecture has no dropout" case), a missing
-                // `inputPlaceholder` feed here would mean the training step
-                // that just ran had no board input — impossible if it got
-                // this far — so this is an ALARM, not a silent skip.
-                if let inputData = feeds[network.inputPlaceholder] {
-                    let advanceSubmission = try GPUSubmission(queue: network.commandQueue, stage: .dropoutAdvance, work: .positions(batchSize))
-                    network.weightAccessLock.wait()
-                    _ = network.graph.encode(
-                        to: advanceSubmission.commandBuffer,
-                        feeds: [network.inputPlaceholder: inputData],
-                        targetTensors: [stateVariable],
-                        targetOperations: [advance],
-                        executionDescriptor: advanceSubmission.graphExecutionDescriptor
-                    )
-                    advanceSubmission.commit()
-                    advanceSubmission.waitUntilCompleted()
-                    network.weightAccessLock.signal()
-                    try advanceSubmission.verify()
-                } else {
-                    SessionLogger.shared.log(
-                        "[ALARM] KL-PROBE: inputPlaceholder missing from this step's feeds — dropout RNG not advanced, next step will reuse this step's mask"
-                    )
-                }
-            }
+            // by telemetry, which is precisely what must not happen.
+            try advanceDropoutRNG(feeds: feeds, batchSize: batchSize)
         }
 
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000

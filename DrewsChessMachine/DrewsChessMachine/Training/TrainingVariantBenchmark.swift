@@ -1,37 +1,37 @@
 import Foundation
 
-/// One of the four compiled training-step executables `ChessTrainer` caches
-/// per batch size (`TrainingExecutableKey`): with or without the diagnostic
-/// readback targets, and with or without the KL probe's pre-update policy
-/// stash.
+/// One of the three kinds of training step, all run by the one compiled
+/// training executable `ChessTrainer` keeps per batch size
+/// (`ChessTrainer.trainingExecutables`), which always computes the diagnostic
+/// reductions and writes the KL probe's stash.
 ///
-/// Which one a production step runs is decided per step — diagnostics by the
-/// step-line schedule (`ChessTrainer.isDiagnosticsStep`), the stash by the KL
-/// probe schedule (`ChessTrainer.isKLProbeStep`) — so a training log mixes
-/// them and cannot say what each costs. `--train-variant-benchmark`
-/// (`TrainVariantBenchmarkCLI`) runs each one alone to measure that.
-enum TrainingExecutableVariant: CaseIterable, Sendable, Hashable {
-    /// Lean targets only: losses, gradient norm, parameter dynamics.
+/// What differs is the work around the executable: a diagnostics step reads
+/// the diagnostic values back (chosen by the step-line schedule,
+/// `ChessTrainer.isDiagnosticsStep`), and a probe step also runs the KL
+/// probe's forward pass before the dropout-RNG advance (the probe schedule,
+/// `ChessTrainer.isKLProbeStep`; a production probe step is usually also a
+/// diagnostics step). A training log mixes them and cannot say what each
+/// costs; `--train-variant-benchmark` (`TrainVariantBenchmarkCLI`) runs each
+/// one alone to measure that.
+enum TrainingStepType: CaseIterable, Sendable, Hashable {
+    /// No diagnostic readback, no probe.
     case plain
-    /// Lean targets plus the diagnostic reductions the step lines read.
+    /// The diagnostic readback the step lines use.
     case diagnostics
-    /// Lean targets plus the KL stash; every step also runs the KL probe's
-    /// forward pass and the separate dropout-RNG advance.
-    case klStash
-    /// Both.
-    case diagnosticsAndKLStash
+    /// Diagnostic readback plus the KL probe's forward pass.
+    case probe
 
     var includeDiagnostics: Bool {
         switch self {
-        case .plain, .klStash: return false
-        case .diagnostics, .diagnosticsAndKLStash: return true
+        case .plain: return false
+        case .diagnostics, .probe: return true
         }
     }
 
-    var includeKLStash: Bool {
+    var runsKLProbe: Bool {
         switch self {
         case .plain, .diagnostics: return false
-        case .klStash, .diagnosticsAndKLStash: return true
+        case .probe: return true
         }
     }
 
@@ -40,18 +40,16 @@ enum TrainingExecutableVariant: CaseIterable, Sendable, Hashable {
         switch self {
         case .plain: return "plain"
         case .diagnostics: return "diagnostics"
-        case .klStash: return "kl-stash"
-        case .diagnosticsAndKLStash: return "diagnostics+kl-stash"
+        case .probe: return "probe"
         }
     }
 
-    /// The `klProbeInterval` that makes every random-data step take this
-    /// variant's KL-stash half: 1 probes every step, 0 never does
-    /// (`ChessTrainer.isKLProbeStep`).
-    var klProbeInterval: Int { includeKLStash ? 1 : 0 }
+    /// The `klProbeInterval` that makes every random-data step of this type
+    /// run the probe (1) or none (0) (`ChessTrainer.isKLProbeStep`).
+    var klProbeInterval: Int { runsKLProbe ? 1 : 0 }
 }
 
-/// Order statistics of one variant's per-step times over its timed window.
+/// Order statistics of one step type's per-step times over its timed window.
 ///
 /// Percentiles use linear interpolation between the two closest ranks
 /// (Hyndman–Fan type 7, numpy's default): for sorted samples x₀…xₙ₋₁ the
