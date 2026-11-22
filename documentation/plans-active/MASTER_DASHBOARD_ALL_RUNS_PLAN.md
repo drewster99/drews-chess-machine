@@ -89,6 +89,12 @@ None since `sf100sl100` (already on the dashboard).
   at 18,000, the R-elitecyc forks at 384,964.
 - From architecture format v11, `cum_step` = the segment's `cumstep_base` + the record's `segment_local_step`
   (= the trainer step for the zlra lineage).
+- Time and compute follow the step axis: a lineage segment's `elapsed_base_sec` / `games_base` come from its record
+  (measured trainer-step seconds and games of the whole lineage run), so a fork's first row continues from its
+  parent's totals at the fork (R-elitecyc-fp32fix starts near 211 h and 37.8M games) and a branch starts at 0.
+- Pre-lineage segments 0 hold `games_base` 0 (the runner's `games=` counts from 0 at a fresh start or a branch);
+  `fatconv98` segment 1 (a continuation of a pre-lineage file, whose record holds null totals) holds segment 0's
+  logged total (`gamesFed=4254363`, its log's closing line).
 
 ## pElo where the 1000-step file is gone
 
@@ -115,8 +121,12 @@ Rows whose files exist are probed as before.
 3. `replay.py`:
    - `lineage_checkpoints` skips carried copies.
    - New `log_backfill(run)`: the per-1000-step log rows `tick.py` wrote, moved here so the refresh shares it, with
-     marks on the trainer-step thousands for v11 segments (the old segment-step marks fall between saves on a resumed
-     segment), plus the writer's test-set results for saves whose file is gone.
+     marks at the saves the log records (`[REPLAY] saved trainer model … step=N`; segment-step thousands before
+     format v11, trainer-step thousands from v11 — the old segment-step marks fall between saves on a resumed v11
+     segment; logs without save lines keep the segment-step thousands), the writer's test-set results for saves whose file is gone, and the blank `games_fed` / `wall_sec` of
+     probed rows.
+   - `enum_path` names `<stem>-step<n>` for a rolling file not named `…-replay-latest` (the zlra runs), so the cron
+     tick's `freeze` finds the enumerated file instead of copying the rolling file.
 4. `refresh_dashboard.py` (replaces the retired static-PNG v5 script): one command that, under the cron tick's lock,
    runs `probe-backfill` + `log_backfill` for every registry run whose rolling out-model is being written by a live
    process (or every run with `--all`), rebuilds the self-play CSVs, appends the live GUI runs' probe marks, renders
@@ -161,3 +171,48 @@ in `registry.json` with its log, then refresh again.
 - D-8: pre-September runs that were never on the dashboard (2026-06-27 `v3_8block_3x3` / `freshNet`, the 2026-07-12
   train-vs-UCI pilots) stay off: the earlier dashboard work left them off, and the owner's instruction concerns runs
   since then; adding them is a registry entry each if wanted.
+
+## Results (2026-11-22)
+
+All 29 replay runs and 3 self-play runs are on the dashboard (72 runs rendered). Probed with DCM-2687 except where noted.
+
+| run | rows | steps | rows with pElo | peak pElo | last pElo |
+|---|---:|---|---:|---:|---:|
+| ejp0hf | 20 | 1,000–20,000 | 20 | 1678.7 | 1365.5 |
+| fc1leaky | 33 | 1,000–33,000 | 33 | 1504.1 | 1492.9 |
+| nose1 | 33 | 1,000–33,000 | 33 | 1502.1 | 1492.9 |
+| nose2 | 33 | 1,000–33,000 | 33 | 1515.4 | 1515.4 |
+| lsC | 33 | 1,000–33,000 | 33 | 1493.4 | 1480.0 |
+| lsC2 | 32 | 1,000–31,906 | 32 | 1478.0 | 1477.5 |
+| lsD | 33 | 1,000–33,000 | 33 | 1478.5 | 1468.7 |
+| rz0 | 33 | 1,000–33,000 | 33 | 1481.6 | 1481.6 |
+| fatty216 | 33 | 1,000–33,000 | 33 | 1365.5 | 1353.1 |
+| fatty224 | 33 | 1,000–33,000 | 33 | 1355.7 | 1346.4 |
+| fatconv98 | 40 | 1,000–39,093 | 40 | 1397.9 | 1352.1 |
+| lrA | 40 | 1,000–40,000 | 40 | 1456.9 | 1396.3 |
+| lrB | 40 | 1,000–40,000 | 40 | 1633.0 | 1508.2 |
+| lrC | 7 | 513–6,116 | 7 | 587.5 | 587.5 |
+| lrBleaky | 40 | 1,000–40,000 | 40 | 1641.7 | 1468.7 |
+| lrBleakyall | 40 | 1,000–40,000 | 40 | 1630.4 | 1448.2 |
+| lrBsilu | 37 | 1,000–36,066 | 37 | 1571.9 | 1246.4 |
+| lrBsilu_clip1 | 22 | 19,000–40,000 | 22 | 1638.1 | 1475.9 |
+| lrBsilu_clip2 | 5 | 19,000–23,000 | 5 | 1571.9 | 1560.1 |
+| lrBsilu_clip5 | 5 | 19,000–23,000 | 5 | 1571.9 | 1567.3 |
+| bsiluall | 102 | 1,000–100,000 | 102 | 1647.4 | 1416.4 |
+| rreplay | 87 | 1,000–86,398 | 87 | 1650.0 | 1639.7 |
+| relite | 22 | 1,000–21,006 | 22 | 1645.3 | 1637.6 |
+| relitecyc | 901 | 1,000–883,503 | 901 (711 from the writer's log) | 1819.6 | 1805.1 |
+| relitecyc_anneal | 30 | 1,000–30,000 | 30 | 1795.8 | 1787.0 |
+| relitefresh | 365 | 1,000–353,933 | 365 | 1684.9 | 1674.1 |
+| relitecyc_hilr | 145 | 385,000–528,527 | 145 | 1805.1 | 1769.9 |
+| relitecyc_fp32 | 30 | 385,000–413,778 | 30 | 1799.4 | 1410.2 |
+| relitecyc_fp32fix | 72 (live) | 385,000–453,000 | 72 | 1814.4 | 1803.5 |
+| AgG3 (self-play) | 6 | 1–4,997 | 6 | 535 | 526 |
+| ZlrA (self-play) | 52 | 1–50,981 | 52 | 569 | 565 |
+| Ew5t (self-play) | 287 | 1–285,957 | 287 | 649 | 609 |
+
+- Probe vs the writer's logged test-set result, on every row of R-elitecyc, R-elitefresh, R-replay and
+  R-elitecyc-fp32fix that has both: at most 0.05 pElo apart (the log's rounding).
+- Blank cells: pre-lineage runs have no `train_step_sec`; rows filled from the writer's log have no `pLogit_*`, internals
+  or `probe_build`; a pre-lineage run's off-cadence final save (lsC2 31,906, lrBsilu 36,066) has no `games_fed`.
+- Self-play pElo / NLL are the in-app wide probe ticks (recording build), as for the earlier self-play runs.

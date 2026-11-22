@@ -188,6 +188,9 @@ class LogBackfillTests(unittest.TestCase):
         # but segment 1 resumed from the 2000 save, so 3000 belongs to an abandoned tail.
         lines = [replay_line(f"10:{m:02d}:00.000", step, step + 500, step * 10)
                  for m, step in enumerate(range(100, 2701, 100))]
+        for step in (500, 1500, 2500):
+            lines.append(f"10:{step // 100:02d}:30.000  [REPLAY] saved trainer model (autosave) step={step} "
+                         f"trainerStep={step + 500} nextGame=1 shard=0 epoch=0 -> r-latest.safetensors\n")
         lines.insert(6, "10:05:30.000  [CHECKPOINT] test sets trainer step 1000 (r-latest.safetensors) (300 ms): "
                         "lichess-200 n=200 top1=1 top5=2 nll=1.6000 pElo=1400.0; lichess-wide n=4435 top1=2 "
                         "top5=3 nll=1.8500 pElo=1800.5\n")
@@ -219,9 +222,10 @@ class LogBackfillTests(unittest.TestCase):
         os.environ.pop("DCM_DASH_ROOT")
         cls.folder.cleanup()
 
-    def test_marks_are_the_trainer_step_thousands_of_a_v11_segment(self):
-        """Protects: a resumed v11 segment's rows sit where its saves are.
-        Fails if: marks are taken at segment-step thousands (trainer 1500, 2500)."""
+    def test_marks_are_the_saves_the_log_records(self):
+        """Protects: a resumed v11 segment's rows sit where its saves are (trainer-step
+        thousands). Fails if: marks are taken at segment-step thousands (trainer 1500,
+        2500) instead of the logged saves."""
         self.assertEqual(sorted(self.rows), [1000, 2000])
         self.assertEqual((self.rows[1000]["meta_step"], self.rows[1000]["pLoss"]), ("500", "2.0"))
 
@@ -241,6 +245,49 @@ class LogBackfillTests(unittest.TestCase):
     def test_a_second_pass_changes_nothing(self):
         added, measured = self.replay.log_backfill("r", verbose=False)
         self.assertEqual((added, measured), (0, 0))
+
+
+class LogBackfillProbedRowTests(unittest.TestCase):
+    """A row a probe filed keeps its measurements; the log adds its blank games and wall cells."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        root = cls.folder.name
+        os.mkdir(os.path.join(root, "data"))
+        with open(os.path.join(root, "dcm_log_20261001-100000.txt"), "w") as handle:
+            handle.writelines(f"10:{m:02d}:00.000  [REPLAY] step={step} games={step * 10} loss=3.0000 pLoss=2.0000 "
+                              f"vLoss=1.0000 pIllM=0.0100 gNorm=0.5000 ms=1000.0\n"
+                              for m, step in enumerate(range(100, 2101, 100)))
+        reg = {"models_dir": root, "logs_dir": root, "runs": {"p": {
+            "label": "p", "out_model": "p-replay-latest.safetensors", "frozen_glob": "p-step*-frozen.safetensors",
+            "segments": [{"log": "dcm_log_20261001-100000.txt", "date": "20261001", "cumstep_base": 0,
+                          "games_base": 0}]}}}
+        with open(os.path.join(root, "registry.json"), "w") as handle:
+            json.dump(reg, handle)
+        os.environ["DCM_DASH_ROOT"] = root
+        import importlib
+        import replay
+        cls.replay = importlib.reload(replay)
+        _, snapshot = cls.replay.read_csv_for_update("p")
+        cls.replay.write_csv("p", [dict(cum_step=1000, meta_step=1000, segment=0, pElo=1500.0, nll=2.0,
+                                        note="probe-backfill")], snapshot)
+        cls.replay.log_backfill("p", verbose=False)
+        cls.rows = {int(r["cum_step"]): r for r in cls.replay.read_csv("p")}
+
+    @classmethod
+    def tearDownClass(cls):
+        os.environ.pop("DCM_DASH_ROOT")
+        cls.folder.cleanup()
+
+    def test_blank_games_and_wall_are_filled_and_the_measurement_kept(self):
+        """Protects: a probed pre-lineage checkpoint's row gets the compute axis from the
+        log. Fails if: probe rows stay without games_fed / wall_sec, or the pass
+        overwrites the probe's pElo."""
+        row = self.rows[1000]
+        self.assertEqual((row["pElo"], row["games_fed"], row["note"]), ("1500.0", "10000", "probe-backfill"))
+        self.assertNotEqual(row["wall_sec"], "")
+        self.assertEqual(sorted(self.rows), [1000, 2000])
 
 
 if __name__ == "__main__":

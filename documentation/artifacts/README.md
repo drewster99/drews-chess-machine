@@ -10,5 +10,5 @@ generator lives when there is one. Republishing an artifact means updating its c
 | DCM Training Step Tables | https://claude.ai/artifact/JBDkj3xWshHd6RARZ1HwLe | `dcm-training-step-tables.html` | `experiments/20261008-zlra-selfplay-lr/tables/` (`tables_html.py` → `training_tables.html`) |
 | ReLU Inputs and Logits | https://claude.ai/artifact/PcjJrobNKwsmVoEBxwrscb | `relu-inputs-and-logits.html` | `experiments/20261004-head-logits-relu-inputs/report.html` (artifact is the later version) |
 | SE Style A/B/C | https://claude.ai/artifact/XNcSMDgAPX9wyTeXq4nX1w | `se-style-abc.html` | `experiments/20260929-se-style-ab/` (`report-30k.html`, `report-final.html`) |
-| DCM Master Dashboard | https://claude.ai/artifact/LfMS23HF3QEVo1r2N4GYaU | `dcm-master-dashboard.html` | `documentation/dashboards/` (`master.py`) |
+| DCM Master Dashboard | https://claude.ai/artifact/LfMS23HF3QEVo1r2N4GYaU | `dcm-master-dashboard.html` | `documentation/dashboards/refresh_dashboard.py` (updates the run CSVs, renders `master.py`, writes this copy; plan `documentation/plans-active/MASTER_DASHBOARD_ALL_RUNS_PLAN.md`) |
 | v5 strength telemetry | https://claude.ai/artifact/3GrFRsEhL2gLXXhb2rsyv2 | `v5-strength-telemetry.html` | `documentation/dashboards/data/v5-source/bundle-provenance/v5-strength.html` |

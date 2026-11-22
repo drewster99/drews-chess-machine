@@ -210,6 +210,12 @@ _TRAINER_STEP = re.compile(r"\btrainerStep=(\d+)\b")
 #   lichess-wide n=4435 top1=2556 top5=3963 nll=1.8361 pElo=1807.7
 # The same evaluation `--probe-model --probe-set wide` makes, of the weights the save
 # wrote, in the log of the segment that wrote them.
+# A save the runner logged, e.g.
+#   [REPLAY] saved trainer model (autosave) step=416 trainerStep=722000 nextGame=… -> …
+# (`trainerStep=` from the trainer-step builds on). Its `step` is the segment step the
+# checkpoint holds, whatever the era's save cadence was: segment-step thousands before
+# architecture format v11, trainer-step thousands from v11, plus abort / final saves.
+_SAVED = re.compile(r"\[REPLAY\] saved trainer model \([^)]*\) step=(\d+)\b")
 _TEST_SETS = re.compile(r"\[CHECKPOINT\] test sets trainer step (\d+) .*?\blichess-wide n=\d+ .*?"
                         r"\bnll=([\d.]+) pElo=(-?[\d.]+)")
 
@@ -238,6 +244,7 @@ class LogIndex:
                v11 segment's log: its start on the trainer clock; empty before v11).
       test_sets  {trainer step: (pElo, nll)} — the writer's lichess-wide result of
                each save it logged (`[CHECKPOINT] test sets …`).
+      saves    sorted segment steps of the saves it logged (`[REPLAY] saved trainer model`).
 
     One deliberate behavior note: the old scan stopped at the first line whose step
     exceeded the target, so on a log holding two concatenated runs it would never
@@ -246,14 +253,20 @@ class LogIndex:
     monotonic, so the two agree; the only concatenated artifact in this project
     (`run.out`) is not a session log and is never passed here.
     """
-    __slots__ = ("order", "at_time", "metrics", "games", "m_steps", "g_steps", "trainer_offsets", "test_sets")
+    __slots__ = ("order", "at_time", "metrics", "games", "m_steps", "g_steps", "trainer_offsets", "test_sets",
+                 "saves")
 
     def __init__(self, path):
         self.order, self.at_time, self.metrics, self.games = [], {}, {}, {}
-        self.trainer_offsets, self.test_sets = set(), {}
+        self.trainer_offsets, self.test_sets, saves = set(), {}, set()
         day, prev = 0, None
         if os.path.exists(path):
             for line in open(path, errors="replace"):
+                if "saved trainer model" in line:
+                    saved = _SAVED.search(line)
+                    if saved:
+                        saves.add(int(saved.group(1)))
+                    continue
                 if "test sets trainer step" in line:
                     tm = _TEST_SETS.search(line)
                     if tm:
@@ -291,6 +304,7 @@ class LogIndex:
                     self.games[step] = int(g.group(1))
         self.m_steps = sorted(self.metrics)
         self.g_steps = sorted(self.games)
+        self.saves = sorted(saves)
 
 
 _INDEX_CACHE = {}
@@ -1171,11 +1185,14 @@ def log_backfill(run, segments=None, verbose=True):
 
     Two kinds of rows, both idempotent on cum_step:
 
-    - Per-1000-step training rows (pLoss, vLoss, legalMass, gNorm, ms, games) from the
-      [REPLAY] line at each mark, pElo blank. The marks are the thousands of the
-      trainer step from architecture format v11 (where the app saves), of the segment
-      step before (where it saved then): on a resumed v11 segment the segment-step
-      thousands fall between saves.
+    - Training rows (pLoss, vLoss, legalMass, gNorm, ms, games) from the [REPLAY] line
+      at each save the log records (`[REPLAY] saved trainer model … step=N`), pElo
+      blank: the rows sit where the checkpoints were, whatever the era's cadence
+      (segment-step thousands before architecture format v11, trainer-step thousands
+      from v11, which on a resumed segment fall between segment-step thousands). A log
+      without save lines falls back to the segment-step thousands.
+    - On a row a probe filed (at a mark or a save), its blank `games_fed` (from the
+      log's `games=` plus the segment's `games_base`) and `wall_sec`.
     - The writer's own test-set result of every save it logged (`[CHECKPOINT] test sets
       trainer step N … lichess-wide … nll= pElo=`): the same evaluation the probe makes,
       of the weights that save wrote. It fills pElo / nll of a row that has none (the
@@ -1193,7 +1210,7 @@ def log_backfill(run, segments=None, verbose=True):
     rows, snapshot = read_csv_for_update(run)
     by = {int(r["cum_step"]): r for r in rows}
     st = SegTime(segs, run)
-    added = measured = 0
+    added = measured = filled_cells = 0
     for si in targets:
         sg = segs[si]
         li = log_index(sg["log"])
@@ -1202,12 +1219,11 @@ def log_backfill(run, segments=None, verbose=True):
         base = sg["cumstep_base"]
         cap = segs[si + 1]["cumstep_base"] if si + 1 < len(segs) and segs[si + 1]["cumstep_base"] > base else None
         trainer_start = _segment_trainer_start(sg, li)
-        last = max(s for s, _ in li.order)
-        if trainer_start is None:
-            marks = list(range(1000, last + 1, 1000))
+        if li.saves:
+            marks = li.saves
         else:
-            first = (trainer_start // 1000 + 1) * 1000
-            marks = [t - trainer_start for t in range(first, trainer_start + last + 1, 1000)]
+            last = max(s for s, _ in li.order)
+            marks = list(range(1000, last + 1, 1000))
         saves = {}
         if trainer_start is not None:
             saves = {t - trainer_start: result for t, result in li.test_sets.items() if t > trainer_start}
@@ -1233,15 +1249,30 @@ def log_backfill(run, segments=None, verbose=True):
                 rows.append(row)
                 by[cum] = row
                 added += 1
+            elif str(row.get("segment", "")) == str(si):
+                # A row filed by a probe: its compute and raw-wall cells, where it has none
+                # (a file without a lineage record states no games; the probe pass does not
+                # walk the wall clock). Both are read at this row's own segment step.
+                if row.get("games_fed") in ("", None) and "games_base" in sg:
+                    games = _games_at(sg["log"], meta)
+                    if games is not None:
+                        row["games_fed"] = sg["games_base"] + games
+                        filled_cells += 1
+                if row.get("wall_sec") in ("", None):
+                    wall = st.wall_at(cum, si)
+                    if wall != "":
+                        row["wall_sec"] = wall
+                        filled_cells += 1
             if meta in saves and row.get("pElo") in ("", None) and NON_FINITE_PELO_NOTE not in (row.get("note") or ""):
                 pelo, nll = saves[meta]
                 row["pElo"], row["nll"] = round(pelo, 2), round(nll, 4)
                 row["note"] = "; ".join(x for x in (row.get("note"), LOG_TEST_SETS_NOTE) if x)
                 measured += 1
-    if added or measured:
+    if added or measured or filled_cells:
         write_csv(run, rows, snapshot)
     if verbose:
-        print(f"{run}: log-backfill +{added} rows, {measured} pElo from the writer's test sets")
+        print(f"{run}: log-backfill +{added} rows, {measured} pElo from the writer's test sets, "
+              f"{filled_cells} games/wall cells")
     return added, measured
 
 

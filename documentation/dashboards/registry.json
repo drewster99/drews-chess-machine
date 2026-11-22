@@ -815,7 +815,8 @@
           "date": "20261001",
           "cumstep_base": 0,
           "label": "branch of qeu8 resume3 step 681,000",
-          "enum_stem": "20261001-headfix-phase2-Ejp0"
+          "enum_stem": "20261001-headfix-phase2-Ejp0",
+          "games_base": 0
         }
       ],
       "trainset": "std-2026-05"
@@ -837,7 +838,8 @@
           "date": "20261001",
           "cumstep_base": 0,
           "label": "run",
-          "enum_stem": "20261001-test_SE_scale+bias-fc1leaky"
+          "enum_stem": "20261001-test_SE_scale+bias-fc1leaky",
+          "games_base": 0
         }
       ],
       "trainset": "std-2026-05"
@@ -859,7 +861,8 @@
           "date": "20261002",
           "cumstep_base": 0,
           "label": "run",
-          "enum_stem": "20261002-bench_v5s3_noSE_noReZero"
+          "enum_stem": "20261002-bench_v5s3_noSE_noReZero",
+          "games_base": 0
         }
       ],
       "trainset": "std-2026-05"
@@ -881,7 +884,8 @@
           "date": "20261002",
           "cumstep_base": 0,
           "label": "run",
-          "enum_stem": "20261002-bench_v5s3_noSE_noReZero-seed2"
+          "enum_stem": "20261002-bench_v5s3_noSE_noReZero-seed2",
+          "games_base": 0
         }
       ],
       "trainset": "std-2026-05"
@@ -903,7 +907,8 @@
           "date": "20261002",
           "cumstep_base": 0,
           "label": "run",
-          "enum_stem": "20261002-label-smoothing-C"
+          "enum_stem": "20261002-label-smoothing-C",
+          "games_base": 0
         }
       ],
       "trainset": "std-2026-05"
@@ -925,7 +930,8 @@
           "date": "20261003",
           "cumstep_base": 0,
           "label": "run",
-          "enum_stem": "20261002-label-smoothing-C-seed2"
+          "enum_stem": "20261002-label-smoothing-C-seed2",
+          "games_base": 0
         }
       ],
       "trainset": "std-2026-05"
@@ -947,7 +953,8 @@
           "date": "20261003",
           "cumstep_base": 0,
           "label": "run",
-          "enum_stem": "20261002-label-smoothing-D"
+          "enum_stem": "20261002-label-smoothing-D",
+          "games_base": 0
         }
       ],
       "trainset": "std-2026-05"
@@ -969,7 +976,8 @@
           "date": "20261002",
           "cumstep_base": 0,
           "label": "run",
-          "enum_stem": "20261002-rezero-zero-init"
+          "enum_stem": "20261002-rezero-zero-init",
+          "games_base": 0
         }
       ],
       "trainset": "std-2026-05"
@@ -991,7 +999,8 @@
           "date": "20261003",
           "cumstep_base": 0,
           "label": "run",
-          "enum_stem": "20261003-fatty216-b2275"
+          "enum_stem": "20261003-fatty216-b2275",
+          "games_base": 0
         }
       ],
       "trainset": "std-2026-05"
@@ -1013,7 +1022,8 @@
           "date": "20261003",
           "cumstep_base": 0,
           "label": "run",
-          "enum_stem": "20261003-fatty224s3-b2275"
+          "enum_stem": "20261003-fatty224s3-b2275",
+          "games_base": 0
         }
       ],
       "trainset": "std-2026-05"
@@ -1035,7 +1045,8 @@
           "date": "20261004",
           "cumstep_base": 0,
           "label": "run",
-          "enum_stem": "20261004-fatconv98-b2275"
+          "enum_stem": "20261004-fatconv98-b2275",
+          "games_base": 0
         },
         {
           "log": "dcm_log_20261004-210810.txt",
@@ -1045,7 +1056,9 @@
           "lineage_run_id": "FAE5AB97-416F-4813-9339-F832EA525C66",
           "segment_id": "A270A617-E517-4158-958A-C03B27D6830E",
           "date": "20261004",
-          "device": "M5 Max"
+          "device": "M5 Max",
+          "games_base": 4254363,
+          "_games_base_note": "segment 0's total from its log's closing line ([REPLAY] done: steps=33000 … gamesFed=4254363); the continuation's lineage record holds null totals (it resumed a pre-lineage file)"
         }
       ],
       "trainset": "std-2026-05"
