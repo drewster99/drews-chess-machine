@@ -56,9 +56,12 @@ ARTIFACT_COPY = os.path.join(REPO, "documentation", "artifacts", "dcm-master-das
 
 
 def process_identity(pid):
-    """'<pid> <start time>' as cron_tick.sh writes it (`ps -o lstart=`)."""
+    """'<pid> <start time>' byte for byte as cron_tick.sh writes it: `ps -o lstart=` pads
+    the time with trailing spaces and the shell's `$(…)` drops only the trailing
+    newlines, so only those are dropped here. Any other difference makes the tick judge
+    a live refresh's lock stale and break it."""
     started = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
-                             check=True).stdout.strip()
+                             check=True).stdout.rstrip("\n")
     return f"{pid} {started}"
 
 
@@ -84,7 +87,7 @@ def tick_lock():
     finally:
         try:
             with open(LOCK_OWNER) as handle:
-                mine = handle.read().strip() == me
+                mine = handle.read().rstrip("\n") == me
         except OSError:
             mine = False
         if mine:

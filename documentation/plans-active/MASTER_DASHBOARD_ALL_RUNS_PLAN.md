@@ -168,6 +168,10 @@ in `registry.json` with its log, then refresh again.
   `~/Documents/drews-chess-machine`); it becomes the refresh entry point.
 - D-7: cron (`cron_tick.sh`) is unchanged: it keeps tracking the live replay run's rows every 5 minutes; it does not
   render the master page or touch the artifact copy, so the tree is not dirtied every 5 minutes.
+- D-9: the refresh takes the cron tick's lock with an owner record byte-identical to `cron_tick.sh`'s (`ps -o lstart=`
+  pads with trailing spaces). The first backfill pass wrote a trimmed record, so three ticks (09:55–10:05) judged it
+  stale and ran beside it; they touched only `relitecyc_fp32fix` (no rows written) and the CSV writes are
+  compare-and-swap, so nothing was lost. Fixed and pinned by a test.
 - D-8: pre-September runs that were never on the dashboard (2026-06-27 `v3_8block_3x3` / `freshNet`, the 2026-07-12
   train-vs-UCI pilots) stay off: the earlier dashboard work left them off, and the owner's instruction concerns runs
   since then; adding them is a registry entry each if wanted.

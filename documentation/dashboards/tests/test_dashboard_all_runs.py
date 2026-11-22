@@ -290,5 +290,19 @@ class LogBackfillProbedRowTests(unittest.TestCase):
         self.assertEqual(sorted(self.rows), [1000, 2000])
 
 
+class RefreshLockTests(unittest.TestCase):
+    def test_the_lock_owner_record_is_the_one_cron_tick_sh_writes(self):
+        """Protects: cron_tick.sh recognises a running refresh as the lock's live owner.
+        Fails if: the record differs from the shell's `printf '%s %s\\n' pid "$(ps -o
+        lstart= -p pid)"` (ps pads the time with trailing spaces), so the tick judges the
+        lock stale and breaks it while the refresh is still writing CSVs."""
+        import subprocess
+        import refresh_dashboard
+        pid = os.getpid()
+        shell = subprocess.run(["bash", "-c", f'x=$(ps -o lstart= -p {pid}); printf "%s %s" {pid} "$x"'],
+                               capture_output=True, text=True, check=True).stdout
+        self.assertEqual(refresh_dashboard.process_identity(pid), shell)
+
+
 if __name__ == "__main__":
     unittest.main()
