@@ -11,7 +11,7 @@ and the tick exits 1. Without that, one checkpoint that keeps failing froze the
 dashboard at its last render for as long as it stayed on disk. Anything else —
 a lineage record contradicting the registry, an unreadable CSV — is not a
 per-checkpoint failure and still stops the tick where it happens."""
-import sys, os, csv, subprocess, contextlib
+import sys, os, subprocess, contextlib
 import replay
 
 def active_run():
@@ -52,31 +52,9 @@ def main(arg):
     except PER_CHECKPOINT_FAILURES as error:
         failures.append(f"probe-backfill: {error}")
 
-    # 2. backfill any missed 1000-marks in the latest segment from the log
-    seg = cfg["segments"][-1]; base = seg["cumstep_base"]
-    out = os.path.join(replay.MODELS, cfg["out_model"])
-    st = replay.SegTime(cfg["segments"], run)
-    rows, snapshot = replay.read_csv_for_update(run); filled = 0
-    if os.path.exists(out):
-        cur = replay.meta_step_of(out)
-        for meta in range(1000, cur, 1000):
-            cum = base + meta
-            if replay.has_step(rows, cum):
-                continue
-            el, clk, _, si = st.elapsed_and_clock(cum)
-            met = replay._metrics_at(cfg["segments"][si]["log"], meta)
-            if not met:
-                continue
-            rows.append(dict(cum_step=cum, meta_step=meta, segment=si, elapsed_train_sec=el,
-                wallclock_iso=clk, ms_per_step=met.get("ms", ""), pElo="", nll="",
-                loss=met.get("loss", ""), pLoss=met.get("pLoss", ""), vLoss=met.get("vLoss", ""),
-                legalMass=round(1 - met["pIllM"], 4) if "pIllM" in met else "", pIllM=met.get("pIllM", ""),
-                bn1Mean="", gNorm=met.get("gNorm", ""), sae2="", eff_alpha="",
-                pLogit_mean="", pLogit_peak="", frozen_file="", note="log-backfill (fast-net)"))
-            filled += 1
-        if filled:
-            replay.write_csv(run, rows, snapshot)
-    print(f"backfilled {filled}")
+    # 2. backfill the latest segment's missed 1000-marks (and the writer's logged
+    #    test-set results) from its log
+    replay.log_backfill(run, segments=[len(cfg["segments"]) - 1])
 
     # 3. render dashboard (silence its per-run stdout dump; we only want this run's table)
     with open(os.devnull, "w") as _dn, contextlib.redirect_stdout(_dn):

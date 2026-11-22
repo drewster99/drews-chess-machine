@@ -202,6 +202,16 @@ _GAMES = re.compile(r"\bgames=(\d+)\b")
 # routinely saved on that same off-cadence step, so without this the last row of each
 # segment would silently under-report the compute axis.
 _DONE = re.compile(r"\[REPLAY\] done: steps=(\d+)\b.*?\bgamesFed=(\d+)\b")
+# The trainer step of a [REPLAY] line (logs from architecture format v11 on); with the
+# line's `step=` (the segment step) it gives the segment's start on the trainer clock.
+_TRAINER_STEP = re.compile(r"\btrainerStep=(\d+)\b")
+# The writer's own test-set evaluation of each save (builds from 2026-10-07), e.g.
+#   [CHECKPOINT] test sets trainer step 720000 (…-latest.safetensors) (311 ms): lichess-200 … ;
+#   lichess-wide n=4435 top1=2556 top5=3963 nll=1.8361 pElo=1807.7
+# The same evaluation `--probe-model --probe-set wide` makes, of the weights the save
+# wrote, in the log of the segment that wrote them.
+_TEST_SETS = re.compile(r"\[CHECKPOINT\] test sets trainer step (\d+) .*?\blichess-wide n=\d+ .*?"
+                        r"\bnll=([\d.]+) pElo=(-?[\d.]+)")
 
 
 class LogIndex:
@@ -224,6 +234,10 @@ class LogIndex:
                a later line for the same step wins, matching the old forward scan.
       games    {step: cumulative games fed} — raw material for the compute axis.
       m_steps / g_steps  sorted keys, for nearest-<= lookup.
+      trainer_offsets  {trainerStep - step} over lines carrying both (one value on a
+               v11 segment's log: its start on the trainer clock; empty before v11).
+      test_sets  {trainer step: (pElo, nll)} — the writer's lichess-wide result of
+               each save it logged (`[CHECKPOINT] test sets …`).
 
     One deliberate behavior note: the old scan stopped at the first line whose step
     exceeded the target, so on a log holding two concatenated runs it would never
@@ -232,13 +246,19 @@ class LogIndex:
     monotonic, so the two agree; the only concatenated artifact in this project
     (`run.out`) is not a session log and is never passed here.
     """
-    __slots__ = ("order", "at_time", "metrics", "games", "m_steps", "g_steps")
+    __slots__ = ("order", "at_time", "metrics", "games", "m_steps", "g_steps", "trainer_offsets", "test_sets")
 
     def __init__(self, path):
         self.order, self.at_time, self.metrics, self.games = [], {}, {}, {}
+        self.trainer_offsets, self.test_sets = set(), {}
         day, prev = 0, None
         if os.path.exists(path):
             for line in open(path, errors="replace"):
+                if "test sets trainer step" in line:
+                    tm = _TEST_SETS.search(line)
+                    if tm:
+                        self.test_sets[int(tm.group(1))] = (float(tm.group(3)), float(tm.group(2)))
+                    continue
                 dm = _DONE.search(line)
                 if dm:
                     self.games[int(dm.group(1))] = int(dm.group(2))
@@ -247,6 +267,9 @@ class LogIndex:
                 if not sm:
                     continue
                 step = int(sm.group(1))
+                trainer = _TRAINER_STEP.search(line)
+                if trainer:
+                    self.trainer_offsets.add(int(trainer.group(1)) - step)
                 t = _TS.match(line)
                 if t:
                     h, mi, s, frac = int(t[1]), int(t[2]), int(t[3]), t[4]
@@ -635,8 +658,8 @@ def lineage_checkpoints(cfg):
     out = []
     for f in recorded:
         si = wanted.get(f.record["run"]["segment_id"])
-        if si is None:
-            continue
+        if si is None or dcm_lineage.is_carried_trainer_state_copy(f):
+            continue   # another run's file, or a derive's copy of the segment's state (not its checkpoint)
         local = f.record["steps"]["segment_local_step"]
         reading = f.step_reading
         if reading.basis == dcm_lineage.BASIS_TRAINER_STEP:
@@ -827,10 +850,16 @@ def discover_enum_stems(cfg, run=None, verbose=True):
 
 def enum_path(cfg, n):
     """The enumerated checkpoint named for step `n` (the name's step: the segment
-    step before format v11, the trainer step from v11)."""
-    om = cfg.get("out_model", "")
-    return (os.path.join(MODELS, om.replace("-replay-latest", f"-replay-step{n}"))
-            if "-replay-latest" in om else None)
+    step before format v11, the trainer step from v11), as the app names it
+    (`EnumeratedCheckpointNaming`): `<base>-replay-step<n>` from a `<base>-replay-latest`
+    rolling stem, `<stem>-step<n>` from any other. `freeze` uses it only after checking
+    the file's header."""
+    om = cfg.get("out_model") or ""
+    if "-replay-latest" in om:
+        return os.path.join(MODELS, om.replace("-replay-latest", f"-replay-step{n}"))
+    if om.endswith(".safetensors"):
+        return os.path.join(MODELS, f"{om[:-len('.safetensors')]}-step{n}.safetensors")
+    return None
 
 # ---------- track ----------
 def freeze(run, cfg, meta, rolling_metadata):
@@ -1116,6 +1145,105 @@ _BACKFILL_REASON_CHARS = 300
 def _shortened(text):
     text = " ".join(text.split())
     return text if len(text) <= _BACKFILL_REASON_CHARS else text[:_BACKFILL_REASON_CHARS] + "…"
+
+# The `note` of a row whose pElo / nll come from the writer's logged test-set result.
+LOG_TEST_SETS_NOTE = "writer test sets (log)"
+
+
+class LogContradiction(ValueError):
+    """A session log that cannot be read as one segment's log."""
+
+
+def _segment_trainer_start(sg, li):
+    """The segment's start on the trainer clock from its log (trainerStep - step on
+    every [REPLAY] line), or None for a log written before trainer steps were
+    logged. Two values mean the log is not one segment's: refused."""
+    if not li.trainer_offsets:
+        return None
+    if len(li.trainer_offsets) != 1:
+        raise LogContradiction(f"{sg['log']}: [REPLAY] lines disagree on trainerStep - step "
+                               f"{sorted(li.trainer_offsets)}")
+    return next(iter(li.trainer_offsets))
+
+
+def log_backfill(run, segments=None, verbose=True):
+    """Fill a run's CSV from its segments' session logs, where no checkpoint was probed.
+
+    Two kinds of rows, both idempotent on cum_step:
+
+    - Per-1000-step training rows (pLoss, vLoss, legalMass, gNorm, ms, games) from the
+      [REPLAY] line at each mark, pElo blank. The marks are the thousands of the
+      trainer step from architecture format v11 (where the app saves), of the segment
+      step before (where it saved then): on a resumed v11 segment the segment-step
+      thousands fall between saves.
+    - The writer's own test-set result of every save it logged (`[CHECKPOINT] test sets
+      trainer step N … lichess-wide … nll= pElo=`): the same evaluation the probe makes,
+      of the weights that save wrote. It fills pElo / nll of a row that has none (the
+      checkpoint file was later thinned away, or never probed), noted
+      LOG_TEST_SETS_NOTE, with no probe_build: the probe never ran. pLogit and the
+      internals need the file and stay blank.
+
+    A segment's marks stop at the next segment's start, so a tail that a later segment
+    resumed before (an abandoned stretch) adds nothing. `segments` limits the pass to
+    those segment indices (the tick reads only the live segment's log). Probing comes
+    first (`probe_backfill`): a row it filled is never touched here."""
+    cfg = REG["runs"][run]
+    segs = cfg["segments"]
+    targets = range(len(segs)) if segments is None else segments
+    rows, snapshot = read_csv_for_update(run)
+    by = {int(r["cum_step"]): r for r in rows}
+    st = SegTime(segs, run)
+    added = measured = 0
+    for si in targets:
+        sg = segs[si]
+        li = log_index(sg["log"])
+        if not li.order:
+            continue
+        base = sg["cumstep_base"]
+        cap = segs[si + 1]["cumstep_base"] if si + 1 < len(segs) and segs[si + 1]["cumstep_base"] > base else None
+        trainer_start = _segment_trainer_start(sg, li)
+        last = max(s for s, _ in li.order)
+        if trainer_start is None:
+            marks = list(range(1000, last + 1, 1000))
+        else:
+            first = (trainer_start // 1000 + 1) * 1000
+            marks = [t - trainer_start for t in range(first, trainer_start + last + 1, 1000)]
+        saves = {}
+        if trainer_start is not None:
+            saves = {t - trainer_start: result for t, result in li.test_sets.items() if t > trainer_start}
+        for meta in sorted(set(marks) | set(saves)):
+            cum = base + meta
+            if cap is not None and cum > cap:
+                continue
+            row = by.get(cum)
+            if row is None:
+                met = _metrics_at(sg["log"], meta)
+                if not met and meta not in saves:
+                    continue
+                elapsed, clock, _, _ = st.elapsed_and_clock(cum, si)
+                games = _games_at(sg["log"], meta)
+                row = dict(cum_step=cum, meta_step=meta, segment=si, elapsed_train_sec=elapsed,
+                           wall_sec=st.wall_at(cum, si), wallclock_iso=clock, ms_per_step=met.get("ms", ""),
+                           pElo="", nll="", loss=met.get("loss", ""), pLoss=met.get("pLoss", ""),
+                           vLoss=met.get("vLoss", ""),
+                           legalMass=round(1 - met["pIllM"], 4) if "pIllM" in met else "",
+                           pIllM=met.get("pIllM", ""), gNorm=met.get("gNorm", ""),
+                           games_fed=(sg["games_base"] + games) if ("games_base" in sg and games is not None) else "",
+                           note="log-backfill (fast-net)")
+                rows.append(row)
+                by[cum] = row
+                added += 1
+            if meta in saves and row.get("pElo") in ("", None) and NON_FINITE_PELO_NOTE not in (row.get("note") or ""):
+                pelo, nll = saves[meta]
+                row["pElo"], row["nll"] = round(pelo, 2), round(nll, 4)
+                row["note"] = "; ".join(x for x in (row.get("note"), LOG_TEST_SETS_NOTE) if x)
+                measured += 1
+    if added or measured:
+        write_csv(run, rows, snapshot)
+    if verbose:
+        print(f"{run}: log-backfill +{added} rows, {measured} pElo from the writer's test sets")
+    return added, measured
+
 
 def recompute_cum_steps(run, verbose=True):
     """Re-derive cum_step = segments[segment].cumstep_base + meta_step for every row.
@@ -1786,6 +1914,8 @@ if __name__ == "__main__":
                    help="allow the rebuild to drop rows / blank values the CSV holds (printed first)")
     p = sub.add_parser("recompute"); p.add_argument("run", nargs="?", default="__all__")
     p = sub.add_parser("recompute-internals"); p.add_argument("run")
+    p = sub.add_parser("probe-backfill"); p.add_argument("run")
+    p = sub.add_parser("log-backfill"); p.add_argument("run")
     p = sub.add_parser("discover-stems")
     p.add_argument("run", nargs="?", default="__all__")
     p.add_argument("--write", action="store_true",
@@ -1816,6 +1946,10 @@ if __name__ == "__main__":
             recompute_elapsed(r)
     elif a.cmd == "recompute-internals":
         recompute_internals(a.run)
+    elif a.cmd == "probe-backfill":
+        probe_backfill(a.run)
+    elif a.cmd == "log-backfill":
+        log_backfill(a.run)
     elif a.cmd == "discover-stems":
         targets = list(REG["runs"]) if a.run == "__all__" else [a.run]
         proposed = {}

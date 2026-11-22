@@ -1,125 +1,180 @@
-import re, json, os, struct, glob, io, base64, datetime
-import numpy as np
-import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
-HERE=os.path.dirname(os.path.abspath(__file__))
-DOC="/Users/andrew/Documents/drews-chess-machine/documentation/v5-layernorm-output.md"
-LS=os.path.join(HERE,"loop_state.txt"); M=os.path.expanduser("~/Library/Application Support/DrewsChessMachine/Models")
-OUT="/Users/andrew/Documents/drews-chess-machine/documentation/dashboards/dcm_dashboard.html"
-# v5 lineage = one continuous run from random init; warm-start param changes at these cumulative steps:
-OFF={'wd1e-4':0,'wd5e-4':45441,'m0.93':60901}   # wd1e-4 stopped @45441, wd5e-4 @15460 -> 60901
-TRANS=[(45441,'→ wd5e-4 (wd 1e-4→5e-4)'),(60901,'→ m0.93 (wd 2.5e-4, μ0.93)')]
-def ff(x):
-    x=x.strip(); return None if x in ('','—','-') else float(x)
-sub={}  # sub-run -> rows (own step)
-for line in open(DOC):
-    m=re.match(r'\|\s*(\*\*)?(wd1e-4|wd5e-4|m0\.93)(\*\*)?\s*\|(.*)\|\s*$', line)
-    if not m: continue
-    name=m.group(2); c=[x.strip().replace('**','') for x in m.group(4).split('|')]
-    if len(c)<10: continue
-    pl=c[9].split('/')
-    sub.setdefault(name,[]).append(dict(step=int(float(c[0])),pElo=ff(c[1]),nll=ff(c[2]),pLoss=ff(c[3]),vLoss=ff(c[4]),
-        legalMass=ff(c[5]),bn1Mean=ff(c[6]),gNorm=ff(c[7]),sae2=ff(c[8]),
-        plogit_mean=ff(pl[0]),plogit_peak=(ff(pl[1]) if len(pl)>1 else None)))
-# combined v5
-v5=[]
-for s in ['wd1e-4','wd5e-4','m0.93']:
-    for r in sub.get(s,[]): v5.append({**r,'step':r['step']+OFF[s]})
-v5.sort(key=lambda r:r['step'])
-runs={'v5':v5}
-def kv(line,key):
-    m=re.search(rf'{re.escape(key)}=([0-9.]+)',line); return float(m.group(1)) if m else None
-for line in open(LS):
-    m=re.match(r'#\s*(MINI|COXW|YKKK|T97X)\s+(\d+)\b[^:\n]*:',line)
-    if not m: continue
-    name={'MINI':'mini2b','COXW':'coxw','YKKK':'ykkk','T97X':'t97x'}[m.group(1)]; pl=re.search(r'pLogitAbsMax=([0-9.]+)/([0-9.]+)',line)
-    runs.setdefault(name,[]).append(dict(step=int(m.group(2)),pElo=kv(line,'pElo'),nll=kv(line,'nll'),pLoss=kv(line,'pLoss'),
-        vLoss=kv(line,'vLoss'),legalMass=kv(line,'lm'),bn1Mean=kv(line,'bn1Mean'),gNorm=kv(line,'gNorm'),sae2=kv(line,'Σαeff²'),
-        plogit_mean=float(pl.group(1)) if pl else None,plogit_peak=float(pl.group(2)) if pl else None))
-for k in runs: runs[k].sort(key=lambda r:r['step'])
-caps={'v5':1.0,'mini2b':0.5,'coxw':1.0,'ykkk':1.0,'t97x':1.0}  # t97x has no ReZero → no Σαeff² data; cap unused
-# --- incremental stable-rank cache (keyed by sub-run / fresh-run) ---
-pat={'wd1e-4':"20260628-v5_5block_7x7_lnout-step*-frozen.safetensors",'wd5e-4':"20260628-v5_5block_7x7_lnout-wd5e4-step*-frozen.safetensors",
- 'm0.93':"20260628-v5_5block_7x7_lnout-wd2.5e4-m93-step*-frozen.safetensors",'mini2b':"20260629-mini2b-3MIV-step*-frozen.safetensors",'coxw':"20260629-mini1b-Coxw-step*-frozen.safetensors",'ykkk':"20260630-mini-YkKk-step*-frozen.safetensors",'t97x':"20260630-T97X-step*-frozen.safetensors"}
-cf=os.path.join(HERE,"util_cache.json"); cache=json.load(open(cf)) if os.path.exists(cf) else {}
-def srfrac(path):
-    with open(path,'rb') as f:
-        n=struct.unpack('<Q',f.read(8))[0]; hdr=json.loads(f.read(n)); base=8+n; srs=[]
-        for k,mm in hdr.items():
-            if not(k.startswith('blocks.') and k.endswith(('conv1.weight','conv2.weight'))): continue
-            s,e=mm['data_offsets']; f.seek(base+s); a=np.frombuffer(f.read(e-s),dtype='<f4').reshape(mm['shape'])
-            W=a.reshape(a.shape[0],-1); sv=np.linalg.svd(W,compute_uv=False); s2=sv**2; srs.append(float(s2.sum()/s2[0])/min(W.shape))
-        return float(np.mean(srs)) if srs else None
-subutil={}; new=0
-for run,p in pat.items():
-    cache.setdefault(run,{}); pts=[]
-    for fp in glob.glob(os.path.join(M,p)):
-        mm=re.search(r'step(\d+)(?:-FINAL)?-frozen',fp)
-        if not mm: continue
-        st=mm.group(1)
-        if st not in cache[run]: cache[run][st]=srfrac(fp); new+=1
-        pts.append((int(st),cache[run][st]))
-    subutil[run]=sorted(pts)
-json.dump(cache,open(cf,'w'))
-util={'v5':sorted([(s+OFF[sr],v) for sr in ['wd1e-4','wd5e-4','m0.93'] for (s,v) in subutil.get(sr,[])]),
-      'mini2b':subutil.get('mini2b',[]),'coxw':subutil.get('coxw',[]),'ykkk':subutil.get('ykkk',[]),'t97x':subutil.get('t97x',[])}
-# --- charts ---
-ORDER=['v5','mini2b','coxw','ykkk','t97x']
-COLOR={'v5':'#1f77b4','mini2b':'#ff7f0e','coxw':'#2ca02c','ykkk':'#d62728','t97x':'#9467bd'}
-LAB={'v5':'v5 — 8.45M, 5-block (wd1e-4→wd5e-4→m0.93)','mini2b':'mini2b — 2.25M, 2-block','coxw':'coxw — 1.86M, 1-block','ykkk':'ykkk — 0.24M, 2-block (SE)','t97x':'t97x — 1.70M, 2-block 9×9 (SE, GELU, no-ReZero)'}
-def png(fig):
-    b=io.BytesIO(); fig.savefig(b,format="png",dpi=125,bbox_inches="tight"); plt.close(fig); return base64.b64encode(b.getvalue()).decode()
-def vlines(ax):
-    for x,_ in TRANS: ax.axvline(x,color='#1f77b4',ls=':',lw=0.8,alpha=0.35)
-def chart(key,title,ylab,logy=False,tf=None):
-    fig,ax=plt.subplots(figsize=(9,4.2))
-    for r in ORDER:
-        xs=[];ys=[]
-        for row in runs.get(r,[]):
-            v=row.get(key)
-            if v is None: continue
-            ys.append(tf(r,v) if tf else v); xs.append(row['step'])
-        if xs: ax.plot(xs,ys,'-o',ms=2.4,lw=1.0,color=COLOR[r],label=LAB[r])
-    vlines(ax)
-    if logy: ax.set_yscale('log')
-    ax.set_xlabel("SGD steps since random init"); ax.set_ylabel(ylab); ax.set_title(title); ax.grid(alpha=.22); ax.legend(fontsize=7.5)
-    return png(fig)
-def chart_util():
-    fig,ax=plt.subplots(figsize=(9,4.2))
-    for r in ORDER:
-        pts=util.get(r,[])
-        if pts: ax.plot([p[0] for p in pts],[p[1] for p in pts],'-o',ms=2.4,lw=1.0,color=COLOR[r],label=LAB[r])
-    vlines(ax)
-    ax.set_xlabel("SGD steps since random init"); ax.set_ylabel("mean conv stable-rank / 128"); ax.set_title("Block utilization — mean conv stable-rank fraction"); ax.grid(alpha=.22); ax.legend(fontsize=7.5)
-    return png(fig)
-charts=[("pElo",chart('pElo',"pElo vs step","pElo")),("nll",chart('nll',"nll vs step","nll")),
- ("pLoss",chart('pLoss',"pLoss vs step","pLoss")),("vLoss",chart('vLoss',"vLoss vs step","vLoss")),
- ("legalMass",chart('legalMass',"legalMass vs step","legalMass")),("gNorm",chart('gNorm',"gNorm vs step","gNorm")),
- ("bn1Mean",chart('bn1Mean',"bn1Mean vs step (log y)","bn1Mean",logy=True)),
- ("pLogit",chart('plogit_mean',"pLogitAbsMax mean vs step","pLogitAbsMax mean")),
- ("sae2",chart('sae2',"Σαeff² / cap vs step","Σαeff²/cap",tf=lambda r,v:v/caps[r])),
- ("util",chart_util())]
-def table(r):
-    rows=runs.get(r,[])
-    def c(v,fmt="{:.3f}"): return "" if v is None else fmt.format(v)
-    def pc(x):
-        if x['plogit_mean'] is None: return ""
-        return "{:.2f}/{}".format(x['plogit_mean'],("{:.3f}".format(x['plogit_peak']) if x['plogit_peak'] is not None else "—"))
-    th="<tr><th>step</th><th>pElo</th><th>nll</th><th>pLoss</th><th>vLoss</th><th>legalMass</th><th>bn1Mean</th><th>gNorm</th><th>Σαeff²</th><th>pLogit μ/peak</th></tr>"
-    body="".join("<tr>"+"".join("<td>%s</td>"%v for v in [x['step'],c(x['pElo'],"{:.1f}"),c(x['nll']),c(x['pLoss'],"{:.2f}"),c(x['vLoss'],"{:.2f}"),c(x['legalMass'],"{:.4f}"),c(x['bn1Mean'],"{:.3f}"),c(x['gNorm'],"{:.3f}"),c(x['sae2'],"{:.4f}"),pc(x)])+"</tr>" for x in rows)
-    peak=max((x['pElo'] for x in rows if x['pElo']),default=0)
-    return f"<details><summary><b>{LAB[r]}</b> — {len(rows)} marks, peak pElo {peak:.0f}</summary><table>{th}{body}</table></details>"
-ch="".join(f"<h2>{i+1} · {n}</h2><img src='data:image/png;base64,{b}'>" for i,(n,b) in enumerate(charts))
-tb="".join(table(r) for r in ORDER)
-_active='ykkk' if runs.get('ykkk') else 'coxw'
-cox=runs[_active][-1] if runs.get(_active) else {}
-html=f"""<!doctype html><html><head><meta charset=utf-8><title>DCM sweep dashboard</title>
-<style>body{{font-family:-apple-system,Helvetica,Arial,sans-serif;margin:24px;max-width:1040px;color:#1a1a1a}}
-h1{{font-size:21px}}h2{{font-size:14px;color:#444;margin-top:26px}}img{{max-width:100%;border:1px solid #ddd;border-radius:6px}}
-table{{border-collapse:collapse;font-size:11px;margin:8px 0}}td,th{{border:1px solid #ccc;padding:2px 7px;text-align:right}}
-summary{{cursor:pointer;font-size:13px;margin-top:10px}}.cap{{color:#666;font-size:12px}}</style></head><body>
-<h1>DCM — capacity / architecture sweep dashboard</h1>
-<p class=cap>Auto-refreshed {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} · {_active} @ step {cox.get('step','?')} (pElo {cox.get('pElo','?')}). Reload to update.
-x = SGD steps since random init. <b>v5</b> is the full lineage as ONE continuous run (wd1e-4→wd5e-4→m0.93; warm-start param changes at the dotted blue lines, ~45.4k and ~60.9k). <b>mini2b</b>, <b>coxw</b> &amp; <b>ykkk</b> are separate fresh-init runs. bn1Mean log-y; Σαeff² ÷ each run's cap; bn1Mean/Σαeff² not cross-comparable in absolute terms (differing block counts/caps).</p>
-{ch}<h2>Data tables (click to expand)</h2>{tb}</body></html>"""
-open(OUT,"w").write(html)
-print(f"refreshed {OUT} ({len(html)//1024} KB); {new} new SVDs; v5 combined {len(v5)} marks (to cumstep {v5[-1]['step'] if v5 else 0})")
+#!/usr/bin/env python3
+"""Refresh the DCM Master Dashboard: the one command that brings every live run's
+rows up to date, re-renders the page and updates the repo copy of the artifact.
+
+    DCM_BIN=<app binary> /usr/bin/python3 documentation/dashboards/refresh_dashboard.py [--all] [--runs a,b]
+
+Steps, in order:
+
+1. Corpus replay (`registry.json`): for each target run, `replay.probe_backfill`
+   (probe every saved checkpoint whose row has no pElo) and then
+   `replay.log_backfill` (per-1000-step log rows, and the writer's logged test-set
+   result for saves whose file is gone). Targets are the runs whose rolling
+   out-model a live `--replay-corpus` process is writing (its latest segment's log
+   only); `--all` takes every run and every segment, `--runs` names them.
+2. `replay.py derive-registry` (read-only): a live run that started a new segment
+   (a resume) shows as NEW SEGMENT; add it to the run in `registry.json` (its log
+   and label) and refresh again. Nothing is written to the registry here.
+3. GUI self-play (`selfplay_registry.json`): the probe marks of every run marked
+   `probe_from_log` are appended from its logs (`selfplay_probe_append.py`,
+   append-only), then every self-play CSV is rebuilt (`selfplay.py`).
+4. `master.py` renders `dcm_master.html` (repo root), `make_hosted.py` strips it to
+   the artifact page body, and that body is copied to
+   `documentation/artifacts/dcm-master-dashboard.html`: the file to publish to
+   https://claude.ai/artifact/LfMS23HF3QEVo1r2N4GYaU.
+
+It holds the cron tick's lock (`/tmp/dcm_cron_tick.lock`, owner record
+"<pid> <start time>", the protocol of `cron_tick.sh`) while it writes CSVs, so a
+tick and a refresh never rewrite the same CSV at once; it waits for a tick that
+holds the lock. A checkpoint that cannot be probed does not stop the refresh: every
+step still runs, the failures are printed at the end and the exit status is 1.
+Probing needs the app binary (`DCM_BIN`); describing files needs `DCM_BINARY` or a
+DerivedData build (set both to the same frozen build).
+"""
+import argparse
+import contextlib
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+import replay  # noqa: E402
+
+LOCK = "/tmp/dcm_cron_tick.lock"
+LOCK_OWNER = os.path.join(LOCK, "owner")
+# How long to wait for a tick holding the lock before giving up (a tick that
+# probes a batch of checkpoints can take minutes).
+LOCK_WAIT_SECONDS = 1800
+LOCK_POLL_SECONDS = 10
+RENDERED = os.path.join(REPO, "dcm_master.html")
+HOSTED = os.path.join(HERE, "dcm_master_hosted.html")
+ARTIFACT_COPY = os.path.join(REPO, "documentation", "artifacts", "dcm-master-dashboard.html")
+
+
+def process_identity(pid):
+    """'<pid> <start time>' as cron_tick.sh writes it (`ps -o lstart=`)."""
+    started = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                             check=True).stdout.strip()
+    return f"{pid} {started}"
+
+
+@contextlib.contextmanager
+def tick_lock():
+    """Hold the cron tick's lock directory for the duration. A stale lock is left to
+    cron_tick.sh to judge and break (it alone records why); this waits, then fails."""
+    me = process_identity(os.getpid())
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            os.mkdir(LOCK)
+            break
+        except FileExistsError:
+            if time.monotonic() > deadline:
+                raise SystemExit(f"{LOCK} is still held after {LOCK_WAIT_SECONDS}s "
+                                 f"(owner: {open(LOCK_OWNER).read().strip() if os.path.exists(LOCK_OWNER) else 'none recorded'})")
+            time.sleep(LOCK_POLL_SECONDS)
+    try:
+        with open(LOCK_OWNER, "w") as handle:
+            handle.write(me + "\n")
+        yield
+    finally:
+        try:
+            with open(LOCK_OWNER) as handle:
+                mine = handle.read().strip() == me
+        except OSError:
+            mine = False
+        if mine:
+            os.remove(LOCK_OWNER)
+            os.rmdir(LOCK)
+
+
+def live_replay_runs():
+    """Registry runs whose rolling out-model a live --replay-corpus process writes.
+    A failing `ps` raises: "could not look" is not "nothing is training"."""
+    args = subprocess.run(["ps", "-Ao", "args="], capture_output=True, text=True, check=True).stdout
+    lines = [line for line in args.splitlines() if "--replay-corpus" in line and "--out-model" in line]
+    return [run for run, cfg in replay.REG["runs"].items()
+            if cfg.get("out_model") and any(cfg["out_model"] in line for line in lines)]
+
+
+def refresh_replay(runs, every_segment, failures):
+    for run in runs:
+        print(f"== {run}")
+        try:
+            replay.probe_backfill(run, verbose=False)
+        except (replay.ProbeFailure, replay.BackfillIncomplete) as error:
+            failures.append(f"{run} probe-backfill: {error}")
+        segments = None if every_segment else [len(replay.REG["runs"][run]["segments"]) - 1]
+        replay.log_backfill(run, segments=segments)
+
+
+def check_registry():
+    """derive-registry, read-only; its report is printed as is."""
+    status = subprocess.run([sys.executable, os.path.join(HERE, "replay.py"), "derive-registry"],
+                            capture_output=True, text=True)
+    for line in status.stdout.splitlines():
+        if not line.startswith(("  + ", "  excluded ", "  carried copy")):
+            print(line)
+    return status.returncode
+
+
+def refresh_selfplay(failures):
+    import json
+    reg = json.load(open(os.path.join(HERE, "selfplay_registry.json")))
+    for run, cfg in reg["runs"].items():
+        if not cfg.get("probe_from_log"):
+            continue
+        for segment in range(len(cfg["logs"])):
+            done = subprocess.run([sys.executable, os.path.join(HERE, "selfplay_probe_append.py"), run,
+                                   "--segment", str(segment)], capture_output=True, text=True)
+            if done.returncode != 0:
+                failures.append(f"{run} probe marks, segment {segment}: {done.stderr.strip() or done.stdout.strip()}")
+    done = subprocess.run([sys.executable, os.path.join(HERE, "selfplay.py")], capture_output=True, text=True)
+    print(done.stdout.rstrip())
+    if done.returncode != 0:
+        failures.append(f"selfplay.py: {done.stderr.strip()[-2000:]}")
+
+
+def render():
+    for script in ("master.py", "make_hosted.py"):
+        subprocess.run([sys.executable, os.path.join(HERE, script)], check=True)
+    shutil.copyfile(HOSTED, ARTIFACT_COPY)
+    print(f"copied {HOSTED} -> {ARTIFACT_COPY} (publish this file)")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Refresh the DCM Master Dashboard and its artifact copy.")
+    ap.add_argument("--all", action="store_true", help="every replay run, every segment (not only the live runs)")
+    ap.add_argument("--runs", help="comma-separated replay runs to refresh (every segment)")
+    ap.add_argument("--no-render", action="store_true", help="update the CSVs only")
+    a = ap.parse_args()
+    failures = []
+    if a.runs:
+        runs = a.runs.split(",")
+        unknown = [r for r in runs if r not in replay.REG["runs"]]
+        if unknown:
+            raise SystemExit(f"unknown replay runs: {unknown}")
+    elif a.all:
+        runs = list(replay.REG["runs"])
+    else:
+        runs = live_replay_runs()
+        print(f"live replay runs: {runs or 'none'}")
+    with tick_lock():
+        refresh_replay(runs, a.all or bool(a.runs), failures)
+        refresh_selfplay(failures)
+    registry_status = check_registry()
+    if not a.no_render:
+        render()
+    for failure in failures:
+        print(f"FAILED {failure}", file=sys.stderr)
+    if registry_status != 0:
+        print("derive-registry needs attention (see above)", file=sys.stderr)
+    return 1 if failures or registry_status != 0 else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

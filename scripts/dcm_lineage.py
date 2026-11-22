@@ -316,30 +316,44 @@ class DerivedSegment:
     see MULTIPLE_MODEL_ID_PATH_KINDS); `unrecorded` names the derivable fields
     whose source total the record holds as null.
     `files` lists the checkpoint files of this segment (empty for a segment
-    known only from a later record's history)."""
+    known only from a later record's history); `parent_segment_id` the segment it
+    resumed from."""
 
-    def __init__(self, segment_index, fields, unrecorded, files, source):
+    def __init__(self, segment_index, fields, unrecorded, files, source, parent_segment_id=None):
         self.segment_index = segment_index
         self.fields = fields
         self.unrecorded = unrecorded
         self.files = files
         self.source = source
+        # The segment this one resumed from (the segment one index earlier in its own
+        # record's history); None for segment 0. Two segments naming one parent are a
+        # fork of the lineage run.
+        self.parent_segment_id = parent_segment_id
 
     def __repr__(self):
         return f"DerivedSegment({self.segment_index}, {self.fields}, unrecorded={self.unrecorded})"
 
 
 class DerivedRun:
-    """One lineage run: its segments (oldest first), the code paths that wrote
-    its files, its newest file, and whether it continued history written
-    before lineage existed (its totals are then null throughout)."""
+    """One lineage run: its segments (oldest first; a forked run's chains are
+    interleaved by segment index), the code paths that wrote its files, its
+    newest file, and whether it continued history written before lineage existed
+    (its totals are then null throughout)."""
 
-    def __init__(self, lineage_run_id, segments, path_kinds, latest_file, continues_unrecorded_history):
+    def __init__(self, lineage_run_id, segments, path_kinds, latest_file, continues_unrecorded_history,
+                 carried_copies=()):
         self.lineage_run_id = lineage_run_id
         self.segments = segments
         self.path_kinds = path_kinds
         self.latest_file = latest_file
         self.continues_unrecorded_history = continues_unrecorded_history
+        # Files that carry one of this run's records under another model ID
+        # (`is_carried_trainer_state_copy`); not checkpoints of any segment.
+        self.carried_copies = list(carried_copies)
+
+    def children(self, segment_id):
+        """The segments that resumed from `segment_id`: more than one is a fork."""
+        return [s for s in self.segments if s.parent_segment_id == segment_id]
 
 
 # A session folder's name ends with this (CheckpointPaths.makeSessionDirectoryName);
@@ -504,6 +518,32 @@ def _progress(file):
     return (record["steps"]["segment_local_step"], record["run"]["recorded_unix"])
 
 
+def is_carried_trainer_state_copy(file):
+    """Whether `file` (a FileLineage) is a `--derive-model` output that carries its
+    source's trainer state: `--set-compute-dtype` / `--set-policy-tail-precision` on a
+    trainer-state file keep the record unchanged (no new run) for `--resume-exact`,
+    and give the copy a new model ID. Its record therefore names a segment it was
+    not written by, under a model ID that segment never had: it is a copy of that
+    segment's state, not one of its checkpoints. Read from the record's own
+    `derivation_history`: its last entry made this file (same model ID) and carried
+    the trainer state of the record's segment."""
+    history = file.record.get("derivation_history") or []
+    if not history:
+        return False
+    last = history[-1]
+    carried = last.get("trainer_state") or {}
+    return (last.get("model_id") == file.model_id
+            and carried.get("segment_id") == file.record["run"]["segment_id"])
+
+
+def _parent_in(record, segment_index):
+    """The segment ID one index before `segment_index` in `record`'s chain."""
+    for summary in record["segments"]:
+        if summary["segment_index"] == segment_index - 1:
+            return summary["segment_id"]
+    return None
+
+
 def derive_runs(recorded):
     """Group FileLineage entries by lineage run and derive each run's segments.
 
@@ -512,10 +552,23 @@ def derive_runs(recorded):
     the segment's bases, and — except on a path in MULTIPLE_MODEL_ID_PATH_KINDS,
     whose segment reports its `model_ids` — model ID): a contradiction is
     reported, never resolved by picking one. (Every described file has a model
-    ID: the app refuses one without.)"""
+    ID: the app refuses one without.)
+
+    A lineage run can fork: two exact resumes of one save each start a segment
+    with the same index, on two chains. Segments are therefore told apart by
+    `segment_id`, each names its `parent_segment_id` from its own record's
+    history, and segments known only from history are read from every chain.
+    Copies made by `--derive-model` that carry a segment's trainer state
+    (`is_carried_trainer_state_copy`) are set aside as the run's
+    `carried_copies`."""
     by_run = {}
+    carried = {}
     for file in recorded:
-        by_run.setdefault(file.record["run"]["lineage_run_id"], []).append(file)
+        run_id = file.record["run"]["lineage_run_id"]
+        if is_carried_trainer_state_copy(file):
+            carried.setdefault(run_id, []).append(file.name)
+            continue
+        by_run.setdefault(run_id, []).append(file)
     derived = {}
     for run_id, files in sorted(by_run.items()):
         by_segment = {}
@@ -559,18 +612,27 @@ def derive_runs(recorded):
             fields = dict(reference_fields)
             if not single_model:
                 fields["model_ids"] = sorted(model_ids)
-            segments[index] = DerivedSegment(index, fields, list(reference_unrecorded),
-                                             [f.name for f in ordered], "file")
-        for summary in latest_record_file.record["segments"]:
-            index = summary["segment_index"]
-            if index in segments:
-                continue
-            fields, unrecorded = _history_segment(latest_record_file.record, summary, run_origin)
-            segments[index] = DerivedSegment(index, fields, unrecorded, [], "history")
+            segments[segment_id] = DerivedSegment(index, fields, list(reference_unrecorded),
+                                                  [f.name for f in ordered], "file",
+                                                  _parent_in(reference_file.record, index))
+        # Segments known only from history, from every chain's records; the most
+        # progressed record that names a segment describes it (on one chain, the
+        # newest file's record, as always).
+        for file in sorted(files, key=lambda f: (f.record["run"]["segment_index"], _progress(f)), reverse=True):
+            for summary in file.record["segments"]:
+                if summary["segment_id"] in segments:
+                    continue
+                fields, unrecorded = _history_segment(file.record, summary, run_origin)
+                segments[summary["segment_id"]] = DerivedSegment(
+                    summary["segment_index"], fields, unrecorded, [], "history",
+                    _parent_in(file.record, summary["segment_index"]))
         path_kinds = sorted({f.record["invocation"]["path_kind"] for f in files})
         continues = any(f.record["run"]["continues_unrecorded_history"] for f in files)
-        derived[run_id] = DerivedRun(run_id, [segments[i] for i in sorted(segments)], path_kinds,
-                                     latest_record_file.name, continues)
+        ordered_segments = sorted(segments.values(),
+                                  key=lambda s: (s.segment_index, s.fields.get("cumstep_base", -1),
+                                                 s.fields["segment_id"]))
+        derived[run_id] = DerivedRun(run_id, ordered_segments, path_kinds, latest_record_file.name, continues,
+                                     sorted(carried.get(run_id, [])))
     return derived
 
 

@@ -26,9 +26,19 @@ Rules:
   history, that clock *is* the registry's axis. Otherwise the registry axis is
   anchored at the `cumstep_base` the registry already holds for the segment
   matching the run's segment 0; with no such anchor the base stays unrecorded.
+- **Forks.** A lineage run can fork: two exact resumes of one save start two
+  chains (`dcm_lineage.derive_runs`). One lineage run may then feed several
+  registry runs, each holding one chain from a fork on; every registry run but
+  the one holding the lineage's segment 0 must start at a fork (its first
+  segment's parent has two or more children). A lineage run split across
+  registry runs anywhere else is a contradiction. All of them share the step
+  offset found for the lineage's segment 0.
 - **New runs and segments are not created.** A registry run carries a label,
   color and session log that no file states; a lineage run or segment with no
-  registry counterpart is reported as a proposal for the owner to add.
+  registry counterpart is reported as a proposal for the owner to add (a new
+  segment under the registry run holding its parent), unless the registry lists
+  it under `excluded_lineage_runs` / `excluded_segments` ({id: reason}), which
+  record runs and segments left off deliberately (tests, abandoned launches).
 """
 import copy
 import json
@@ -61,7 +71,8 @@ def _equal(a, b):
     return a == b
 
 
-def _registry_run_for(reg_runs, derived_run):
+def _registry_runs_for(reg_runs, derived_run):
+    """The registry runs naming this lineage run, or a model ID of its files."""
     run_id = derived_run.lineage_run_id
     model_ids = {s.fields["model_id"] for s in derived_run.segments if "model_id" in s.fields}
     hits = []
@@ -70,22 +81,13 @@ def _registry_run_for(reg_runs, derived_run):
         if any(sg.get("lineage_run_id") == run_id for sg in segments) or \
                 any(sg.get("model_id") in model_ids for sg in segments if sg.get("model_id")):
             hits.append(name)
-    if len(hits) > 1:
-        raise RegistryContradiction(f"lineage run {run_id} matches registry runs {hits}")
-    return hits[0] if hits else None
+    return hits
 
 
-def _registry_segment_for(segments, derived_segment):
-    hits = []
-    for index, sg in enumerate(segments):
-        if sg.get("segment_id") and sg.get("segment_id") == derived_segment.fields.get("segment_id"):
-            hits.append(index)
-        elif sg.get("model_id") and sg.get("model_id") == derived_segment.fields.get("model_id"):
-            hits.append(index)
-    if len(hits) > 1:
-        raise RegistryContradiction(
-            f"lineage segment {derived_segment.fields.get('segment_id')} matches registry segments {hits}")
-    return hits[0] if hits else None
+def _segment_matches(sg, derived_segment):
+    if sg.get("segment_id"):
+        return sg.get("segment_id") == derived_segment.fields.get("segment_id")
+    return bool(sg.get("model_id")) and sg.get("model_id") == derived_segment.fields.get("model_id")
 
 
 def plan(reg, derived_runs):
@@ -97,41 +99,87 @@ def plan(reg, derived_runs):
     Returns (updated_registry, report). `updated_registry` is a deep copy with
     every fill applied; `report` is a dict with `fills`, `same`, `conflicts`
     (lists of (registry run, segment index, field, registry value, derived
-    value)), `unmatched_runs` (lineage run id -> derived segment table) and
-    `unmatched_segments` ((registry run, lineage segment fields) pairs), and
+    value)), `unmatched_runs` (lineage run id -> derived segment table),
+    `unmatched_segments` ((registry run, lineage segment fields) pairs),
     `unrecorded` ((registry run, segment index, field)) for derivable fields
-    the records hold as null."""
+    the records hold as null, and `excluded` ((lineage run id, segment id or
+    None, reason)) for what the registry lists as left off."""
     updated = copy.deepcopy(reg)
     runs = updated["runs"]
-    report = dict(fills=[], same=[], conflicts=[], unmatched_runs={}, unmatched_segments=[], unrecorded=[])
+    excluded_runs = reg.get("excluded_lineage_runs", {})
+    excluded_segments = reg.get("excluded_segments", {})
+    report = dict(fills=[], same=[], conflicts=[], unmatched_runs={}, unmatched_segments=[], unrecorded=[],
+                  excluded=[])
     for run_id, derived in sorted(derived_runs.items()):
-        name = _registry_run_for(runs, derived)
-        if name is None:
-            report["unmatched_runs"][run_id] = [dict(segment_index=s.segment_index, **s.fields)
-                                                for s in derived.segments]
+        if run_id in excluded_runs:
+            report["excluded"].append((run_id, None, excluded_runs[run_id]))
             continue
-        segments = runs[name]["segments"]
-        mapping = {}
+        kept = []
         for derived_segment in derived.segments:
-            index = _registry_segment_for(segments, derived_segment)
-            if index is None:
-                report["unmatched_segments"].append((name, dict(segment_index=derived_segment.segment_index,
-                                                                **derived_segment.fields)))
+            segment_id = derived_segment.fields.get("segment_id")
+            if segment_id in excluded_segments:
+                report["excluded"].append((run_id, segment_id, excluded_segments[segment_id]))
             else:
-                mapping[derived_segment.segment_index] = index
-        # Registry axis offset for this lineage run's trainer clock.
+                kept.append(derived_segment)
+        names = _registry_runs_for(runs, derived)
+        if not names:
+            report["unmatched_runs"][run_id] = [dict(segment_index=s.segment_index, **s.fields) for s in kept]
+            continue
+        # Each lineage segment -> the one (registry run, segment index) naming it.
+        mapping = {}
+        for derived_segment in kept:
+            hits = [(name, index) for name in names
+                    for index, sg in enumerate(runs[name].get("segments", []))
+                    if _segment_matches(sg, derived_segment)]
+            if len(hits) > 1:
+                raise RegistryContradiction(
+                    f"lineage segment {derived_segment.fields.get('segment_id')} matches registry segments {hits}")
+            if hits:
+                mapping[derived_segment.fields["segment_id"]] = hits[0]
+        by_id = {s.fields["segment_id"]: s for s in derived.segments}
+        for derived_segment in kept:
+            segment_id = derived_segment.fields["segment_id"]
+            if segment_id in mapping:
+                continue
+            parent = mapping.get(derived_segment.parent_segment_id)
+            owner = parent[0] if parent else names[0]
+            report["unmatched_segments"].append((owner, dict(segment_index=derived_segment.segment_index,
+                                                             **derived_segment.fields)))
+        claimed = {name: [by_id[sid] for sid, (n, _) in mapping.items() if n == name] for name in names}
+        for name, segments_claimed in claimed.items():
+            indices = [s.segment_index for s in segments_claimed]
+            if len(indices) != len(set(indices)):
+                raise RegistryContradiction(f"registry run {name} holds two segments of one index of lineage "
+                                            f"run {run_id} (two chains of a fork)")
+        if len(names) > 1:
+            for name, segments_claimed in claimed.items():
+                if not segments_claimed:
+                    continue
+                first = min(segments_claimed, key=lambda s: s.segment_index)
+                if first.parent_segment_id is None:
+                    continue
+                if len(derived.children(first.parent_segment_id)) < 2:
+                    raise RegistryContradiction(
+                        f"lineage run {run_id} matches registry runs {names}, and {name} does not start at a "
+                        f"fork of it")
+        # Registry axis offset for this lineage run's trainer clock, found on the
+        # registry segment holding the lineage's segment 0 and shared by every
+        # registry run the lineage feeds.
         offset = None
-        if 0 in mapping:
-            anchor_index = mapping[0]
+        roots = [s for s in derived.segments if s.segment_index == 0]
+        if len(roots) == 1 and roots[0].fields["segment_id"] in mapping:
+            anchor_name, anchor_index = mapping[roots[0].fields["segment_id"]]
+            anchor = runs[anchor_name]["segments"][anchor_index]
             if anchor_index == 0 and not derived.continues_unrecorded_history:
                 offset = 0
-            elif "cumstep_base" in segments[anchor_index]:
-                offset = segments[anchor_index]["cumstep_base"]
-        for derived_segment in derived.segments:
-            if derived_segment.segment_index not in mapping:
+            elif "cumstep_base" in anchor:
+                offset = anchor["cumstep_base"]
+        for derived_segment in kept:
+            segment_id = derived_segment.fields["segment_id"]
+            if segment_id not in mapping:
                 continue
-            index = mapping[derived_segment.segment_index]
-            target = segments[index]
+            name, index = mapping[segment_id]
+            target = runs[name]["segments"][index]
             values = dict(derived_segment.fields)
             unrecorded = set(derived_segment.unrecorded)
             if "cumstep_base" in values:
@@ -200,6 +248,11 @@ def derive_registry(registry_path, model_paths, path_kind, write, out=print):
     for run_id, segments in sorted(report["unmatched_runs"].items()):
         out(f"  NEW RUN {run_id} (add by hand with label, color and session logs): "
             f"{json.dumps(segments, sort_keys=True)}")
+    for run_id, segment_id, reason in report["excluded"]:
+        out(f"  excluded {run_id}{' segment ' + segment_id if segment_id else ''}: {reason}")
+    for run in sorted(derived.values(), key=lambda r: r.lineage_run_id):
+        for name in run.carried_copies:
+            out(f"  carried copy (a derive that kept a segment's trainer state; not a checkpoint): {name}")
     out(f"  {len(report['same'])} field(s) already agree")
     needs_attention = bool(report["conflicts"] or errors or report["unmatched_segments"] or report["unmatched_runs"])
     if write:
