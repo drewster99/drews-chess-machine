@@ -323,6 +323,15 @@ struct TrainStepTiming: Sendable {
     /// `policyLogitMean`. On a scalar-tanh head it is the raw pre-tanh
     /// logit's mean, which is not an offset and is not centered.
     var valueLogitMean: Float = .nan
+    /// Batch mean of the squared raw advantage `E[A²]` (`A = z −
+    /// vBaseline`), BEFORE the policy loss floors it at
+    /// `ChessTrainer.advantagePowerFloor` — read back on every step, unlike
+    /// the diagnostic `advantage*` block. `sqrt` of it is the RMS the
+    /// normalization divides by whenever it is above the floor; below, the
+    /// floor binds. Feeds `advRMS=` / `advFloored=`. The default (`.nan`,
+    /// "not measured") only keeps memberwise construction that predates it
+    /// compiling; the trainer always sets it.
+    var advantageMeanSquare: Float = .nan
 }
 
 // MARK: - Sweep Result
@@ -1336,6 +1345,18 @@ final class ChessTrainer: @unchecked Sendable {
     static let policyLossWeightDefault: Float = Float(PolicyLossWeight.declaredDefault)
     static let valueLossWeightDefault: Float = Float(ValueLossWeight.declaredDefault)
 
+    /// The floor under the policy-gradient advantage's batch mean square
+    /// (`E[A²]`, `A = z − vBaseline`) in the policy loss's RMS normalization:
+    /// the advantage is divided by `sqrt(max(E[A²], floor) + 1e-6)`, so the
+    /// divisor never falls below an RMS of 0.2. Without it a homogeneous
+    /// batch (all draws against a confident draw baseline) would divide by a
+    /// near-zero RMS and blow its tiny advantages up to unit power — a huge
+    /// policy gradient from no real signal. Below the floor the policy
+    /// gradient instead scales with the batch's own advantage power. The one
+    /// definition: the training graph's constant and the step lines'
+    /// `advFloored=` count (`AdvantagePowerStepLog`) both read it.
+    static let advantagePowerFloor: Double = 0.04
+
     var learningRate: Float
     /// Base batch size at which `learningRate` and `weightDecayC`
     /// are taken as-is when sqrt-batch scaling is enabled. A step
@@ -1923,6 +1944,9 @@ final class ChessTrainer: @unchecked Sendable {
     /// [batch, 1] raw advantage tensor — read back per step so the
     /// stats box can maintain a rolling percentile window.
     private var advantageRawTensor: MPSGraphTensor
+    /// Scalar pre-floor `E[A²]` of the policy loss's normalization. A lean
+    /// target (every step): one fp32 scalar the graph computes anyway.
+    private var advantageMeanSquareTensor: MPSGraphTensor
     /// Scalar mean policy loss restricted to batch positions where
     /// outcome z > 0.5. NaN when no win positions are in the batch.
     private var policyLossWinTensor: MPSGraphTensor
@@ -1941,6 +1965,12 @@ final class ChessTrainer: @unchecked Sendable {
     /// step-line code as one `[DYNAMICS]` line. Built from `arch`, which a
     /// reset keeps, so its layout never changes for this trainer.
     let dynamicsLog: TrainingDynamicsLog
+    /// Every real-data step's pre-floor advantage mean square since the
+    /// previous step line, taken by each path's step-line code as
+    /// `advRMS=` / `advFloored=` (`AdvantagePowerStepLine.swift`). Rewound
+    /// with every clock change, so a promotion's discarded steps are never
+    /// reported.
+    let advantagePowerLog = AdvantagePowerStepLog(floor: Float(ChessTrainer.advantagePowerFloor))
     /// Scalar batch mean of the policy head's per-position mean logit,
     /// before the loss centers it. The shared offset centering holds at a
     /// constant; `[STATS]` reports it so drift stays visible.
@@ -2149,7 +2179,8 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotValueProbLoss: Int = 26
     private static let lossReadbackSlotPolicyLogitMean: Int = 27
     private static let lossReadbackSlotValueLogitMean: Int = 28
-    private static let lossReadbackSlotCount: Int = 29
+    private static let lossReadbackSlotAdvantageMeanSquare: Int = 29
+    private static let lossReadbackSlotCount: Int = 30
 
     /// Reusable host-side staging buffers for replay-buffer samples.
     /// The trainer owns these buffers so real-data training can hop
@@ -2369,6 +2400,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.advantageFracPosTensor = built.advantageFracPos
         self.advantageFracSmallTensor = built.advantageFracSmall
         self.advantageRawTensor = built.advantageRaw
+        self.advantageMeanSquareTensor = built.advantageMeanSquare
         self.policyLossWinTensor = built.policyLossWin
         self.policyLossLossTensor = built.policyLossLoss
         self.velocityGlobalNormTensor = built.velocityGlobalNorm
@@ -2605,6 +2637,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.advantageFracPosTensor = built.advantageFracPos
         self.advantageFracSmallTensor = built.advantageFracSmall
         self.advantageRawTensor = built.advantageRaw
+        self.advantageMeanSquareTensor = built.advantageMeanSquare
         self.policyLossWinTensor = built.policyLossWin
         self.policyLossLossTensor = built.policyLossLoss
         self.velocityGlobalNormTensor = built.velocityGlobalNorm
@@ -2694,6 +2727,7 @@ final class ChessTrainer: @unchecked Sendable {
         // immature network and drives oversized first-step updates.
         _completedTrainSteps.value = 0
         batchHashes.reset()
+        advantagePowerLog.rewind(toTrainerStep: 0)
         // The gradient-norm history belongs to the trajectory these weights
         // replace; a fresh network starts its own (warm-up from empty).
         gradNormHistory = GradientNormHistory()
@@ -2815,6 +2849,9 @@ final class ChessTrainer: @unchecked Sendable {
         advantageFracPos: MPSGraphTensor,
         advantageFracSmall: MPSGraphTensor,
         advantageRaw: MPSGraphTensor,
+        /// Batch mean of `A²`, before the floor — the power the policy
+        /// loss's normalization divides by when it is above the floor.
+        advantageMeanSquare: MPSGraphTensor,
         policyLossWin: MPSGraphTensor,
         policyLossLoss: MPSGraphTensor,
         velocityGlobalNorm: MPSGraphTensor,
@@ -3231,9 +3268,11 @@ final class ChessTrainer: @unchecked Sendable {
         // it adjusts the forward value used as the REINFORCE weight,
         // never touches the autograd path.
         //
-        // ε of 1e-6 is conservative. We floor the power at 0.04
-        // (rms 0.2) via `graph.maximum` so that a homogeneous batch
-        // (e.g. all draws) doesn't produce an infinite gradient.
+        // ε of 1e-6 is conservative. We floor the power at
+        // `advantagePowerFloor` (rms 0.2) via `graph.maximum` so that a
+        // homogeneous batch (e.g. all draws) doesn't produce an infinite
+        // gradient. The pre-floor mean square is a lean target, read back
+        // every step for the step lines' `advRMS=` / `advFloored=`.
         let advantageSq = graph.square(
             with: advantage,
             name: "advantage_sq"
@@ -3243,7 +3282,7 @@ final class ChessTrainer: @unchecked Sendable {
             axes: [0, 1],
             name: "advantage_mean_square"
         )
-        let advantagePowerFloor = graph.constant(0.04, dataType: lossDType)
+        let advantagePowerFloor = graph.constant(Self.advantagePowerFloor, dataType: lossDType)
         let advantagePowerForNorm = graph.maximum(
             advantageMS,
             advantagePowerFloor,
@@ -4566,6 +4605,7 @@ final class ChessTrainer: @unchecked Sendable {
             advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
             advantageFracPosTensor, advantageFracSmallTensor,
             advantage,
+            advantageMS,
             policyLossWin, policyLossLoss,
             velocityGlobalNormTensor,
             parameterDynamicsTensor,
@@ -4606,6 +4646,8 @@ final class ChessTrainer: @unchecked Sendable {
             // A restored clock comes with restored weights: the batch-hash
             // chain of the replaced trajectory must not continue.
             batchHashes.reset()
+            // Nor may the step lines report its steps above the clock.
+            advantagePowerLog.rewind(toTrainerStep: max(0, newValue))
         }
     }
 
@@ -5276,6 +5318,14 @@ final class ChessTrainer: @unchecked Sendable {
                 preClipNorm: baseTiming.gradGlobalNorm,
                 fedCap: gradientCap.fedCap
             )
+            // The step's advantage power for the next step line, keyed by
+            // the same trainer step as the history entry above. Telemetry
+            // only; it throws solely when the clock moved back without a
+            // rewind, the same bug the history's contiguity check catches.
+            try self.advantagePowerLog.record(
+                trainerStep: self._completedTrainSteps.value + 1,
+                meanSquare: baseTiming.advantageMeanSquare
+            )
 
             // Count a successfully-completed real-data SGD step, for
             // the LR-warmup multiplier in `buildFeeds`. Only real-
@@ -5421,7 +5471,8 @@ final class ChessTrainer: @unchecked Sendable {
                 sampledBatchDrawFraction: sampledBatchDrawFraction,
                 hasDiagnostics: baseTiming.hasDiagnostics,
                 policyLogitMean: baseTiming.policyLogitMean,
-                valueLogitMean: baseTiming.valueLogitMean
+                valueLogitMean: baseTiming.valueLogitMean,
+                advantageMeanSquare: baseTiming.advantageMeanSquare
             )
         }
     }
@@ -7200,7 +7251,7 @@ final class ChessTrainer: @unchecked Sendable {
         let leanTargets: [MPSGraphTensor] = [
             totalLoss, policyLossTensor, valueLossTensor,
             illegalMassPenaltyTensor, gradGlobalNormTensor,
-            parameterDynamicsTensor
+            parameterDynamicsTensor, advantageMeanSquareTensor
         ]
         let diagnosticTargets: [MPSGraphTensor] = [
             policyEntropyTensor, policyNonNegCountTensor, policyNonNegIllegalCountTensor,
@@ -7380,7 +7431,8 @@ final class ChessTrainer: @unchecked Sendable {
             let valueData = results[valueLossTensor],
             let illegalPenaltyData = results[illegalMassPenaltyTensor],
             let gradNormData = results[gradGlobalNormTensor],
-            let dynamicsData = results[parameterDynamicsTensor]
+            let dynamicsData = results[parameterDynamicsTensor],
+            let advantageMeanSquareData = results[advantageMeanSquareTensor]
         else {
             throw ChessTrainerError.lossOutputMissing
         }
@@ -7420,6 +7472,11 @@ final class ChessTrainer: @unchecked Sendable {
         ChessNetwork.readFloatsFP32(
             from: gradNormData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotGradNorm),
+            count: 1
+        )
+        ChessNetwork.readFloatsFP32(
+            from: advantageMeanSquareData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvantageMeanSquare),
             count: 1
         )
 
@@ -7500,6 +7557,7 @@ final class ChessTrainer: @unchecked Sendable {
         let valueBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValue]
         let illegalPenaltyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotIllegalMassPenalty]
         let gradNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotGradNorm]
+        let advantageMeanSquareBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvantageMeanSquare]
         // Diagnostic Buf values: the live scratch slot on stats steps, `.nan`
         // otherwise (the reductions weren't encoded, so the slots are stale).
         let entropyBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotEntropy] : Float.nan
@@ -7776,7 +7834,8 @@ final class ChessTrainer: @unchecked Sendable {
             sampledBatchDrawFraction: .nan,
             hasDiagnostics: includeDiagnostics,
             policyLogitMean: policyLogitMeanBufValue,
-            valueLogitMean: valueLogitMeanBufValue
+            valueLogitMean: valueLogitMeanBufValue,
+            advantageMeanSquare: advantageMeanSquareBufValue
         )
         }  // autoreleasepool
     }

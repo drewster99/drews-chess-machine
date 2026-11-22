@@ -2269,6 +2269,7 @@ enum CorpusReplayRunner {
                 let gradientCapReading = gradientCapWindow.take(
                     history: try await trainer.exportGradNormHistory(), throughTrainerStep: observedSteps,
                     fedCap: timing.gradientCap.fedCap)
+                let advantagePowerReading = trainer.advantagePowerLog.take(throughTrainerStep: observedSteps)
                 let line = "[REPLAY] step=\(step)"
                     + String(format: " loss=%.4f pLoss=%.4f vLoss=%.4f", timing.loss, timing.policyLoss, timing.valueLoss)
                     + " pEnt=\(dg(timing.policyEntropy, 3)) pIllM=\(dg(timing.illegalMassPenalty, 4))"
@@ -2281,6 +2282,7 @@ enum CorpusReplayRunner {
                     + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
                     + gradientCapReading.logFields
                     + " trainerStep=\(observedSteps)"
+                    + advantagePowerReading.logFields
                 emit(line)
                 // Per-layer optimizer dynamics over every step since the previous
                 // line (`TrainingDynamics.swift`) — session log only, like the
@@ -2349,6 +2351,7 @@ enum CorpusReplayRunner {
                         segmentGames: feedTally.games - reconstructionFed.games)
                 )
                 statsRow.recordGradientCap(gradientCapReading, settings: p.relativeGradientCap.settings)
+                statsRow.recordAdvantagePower(advantagePowerReading)
                 recorder?.appendStats(statsRow)
             }
             // The live training-health evaluation, every 50 trainer steps:

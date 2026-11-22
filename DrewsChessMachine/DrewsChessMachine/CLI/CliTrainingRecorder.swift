@@ -857,6 +857,16 @@ final class CliTrainingRecorder: @unchecked Sendable {
         var relativeGradClipWindowSteps: Int? = nil
         var relativeGradClipMinHistorySteps: Int? = nil
         var relativeGradClipFloor: Double? = nil
+        /// Policy-gradient advantage power, filled by every training path at
+        /// its step line (`recordAdvantagePower`): mean / min / max of the
+        /// per-step pre-floor RMS since the previous line, how many of those
+        /// steps the 0.2 RMS floor bound, and how many steps that was; nil
+        /// (omitted) on a row that recorded none.
+        var advantageRMSMean: Double? = nil
+        var advantageRMSMin: Double? = nil
+        var advantageRMSMax: Double? = nil
+        var advantageFlooredSteps: Int? = nil
+        var advantagePowerSteps: Int? = nil
         let policyHeadWeightNorm: Double?
         let policyLogitAbsMax: Double?
         let playedMoveProb: Double?
@@ -1045,6 +1055,11 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case relativeGradClipWindowSteps = "relative_grad_clip_window_steps"
             case relativeGradClipMinHistorySteps = "relative_grad_clip_min_history_steps"
             case relativeGradClipFloor = "relative_grad_clip_floor"
+            case advantageRMSMean = "advantage_rms_mean"
+            case advantageRMSMin = "advantage_rms_min"
+            case advantageRMSMax = "advantage_rms_max"
+            case advantageFlooredSteps = "advantage_floored_steps"
+            case advantagePowerSteps = "advantage_power_steps"
             case policyHeadWeightNorm = "policy_head_weight_norm"
             case policyLogitAbsMax = "policy_logit_abs_max"
             case playedMoveProb = "played_move_prob"
@@ -1237,6 +1252,15 @@ extension CliTrainingRecorder.StatsLine {
         relativeGradClipWindowSteps = configuration.windowSteps
         relativeGradClipMinHistorySteps = configuration.minimumHistorySteps
         relativeGradClipFloor = configuration.floor
+    }
+
+    /// Fill the advantage-power fields from the step line's reading.
+    mutating func recordAdvantagePower(_ reading: AdvantagePowerStepLineReading) {
+        advantageRMSMean = reading.rmsMean
+        advantageRMSMin = reading.rmsMin
+        advantageRMSMax = reading.rmsMax
+        advantageFlooredSteps = reading.flooredSteps
+        advantagePowerSteps = reading.steps
     }
 
     /// Build a stats line for a CLI training run that has **no self-play loop

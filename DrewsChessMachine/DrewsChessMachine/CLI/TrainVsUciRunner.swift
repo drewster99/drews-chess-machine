@@ -1020,6 +1020,7 @@ enum TrainVsUciRunner {
                     let gradientCapReading = gradientCapWindow.take(
                         history: try await trainer.exportGradNormHistory(), throughTrainerStep: observedSteps,
                         fedCap: timing.gradientCap.fedCap)
+                    let advantagePowerReading = trainer.advantagePowerLog.take(throughTrainerStep: observedSteps)
                     let line = "[VS-UCI] step=\(step)"
                         + String(format: " loss=%.4f pLoss=%.4f vLoss=%.4f", timing.loss, timing.policyLoss, timing.valueLoss)
                         + " pEnt=\(dg(timing.policyEntropy, 3)) playedP=\(dg(timing.playedMoveProb, 3))"
@@ -1030,6 +1031,7 @@ enum TrainVsUciRunner {
                         + (cycleValues.learningRate != nil ? " lrCyc" + LRMomentumCycleLogFormat.envelopeBounds(cycleValues) : "")
                         + gradientCapReading.logFields
                         + " trainerStep=\(observedSteps)"
+                        + advantagePowerReading.logFields
                     emit(line)
                     // Per-layer optimizer dynamics over every step since the previous
                     // line (`TrainingDynamics.swift`) — session log only, like the
@@ -1113,6 +1115,7 @@ enum TrainVsUciRunner {
                             segmentGames: slots.reduce(0) { $0 + $1.gamesCompleted })
                     )
                     statsRow.recordGradientCap(gradientCapReading, settings: p.relativeGradientCap.settings)
+                    statsRow.recordAdvantagePower(advantagePowerReading)
                     recorder?.appendStats(statsRow)
                 }
                 // The live training-health evaluation, every 50 trainer
