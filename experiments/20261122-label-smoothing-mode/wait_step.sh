@@ -7,7 +7,7 @@ while true; do
   done_all=1; out=""
   for a in A B C; do
     f=( "$M"/20261122-lsmode-$a-*step$STEP.safetensors )   # null_glob: empty when not written yet
-    if (( ${#f} > 0 )); then out+="$a:ok "; elif pgrep -f "lsmode-$a-latest" >/dev/null; then done_all=0; else out+="$a:EXITED "; fi
+    if (( ${#f} > 0 )); then out+="$a:ok "; elif pgrep -f "lsmode-$a-(r200k-)?latest" >/dev/null; then done_all=0; else out+="$a:EXITED "; fi
   done
   if (( done_all )); then echo "step $STEP $out"; exit 0; fi
   sleep 30

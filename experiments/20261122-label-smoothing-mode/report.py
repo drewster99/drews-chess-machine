@@ -10,7 +10,9 @@ LARGE = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/OpsS
 sys.path.insert(0, "/Users/andrew/cursor/drews-chess-machine/scripts"); import dcm_arch
 ARMS = ["A", "B", "C"]
 # Session logs (stdout is block-buffered, so the step lines show up there late).
-LOGS = {"A": "dcm_log_20261122-115904-2.txt", "B": "dcm_log_20261122-115904-3.txt", "C": "dcm_log_20261122-115904.txt"}
+LOGS = {"A": ["dcm_log_20261122-115904-2.txt", "dcm_log_20261122-153853.txt"],
+        "B": ["dcm_log_20261122-115904-3.txt", "dcm_log_20261122-153923-2.txt"],
+        "C": ["dcm_log_20261122-115904.txt", "dcm_log_20261122-153923.txt"]}  # segment 0, then segment 1 (200k buffer, from step 9,000)
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 LO, HI = (int(args[0]) if args else 1000), (int(args[1]) if len(args) > 1 else 10**9)
 PROBE = "--no-probe" not in sys.argv
@@ -44,7 +46,7 @@ def large(arm, s, f):
 
 def step_lines(arm):
     out = {}
-    for l in open(os.path.expanduser(f"~/Library/Logs/DrewsChessMachine/{LOGS[arm]}"), errors="replace"):
+    for l in (l for log in LOGS[arm] for l in open(os.path.expanduser(f"~/Library/Logs/DrewsChessMachine/{log}"), errors="replace")):
         if "[REPLAY] step=" in l and (m := re.search(r"trainerStep=(\d+)", l)) and int(m.group(1)) % 1000 == 0:
             out[int(m.group(1))] = dict(re.findall(r"(\w+)=([-\d.e+]+)", l))
     return out
