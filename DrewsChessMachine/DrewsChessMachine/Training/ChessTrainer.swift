@@ -1587,18 +1587,29 @@ final class ChessTrainer: @unchecked Sendable {
     ///
     /// The rewritten `z` reaches two consumers:
     ///
-    /// (a) The policy gradient. The per-position weight is
-    /// `max(0, normalize(z − vBaseline))` — REINFORCE-with-baseline,
-    /// advantage RMS-normalized, then the negative branch dropped (see
-    /// `buildTrainingOps`: `−A·log p` is unbounded below for `A < 0`).
-    /// Because negatives are clamped to zero, `drawPenalty` can never
-    /// produce a *punishing* gradient on a draw — it only shifts draws
-    /// toward (or into) the dropped zone. A drawn position reinforces
-    /// its played moves only when `z − vBaseline > 0`, i.e. when
-    /// `vBaseline < −drawPenalty`: the network must have expected to
-    /// lose by more than `drawPenalty` for clawing back the draw to
-    /// still count as a positive sample. So `drawPenalty` is a
-    /// *threshold on salvaged draws*, not a penalty term.
+    /// (a) The policy gradient, through the advantage
+    /// `normalize(z − vBaseline)` (REINFORCE-with-baseline, RMS-normalized).
+    /// A drawn position reinforces its played moves only when
+    /// `z − vBaseline > 0`, i.e. when `vBaseline < −drawPenalty`: the
+    /// network must have expected to lose by more than `drawPenalty` for
+    /// clawing back the draw to still count as a positive sample. What
+    /// happens to the other drawn positions depends on
+    /// `useSignedAdvantageComplementCE`:
+    ///
+    /// - **Off (legacy clamp regime):** the per-position weight is
+    ///   `max(0, advantage)` and the negative branch is dropped (see
+    ///   `buildTrainingOps`: `−A·log p` is unbounded below for `A < 0`).
+    ///   Because negatives are clamped to zero, `drawPenalty` can never
+    ///   produce a *punishing* gradient on a draw — it only shifts draws
+    ///   toward (or into) the dropped zone, so it is a *threshold on
+    ///   salvaged draws*, not a penalty term. This paragraph's reasoning
+    ///   holds only in this mode.
+    /// - **On (the default):** a negative advantage trains the complement
+    ///   cross-entropy with weight `max(0, −advantage)`, which pushes the
+    ///   played move's mass onto the other legal moves. A drawn position
+    ///   with `z − vBaseline < 0` is then actively punished, and a larger
+    ///   `drawPenalty` moves more draws into that branch and punishes them
+    ///   harder: here it is a penalty term.
     ///
     /// (b) The value head W/D/L slot, `clamp(int(1 − z), 0, 2)`. For
     /// `drawPenalty ∈ (0, 1)`, `int(1 + drawPenalty)` truncates back
@@ -1606,7 +1617,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// `drawPenalty = 1` lands on slot 2 (loss), relabeling draws as
     /// losses and corrupting the W/D/L calibration the head exists to
     /// provide. So for any `drawPenalty < 1`, consumer (b) is inert and
-    /// the entire effect is the policy-gradient threshold in (a).
+    /// the entire effect is the policy-gradient effect in (a).
     ///
     /// Why "bootstrap-phase": early in a fresh run the value head is
     /// near-random (`vBaseline ≈ 0` everywhere), so a positive
