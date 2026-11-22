@@ -1,0 +1,80 @@
+Process:         DrewsChessMachine [57064]
+Path:            /Users/USER/Library/Application Support/DrewsChessMachine/*/DCM-2687-d8afa524.app/Contents/MacOS/DrewsChessMachine
+Load Address:    0x10267c000
+Identifier:      com.drewben.DrewsChessMachine
+Version:         1.0.1 (4)
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  launchd [1]
+Target Type:     live task
+
+Date/Time:       2026-11-22 13:58:06.722 -0600
+Launch Time:     2026-11-22 11:59:04.489 -0600
+OS Version:      macOS 27.2.1 (26B131)
+Report Version:  7
+Analysis Tool:   /usr/bin/heap
+
+Physical footprint:         21.5G
+Physical footprint (peak):  22.3G
+Idle exit:                  untracked
+----
+
+Process 57064: 3 zones
+
+All zones: 1257137 nodes malloced - Sizes: 6e+06KB[1] 97280KB[1] 77824KB[1] 49424KB[1] 25616KB[1] 25600KB[1] 11648KB[1] 7824KB[1] 6144KB[3] 3920KB[4] 3072KB[1] 1968KB[2] 1024KB[1] 992KB[1] 960KB[2] 784KB[1] 720KB[2] 496KB[1] 400KB[1] 384KB[2] 336KB[1] 256KB[1] 224KB[1] 208KB[7] 192KB[24] 176KB[13] 160KB[17] 144KB[36] 128KB[93] 112KB[183] 96KB[2] 80KB[27] 64KB[10] 48KB[153] 32KB[16] 28KB[5] 24KB[12] 20KB[90] 16KB[172] 14KB[140] 12KB[355] 10KB[1322] 8KB[2540] 7KB[9336] 6KB[28932] 5KB[63223] 4KB[42963] 3.5KB[45851] 3KB[56494] 2.5KB[55325] 2KB[21175] 1.75KB[18392] 1.5KB[11140] 1.25KB[9843] 1KB[2511] 896[2726] 768[17079] 640[5127] 512[7295] 448[2730] 384[2675] 320[1744] 256[1355] 224[6886] 192[17837] 160[64899] 128[63046] 112[31126] 96[51462] 80[31496] 64[52585] 48[119150] 32[274983] 16[132502] 
+
+Found:  500 ObjC classes  333 Swift classes  924 C++ classes  82 CFTypes
+Type names for non-objects could be derived from allocation backtraces if the process used MallocStackLogging
+
+-----------------------------------------------------------------------
+All zones: 1257137 nodes (8016577760 bytes)
+
+   COUNT      BYTES       AVG   CLASS_NAME                                        TYPE    BINARY
+   =====      =====       ===   ==========                                        ====    ======
+       1  6144000000  6144000000.0   ReplayBuffer.boardStorage (malloc)                        DrewsChessMachine
+  368840  1361764528    3692.0   Swift._ContiguousArrayStorage<DrewsChessMachine.ChessMove>  Swift   libswiftCore.dylib
+     355  109855888  309453.2   __DataStorage._bytes (malloc)                             Foundation
+  602297   90643728     150.5   non-object                                                
+       1   79691776  79691776.0   ChessTrainer.replayBatchLegalMasks (malloc)               DrewsChessMachine
+       1   50610176  50610176.0   Swift._DictionaryStorage<Swift.UInt64, DrewsChessMachine.ReplayBuffer.BufferedPositionStats>  Swift   libswiftCore.dylib
+     101   29336432  290459.7   Swift._ContiguousArrayStorage<Swift.Float>        Swift   libswiftCore.dylib
+       1   26214400  26214400.0   ChessTrainer.replayBatchBoards (malloc)                   DrewsChessMachine
+      10   22021696  2202169.5   Swift._ContiguousArrayStorage<Swift.Int>          Swift   libswiftCore.dylib
+       1   11927552  11927552.0   Swift._ContiguousArrayStorage<DrewsChessMachine.GameRecord>  Swift   libswiftCore.dylib
+   13932   10699776     768.0   MPSNDArrayIdentity                                ObjC    MPSNDArray
+       1    8011776  8011776.0   ReplayBuffer.stateHashStorage (malloc)                    DrewsChessMachine
+     130    6389760   49152.0   MTLResourceList                                   ObjC    Metal
+     839    4295680    5120.0   AGX::HAL300::ComputeProgramVariant                C++     AGXMetalG17X
+       1    4014080  4014080.0   ReplayBuffer.moveStorage (malloc)                         DrewsChessMachine
+       1    4014080  4014080.0   ReplayBuffer.outcomeStorage (malloc)                      DrewsChessMachine
+       1    4014080  4014080.0   ReplayBuffer.samplingTauStorage (malloc)                  DrewsChessMachine
+       1    4014080  4014080.0   ReplayBuffer.workerGameIdStorage (malloc)                 DrewsChessMachine
+       1    2015232  2015232.0   ReplayBuffer.gameLengthStorage (malloc)                   DrewsChessMachine
+       1    2015232  2015232.0   ReplayBuffer.plyIndexStorage (malloc)                     DrewsChessMachine
+    3747    1918464     512.0   GPU::ViewMemrefOpHandler                          C++     MetalPerformanceShadersGraph
+    2488    1592320     640.0   GPU::StridedArrayViewOpHandler                    C++     MetalPerformanceShadersGraph
+    2053    1576704     768.0   MPSNDArrayReduction                               ObjC    MPSNDArray
+    3018    1545216     512.0   _MTLFunctionInternal                              ObjC    Metal
+       3    1523712  507904.0   Swift._DictionaryStorage<Swift.String, DrewsChessMachine.LichessProbeData.PuzzleMetadata>  Swift   libswiftCore.dylib
+   31155    1495440      48.0   NSMutableArray                                    ObjC    CoreFoundation
+    6143    1465472     238.6   NSMutableDictionary (Storage)                     C       CoreFoundation
+   11776    1241888     105.5   Swift.StringStorage                               Swift   libswiftCore.dylib
+    8110    1174448     144.8   MPSGraphTensor._value (struct)                    C       MetalPerformanceShadersGraph
+     836    1070080    1280.0   AGXG17XFamilyComputeProgram                       ObjC    AGXMetalG17X
+       1    1048576  1048576.0   Swift._ContiguousArrayStorage<DrewsChessMachine.GPUSubmissionRecord>  Swift   libswiftCore.dylib
+       1    1015808  1015808.0   ReplayBuffer.materialCountStorage (malloc)                DrewsChessMachine
+   19063     962160      50.5   CFString                                          ObjC    CoreFoundation
+    5988     958080     160.0   MPSKernelDAGObject                                ObjC    MPSCore
+    4914     943488     192.0   GPU::MemrefBackedOpHandler                        C++     MetalPerformanceShadersGraph
+    1457     932480     640.0   MPSNDArray                                        ObjC    MPSCore
+    4185     803520     192.0   GPU::StitchedOpHandler                            C++     MetalPerformanceShadersGraph
+    4966     794560     160.0   GPU::MPSGraphKernelDAG                            C++     MetalPerformanceShadersGraph
+     836     749056     896.0   AGXG17XFamilyComputePipeline                      ObjC    AGXMetalG17X
+    4636     741760     160.0   Swift._ContiguousArrayStorage<Swift.Optional<DrewsChessMachine.Piece>>  Swift   libswiftCore.dylib
+    4635     741600     160.0   Swift._SetStorage<DrewsChessMachine.ChessMove>    Swift   libswiftCore.dylib
+    1588     711424     448.0   AGXG17XFamilyBuffer                               ObjC    AGXMetalG17X
+    4085     653600     160.0   GPU::MemrefToTensorOpHandler                      C++     MetalPerformanceShadersGraph
+    8167     653360      80.0   MPSGraphTensor                                    ObjC    MetalPerformanceShadersGraph
+    4914     628992     128.0   GPU::UseMemrefOpHandler                           C++     MetalPerformanceShadersGraph
+    3731     596960     160.0   GPU::DeallocOpHandler                             C++     MetalPerformanceShadersGraph
+    3697     591520     160.0   GPU::MultiplyOpHandler                            C++     MetalPerformanceShadersGraph

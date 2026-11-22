@@ -1,0 +1,20 @@
+==========================================================================================
+DrewsChessMachine [57064]: 64-bit    Footprint: 22 GB (16384 bytes per page)
+==========================================================================================
+
+  Dirty  (Swapped)      Clean  Reclaimable    (Wired)    Regions    Category
+    ---        ---        ---          ---        ---        ---    ---
+  13 GB    4591 MB        0 B       224 KB    8620 MB        782    IOAccelerator (graphics)
+6388 MB    5450 MB        0 B          0 B        0 B         72    Malloc Large
+2127 MB    2033 MB        0 B          0 B     112 KB        758    Malloc Small
+ 282 MB        0 B        0 B        26 MB     282 MB         20    Owned physical footprint (unmapped) (graphics)
+  13 MB      12 MB        0 B          0 B        0 B         34    Malloc Metadata
+5592 KB        0 B        0 B          0 B    5592 KB          1    page table
+2832 KB     192 KB        0 B          0 B        0 B         23    Untagged
+1323 KB     910 KB        0 B          0 B        0 B        614    __DATA
+ 917 KB     177 KB        0 B          0 B        0 B        632    __DATA_DIRTY
+ 544 KB     496 KB        0 B          0 B        0 B          1    Deferred Reclaim
+ 400 KB        0 B        0 B          0 B     400 KB          9    IOAccelerator
+ 288 KB      64 KB        0 B          0 B        0 B         12    Stack
+ 288 KB      80 KB        0 B          0 B        0 B          1    Malloc Tiny
+ 272 KB      80 KB     320 KB          0 B        0 B        659    __DATA_CONST
