@@ -213,6 +213,7 @@ All 29 replay runs and 3 self-play runs are on the dashboard (72 runs rendered).
 
 - Probe vs the writer's logged test-set result, on every row of R-elitecyc, R-elitefresh, R-replay and
   R-elitecyc-fp32fix that has both: at most 0.05 pElo apart (the log's rounding).
-- Blank cells: pre-lineage runs have no `train_step_sec`; rows filled from the writer's log have no `pLogit_*`, internals
-  or `probe_build`; a pre-lineage run's off-cadence final save (lsC2 31,906, lrBsilu 36,066) has no `games_fed`.
+- Blank cells: `train_step_sec` on pre-lineage runs (ejp0hf, the R-arms, fatconv98 including its continuation, whose
+  record holds null totals) and on R-elitecyc's 711 log-filled rows; those 711 rows also have no `pLogit_*`, internals
+  or `probe_build` (they need the file). No pElo cell is blank on any new replay row.
 - Self-play pElo / NLL are the in-app wide probe ticks (recording build), as for the earlier self-play runs.
