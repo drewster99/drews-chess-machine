@@ -1,0 +1,19 @@
+Training-executable variant benchmark (random data, training-mode BN)
+  source: --start-model /Users/andrew/Library/Application Support/DrewsChessMachine/Models/20261122-lsmode-A-latest-step9000.safetensors   compute: bfloat16   batch: 4096   warmup: 5   window: 120 s per variant
+  in basic25(25) -> stem 64 (5x5) . 6x[3x3+3x3 @64, no-SE, silu/pre, clean_add, no-ReZero, out:layer_norm, drop*1] . act silu . policy intermediate_conv(4864) . value WDL(24->FC128) . bfloat16 policy-tail fp32_from_pre_bn . 694,767 params
+
+Step time (ms; median / p10 / p90 over each variant's window)
+  variant                 steps  steps/s    total med     p10     p90  vs plain     gpu med     p10     p90   readback  kl probe
+  plain                     316    2.625        379.7   378.2   382.4    1.000x       366.3   365.1   368.7        0.0         -
+  diagnostics               314    2.616        381.4   380.3   383.5    1.005x       368.0   367.0   369.9        0.1         -
+  kl-stash                  303    2.523        395.5   394.6   397.6    1.042x       366.8   365.9   368.7        0.0      15.1
+  diagnostics+kl-stash      301    2.504        398.4   396.5   401.6    1.049x       369.7   367.9   372.5        0.1      15.1
+
+Device allocation (MB = 1024^2 B; currentAllocatedSize, cumulative across variants in this order)
+  variant                compile ms   before  +compile  +first step  after window  footprint  thermal
+  plain                          33      126        +0        +4249          4372       4773  nominal->nominal
+  diagnostics                    38     4372        +0        +4168          8540       8945  nominal->nominal
+  kl-stash                       33     8540        +0        +4576         13117      13620  nominal->nominal
+  diagnostics+kl-stash           33    13117        +0        +4092         17208      17731  nominal->nominal
+
+  wrote /Users/andrew/cursor/drews-chess-machine/experiments/20261122-memory-footprint/train-variant-bench-6x3x3-64.json

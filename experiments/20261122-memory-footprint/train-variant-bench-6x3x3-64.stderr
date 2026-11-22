@@ -1,0 +1,12 @@
+[BENCH] plain: compiling
+[BENCH] plain: timing for 120 s
+[BENCH] plain: 316 steps, median 379.7 ms
+[BENCH] diagnostics: compiling
+[BENCH] diagnostics: timing for 120 s
+[BENCH] diagnostics: 314 steps, median 381.4 ms
+[BENCH] kl-stash: compiling
+[BENCH] kl-stash: timing for 120 s
+[BENCH] kl-stash: 303 steps, median 395.5 ms
+[BENCH] diagnostics+kl-stash: compiling
+[BENCH] diagnostics+kl-stash: timing for 120 s
+[BENCH] diagnostics+kl-stash: 301 steps, median 398.4 ms

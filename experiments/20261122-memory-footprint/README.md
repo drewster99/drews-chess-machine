@@ -66,3 +66,22 @@ and used 15.5 GB.
 3. Smaller `replay_buffer_capacity` for small-model tests (500k saves ≈ 3 GB; owner 2026-11-22 chose 200k for
    the label-smoothing arms from step 10,000); bit-packed boards would save
    ~5.9 GB but adds an unpack to every batch (the fp32 layout was chosen for speed).
+
+## Benchmark: the four training variants (2026-11-22 14:40, `--train-variant-benchmark`, commit 0a9a487f)
+
+Arm A's step-9,000 weights, bf16, batch 4096, random data, each variant alone for 120 s on an idle GPU (Release
+build from DerivedData; nothing else training). Files: `train-variant-bench-6x3x3-64.{txt,json,stderr}`.
+
+| variant | steps/s | total ms med | GPU ms med | KL probe ms | GPU memory added at first step |
+|---|---|---|---|---|---|
+| plain | 2.625 | 379.7 | 366.3 | — | +4,249 MB |
+| diagnostics | 2.616 | 381.4 (+0.5%) | 368.0 | — | +4,168 MB |
+| kl-stash | 2.523 | 395.5 (+4.2%) | 366.8 | 15.1 | +4,576 MB |
+| diagnostics + kl-stash | 2.504 | 398.4 (+4.9%) | 369.7 (+0.9%) | 15.1 | +4,092 MB |
+
+- Confirms the heap inference: compiling allocates nothing; each variant's first run adds ~4.1–4.6 GB that stays.
+  Four variants loaded = 17.2 GB of GPU memory for a 0.69M-parameter model.
+- The training step itself barely differs: diagnostics +1.7 ms GPU, the KL stash +0.5 ms. The kl-stash rows' extra
+  ~15 ms is the KL probe's own forward pass, which runs only on probe steps.
+- So one executable that always computes diagnostics and the stash would cost ≈ 1% per step (GPU 369.7 vs 366.3 ms)
+  and save the other heaps (≈ 8 GB in a run using three variants).
