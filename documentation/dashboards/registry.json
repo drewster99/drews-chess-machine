@@ -2164,6 +2164,81 @@
         }
       ],
       "trainset": "elite-2021_2025"
+    },
+    "lsmodeA": {
+      "label": "lsmodeA — policy label smoothing mode 0 (fixed total), ε 0.1 — 6×3×3@64, 0.69M",
+      "color": "#1b9e77",
+      "n_blocks": 6,
+      "params": 694767,
+      "arch_summary": "Label-smoothing mode test arm A (experiments/20261122-label-smoothing-mode): mode 0 (fixed total), ε 0.1. Same fresh net (20261122-115-Jdx1), seed 20261122 and elite corpus feed as the other two arms; fixed LR 0.005; to 40,000 steps.",
+      "arch_stem": "basic25 → stem 5×5→64",
+      "arch_blocks": "6× @64, 3×3+3×3, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (64) · value WDL(24→FC128) · SiLU heads · fp32 policy tail",
+      "out_model": "20261122-lsmode-A-latest.safetensors",
+      "frozen_glob": "20261122-lsmode-A-latest-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261122-115904-2.txt",
+          "label": "fresh start",
+          "date": "20261122",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "elite-2021_2025"
+    },
+    "lsmodeB": {
+      "label": "lsmodeB — policy label smoothing mode 1 (per move), δ 0.0033, cap 0.5 — 6×3×3@64, 0.69M",
+      "color": "#d95f02",
+      "n_blocks": 6,
+      "params": 694767,
+      "arch_summary": "Label-smoothing mode test arm B (experiments/20261122-label-smoothing-mode): mode 1 (per move), δ 0.0033, cap 0.5. Same fresh net (20261122-115-Jdx1), seed 20261122 and elite corpus feed as the other two arms; fixed LR 0.005; to 40,000 steps.",
+      "arch_stem": "basic25 → stem 5×5→64",
+      "arch_blocks": "6× @64, 3×3+3×3, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (64) · value WDL(24→FC128) · SiLU heads · fp32 policy tail",
+      "out_model": "20261122-lsmode-B-latest.safetensors",
+      "frozen_glob": "20261122-lsmode-B-latest-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261122-115904-3.txt",
+          "label": "fresh start",
+          "date": "20261122",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "elite-2021_2025"
+    },
+    "lsmodeC": {
+      "label": "lsmodeC — policy label smoothing no policy smoothing, ε 0 — 6×3×3@64, 0.69M",
+      "color": "#7570b3",
+      "n_blocks": 6,
+      "params": 694767,
+      "arch_summary": "Label-smoothing mode test arm C (experiments/20261122-label-smoothing-mode): no policy smoothing, ε 0. Same fresh net (20261122-115-Jdx1), seed 20261122 and elite corpus feed as the other two arms; fixed LR 0.005; to 40,000 steps.",
+      "arch_stem": "basic25 → stem 5×5→64",
+      "arch_blocks": "6× @64, 3×3+3×3, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (64) · value WDL(24→FC128) · SiLU heads · fp32 policy tail",
+      "out_model": "20261122-lsmode-C-latest.safetensors",
+      "frozen_glob": "20261122-lsmode-C-latest-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261122-115904.txt",
+          "label": "fresh start",
+          "date": "20261122",
+          "cumstep_base": 0,
+          "games_base": 0,
+          "elapsed_base_sec": 0.0,
+          "wall_base_sec": 0.0,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "elite-2021_2025"
     }
   },
   "excluded_lineage_runs": {

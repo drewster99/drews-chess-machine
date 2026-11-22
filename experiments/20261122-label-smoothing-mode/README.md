@@ -1,6 +1,6 @@
 # 2026-11-22 — Policy label smoothing: mode 0 (fixed total) vs mode 1 (per move), plus no smoothing
 
-**Status:** running (launched 2026-11-22 12:28 CST, all three arms at once). Owner request 2026-11-22:
+**Status:** running (launched 2026-11-22 11:59 CST, all three arms at once). Owner request 2026-11-22:
 per-move smoothing (mode 1, built 2026-10-02 as arm B of
 `documentation/plans-active/POLICY_LABEL_SMOOTHING_EXPERIMENTS.md`) had never been run.
 R-elitecyc-fp32fix was stopped for it (abort save at trainer step 456,328).
