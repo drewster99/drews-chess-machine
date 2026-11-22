@@ -1905,9 +1905,9 @@ enum CorpusReplayRunner {
         emit("[REPLAY] batchSize=\(batchSize) reuse=\(String(format: "%.2f", reuse)) K=\(perStepFeed) minPrefill=\(minPrefill) stepLimit=\(stepLimit.map(String.init) ?? "none") epochLimit=\(epochLimit.map(String.init) ?? "none")")
 
         // Streaming game source, cycling the shard list for epochs. One shard
-        // is open at a time and read game by game (`SealedShardGameStream`,
-        // verified whole at open), so the feed holds a read window, not the
-        // shard's decoded games.
+        // is held at a time, as its verified raw bytes, and decoded game by
+        // game (`SealedShardGameStream`), so the feed holds one shard's bytes
+        // and one game, not every decoded game of the shard.
         var shardCursor = startShardCursor
         var currentShard: GameCorpusShardIO.SealedShardGameStream? = nil
         // Resume-exact starts in the refeed's first epoch (the saved one, or
@@ -1928,24 +1928,9 @@ enum CorpusReplayRunner {
         func nextGame() -> GameRecord? {
             while true {
                 if let shard = currentShard {
-                    do {
-                        if let game = try shard.nextGame() {
-                            nextGameWithinEpoch += 1
-                            return game
-                        }
-                    } catch {
-                        // Verified at open, so only a file changed since (or a
-                        // failed read) lands here. The games already fed were
-                        // the verified content; the rest of the shard is not.
-                        currentShard = nil
-                        if config.resumeExact {
-                            exactResumeShardFailure = CorpusReplayError.exactResumeShardUnreadable(
-                                shard: shardURLs[shardCursor - 1].lastPathComponent,
-                                detail: error.localizedDescription)
-                            return nil
-                        }
-                        emit("[REPLAY] skipping the rest of shard \(shardURLs[shardCursor - 1].lastPathComponent): \(error.localizedDescription)")
-                        continue
+                    if let game = shard.nextGame() {
+                        nextGameWithinEpoch += 1
+                        return game
                     }
                     currentShard = nil
                 }
@@ -1973,7 +1958,7 @@ enum CorpusReplayRunner {
                     // offset < this shard's game count by construction (locate),
                     // so this never lands past the end.
                     skipped = min(requestedSkip, shard.gameCount)
-                    try shard.skipGames(skipped)
+                    shard.skipGames(skipped)
                     currentShard = shard
                 } catch {
                     if config.resumeExact {

@@ -259,9 +259,11 @@ final class ChessNetwork: @unchecked Sendable {
     /// a seed-derived state right after graph construction (and after a
     /// network reset), and with a saved state on exact resume.
     let dropoutRngSeedOp: MPSGraphOperation?
-    /// Per-step state-advance assign; the trainer appends this to its SGD
-    /// `assignOps` so the compiled training executable advances the stream
-    /// exactly once per step.
+    /// Per-step state-advance assign. The trainer runs it as its own pass
+    /// after each training step (`ChessTrainer.advanceDropoutRNG`; after the
+    /// KL probe's forward on a probe step), never inside the training
+    /// executable, so the stream advances exactly once per step and the probe
+    /// draws the step's own mask.
     let dropoutRngAdvanceOp: MPSGraphOperation?
     /// Preallocated `[1]` fp32 holding the LIVE rate — the binding used by the
     /// training step, and by nothing else. `ChessTrainer.dropoutRate` rewrites
@@ -892,8 +894,8 @@ final class ChessNetwork: @unchecked Sendable {
         }
 
         // Advance the RNG state variable to the post-tower stream position
-        // once per training step (the trainer compiles this into its SGD
-        // assign ops). Only meaningful when the blocks actually consumed
+        // once per training step (the trainer runs it as its own pass after
+        // each step; see `dropoutRngAdvanceOp`). Only meaningful when the blocks actually consumed
         // randomness — i.e. the chained state differs from the variable.
         if let stateVar = dropoutStateVar, let finalState = dropoutState, finalState !== stateVar {
             dropoutAdvanceOp = g.assign(stateVar, tensor: finalState, name: "dropout_rng_advance")
@@ -1546,7 +1548,6 @@ final class ChessNetwork: @unchecked Sendable {
             let inferenceWork: GPUWorkSize = inferenceExecutables[count] == nil
                 ? .positionsOnNewlyCompiledShape(count) : .positions(count)
             let executable = inferenceExecutable(for: count, feeds: entry.feeds)
-            let firstRun = inferenceAllocationLedger.beginFirstRun(of: count, device: metalDevice)
             guard let feedTensors = executable.feedTensors else {
                 throw ChessNetworkError.outputMissing("inference feed tensors")
             }
@@ -1558,6 +1559,9 @@ final class ChessNetwork: @unchecked Sendable {
                 }
                 inputs.append(data)
             }
+            // Taken after every check that can throw before the run, so a
+            // compile's pending `[GPU-ALLOC]` line is spent only on a run.
+            let firstRun = inferenceAllocationLedger.beginFirstRun(of: count, device: metalDevice)
             let resultArray = try GPUSubmission.runExecutable(
                 executable,
                 on: commandQueue,
@@ -1764,7 +1768,6 @@ final class ChessNetwork: @unchecked Sendable {
             let baselineWork: GPUWorkSize = valueBaselineExecutables[count] == nil
                 ? .positionsOnNewlyCompiledShape(count) : .positions(count)
             let executable = valueBaselineExecutable(for: count, feeds: entry.feeds)
-            let firstRun = valueBaselineAllocationLedger.beginFirstRun(of: count, device: metalDevice)
             guard let feedTensors = executable.feedTensors else {
                 throw ChessNetworkError.outputMissing("value-baseline feed tensors")
             }
@@ -1789,6 +1792,9 @@ final class ChessNetwork: @unchecked Sendable {
             // per the proven concurrent-encode contract; `consume` only hands the
             // buffer reference onward (the data fills on the GPU, in order).
             let submission = try GPUSubmission(queue: commandQueue, stage: .valueBaseline, work: baselineWork)
+            // Taken after every check that can throw before the encode, so a
+            // compile's pending `[GPU-ALLOC]` line is spent only on a run.
+            let firstRun = valueBaselineAllocationLedger.beginFirstRun(of: count, device: metalDevice)
             _ = executable.encode(
                 to: submission.commandBuffer,
                 inputs: inputs,

@@ -7513,7 +7513,36 @@ final class ChessTrainer: @unchecked Sendable {
         // `gpuCommandFailed`, which every training path treats as a GPU fault
         // (crash dump, then abort).
         try stepSubmission.verify()
-        try network.verifyPendingValueBaseline()
+        // From here the step's weight update has landed, so the step owes the
+        // dropout stream exactly one advance on every way out of it — a throw
+        // included (a lost value baseline, a missing output, a non-finite
+        // loss), as when the advance ran inside the step's own executable. The
+        // normal path advances once (`advanceDropoutOnce`); a throw issues the
+        // advance it still owes and then rethrows (`failAfterStepLanded`).
+        var dropoutAdvanced = false
+        func advanceDropoutOnce() throws {
+            guard !dropoutAdvanced else { return }
+            dropoutAdvanced = true
+            try advanceDropoutRNG(feeds: feeds, batchSize: batchSize)
+        }
+        func failAfterStepLanded(_ error: Error) throws -> Never {
+            if !dropoutAdvanced {
+                do {
+                    try advanceDropoutOnce()
+                } catch let advanceError {
+                    // The step's own error is the one reported; the advance's
+                    // failure is logged beside it, never dropped.
+                    SessionLogger.shared.log(
+                        "[ALARM] dropout RNG advance after a failed training step also failed: \(advanceError) (step error: \(error))")
+                }
+            }
+            throw error
+        }
+        do {
+            try network.verifyPendingValueBaseline()
+        } catch {
+            try failAfterStepLanded(error)
+        }
         firstRunAllocation?.finish(owner: network.gpuOwnerName, graph: "training", key: "batch=\(batchSize)")
         // Split working-weight sync (bf16 stomp workaround; see
         // `splitWorkingWeightSync`): the main executable updated the fp32 masters
@@ -7537,7 +7566,12 @@ final class ChessTrainer: @unchecked Sendable {
             // working/master mismatch. Surface it loudly instead, mirroring the
             // main step's `.error` check above. encode+commit+wait is functionally
             // identical to `graph.run`.
-            let syncSubmission = try GPUSubmission(queue: network.commandQueue, stage: .workingWeightSync, work: .notPerPosition)
+            let syncSubmission: GPUSubmission
+            do {
+                syncSubmission = try GPUSubmission(queue: network.commandQueue, stage: .workingWeightSync, work: .notPerPosition)
+            } catch {
+                try failAfterStepLanded(error)
+            }
             network.weightAccessLock.wait()
             _ = network.graph.encode(
                 to: syncSubmission.commandBuffer,
@@ -7549,7 +7583,11 @@ final class ChessTrainer: @unchecked Sendable {
             syncSubmission.commit()
             syncSubmission.waitUntilCompleted()
             network.weightAccessLock.signal()
-            try syncSubmission.verify()
+            do {
+                try syncSubmission.verify()
+            } catch {
+                try failAfterStepLanded(error)
+            }
         }
         // An ordinary step advances the dropout RNG now — the point where the
         // advance used to run inside the step's own executable, so it is timed
@@ -7557,7 +7595,7 @@ final class ChessTrainer: @unchecked Sendable {
         // non-finite halt below, a save, a crash dump). A probe step advances
         // after its probe instead.
         if !isKLProbeStep {
-            try advanceDropoutRNG(feeds: feeds, batchSize: batchSize)
+            try advanceDropoutOnce()
         }
         let gpuWaitMs = (CFAbsoluteTimeGetCurrent() - gpuWaitStart) * 1000
         encodeMsTimes.append(encodeMs)
@@ -7590,7 +7628,7 @@ final class ChessTrainer: @unchecked Sendable {
             let dynamicsData = results[parameterDynamicsTensor],
             let advantageMeanSquareData = results[advantageMeanSquareTensor]
         else {
-            throw ChessTrainerError.lossOutputMissing
+            try failAfterStepLanded(ChessTrainerError.lossOutputMissing)
         }
         // Per-tensor dynamics sums (fp32, a few hundred floats) into this
         // trainer's window. A wrong length is a build/layout mismatch — a
@@ -7602,7 +7640,11 @@ final class ChessTrainer: @unchecked Sendable {
                 ChessNetwork.readFloatsFP32(from: dynamicsData, into: base, count: dynamicsCount)
             }
         }
-        try dynamicsLog.record(stepSums: dynamicsSums)
+        do {
+            try dynamicsLog.record(stepSums: dynamicsSums)
+        } catch {
+            try failAfterStepLanded(error)
+        }
         // Every scalar the training graph reports is fp32 (the loss path runs
         // in the heads' fp32 tail dtype), so each is a raw fp32 read.
         ChessNetwork.readFloatsFP32(
@@ -7636,9 +7678,10 @@ final class ChessTrainer: @unchecked Sendable {
             count: 1
         )
 
-        // Diagnostic outputs are requested only on stats steps, so their
-        // results are absent otherwise. Read them all here under one guard;
-        // the per-field Buf values below default to `.nan` when skipped.
+        // Diagnostic outputs are computed on every step (one executable serves
+        // every step type) but read back only on stats steps. Read them all
+        // here under one guard; the per-field Buf values below are `.nan` on
+        // the other steps.
         var advRawValues: [Float] = []
         if includeDiagnostics {
             guard
@@ -7668,7 +7711,7 @@ final class ChessTrainer: @unchecked Sendable {
                 let policyLogitMeanData = results[policyLogitMeanTensor],
                 let valueLogitMeanData = results[valueLogitMeanTensor]
             else {
-                throw ChessTrainerError.lossOutputMissing
+                try failAfterStepLanded(ChessTrainerError.lossOutputMissing)
             }
             ChessNetwork.readFloatsFP32(from: entropyData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotEntropy), count: 1)
             ChessNetwork.readFloatsFP32(from: nonNegData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNeg), count: 1)
@@ -7715,7 +7758,7 @@ final class ChessTrainer: @unchecked Sendable {
         let gradNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotGradNorm]
         let advantageMeanSquareBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvantageMeanSquare]
         // Diagnostic Buf values: the live scratch slot on stats steps, `.nan`
-        // otherwise (the reductions weren't encoded, so the slots are stale).
+        // otherwise (nothing was read back, so the slots are stale).
         let entropyBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotEntropy] : Float.nan
         let nonNegBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotNonNeg] : Float.nan
         let nonNegIllegalBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotNonNegIllegal] : Float.nan
@@ -7744,7 +7787,7 @@ final class ChessTrainer: @unchecked Sendable {
 
         // Health check: any NaN/Inf in the headline loss or grad scalars means
         // this step's weight update has already corrupted the network (the
-        // optimizer assignOps ran inside the same graph.run). We can't undo
+        // optimizer assigns ran inside the step's executable). We can't undo
         // that, but we can stop compounding the damage by halting right here.
         // The six checked values are the ones printed in [STATS] and used to
         // drive alarms; checking valueMean + entropy too catches broader
@@ -7757,12 +7800,12 @@ final class ChessTrainer: @unchecked Sendable {
             SessionLogger.shared.log(
                 "[ALARM] loss non-finite: total=\(totalBufValue) policy=\(policyBufValue) value=\(valueBufValue) grad=\(gradNormBufValue) vMean=\(valueMeanBufValue) pEnt=\(entropyBufValue)"
             )
-            throw ChessTrainerError.nonFiniteLoss(
+            try failAfterStepLanded(ChessTrainerError.nonFiniteLoss(
                 total: totalBufValue,
                 policy: policyBufValue,
                 value: valueBufValue,
                 gradNorm: gradNormBufValue
-            )
+            ))
         }
 
         // --- KL probe: the second forward pass ---
@@ -7876,7 +7919,7 @@ final class ChessTrainer: @unchecked Sendable {
             // metric, but the RNG must still move or the next step silently
             // reuses this step's mask — a correctness bug in training, caused
             // by telemetry, which is precisely what must not happen.
-            try advanceDropoutRNG(feeds: feeds, batchSize: batchSize)
+            try advanceDropoutOnce()
         }
 
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000
