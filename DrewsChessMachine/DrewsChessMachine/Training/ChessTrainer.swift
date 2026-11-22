@@ -2131,6 +2131,12 @@ final class ChessTrainer: @unchecked Sendable {
         let includeKLStash: Bool
     }
     private var trainingExecutables: [TrainingExecutableKey: MPSGraphExecutable] = [:]
+    /// Training-executable compiles awaiting their first step, for the
+    /// `[GPU-ALLOC]` line each writes. Same `executionQueue` discipline as
+    /// `trainingExecutables`, and cleared with it.
+    private var trainingAllocationLedger = GPUAllocationFirstRunLedger<TrainingExecutableKey>()
+    /// KL-probe subgraphs (per batch size) awaiting their first probe run.
+    private var klProbeAllocationLedger = GPUAllocationFirstRunLedger<Int>()
 
     /// Mirror of `feedCache.count` updated on every cache mutation so a
     /// reader on a different queue can observe the size without
@@ -2436,59 +2442,59 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [1]
         )
         let lrND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        lrND.label = "lrND"
+        lrND.label = "trainer.scalar.lr (init)"
         self.lrNDArray = lrND
         self.lrTensorData = MPSGraphTensorData(lrND)
         let entropyND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        entropyND.label = "entropyND"
+        entropyND.label = "trainer.scalar.entropyCoeff (init)"
         self.entropyCoeffNDArray = entropyND
         self.entropyCoeffTensorData = MPSGraphTensorData(entropyND)
         let weightDecayND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        weightDecayND.label = "weightDecayND"
+        weightDecayND.label = "trainer.scalar.weightDecay (init)"
         self.weightDecayNDArray = weightDecayND
         self.weightDecayTensorData = MPSGraphTensorData(weightDecayND)
         let gradClipND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        gradClipND.label = "gradClipND"
+        gradClipND.label = "trainer.scalar.gradClipMaxNorm (init)"
         self.gradClipMaxNormNDArray = gradClipND
         self.gradClipMaxNormTensorData = MPSGraphTensorData(gradClipND)
         let policyLossWeightND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        policyLossWeightND.label = "policyLossWeightND"
+        policyLossWeightND.label = "trainer.scalar.policyLossWeight (init)"
         self.policyLossWeightNDArray = policyLossWeightND
         self.policyLossWeightTensorData = MPSGraphTensorData(policyLossWeightND)
         let valueLossWeightND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        valueLossWeightND.label = "valueLossWeightND"
+        valueLossWeightND.label = "trainer.scalar.valueLossWeight (init)"
         self.valueLossWeightNDArray = valueLossWeightND
         self.valueLossWeightTensorData = MPSGraphTensorData(valueLossWeightND)
         let illegalMassWeightND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        illegalMassWeightND.label = "illegalMassWeightND"
+        illegalMassWeightND.label = "trainer.scalar.illegalMassWeight (init)"
         self.illegalMassWeightNDArray = illegalMassWeightND
         self.illegalMassWeightTensorData = MPSGraphTensorData(illegalMassWeightND)
         let labelSmoothingND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        labelSmoothingND.label = "labelSmoothingEpsilonND"
+        labelSmoothingND.label = "trainer.scalar.labelSmoothingEpsilon (init)"
         self.labelSmoothingEpsilonNDArray = labelSmoothingND
         self.labelSmoothingEpsilonTensorData = MPSGraphTensorData(labelSmoothingND)
         let perMoveSelectorND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        perMoveSelectorND.label = "policyLabelSmoothingPerMoveSelectorND"
+        perMoveSelectorND.label = "trainer.scalar.policyLabelSmoothingPerMoveSelector (init)"
         self.policyLabelSmoothingPerMoveSelectorNDArray = perMoveSelectorND
         self.policyLabelSmoothingPerMoveSelectorTensorData = MPSGraphTensorData(perMoveSelectorND)
         let perMoveND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        perMoveND.label = "policyLabelSmoothingPerMoveND"
+        perMoveND.label = "trainer.scalar.policyLabelSmoothingPerMove (init)"
         self.policyLabelSmoothingPerMoveNDArray = perMoveND
         self.policyLabelSmoothingPerMoveTensorData = MPSGraphTensorData(perMoveND)
         let perMoveCapND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        perMoveCapND.label = "policyLabelSmoothingPerMoveCapND"
+        perMoveCapND.label = "trainer.scalar.policyLabelSmoothingPerMoveCap (init)"
         self.policyLabelSmoothingPerMoveCapNDArray = perMoveCapND
         self.policyLabelSmoothingPerMoveCapTensorData = MPSGraphTensorData(perMoveCapND)
         let valueLabelSmoothingND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        valueLabelSmoothingND.label = "valueLabelSmoothingEpsilonND"
+        valueLabelSmoothingND.label = "trainer.scalar.valueLabelSmoothingEpsilon (init)"
         self.valueLabelSmoothingEpsilonNDArray = valueLabelSmoothingND
         self.valueLabelSmoothingEpsilonTensorData = MPSGraphTensorData(valueLabelSmoothingND)
         let momentumND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        momentumND.label = "momentumND"
+        momentumND.label = "trainer.scalar.momentum (init)"
         self.momentumNDArray = momentumND
         self.momentumTensorData = MPSGraphTensorData(momentumND)
         let complementCEEnableND = MPSNDArray(device: net.metalDevice, descriptor: scalarFeedDesc)
-        complementCEEnableND.label = "complementCEEnableND"
+        complementCEEnableND.label = "trainer.scalar.complementCEEnable (init)"
         self.complementCEEnableNDArray = complementCEEnableND
         self.complementCEEnableTensorData = MPSGraphTensorData(complementCEEnableND)
 
@@ -2721,6 +2727,12 @@ final class ChessTrainer: @unchecked Sendable {
         // variables; a rebuilt network invalidates them. Drop them so the next
         // step recompiles against the fresh graph.
         trainingExecutables.removeAll()
+        trainingAllocationLedger.removeAll()
+        // The KL-probe subgraphs were built into the replaced graph too (their
+        // stash assign is a target of the training executable), so they go
+        // with it.
+        klProbeGraphs.removeAll()
+        klProbeAllocationLedger.removeAll()
         // Fresh weights ⇒ the LR-warmup schedule must restart from
         // step 0. Without this, the warmup multiplier (a function of
         // `_completedTrainSteps / lrWarmupSteps`) jumps ahead of the
@@ -4370,6 +4382,7 @@ final class ChessTrainer: @unchecked Sendable {
 
             let desc = MPSNDArrayDescriptor(dataType: .float32, shape: shape)
             let nda = MPSNDArray(device: network.metalDevice, descriptor: desc)
+            nda.label = "trainer.velocityLoad.\(varName)\(shape.map(\.intValue))"
             velLoadNDArrays.append(nda)
             velLoadTensorData.append(MPSGraphTensorData(nda))
         }
@@ -4417,6 +4430,7 @@ final class ChessTrainer: @unchecked Sendable {
                 masterLoadAssignOps.append(graph.assign(master, tensor: loadPh, name: "\(baseName)_master_load_assign"))
                 let mdesc = MPSNDArrayDescriptor(dataType: .float32, shape: shape)
                 let mnda = MPSNDArray(device: network.metalDevice, descriptor: mdesc)
+                mnda.label = "trainer.masterLoad.\(baseName)\(shape.map(\.intValue))"
                 masterLoadNDArrays.append(mnda)
                 masterLoadTensorData.append(MPSGraphTensorData(mnda))
             }
@@ -4700,22 +4714,22 @@ final class ChessTrainer: @unchecked Sendable {
                 includeKLStash: includeKLStash
             )
             let alreadyCompiled = self.trainingExecutables[key] != nil
-            let device = self.network.metalDevice
-            let before = UInt64(device.currentAllocatedSize)
             let compileStart = CFAbsoluteTimeGetCurrent()
-            _ = try self.trainingExecutable(
-                batchSize: batchSize,
-                includeDiagnostics: includeDiagnostics,
-                includeKLStash: includeKLStash,
-                targets: targets,
-                feeds: feeds
-            )
+            let (_, allocation) = try GPUAllocationChange.measure(on: self.network.metalDevice) {
+                try self.trainingExecutable(
+                    batchSize: batchSize,
+                    includeDiagnostics: includeDiagnostics,
+                    includeKLStash: includeKLStash,
+                    targets: targets,
+                    feeds: feeds
+                )
+            }
             let compileMs = (CFAbsoluteTimeGetCurrent() - compileStart) * 1000
             return TrainingExecutableCompilation(
                 alreadyCompiled: alreadyCompiled,
                 compileMs: compileMs,
-                gpuAllocatedBytesBeforeCompile: before,
-                gpuAllocatedBytesAfterCompile: UInt64(device.currentAllocatedSize)
+                gpuAllocatedBytesBeforeCompile: allocation.bytesBefore,
+                gpuAllocatedBytesAfterCompile: allocation.bytesAfter
             )
         }
     }
@@ -6917,7 +6931,7 @@ final class ChessTrainer: @unchecked Sendable {
         // Without these, Xcode's trace UI just shows hex addresses
         // for each `setBuffer:` call, which is unreadable when chasing
         // "which feed is the source of the late MTLBuffer creation?"
-        boardND.label = "trainer.feed.board[\(batchSize)] (reset)"
+        boardND.label = "trainer.feed.board[\(batchSize)]"
         let boardTD = MPSGraphTensorData(boardND)
 
         let moveDesc = MPSNDArrayDescriptor(
@@ -6925,7 +6939,7 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [NSNumber(value: batchSize)]
         )
         let moveND = MPSNDArray(device: mtlDevice, descriptor: moveDesc)
-        moveND.label = "trainer.feed.movePlayed[\(batchSize)] (reset)"
+        moveND.label = "trainer.feed.movePlayed[\(batchSize)]"
         let moveTD = MPSGraphTensorData(moveND)
 
         // z / vBaseline / legalMask ND arrays are fp32, like the board:
@@ -6938,7 +6952,7 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [NSNumber(value: batchSize), 1]
         )
         let zND = MPSNDArray(device: mtlDevice, descriptor: zDesc)
-        zND.label = "trainer.feed.z[\(batchSize)] (reset)"
+        zND.label = "trainer.feed.z[\(batchSize)]"
         let zTD = MPSGraphTensorData(zND)
 
         // vBaseline ND array — same shape as z, one scalar per row (fp32).
@@ -6947,7 +6961,7 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [NSNumber(value: batchSize), 1]
         )
         let vBaselineND = MPSNDArray(device: mtlDevice, descriptor: vBaselineDesc)
-        vBaselineND.label = "trainer.feed.vBaseline[\(batchSize)] (reset)"
+        vBaselineND.label = "trainer.feed.vBaseline[\(batchSize)]"
         let vBaselineTD = MPSGraphTensorData(vBaselineND)
 
         let legalMaskDesc = MPSNDArrayDescriptor(
@@ -6955,7 +6969,7 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [NSNumber(value: batchSize), NSNumber(value: ChessNetwork.policySize)]
         )
         let legalMaskND = MPSNDArray(device: mtlDevice, descriptor: legalMaskDesc)
-        legalMaskND.label = "trainer.feed.legalMask[\(batchSize)] (reset)"
+        legalMaskND.label = "trainer.feed.legalMask[\(batchSize)]"
         let legalMaskTD = MPSGraphTensorData(legalMaskND)
 
         // Pre-build the feeds dictionary so `buildFeeds` can return it
@@ -7091,6 +7105,16 @@ final class ChessTrainer: @unchecked Sendable {
     /// correct limit.
     private func klProbeGraph(batchSize: Int) -> KLProbeGraph {
         if let existing = klProbeGraphs[batchSize] { return existing }
+        let (built, buildAllocation) = GPUAllocationChange.measure(on: network.metalDevice) {
+            buildKLProbeGraph(batchSize: batchSize)
+        }
+        klProbeGraphs[batchSize] = built
+        klProbeAllocationLedger.recordCompile(of: batchSize, buildAllocation)
+        return built
+    }
+
+    /// `klProbeGraph`'s build of a batch size's subgraph (not cached here).
+    private func buildKLProbeGraph(batchSize: Int) -> KLProbeGraph {
 
         let graph = network.graph
         let policySize = network.arch.policySize
@@ -7140,7 +7164,6 @@ final class ChessTrainer: @unchecked Sendable {
             klMean: klMean,
             klMeanSquare: klMeanSquare
         )
-        klProbeGraphs[batchSize] = built
         SessionLogger.shared.log(
             "[KL-PROBE] built subgraph batch=\(batchSize) policySize=\(policySize) "
             + "stash=\(batchSize * policySize * MemoryLayout<Float>.size / (1024 * 1024))MB"
@@ -7260,16 +7283,19 @@ final class ChessTrainer: @unchecked Sendable {
         if includeKLStash {
             targetOps.append(klProbeGraph(batchSize: batchSize).stashAssign)
         }
-        let executable = try withLargeBuildStack {
-            self.network.graph.compile(
-                with: MPSGraphDevice(mtlDevice: self.network.metalDevice),
-                feeds: feedShapes,
-                targetTensors: targets,
-                targetOperations: targetOps,
-                compilationDescriptor: des
-            )
+        let (executable, compileAllocation) = try GPUAllocationChange.measure(on: network.metalDevice) {
+            try withLargeBuildStack {
+                self.network.graph.compile(
+                    with: MPSGraphDevice(mtlDevice: self.network.metalDevice),
+                    feeds: feedShapes,
+                    targetTensors: targets,
+                    targetOperations: targetOps,
+                    compilationDescriptor: des
+                )
+            }
         }
         trainingExecutables[key] = executable
+        trainingAllocationLedger.recordCompile(of: key, compileAllocation)
         SessionLogger.shared.log(
             "[EXEC] compiled training executable batch=\(batchSize) diagnostics=\(includeDiagnostics) klStash=\(includeKLStash) targets=\(targets.count)"
         )
@@ -7456,6 +7482,10 @@ final class ChessTrainer: @unchecked Sendable {
         // gpuWaitMs is commit + GPU execution + wait. Their ratio decides the
         // Phase 3 architecture. The executable was already compiled by
         // `trainingExecutable` above, so no compile cost is folded into encodeMs.
+        let firstRunAllocation = trainingAllocationLedger.beginFirstRun(
+            of: TrainingExecutableKey(batchSize: batchSize, includeDiagnostics: includeDiagnostics,
+                                      includeKLStash: isKLProbeStep),
+            device: network.metalDevice)
         let encodeStart = CFAbsoluteTimeGetCurrent()
         let resultArray = executable.encode(
             to: stepSubmission.commandBuffer,
@@ -7491,6 +7521,9 @@ final class ChessTrainer: @unchecked Sendable {
         // (crash dump, then abort).
         try stepSubmission.verify()
         try network.verifyPendingValueBaseline()
+        firstRunAllocation?.finish(
+            owner: network.gpuOwnerName, graph: "training",
+            key: "batch=\(batchSize) diagnostics=\(includeDiagnostics) klStash=\(isKLProbeStep)")
         // Split working-weight sync (bf16 stomp workaround; see
         // `splitWorkingWeightSync`): the main executable updated the fp32 masters
         // but did NOT re-derive the bf16 working weights. Do that now in a
@@ -7788,6 +7821,8 @@ final class ChessTrainer: @unchecked Sendable {
                 // Wait inside the lock, verify after it (the lock section
                 // must not throw).
                 let klSubmission = try GPUSubmission(queue: network.commandQueue, stage: .klProbe, work: .positions(batchSize))
+                let klFirstRunAllocation = klProbeAllocationLedger.beginFirstRun(
+                    of: batchSize, device: network.metalDevice)
                 network.weightAccessLock.wait()
                 let klResults = network.graph.encode(
                     to: klSubmission.commandBuffer,
@@ -7800,6 +7835,7 @@ final class ChessTrainer: @unchecked Sendable {
                 klSubmission.waitUntilCompleted()
                 network.weightAccessLock.signal()
                 try klSubmission.verify()
+                klFirstRunAllocation?.finish(owner: network.gpuOwnerName, graph: "klProbe", key: "batch=\(batchSize)")
 
                 guard let meanData = klResults[probe.klMean],
                       let meanSquareData = klResults[probe.klMeanSquare] else {

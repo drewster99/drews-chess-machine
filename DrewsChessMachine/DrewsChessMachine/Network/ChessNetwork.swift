@@ -469,6 +469,21 @@ final class ChessNetwork: @unchecked Sendable {
     /// other executable. Lives for the network's lifetime (the graph is never
     /// rebuilt), same as `inferenceExecutables`.
     private var valueBaselineExecutables: [Int: MPSGraphExecutable] = [:]
+    /// Inference and value-baseline compiles awaiting their first run, for the
+    /// `[GPU-ALLOC]` line each writes (`GPUAllocationFirstRunLedger`). Same
+    /// `executionQueue` discipline as the caches they describe.
+    private var inferenceAllocationLedger = GPUAllocationFirstRunLedger<Int>()
+    private var valueBaselineAllocationLedger = GPUAllocationFirstRunLedger<Int>()
+
+    /// The name this network's GPU work carries: its command queue's label,
+    /// as in every `GPUSubmission` label. Owners name their networks after
+    /// building them, so it is read when a log line is written, not cached.
+    var gpuOwnerName: String { commandQueue.label ?? "unlabeled queue" }
+
+    /// Prefix of the `label` on every Metal object this network allocates
+    /// (`network.inf` / `network.train`), so a Metal capture or heap census
+    /// names each buffer's owner and purpose.
+    private let metalLabelPrefix: String
     /// Caller-owned (never `results: nil`) fp32 `[count, 1]` result buffers for
     /// the value-baseline forward, keyed by batch size. The trainer feeds the
     /// returned buffer straight into the training step's `vBaseline`; reused each
@@ -616,9 +631,13 @@ final class ChessNetwork: @unchecked Sendable {
         }
 
         let infOrTrain = bnMode == .inference ? "inf" : "train"
+        // Owners rename the queue after the build (the name every
+        // `GPUSubmission` of this network carries); this one marks a network
+        // nobody named.
         cmdQueue.label = "init - \(infOrTrain)"
         metalDevice = mtlDevice
         commandQueue = cmdQueue
+        metalLabelPrefix = "network.\(infOrTrain)"
         graphDevice = MPSGraphDevice(mtlDevice: mtlDevice)
         let g = MPSGraph()
         graph = g
@@ -780,10 +799,12 @@ final class ChessNetwork: @unchecked Sendable {
             // consumers, and a mutable one the trainer rewrites. Sharing one
             // would reintroduce exactly the coupling this change removes.
             let zeroNDA = MPSNDArray(device: mtlDevice, descriptor: rateDesc)
+            zeroNDA.label = "network.\(infOrTrain).dropoutRate.zero[1]"
             var zero = Float(0)
             zeroNDA.writeBytes(&zero, strideBytes: nil)
             dropoutRateZeroTD = MPSGraphTensorData(zeroNDA)
             let liveNDA = MPSNDArray(device: mtlDevice, descriptor: rateDesc)
+            liveNDA.label = "network.\(infOrTrain).dropoutRate.live[1]"
             var live = Float(0)
             liveNDA.writeBytes(&live, strideBytes: nil)
             dropoutRateLiveNDA = liveNDA
@@ -1076,6 +1097,7 @@ final class ChessNetwork: @unchecked Sendable {
 
             let desc = MPSNDArrayDescriptor(dataType: computeDType, shape: shape)
             let nda = MPSNDArray(device: mtlDevice, descriptor: desc)
+            nda.label = "network.\(infOrTrain).weightLoad.\(v.operation.name)\(shape.map(\.intValue))"
             loadNDArrays.append(nda)
             loadTensorData.append(MPSGraphTensorData(nda))
         }
@@ -1095,7 +1117,7 @@ final class ChessNetwork: @unchecked Sendable {
             shape: [1, NSNumber(value: arch.inputPlanes), 8, 8]
         )
         let inputND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
-        inputND.label = "inputND"
+        inputND.label = "network.\(infOrTrain).inference.input[1]"
         inferenceInputNDArray = inputND
         inferenceInputTensorData = MPSGraphTensorData(inputND)
 
@@ -1105,7 +1127,7 @@ final class ChessNetwork: @unchecked Sendable {
         // `makeWeightData` and then over-read that narrower buffer when
         // `writeBytes` copies the fp32 array's full size.
         let dummyND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
-        dummyND.label = "dummyND"
+        dummyND.label = "network.\(infOrTrain).weightIO.dummyInput[1]"
         Self.writeFloatsFP32(
             [Float](repeating: 0, count: 1 * arch.inputPlanes * Self.boardSize * Self.boardSize),
             into: dummyND
@@ -1524,6 +1546,7 @@ final class ChessNetwork: @unchecked Sendable {
             let inferenceWork: GPUWorkSize = inferenceExecutables[count] == nil
                 ? .positionsOnNewlyCompiledShape(count) : .positions(count)
             let executable = inferenceExecutable(for: count, feeds: entry.feeds)
+            let firstRun = inferenceAllocationLedger.beginFirstRun(of: count, device: metalDevice)
             guard let feedTensors = executable.feedTensors else {
                 throw ChessNetworkError.outputMissing("inference feed tensors")
             }
@@ -1543,6 +1566,7 @@ final class ChessNetwork: @unchecked Sendable {
                 stage: .batchedInference,
                 work: inferenceWork
             )
+            firstRun?.finish(owner: gpuOwnerName, graph: "inference", key: "batch=\(count)")
             let results = Dictionary(uniqueKeysWithValues: zip(inferenceTargets, resultArray))
 
             guard let policyData = results[policyOutput] else {
@@ -1592,7 +1616,7 @@ final class ChessNetwork: @unchecked Sendable {
             shape: [NSNumber(value: count), NSNumber(value: arch.inputPlanes), 8, 8]
         )
         let nda = MPSNDArray(device: metalDevice, descriptor: desc)
-        nda.label = "inference.input[\(count)]"
+        nda.label = "\(metalLabelPrefix).batchInput[\(count)]"
         let tensorData = MPSGraphTensorData(nda)
         var feeds: [MPSGraphTensor: MPSGraphTensorData] = [inputPlaceholder: tensorData]
         // Every consumer of this entry — value baseline, BN warmup, batched
@@ -1649,20 +1673,24 @@ final class ChessNetwork: @unchecked Sendable {
         // `withLargeBuildStack`. The wrapped compile cannot itself throw, so the
         // only possible error is the helper's unreachable thread-failure.
         let executable: MPSGraphExecutable
+        let compileAllocation: GPUAllocationChange
         do {
-            executable = try withLargeBuildStack {
-                self.graph.compile(
-                    with: MPSGraphDevice(mtlDevice: self.metalDevice),
-                    feeds: feedShapes,
-                    targetTensors: self.inferenceTargets,
-                    targetOperations: nil,
-                    compilationDescriptor: desc
-                )
+            (executable, compileAllocation) = try GPUAllocationChange.measure(on: metalDevice) {
+                try withLargeBuildStack {
+                    self.graph.compile(
+                        with: MPSGraphDevice(mtlDevice: self.metalDevice),
+                        feeds: feedShapes,
+                        targetTensors: self.inferenceTargets,
+                        targetOperations: nil,
+                        compilationDescriptor: desc
+                    )
+                }
             }
         } catch {
             preconditionFailure("ChessNetwork inference compile failed on large-stack thread: \(error)")
         }
         inferenceExecutables[count] = executable
+        inferenceAllocationLedger.recordCompile(of: count, compileAllocation)
         return executable
     }
 
@@ -1736,6 +1764,7 @@ final class ChessNetwork: @unchecked Sendable {
             let baselineWork: GPUWorkSize = valueBaselineExecutables[count] == nil
                 ? .positionsOnNewlyCompiledShape(count) : .positions(count)
             let executable = valueBaselineExecutable(for: count, feeds: entry.feeds)
+            let firstRun = valueBaselineAllocationLedger.beginFirstRun(of: count, device: metalDevice)
             guard let feedTensors = executable.feedTensors else {
                 throw ChessNetworkError.outputMissing("value-baseline feed tensors")
             }
@@ -1767,6 +1796,10 @@ final class ChessNetwork: @unchecked Sendable {
                 executionDescriptor: submission.executableExecutionDescriptor
             )
             submission.commit()
+            // MPSGraph allocates an executable's buffers while encoding, so
+            // the reading after the commit holds the first run's allocation
+            // without waiting for the GPU (this forward deliberately doesn't).
+            firstRun?.finish(owner: gpuOwnerName, graph: "valueBaseline", key: "batch=\(count)")
             // A/B: fully serialize the baseline before the training step reads its
             // output. Defeats any cross-command-buffer read-before-write hazard on
             // the single-buffered `resultTD` if the default overlap is unsafe on
@@ -1810,20 +1843,24 @@ final class ChessNetwork: @unchecked Sendable {
 
         // Large-stack compile — see `inferenceExecutable` / `withLargeBuildStack`.
         let executable: MPSGraphExecutable
+        let compileAllocation: GPUAllocationChange
         do {
-            executable = try withLargeBuildStack {
-                self.graph.compile(
-                    with: MPSGraphDevice(mtlDevice: self.metalDevice),
-                    feeds: feedShapes,
-                    targetTensors: [self.valueOutput],
-                    targetOperations: nil,
-                    compilationDescriptor: desc
-                )
+            (executable, compileAllocation) = try GPUAllocationChange.measure(on: metalDevice) {
+                try withLargeBuildStack {
+                    self.graph.compile(
+                        with: MPSGraphDevice(mtlDevice: self.metalDevice),
+                        feeds: feedShapes,
+                        targetTensors: [self.valueOutput],
+                        targetOperations: nil,
+                        compilationDescriptor: desc
+                    )
+                }
             }
         } catch {
             preconditionFailure("ChessNetwork value-baseline compile failed on large-stack thread: \(error)")
         }
         valueBaselineExecutables[count] = executable
+        valueBaselineAllocationLedger.recordCompile(of: count, compileAllocation)
         return executable
     }
 
@@ -1835,7 +1872,7 @@ final class ChessNetwork: @unchecked Sendable {
         }
         let desc = MPSNDArrayDescriptor(dataType: .float32, shape: [NSNumber(value: count), 1])
         let nda = MPSNDArray(device: metalDevice, descriptor: desc)
-        nda.label = "vbaseline.result[\(count)]"
+        nda.label = "\(metalLabelPrefix).valueBaseline.result[\(count)]"
         let td = MPSGraphTensorData(nda)
         valueBaselineResultCache[count] = td
         return td

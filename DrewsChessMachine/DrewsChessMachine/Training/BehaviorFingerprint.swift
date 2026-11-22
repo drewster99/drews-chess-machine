@@ -238,6 +238,7 @@ enum BehaviorFingerprint {
         //    The dropout Philox state MPSGraph derives from a seed.
         guard let device = MTLCreateSystemDefaultDevice() else { throw FingerprintError.noMetalDevice }
         guard let commandQueue = device.makeCommandQueue() else { throw FingerprintError.noCommandQueue }
+        commandQueue.label = "BehaviorFingerprint.dropoutStateDerive"
         let philox = try DropoutPhiloxState.derived(fromSeed: philoxSeed, device: device, commandQueue: commandQueue)
         for word in philox.words { append(UInt32(bitPattern: word), to: &hasher) }
 
