@@ -1601,7 +1601,15 @@ final class ChessTrainer: @unchecked Sendable {
     /// - `.off`: `negativeBranch = 0` — negative-advantage samples
     ///   contribute no policy gradient, the legacy `max(0, advNorm) ·
     ///   positiveCE` clamp regime.
-    var negativeAdvantagePolicyLoss: NegativeAdvantagePolicyLoss
+    ///
+    /// Live-tunable: the GUI writes it on the main actor while the step that
+    /// reads it (to fill the selector feed) runs on `executionQueue`, so the
+    /// value lives in a lock box rather than a plain stored property.
+    var negativeAdvantagePolicyLoss: NegativeAdvantagePolicyLoss {
+        get { _negativeAdvantagePolicyLoss.value }
+        set { _negativeAdvantagePolicyLoss.value = newValue }
+    }
+    private let _negativeAdvantagePolicyLoss: SyncBox<NegativeAdvantagePolicyLoss>
 
     /// Bootstrap-phase contempt knob. When `drawPenalty > 0`, every
     /// drawn game's outcome `z` is rewritten from `0.0` to
@@ -2331,7 +2339,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLabelSmoothingPerMoveCap = policyLabelSmoothingPerMoveCap
         self.valueLabelSmoothingEpsilon = valueLabelSmoothingEpsilon
         self.momentumCoeff = momentumCoeff
-        self.negativeAdvantagePolicyLoss = negativeAdvantagePolicyLoss
+        self._negativeAdvantagePolicyLoss = SyncBox(negativeAdvantagePolicyLoss)
         self.sqrtBatchScalingForLR = sqrtBatchScalingForLR
         self.lrWarmupSteps = lrWarmupSteps
         self.arch = arch

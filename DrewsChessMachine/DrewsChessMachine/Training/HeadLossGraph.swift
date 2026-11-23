@@ -494,17 +494,29 @@ enum HeadLossGraph {
     ) -> MPSGraphTensor {
         let complementCE = complementCEPerPosition(graph: graph, centeredLogits: centeredLogits, targets: targets)
         let unlikelihood = policyUnlikelihoodPerPosition(graph: graph, centeredLogits: centeredLogits, targets: targets)
-        let useUnlikelihood = graph.greaterThan(
-            selector, graph.constant(1.5, dataType: dataType), name: "negative_advantage_use_unlikelihood")
+        // The choice is an arithmetic blend with 0/1 weights, not `graph.select`: this
+        // tensor is on the loss's path to every trainable weight, and MPSGraph's
+        // autodiff has no gradient rule through `select` here — building the training
+        // graph with a select aborted in MPSGraphAutomaticDifferentiation ("Couldn't
+        // get gradient Tensor for tensor of op : stem_conv_weights"). Both branches are
+        // finite on every row (the unlikelihood mask is a finite −1e9, and single-move
+        // rows are zeroed by `complementValid`), so a zero weight contributes exactly
+        // zero value and zero gradient.
+        let unlikelihoodWeight = graph.cast(
+            graph.greaterThan(selector, graph.constant(1.5, dataType: dataType), name: "negative_advantage_use_unlikelihood_bool"),
+            to: dataType,
+            name: "negative_advantage_use_unlikelihood"
+        )
+        let complementWeight = graph.subtraction(
+            graph.constant(1.0, dataType: dataType), unlikelihoodWeight, name: "negative_advantage_use_complement")
         let enabled = graph.cast(
             graph.greaterThan(selector, graph.constant(0.5, dataType: dataType), name: "negative_advantage_enabled_bool"),
             to: dataType,
             name: "negative_advantage_enabled"
         )
-        let chosen = graph.select(
-            predicate: useUnlikelihood,
-            trueTensor: unlikelihood,
-            falseTensor: complementCE,
+        let chosen = graph.addition(
+            graph.multiplication(unlikelihood, unlikelihoodWeight, name: "negative_advantage_unlikelihood_part"),
+            graph.multiplication(complementCE, complementWeight, name: "negative_advantage_complement_part"),
             name: "negative_advantage_loss_selected"
         )
         return graph.multiplication(chosen, enabled, name: "negative_advantage_loss_per_pos")

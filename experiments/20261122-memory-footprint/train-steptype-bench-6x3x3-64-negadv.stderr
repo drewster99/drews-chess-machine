@@ -1,0 +1,9 @@
+[BENCH] plain: compiling
+[BENCH] plain: timing for 120 s
+[BENCH] plain: 301 steps, median 398.2 ms
+[BENCH] diagnostics: compiling
+[BENCH] diagnostics: timing for 120 s
+[BENCH] diagnostics: 301 steps, median 397.7 ms
+[BENCH] probe: compiling
+[BENCH] probe: timing for 120 s
+[BENCH] probe: 291 steps, median 412.8 ms
