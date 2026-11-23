@@ -25,20 +25,20 @@ final class SessionResumeParameterFallbackTests: XCTestCase {
     /// run must use the legacy clamp-on regime (off) — even though the
     /// live `TrainingParameters` default for fresh sessions is on.
     func testComplementCEAbsentFieldResolvesToOff() {
-        XCTAssertFalse(
-            SessionCheckpointState.resolvedSignedAdvantageComplementCE(savedFlag: nil),
+        XCTAssertEqual(
+            SessionCheckpointState.resolvedNegativeAdvantagePolicyLoss(saved: nil), .off,
             "a session file without the complement-CE field predates the feature; resume must preserve the legacy clamp-on regime (off), not inherit the live default"
         )
     }
 
     /// A present field is authoritative in both directions.
     func testComplementCEPresentFieldIsAuthoritative() {
-        XCTAssertTrue(
-            SessionCheckpointState.resolvedSignedAdvantageComplementCE(savedFlag: true),
+        XCTAssertEqual(
+            SessionCheckpointState.resolvedNegativeAdvantagePolicyLoss(saved: .complementCE), .complementCE,
             "a session saved with complement CE on must resume with it on"
         )
-        XCTAssertFalse(
-            SessionCheckpointState.resolvedSignedAdvantageComplementCE(savedFlag: false),
+        XCTAssertEqual(
+            SessionCheckpointState.resolvedNegativeAdvantagePolicyLoss(saved: .off), .off,
             "a session saved with complement CE off must resume with it off"
         )
     }

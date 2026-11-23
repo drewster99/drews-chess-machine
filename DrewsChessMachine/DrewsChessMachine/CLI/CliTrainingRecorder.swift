@@ -1012,6 +1012,12 @@ final class CliTrainingRecorder: @unchecked Sendable {
         var policyLabelSmoothingMode: String? = nil
         var policyLabelSmoothingPerMove: Double? = nil
         var policyLabelSmoothingPerMoveCap: Double? = nil
+        /// The negative-advantage policy loss in effect this tick
+        /// (`NegativeAdvantagePolicyLoss.logToken`), so arms of an A/B over
+        /// it are distinguishable in `results.json`. Nil only on a
+        /// construction site that predates it; every production call site
+        /// passes it.
+        var negativeAdvantagePolicyLoss: String? = nil
         /// The trainer architecture's policy-head tail precision
         /// (`PolicyTailPrecisionSetting` raw value; format v12 — before it
         /// the process-wide launch flag's value). Nil only on a construction
@@ -1141,6 +1147,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case policyLabelSmoothingMode = "policy_label_smoothing_mode"
             case policyLabelSmoothingPerMove = "policy_label_smoothing_per_move"
             case policyLabelSmoothingPerMoveCap = "policy_label_smoothing_per_move_cap"
+            case negativeAdvantagePolicyLoss = "negative_advantage_policy_loss"
             case policyTailPrecision = "policy_tail_precision"
             case cumTrainerStep = "cum_trainer_step"
             case cumTrainStepSec = "cum_train_step_sec"
@@ -1528,6 +1535,7 @@ extension CliTrainingRecorder.StatsLine {
         policyLabelSmoothingMode = hyperparameters.policyLabelSmoothingMode.logToken
         policyLabelSmoothingPerMove = Double(hyperparameters.policyLabelSmoothingPerMove)
         policyLabelSmoothingPerMoveCap = Double(hyperparameters.policyLabelSmoothingPerMoveCap)
+        negativeAdvantagePolicyLoss = hyperparameters.negativeAdvantagePolicyLoss.logToken
         self.policyTailPrecision = policyTailPrecision.rawValue
     }
 }

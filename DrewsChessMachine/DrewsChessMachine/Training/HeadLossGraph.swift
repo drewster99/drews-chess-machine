@@ -79,8 +79,15 @@ enum HeadLossGraph {
         /// move: `(1 − f)·uniform(other legal) + f·oneHot`, `f = min(δ, cap/(n − 1))`.
         let complement: MPSGraphTensor
         /// `[batch, 1]`: 1 where the position has more than one legal move,
-        /// else 0. The weight the complement cross-entropy must carry.
+        /// else 0. The weight both negative-advantage losses (complement CE,
+        /// unlikelihood) must carry.
         let complementValid: MPSGraphTensor
+        /// `legalMask − oneHot`: 1 at every legal move except the played one.
+        /// The set the unlikelihood loss keeps (`policyUnlikelihoodPerPosition`).
+        let otherLegalMask: MPSGraphTensor
+        /// `otherLegalMask / max(|legal| − 1, 1)`: uniform over the other legal
+        /// moves (all zero with one legal move).
+        let uniformOverOtherLegal: MPSGraphTensor
     }
 
     /// The fed scalars that choose and parameterize the policy targets'
@@ -203,7 +210,9 @@ enum HeadLossGraph {
             oneHot: basis.oneHot,
             smoothed: fixedTotal.smoothed,
             complement: fixedTotal.complement,
-            complementValid: basis.complementValid
+            complementValid: basis.complementValid,
+            otherLegalMask: basis.otherLegalMask,
+            uniformOverOtherLegal: basis.uniformOverOtherLegal
         )
     }
 
@@ -285,7 +294,9 @@ enum HeadLossGraph {
                 falseTensor: fixedTotal.complement,
                 name: "policy_complement_target_selected"
             ),
-            complementValid: basis.complementValid
+            complementValid: basis.complementValid,
+            otherLegalMask: basis.otherLegalMask,
+            uniformOverOtherLegal: basis.uniformOverOtherLegal
         )
     }
 
@@ -373,6 +384,130 @@ enum HeadLossGraph {
             name: "policy_per_move_complement_target"
         )
         return (smoothed: smoothed, complement: complement)
+    }
+
+    // MARK: - Negative-advantage policy loss
+
+    /// The complement cross-entropy per position, `[batch, 1]`:
+    /// `CE(targets.complement, softmax(centeredLogits))`, zero on a
+    /// single-legal-move position (`complementValid`). The CE input is the
+    /// centered UNMASKED logits, like the positive branch's, so illegal
+    /// cells keep their downward gradient.
+    static func complementCEPerPosition(
+        graph: MPSGraph,
+        centeredLogits: MPSGraphTensor,
+        targets: PolicyTargets
+    ) -> MPSGraphTensor {
+        let raw = graph.softMaxCrossEntropy(
+            centeredLogits,
+            labels: targets.complement,
+            axis: 1,
+            reuctionType: .none,
+            name: "policy_ce_complement_raw"
+        )
+        return graph.multiplication(
+            graph.reshape(raw, shape: [-1, 1], name: "policy_ce_complement_per_pos_unweighted"),
+            targets.complementValid,
+            name: "policy_ce_complement_per_pos"
+        )
+    }
+
+    /// The unlikelihood loss per position, `[batch, 1]`:
+    /// `−log Σ_{legal j ≠ played} p_j` with `p = softmax(centeredLogits)`
+    /// over all cells (the same unmasked softmax the cross-entropies use),
+    /// zero on a single-legal-move position. See `NegativeAdvantagePolicyLoss`
+    /// for what it teaches and its gradient.
+    ///
+    /// **How it is computed.** `−log S = lse(x) − lse_O(x)`, with `lse` the
+    /// log-sum-exp over all cells and `lse_O` over the other legal moves O.
+    /// MPSGraph has no gradient rule for `reductionMaximum`, so a hand-built
+    /// stable log-sum-exp cannot sit on the loss path; the fused
+    /// `softMaxCrossEntropy` (stable, with an autodiff rule) supplies both
+    /// terms instead. For any target `t` supported on O and summing to 1,
+    /// `CE(t, x) = lse(x) − Σ t·x`, and over the logits with every cell
+    /// outside O pushed to −1e9 (the additive mask the legal-move masking
+    /// already uses; fp32 holds the bias exactly, so those cells carry no
+    /// softmax mass) `CE(t, x_O) = lse_O(x) − Σ t·x`, because `x_O = x` on O.
+    /// The difference is `lse(x) − lse_O(x)` whatever `t` is, and so is its
+    /// gradient: `softmax(x) − softmax_O(x)`, which is `+p_a` on the played
+    /// move, `+p_j` on illegal cells and `p_j − p_j/S` on the other legal
+    /// moves. `t` = uniform over O.
+    ///
+    /// **One legal move.** O is empty, `t` is all zero and every cell is
+    /// masked, so both cross-entropies are exactly 0 (a zero target times a
+    /// finite log-softmax) — no 0/0 and no infinity — and the position's
+    /// weight `complementValid` is 0, which zeroes its gradient too.
+    ///
+    /// The difference of two cross-entropies can come out a few fp32 ulps
+    /// below zero when `S ≈ 1`; it is not clamped (a clamp would cut the
+    /// gradient where it is already ≈ 0 and gain nothing).
+    static func policyUnlikelihoodPerPosition(
+        graph: MPSGraph,
+        centeredLogits: MPSGraphTensor,
+        targets: PolicyTargets
+    ) -> MPSGraphTensor {
+        let one = graph.constant(1.0, dataType: dataType)
+        let outsideOtherLegal = graph.subtraction(
+            one, targets.otherLegalMask, name: "policy_unlikelihood_outside_other_legal")
+        let additiveMask = graph.multiplication(
+            outsideOtherLegal, graph.constant(-1e9, dataType: dataType), name: "policy_unlikelihood_additive_mask")
+        let otherLegalLogits = graph.addition(
+            centeredLogits, additiveMask, name: "policy_unlikelihood_other_legal_logits")
+        let logSumExpAllMinusTarget = graph.softMaxCrossEntropy(
+            centeredLogits,
+            labels: targets.uniformOverOtherLegal,
+            axis: 1,
+            reuctionType: .none,
+            name: "policy_unlikelihood_ce_all"
+        )
+        let logSumExpOtherLegalMinusTarget = graph.softMaxCrossEntropy(
+            otherLegalLogits,
+            labels: targets.uniformOverOtherLegal,
+            axis: 1,
+            reuctionType: .none,
+            name: "policy_unlikelihood_ce_other_legal"
+        )
+        let raw = graph.subtraction(
+            logSumExpAllMinusTarget, logSumExpOtherLegalMinusTarget, name: "policy_unlikelihood_raw")
+        return graph.multiplication(
+            graph.reshape(raw, shape: [-1, 1], name: "policy_unlikelihood_per_pos_unweighted"),
+            targets.complementValid,
+            name: "policy_unlikelihood_per_pos"
+        )
+    }
+
+    /// The negative-advantage branch per position, `[batch, 1]`, for the
+    /// form `selector` (a `[1]` fp32 placeholder fed
+    /// `NegativeAdvantagePolicyLoss.graphSelectorValue`) picks this step:
+    /// 0 off, 1 complement CE, 2 unlikelihood.
+    ///
+    /// Both losses are built and `select` passes the chosen one through
+    /// unchanged (its gradient reaches only the chosen one); the branch is
+    /// then multiplied by 1 or 0. Both losses are finite on every row, so
+    /// the zero gate gives exactly zero, never NaN. A fed selector rather
+    /// than a build-time branch keeps the form live-tunable.
+    static func negativeAdvantagePolicyLossPerPosition(
+        graph: MPSGraph,
+        centeredLogits: MPSGraphTensor,
+        targets: PolicyTargets,
+        selector: MPSGraphTensor
+    ) -> MPSGraphTensor {
+        let complementCE = complementCEPerPosition(graph: graph, centeredLogits: centeredLogits, targets: targets)
+        let unlikelihood = policyUnlikelihoodPerPosition(graph: graph, centeredLogits: centeredLogits, targets: targets)
+        let useUnlikelihood = graph.greaterThan(
+            selector, graph.constant(1.5, dataType: dataType), name: "negative_advantage_use_unlikelihood")
+        let enabled = graph.cast(
+            graph.greaterThan(selector, graph.constant(0.5, dataType: dataType), name: "negative_advantage_enabled_bool"),
+            to: dataType,
+            name: "negative_advantage_enabled"
+        )
+        let chosen = graph.select(
+            predicate: useUnlikelihood,
+            trueTensor: unlikelihood,
+            falseTensor: complementCE,
+            name: "negative_advantage_loss_selected"
+        )
+        return graph.multiplication(chosen, enabled, name: "negative_advantage_loss_per_pos")
     }
 
     /// Build the W/D/L value target, `[batch, classes]`:

@@ -124,11 +124,11 @@ When true, scales the effective learning rate by sqrt(batch / referenceBatch). S
 
 **Type:** Bool · **Range:** — · **Default:** true · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
-### signed_advantage_complement_ce
+### negative_advantage_policy_loss
 
-When true, the policy gradient runs two cross-entropies — positive-advantage samples teach via standard smoothed CE on the played move, negative-advantage samples teach via a complementary smoothed CE that pushes mass off the played move toward the OTHER legal moves. Each contribution is bounded below by zero so the total policy loss stays bounded below by zero on both signs. When false, only positive-advantage samples teach the policy (legacy clamp-on regime) and negative samples contribute zero gradient. Note: complement-target entropy is structurally higher than positive-target entropy (the (1−ε) main mass spreads over (|legal|−1) cells vs 1 cell), so the per-position negative-branch loss magnitudes will look larger in [STATS] — that's the target geometry, not a divergence signal.
+What a negative-advantage sample (the game went worse than the value head expected) trains the policy with, weighted by max(0, −A): 0 = off (negative samples contribute no policy gradient; only positive-advantage samples teach the policy), 1 = complement CE (cross-entropy against the complement target: the (1−ε) main mass spread evenly over the other legal moves, the label-smoothing share over all legal moves, so the played move keeps a floor; every other legal move is pulled toward the same mass), 2 = unlikelihood (−log of the probability the policy gives the other legal moves, Σ p over the legal moves except the played one, over the same unmasked softmax: lowers the played move and every illegal move, and raises each other legal move in proportion to its current probability, keeping their order; no label smoothing, and its pull on the played move fades as that move's probability falls). Both are bounded below by zero and zero on a position with one legal move. The negative branch's loss magnitude differs between 1 and 2 (the complement CE settles near the complement target's entropy, several nats; the unlikelihood near 0), so pLoss levels compare only within one form. A change takes effect on the next training step.
 
-**Type:** Bool · **Range:** — · **Default:** true · **Live-tunable** (mid-session UI changes propagate to the running trainer)
+**Type:** Int · **Range:** 0..2 · **Default:** 1 · **Live-tunable** (mid-session UI changes propagate to the running trainer)
 
 ### lr_warmup_steps
 

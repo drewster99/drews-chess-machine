@@ -43,7 +43,7 @@ final class TrainingSettingsPopoverModel {
     var warmupText = "" { didSet { warmupError = false; refreshScheduleChartInput() } }
     var momentumText = "" { didSet { momentumError = false; refreshScheduleChartInput() } }
     var sqrtBatchScalingValue = true { didSet { refreshScheduleChartInput() } }
-    var signedAdvantageComplementCEValue = true
+    var negativeAdvantagePolicyLossValue: NegativeAdvantagePolicyLoss = .complementCE
     var entropyText = "" { didSet { entropyError = false } }
     var illegalMassWeightText = "" { didSet { illegalMassWeightError = false } }
     var gradClipText = "" { didSet { gradClipError = false } }
@@ -513,7 +513,7 @@ final class TrainingSettingsPopoverModel {
         warmupText = String(p.lrWarmupSteps)
         momentumText = String(format: "%.3f", p.momentumCoeff)
         sqrtBatchScalingValue = p.sqrtBatchScalingLR
-        signedAdvantageComplementCEValue = p.signedAdvantageComplementCE
+        negativeAdvantagePolicyLossValue = p.negativeAdvantagePolicyLoss
         entropyText = String(format: "%.2e", p.entropyBonus)
         illegalMassWeightText = String(format: "%.2f", p.illegalMassWeight)
         gradClipText = String(format: "%.1f", p.gradClipMaxNorm)
@@ -1117,12 +1117,12 @@ final class TrainingSettingsPopoverModel {
             p.sqrtBatchScalingLR = sqrtBatchScalingValue
         }
 
-        // Signed-advantage complement-CE toggle — Bool.
-        if signedAdvantageComplementCEValue != p.signedAdvantageComplementCE {
+        // Negative-advantage policy loss — an enum, cannot fail to parse.
+        if negativeAdvantagePolicyLossValue != p.negativeAdvantagePolicyLoss {
             SessionLogger.shared.log(
-                "[PARAM] signedAdvantageComplementCE: \(p.signedAdvantageComplementCE) -> \(signedAdvantageComplementCEValue)"
+                "[PARAM] negativeAdvantagePolicyLoss: \(p.negativeAdvantagePolicyLoss.logToken) -> \(negativeAdvantagePolicyLossValue.logToken)"
             )
-            p.signedAdvantageComplementCE = signedAdvantageComplementCEValue
+            p.negativeAdvantagePolicyLoss = negativeAdvantagePolicyLossValue
         }
 
         // Entropy regularization — Double in the declared range.

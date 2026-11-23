@@ -1654,7 +1654,7 @@ extension SessionController {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, dropRate, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap, complementCEOn, cycle, policySmoothingConfig) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, dropRate, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap, negativeAdvantageLoss, cycle, policySmoothingConfig) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -1676,7 +1676,7 @@ extension SessionController {
                                 TrainingParameters.shared.arenaGamesPerTournament,
                                 TrainingParameters.shared.selfPlayDrawKeepFraction,
                                 TrainingParameters.shared.selfPlayMaxPliesPerGame,
-                                trainer.useSignedAdvantageComplementCE,
+                                trainer.negativeAdvantagePolicyLoss,
                                 trainer.lrMomentumCycle,
                                 // Read back from the trainer, like every field
                                 // above, so the line shows the smoothing the
@@ -1826,7 +1826,7 @@ extension SessionController {
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", livePromoteThreshold)) arenaGames=\(liveTournamentGames) arenaAutoSec=\(Int(arenaAutoSec)) workers=\(workerN) stepLineSec=\(String(format: "%g", stepLineIntervalSec))"
                         let regStr = String(
-                            format: "clip=%.1f decay=%.0e drop=%.2f ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f complCE=%@",
+                            format: "clip=%.1f decay=%.0e drop=%.2f ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f negAdvLoss=%@",
                             gradClip,
                             weightDec,
                             dropRate,
@@ -1836,7 +1836,7 @@ extension SessionController {
                             policyW,
                             valueW,
                             momentum,
-                            complementCEOn ? "on" : "off"
+                            negativeAdvantageLoss.logToken
                         ) + " " + policySmoothingConfig.policyLabelSmoothingLogFields
                         // Average game length: lifetime and rolling-
                         // window (`recentWindow`, currently 1 minute).
@@ -2274,6 +2274,7 @@ extension SessionController {
                                 policyLabelSmoothingMode: policySmoothingConfig.policyLabelSmoothingMode.logToken,
                                 policyLabelSmoothingPerMove: Double(policySmoothingConfig.policyLabelSmoothingPerMove),
                                 policyLabelSmoothingPerMoveCap: Double(policySmoothingConfig.policyLabelSmoothingPerMoveCap),
+                                negativeAdvantagePolicyLoss: policySmoothingConfig.negativeAdvantagePolicyLoss.logToken,
                                 cumTrainerStep: lineageNow?.totals.cumTrainerStep,
                                 cumTrainStepSec: lineageNow?.totals.cumTrainStepSec,
                                 cumGames: lineageNow?.totals.cumGames

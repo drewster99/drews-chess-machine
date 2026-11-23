@@ -1203,7 +1203,7 @@ enum CorpusReplayRunner {
                 hp.lrWarmupSteps, p.replayBufferCapacity, p.replayRatioTarget,
                 p.replayBufferMinPositionsBeforeTraining
             )
-            + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
+            + " negAdvLoss=\(hp.negativeAdvantagePolicyLoss.logToken)"
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
             + " relClip=\(p.relativeGradientCap.settings.compactDescription)"

@@ -249,7 +249,7 @@ extension SessionParameterResume {
         restore(DrawWatchTerminateGames.self, saved: rs.drawWatchTerminateGames, into: \.drawWatchTerminateGames)
         restore(DrawWatchStreakLength.self, saved: rs.drawWatchStreakLength, into: \.drawWatchStreakLength)
         restore(SqrtBatchScalingLR.self, saved: rs.sqrtBatchScalingForLR, into: \.sqrtBatchScalingLR)
-        restore(SignedAdvantageComplementCE.self, saved: rs.signedAdvantageComplementCE, into: \.signedAdvantageComplementCE)
+        restoreNegativeAdvantagePolicyLoss(from: rs, acceptedReplacements: acceptedReplacements)
         restore(LRWarmupSteps.self, saved: rs.lrWarmupSteps, into: \.lrWarmupSteps)
         // Run-management knobs that once lived only in app settings.
         restore(ReplayBufferMinPositionsBeforeTraining.self, saved: rs.replayBufferMinPositionsBeforeTraining, into: \.replayBufferMinPositionsBeforeTraining)
@@ -363,6 +363,54 @@ extension SessionParameterResume {
         )
         restore(PolicyLabelSmoothingPerMove.self, savedFloat: rs.policyLabelSmoothingPerMove, into: \.policyLabelSmoothingPerMove)
         restore(PolicyLabelSmoothingPerMoveCap.self, savedFloat: rs.policyLabelSmoothingPerMoveCap, into: \.policyLabelSmoothingPerMoveCap)
+    }
+
+    // MARK: - Negative-advantage policy loss restore
+
+    /// Writes a resumed session's negative-advantage policy loss back onto
+    /// `TrainingParameters.shared`. The session's token was converted from
+    /// the previous Bool at decode when the session predates it
+    /// (`convertLegacySignedAdvantageComplementCE`); a session with neither
+    /// resolves to the declared pre-feature value (`off`, held for this
+    /// run). An unknown token reaches here only after the user reviewed it
+    /// at load and accepted the current setting in its place.
+    func restoreNegativeAdvantagePolicyLoss(from rs: SessionCheckpointState, acceptedReplacements: Set<String>) {
+        let p = parameters
+        if acceptedReplacements.contains(SessionCheckpointState.SavedSettingID.negativeAdvantagePolicyLoss) {
+            logReplacedAtLoad(
+                NegativeAdvantagePolicyLossParameter.self,
+                savedDescription: rs.negativeAdvantagePolicyLoss ?? "absent",
+                currentDescription: p.negativeAdvantagePolicyLoss.logToken,
+                why: "is not a known form"
+            )
+            return
+        }
+        let savedRawValue: Int?
+        if let token = rs.negativeAdvantagePolicyLoss {
+            guard let saved = NegativeAdvantagePolicyLoss(logToken: token) else {
+                preconditionFailure("session load reviews an unknown negative_advantage_policy_loss before resume; got \(token)")
+            }
+            savedRawValue = saved.rawValue
+        } else {
+            savedRawValue = nil
+        }
+        restore(
+            NegativeAdvantagePolicyLossParameter.self,
+            saved: savedRawValue,
+            current: p.negativeAdvantagePolicyLoss.rawValue,
+            describe: { NegativeAdvantagePolicyLoss(persistedRawValue: $0).logToken },
+            write: { rawValue, source in
+                let form = NegativeAdvantagePolicyLoss(persistedRawValue: rawValue)
+                switch source {
+                case .session:
+                    p.negativeAdvantagePolicyLoss = form
+                case .preFeature:
+                    p.holdForThisRun(NegativeAdvantagePolicyLossParameter.self) { p.negativeAdvantagePolicyLoss = form }
+                case .currentSetting, .notExact:
+                    break
+                }
+            }
+        )
     }
 
     // MARK: - Arena promotion criterion restore

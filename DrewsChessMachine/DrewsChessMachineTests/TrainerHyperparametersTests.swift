@@ -106,7 +106,7 @@ final class TrainerHyperparametersTests: XCTestCase {
         p.policyLabelSmoothingEpsilon = 0.05
         p.valueLabelSmoothingEpsilon = 0.02
         p.momentumCoeff = 0.85
-        p.signedAdvantageComplementCE = false
+        p.negativeAdvantagePolicyLoss = .off
         p.sqrtBatchScalingLR = false
         p.lrWarmupSteps = 321
         p.batchStatsInterval = 7
@@ -124,7 +124,7 @@ final class TrainerHyperparametersTests: XCTestCase {
         XCTAssertEqual(h.policyLabelSmoothingEpsilon, Float(0.05))
         XCTAssertEqual(h.valueLabelSmoothingEpsilon, Float(0.02))
         XCTAssertEqual(h.momentumCoeff, Float(0.85))
-        XCTAssertFalse(h.useSignedAdvantageComplementCE)
+        XCTAssertEqual(h.negativeAdvantagePolicyLoss, .off)
         XCTAssertFalse(h.sqrtBatchScalingForLR)
         XCTAssertEqual(h.lrWarmupSteps, 321)
         XCTAssertEqual(h.batchStatsInterval, 7)

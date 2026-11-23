@@ -260,7 +260,7 @@ enum BehaviorFingerprint {
             policyLabelSmoothingPerMoveCap: 0.1,
             valueLabelSmoothingEpsilon: 0.05,
             momentumCoeff: 0.9,
-            useSignedAdvantageComplementCE: false,
+            negativeAdvantagePolicyLoss: .off,
             sqrtBatchScalingForLR: false,
             lrWarmupSteps: 0,
             arch: arch,

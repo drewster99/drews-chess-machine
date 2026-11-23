@@ -1364,7 +1364,7 @@ extension SessionController {
             // than the session's saved value). All Optional for back-compat.
             lrWarmupSteps: params.lrWarmupSteps,
             sqrtBatchScalingForLR: params.sqrtBatchScalingLR,
-            signedAdvantageComplementCE: params.signedAdvantageComplementCE,
+            negativeAdvantagePolicyLoss: params.negativeAdvantagePolicyLoss.logToken,
             replayBufferMinPositionsBeforeTraining: runCapture.replayBufferMinPositionsBeforeTraining,
             arenaAutoIntervalSec: params.arenaAutoIntervalSec,
             candidateProbeIntervalSec: params.candidateProbeIntervalSec,

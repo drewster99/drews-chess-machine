@@ -148,9 +148,9 @@ struct ControlSideEffectsProbe: View {
                 SessionLogger.shared.log("[PARAM] sqrtBatchScalingForLR: \(oldValue) -> \(newValue)")
                 trainer?.sqrtBatchScalingForLR = newValue
             }
-            .onChange(of: trainingParams.signedAdvantageComplementCE) { oldValue, newValue in
-                SessionLogger.shared.log("[PARAM] signedAdvantageComplementCE: \(oldValue) -> \(newValue)")
-                trainer?.useSignedAdvantageComplementCE = newValue
+            .onChange(of: trainingParams.negativeAdvantagePolicyLoss) { oldValue, newValue in
+                SessionLogger.shared.log("[PARAM] negativeAdvantagePolicyLoss: \(oldValue.logToken) -> \(newValue.logToken)")
+                trainer?.negativeAdvantagePolicyLoss = newValue
             }
             .onChange(of: trainingParams.lrWarmupSteps) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] lrWarmupSteps: \(oldValue) -> \(newValue)")

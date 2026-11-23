@@ -38,6 +38,12 @@ extension ParameterValue {
     /// omits — a partial `parameters.json` leaves it to the current setting,
     /// as `--parameters` always has; the default reads the persisted setting.
     ///
+    /// **Previous complement-CE key.** `signed_advantage_complement_ce` (a
+    /// Bool) is converted here too, to `negative_advantage_policy_loss`
+    /// (`LegacySignedAdvantageComplementCE.converting`: true → complement
+    /// CE, false → off), so an old snapshot compares equal to a run at the
+    /// same behavior and a changed one is reported.
+    ///
     /// Throws `TrainingConfigError.wrongType(id: "<root>")` when the text is
     /// not a JSON object, `wrongType(id:)` for a value no parameter kind
     /// reads, and the underlying error for text that is not JSON.
@@ -74,7 +80,11 @@ extension ParameterValue {
         if !converted.notes.isEmpty {
             LegacyLRScheduleKeys.logNote("[PARAM] legacy LR schedule keys converted: " + converted.notes.joined(separator: "; "))
         }
-        return converted.values
+        let negativeAdvantage = try LegacySignedAdvantageComplementCE.converting(converted.values)
+        if let note = negativeAdvantage.note {
+            LegacyLRScheduleKeys.logNote("[PARAM] legacy key converted: " + note)
+        }
+        return negativeAdvantage.values
     }
 }
 

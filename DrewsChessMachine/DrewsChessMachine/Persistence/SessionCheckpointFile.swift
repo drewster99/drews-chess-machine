@@ -13,6 +13,8 @@ enum SessionCheckpointError: LocalizedError {
     case missingLineage(formatVersion: Int)
     /// The previous LR schedule form could not be read as LR keyframes.
     case legacyLRSchedule(detail: String)
+    /// The previous complement-CE flag could not be converted.
+    case legacyNegativeAdvantagePolicyLoss(detail: String)
 
     var errorDescription: String? {
         switch self {
@@ -34,6 +36,8 @@ enum SessionCheckpointError: LocalizedError {
                 + "\(SessionCheckpointState.lineageRequiredFromFormatVersion)), and this one has none"
         case .legacyLRSchedule(let detail):
             return "session.json's LR schedule (previous form) cannot be read as LR keyframes: \(detail)"
+        case .legacyNegativeAdvantagePolicyLoss(let detail):
+            return "session.json's negative-advantage policy loss cannot be read: \(detail)"
         }
     }
 }
@@ -411,40 +415,34 @@ struct SessionCheckpointState: Codable, Equatable {
     // overrides @AppStorage so reload is fully reproducible.
     var lrWarmupSteps: Int?
     var sqrtBatchScalingForLR: Bool?
-    /// Whether the signed-advantage complement-CE branch was active at
-    /// save time. When true, negative-advantage samples drive the
-    /// policy via a complementary CE against a mirror-smoothed target
-    /// (mass on the OTHER legal moves) instead of contributing zero
-    /// gradient (the legacy clamp-on regime). Optional for back-compat
-    /// with session files written before the toggle landed; resolve via
-    /// `resolvedSignedAdvantageComplementCE` — never by falling through
-    /// to the live `TrainingParameters` value.
+    /// `NegativeAdvantagePolicyLoss.logToken` in effect at save time (`off`
+    /// / `complement_ce` / `unlikelihood`). Stored as the token, not the raw
+    /// `Int`, so the file stays readable and survives any renumbering. A
+    /// session written before this field carries the Bool
+    /// `signedAdvantageComplementCE` instead, which `decode` converts into
+    /// this one; a session with neither predates the complement CE and
+    /// resolves to `off` (`resolvedNegativeAdvantagePolicyLoss`).
+    var negativeAdvantagePolicyLoss: String?
+    /// The Bool this setting replaced: whether the complement CE was on, in
+    /// a session written before `negativeAdvantagePolicyLoss`. Read only:
+    /// `decode` converts it (`convertLegacySignedAdvantageComplementCE`) and
+    /// clears it, so it is never written back.
     var signedAdvantageComplementCE: Bool?
 
-    /// The complement-CE setting a resumed session should actually run
-    /// with.
+    /// The negative-advantage policy loss a resumed session should actually
+    /// run with, given its saved form (nil when the session records none).
     ///
-    /// This checkpoint field was introduced in the same commit as the
-    /// complement-CE feature itself, so a session file lacking the
-    /// field provably predates the feature — the run it captured
-    /// factually trained in the legacy clamp-on regime. The
-    /// absent-field fallback must therefore reproduce that pre-feature
-    /// behavior (off), NOT the user's current default: falling through
-    /// to the live setting silently switched the policy-gradient
-    /// regime of old runs on resume. (Observed on the resumed KbHZ
-    /// session from 2026-05: its policy loss jumped at resume because
-    /// complement CE was applied to a run that never used it.)
-    ///
-    /// Kept as a pure static so the policy is unit-testable without
-    /// constructing a full checkpoint state; the instance property is
-    /// the call-site-facing form.
-    static func resolvedSignedAdvantageComplementCE(savedFlag: Bool?) -> Bool {
-        savedFlag ?? TrainingParameterResolution.absentValue(of: SignedAdvantageComplementCE.self)
-    }
-
-    /// Instance form of `resolvedSignedAdvantageComplementCE(savedFlag:)`.
-    var resolvedSignedAdvantageComplementCE: Bool {
-        Self.resolvedSignedAdvantageComplementCE(savedFlag: signedAdvantageComplementCE)
+    /// A session file lacking both this field and the Bool it replaced
+    /// provably predates the complement CE: the run it captured trained in
+    /// the clamp regime, so the absent value is `off` (the key's declared
+    /// pre-feature value), NOT the user's current default — falling through
+    /// to the live setting once silently switched the policy-gradient regime
+    /// of old runs on resume. (Observed on the resumed KbHZ session from
+    /// 2026-05: its policy loss jumped at resume because complement CE was
+    /// applied to a run that never used it.)
+    static func resolvedNegativeAdvantagePolicyLoss(saved: NegativeAdvantagePolicyLoss?) -> NegativeAdvantagePolicyLoss {
+        saved ?? NegativeAdvantagePolicyLoss(
+            persistedRawValue: TrainingParameterResolution.absentValue(of: NegativeAdvantagePolicyLossParameter.self))
     }
 
     // MARK: Pre-feature fallback resolution
@@ -901,6 +899,7 @@ struct SessionCheckpointState: Codable, Equatable {
                 throw SessionCheckpointError.unsupportedVersion(state.formatVersion)
             }
             try state.convertLegacyLRSchedule()
+            try state.convertLegacySignedAdvantageComplementCE()
             if state.formatVersion >= Self.lineageRequiredFromFormatVersion && state.lineage == nil {
                 throw SessionCheckpointError.missingLineage(formatVersion: state.formatVersion)
             }
@@ -1235,6 +1234,7 @@ extension SessionCheckpointState {
     /// replacement the user accepted.
     enum SavedSettingID {
         static let policyLabelSmoothing = "policy_label_smoothing"
+        static let negativeAdvantagePolicyLoss = "negative_advantage_policy_loss"
         static let arenaPromotionCriterion = "arena_promotion_criterion"
         static let periodicAutosaveInterval = "periodic_autosave_interval_sec"
         static let trainingHealthActions = "training_health_actions"
@@ -1275,6 +1275,17 @@ extension SessionCheckpointState {
                 found: foundSmoothing,
                 problem: "mode \"\(token)\" is not a known mode (fixed_total or per_move)",
                 replacement: currentSmoothing
+            ))
+        }
+
+        // Negative-advantage policy loss: the saved token must name a form.
+        if let token = negativeAdvantagePolicyLoss, NegativeAdvantagePolicyLoss(logToken: token) == nil {
+            findings.append(InvalidStoredSetting(
+                id: SavedSettingID.negativeAdvantagePolicyLoss,
+                name: "Negative-advantage policy loss",
+                found: token,
+                problem: "not a known form (\(NegativeAdvantagePolicyLoss.allCases.map(\.logToken).joined(separator: ", ")))",
+                replacement: current.negativeAdvantagePolicyLoss.logToken
             ))
         }
 
@@ -1343,6 +1354,24 @@ extension SessionCheckpointState {
 }
 
 extension SessionCheckpointState {
+    /// A session written before `negativeAdvantagePolicyLoss` carries the
+    /// Bool `signedAdvantageComplementCE`; convert it
+    /// (`LegacySignedAdvantageComplementCE.form`: true → complement CE,
+    /// false → off) and clear it so nothing writes it again. A session
+    /// carrying both is refused: nothing writes one.
+    mutating func convertLegacySignedAdvantageComplementCE() throws {
+        guard let enabled = signedAdvantageComplementCE else { return }
+        guard negativeAdvantagePolicyLoss == nil else {
+            throw SessionCheckpointError.legacyNegativeAdvantagePolicyLoss(
+                detail: "both negativeAdvantagePolicyLoss and the previous signedAdvantageComplementCE")
+        }
+        let form = LegacySignedAdvantageComplementCE.form(complementCEEnabled: enabled)
+        negativeAdvantagePolicyLoss = form.logToken
+        signedAdvantageComplementCE = nil
+        SessionLogger.shared.log("[RESUME] legacy setting in session.json converted: "
+            + "signedAdvantageComplementCE=\(enabled) -> negativeAdvantagePolicyLoss=\(form.logToken)")
+    }
+
     /// A session written before LR keyframes carries the previous schedule
     /// (`lrMomentumCycle` + `lrMomentumCycleEnvelope`); convert it to
     /// `lrSchedule`, exactly (`LRMomentumCycle.converting`, owner decision

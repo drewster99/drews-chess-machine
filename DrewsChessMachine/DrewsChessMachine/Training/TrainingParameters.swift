@@ -673,15 +673,23 @@ public enum MomentumCoeff: TrainingParameterKey {}
 )
 public enum SqrtBatchScalingLR: TrainingParameterKey {}
 
+// MARK: Negative-advantage policy loss
+//
+// Replaced the Bool `signed_advantage_complement_ce` (true -> 1 complement
+// CE, false -> 0 off), converted on every read of an old form
+// (`LegacySignedAdvantageComplementCE`). See `NegativeAdvantagePolicyLoss`.
+
 @TrainingParameter(
-    name: "Signed-Advantage Complement CE",
-    description: "When true, the policy gradient runs two cross-entropies — positive-advantage samples teach via standard smoothed CE on the played move, negative-advantage samples teach via a complementary smoothed CE that pushes mass off the played move toward the OTHER legal moves. Each contribution is bounded below by zero so the total policy loss stays bounded below by zero on both signs. When false, only positive-advantage samples teach the policy (legacy clamp-on regime) and negative samples contribute zero gradient. Note: complement-target entropy is structurally higher than positive-target entropy (the (1−ε) main mass spreads over (|legal|−1) cells vs 1 cell), so the per-position negative-branch loss magnitudes will look larger in [STATS] — that's the target geometry, not a divergence signal.",
-    default: true,
+    name: "Negative-Advantage Policy Loss",
+    description: "What a negative-advantage sample (the game went worse than the value head expected) trains the policy with, weighted by max(0, −A): 0 = off (negative samples contribute no policy gradient; only positive-advantage samples teach the policy), 1 = complement CE (cross-entropy against the complement target: the (1−ε) main mass spread evenly over the other legal moves, the label-smoothing share over all legal moves, so the played move keeps a floor; every other legal move is pulled toward the same mass), 2 = unlikelihood (−log of the probability the policy gives the other legal moves, Σ p over the legal moves except the played one, over the same unmasked softmax: lowers the played move and every illegal move, and raises each other legal move in proportion to its current probability, keeping their order; no label smoothing, and its pull on the played move fades as that move's probability falls). Both are bounded below by zero and zero on a position with one legal move. The negative branch's loss magnitude differs between 1 and 2 (the complement CE settles near the complement target's entropy, several nats; the unlikelihood near 0), so pLoss levels compare only within one form. A change takes effect on the next training step.",
+    default: 1,
+    range: 0...2,
     category: "Optimizer",
+    id: "negative_advantage_policy_loss",
     liveTunable: true,
-    absentValue: .preFeature(false)
+    absentValue: .preFeature(0)
 )
-public enum SignedAdvantageComplementCE: TrainingParameterKey {}
+public enum NegativeAdvantagePolicyLossParameter: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "LR Warmup Steps",
@@ -1717,7 +1725,9 @@ public extension TrainingParametersSnapshot {
     var learningRate: Double { value(for: LearningRate.self) }
     var momentumCoeff: Double { value(for: MomentumCoeff.self) }
     var sqrtBatchScalingLR: Bool { value(for: SqrtBatchScalingLR.self) }
-    var signedAdvantageComplementCE: Bool { value(for: SignedAdvantageComplementCE.self) }
+    var negativeAdvantagePolicyLoss: NegativeAdvantagePolicyLoss {
+        NegativeAdvantagePolicyLoss(persistedRawValue: value(for: NegativeAdvantagePolicyLossParameter.self))
+    }
     var lrWarmupSteps: Int { value(for: LRWarmupSteps.self) }
     var drawPenalty: Double { value(for: DrawPenalty.self) }
     var selfPlayStartTau: Double { value(for: SelfPlayStartTau.self) }
@@ -1883,7 +1893,15 @@ public final class TrainingParameters {
     public var learningRate: Double { didSet { if !Self.commitAssignment(LearningRate.self, value: learningRate, oldValue: oldValue) { learningRate = oldValue } } }
     public var momentumCoeff: Double { didSet { if !Self.commitAssignment(MomentumCoeff.self, value: momentumCoeff, oldValue: oldValue) { momentumCoeff = oldValue } } }
     public var sqrtBatchScalingLR: Bool { didSet { if !Self.commitAssignment(SqrtBatchScalingLR.self, value: sqrtBatchScalingLR, oldValue: oldValue) { sqrtBatchScalingLR = oldValue } } }
-    public var signedAdvantageComplementCE: Bool { didSet { if !Self.commitAssignment(SignedAdvantageComplementCE.self, value: signedAdvantageComplementCE, oldValue: oldValue) { signedAdvantageComplementCE = oldValue } } }
+    /// Stored as the enum; the `didSet` unwraps it at the persistence
+    /// boundary, like `policyLabelSmoothingMode`.
+    public var negativeAdvantagePolicyLoss: NegativeAdvantagePolicyLoss {
+        didSet {
+            if !Self.commitAssignment(NegativeAdvantagePolicyLossParameter.self, value: negativeAdvantagePolicyLoss.rawValue, oldValue: oldValue.rawValue) {
+                negativeAdvantagePolicyLoss = oldValue
+            }
+        }
+    }
     public var lrWarmupSteps: Int { didSet { if !Self.commitAssignment(LRWarmupSteps.self, value: lrWarmupSteps, oldValue: oldValue) { lrWarmupSteps = oldValue } } }
     public var drawPenalty: Double { didSet { if !Self.commitAssignment(DrawPenalty.self, value: drawPenalty, oldValue: oldValue) { drawPenalty = oldValue } } }
     public var selfPlayStartTau: Double { didSet { if !Self.commitAssignment(SelfPlayStartTau.self, value: selfPlayStartTau, oldValue: oldValue) { selfPlayStartTau = oldValue } } }
@@ -2016,7 +2034,9 @@ public final class TrainingParameters {
         self.learningRate = Self.read(LearningRate.self)
         self.momentumCoeff = Self.read(MomentumCoeff.self)
         self.sqrtBatchScalingLR = Self.read(SqrtBatchScalingLR.self)
-        self.signedAdvantageComplementCE = Self.read(SignedAdvantageComplementCE.self)
+        self.negativeAdvantagePolicyLoss = NegativeAdvantagePolicyLoss(
+            persistedRawValue: Self.read(NegativeAdvantagePolicyLossParameter.self)
+        )
         self.lrWarmupSteps = Self.read(LRWarmupSteps.self)
         self.drawPenalty = Self.read(DrawPenalty.self)
         self.selfPlayStartTau = Self.read(SelfPlayStartTau.self)
@@ -2129,7 +2149,7 @@ public final class TrainingParameters {
         v[LearningRate.id] = LearningRate.encode(learningRate)
         v[MomentumCoeff.id] = MomentumCoeff.encode(momentumCoeff)
         v[SqrtBatchScalingLR.id] = SqrtBatchScalingLR.encode(sqrtBatchScalingLR)
-        v[SignedAdvantageComplementCE.id] = SignedAdvantageComplementCE.encode(signedAdvantageComplementCE)
+        v[NegativeAdvantagePolicyLossParameter.id] = NegativeAdvantagePolicyLossParameter.encode(negativeAdvantagePolicyLoss.rawValue)
         v[LRWarmupSteps.id] = LRWarmupSteps.encode(lrWarmupSteps)
         v[DrawPenalty.id] = DrawPenalty.encode(drawPenalty)
         v[SelfPlayStartTau.id] = SelfPlayStartTau.encode(selfPlayStartTau)
@@ -2303,8 +2323,11 @@ public final class TrainingParameters {
             try MomentumCoeff.definition.validate(raw); momentumCoeff = try MomentumCoeff.decode(raw)
         case SqrtBatchScalingLR.id:
             try SqrtBatchScalingLR.definition.validate(raw); sqrtBatchScalingLR = try SqrtBatchScalingLR.decode(raw)
-        case SignedAdvantageComplementCE.id:
-            try SignedAdvantageComplementCE.definition.validate(raw); signedAdvantageComplementCE = try SignedAdvantageComplementCE.decode(raw)
+        case NegativeAdvantagePolicyLossParameter.id:
+            try NegativeAdvantagePolicyLossParameter.definition.validate(raw)
+            negativeAdvantagePolicyLoss = NegativeAdvantagePolicyLoss(
+                persistedRawValue: try NegativeAdvantagePolicyLossParameter.decode(raw)
+            )
         case LRWarmupSteps.id:
             try LRWarmupSteps.definition.validate(raw); lrWarmupSteps = try LRWarmupSteps.decode(raw)
         case DrawPenalty.id:
@@ -2512,6 +2535,7 @@ public final class TrainingParameters {
     /// untouched until the user resets it.
     private nonisolated static func read<K: TrainingParameterKey>(_ key: K.Type) -> K.Value {
         _ = legacyLRScheduleSettingsConverted
+        _ = legacySignedAdvantageComplementCESettingConverted
         switch inspectStored(key, in: .standard) {
         case .absent:
             return K.declaredDefault
@@ -2521,6 +2545,49 @@ public final class TrainingParameters {
             recordInvalidStoredValue(finding)
             return K.declaredDefault
         }
+    }
+
+    /// The GUI's stored `signed_advantage_complement_ce` (the Bool that
+    /// `negative_advantage_policy_loss` replaced), converted once per process
+    /// before any setting is read, so a user who had turned the complement
+    /// CE off keeps it off.
+    private nonisolated static let legacySignedAdvantageComplementCESettingConverted: Void = {
+        convertLegacySignedAdvantageComplementCESetting(in: .standard)
+    }()
+
+    /// The conversion `legacySignedAdvantageComplementCESettingConverted`
+    /// runs, on any defaults (tests use a private suite). Only when the new
+    /// key is not stored and the old one is: a stored true/false converts
+    /// through `LegacySignedAdvantageComplementCE.form` and is stored under
+    /// the new key. A stored entry the previous build could not read, or no
+    /// entry, ran the previous default (`true`), which is the new key's
+    /// declared default (`complement_ce`), so nothing is stored. The old
+    /// entry is left in place, never deleted; once the new key is stored it
+    /// alone is read.
+    nonisolated static func convertLegacySignedAdvantageComplementCESetting(in defaults: UserDefaults) {
+        let oldID = LegacySignedAdvantageComplementCE.id
+        guard defaults.object(forKey: NegativeAdvantagePolicyLossParameter.id) == nil,
+              let object = defaults.object(forKey: oldID) else { return }
+        let parsed: ParameterValue?
+        if let number = object as? NSNumber {
+            do {
+                parsed = try ParameterValue(jsonValue: number, id: oldID)
+            } catch {
+                parsed = nil
+            }
+        } else {
+            parsed = nil
+        }
+        guard case .bool(let enabled) = parsed else {
+            LegacyLRScheduleKeys.logNote("[PARAM] legacy \(oldID) setting not converted: it holds \(object), "
+                + "not a true/false value, so the previous build ran its default (true), the declared "
+                + "\(NegativeAdvantagePolicyLossParameter.id) default (the old entry is left in place)")
+            return
+        }
+        let form = LegacySignedAdvantageComplementCE.form(complementCEEnabled: enabled)
+        store(.int(form.rawValue), forKey: NegativeAdvantagePolicyLossParameter.id, in: defaults)
+        LegacyLRScheduleKeys.logNote("[PARAM] legacy setting converted: \(oldID)=\(enabled) -> "
+            + "\(NegativeAdvantagePolicyLossParameter.id)=\(form.logToken) (the old entry is left in place)")
     }
 
     /// The GUI's stored settings from before LR keyframes, converted once
@@ -3085,7 +3152,7 @@ public final class TrainingParameters {
         LearningRate.self,
         MomentumCoeff.self,
         SqrtBatchScalingLR.self,
-        SignedAdvantageComplementCE.self,
+        NegativeAdvantagePolicyLossParameter.self,
         LRWarmupSteps.self,
         DrawPenalty.self,
         SelfPlayStartTau.self,

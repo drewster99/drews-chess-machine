@@ -157,7 +157,7 @@ final class SessionParameterResumeTests: XCTestCase {
         XCTAssertEqual(SessionCheckpointState.resolvedPolicyLabelSmoothingEpsilon(saved: nil), 0)
         XCTAssertEqual(SessionCheckpointState.resolvedValueLabelSmoothingEpsilon(saved: nil), 0)
         XCTAssertEqual(SessionCheckpointState.resolvedPolicyLabelSmoothingMode(saved: nil), .fixedTotal)
-        XCTAssertFalse(SessionCheckpointState.resolvedSignedAdvantageComplementCE(savedFlag: nil))
+        XCTAssertEqual(SessionCheckpointState.resolvedNegativeAdvantagePolicyLoss(saved: nil), .off)
         XCTAssertEqual(SessionCheckpointState.resolvedMaxPliesFromAnyOneGame(saved: nil),
                        MaxPliesFromAnyOneGame.definition.intRange?.max)
     }

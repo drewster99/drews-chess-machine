@@ -182,7 +182,7 @@ enum TrainVsUciSession {
             selfPlayDelayMs: p.selfPlayDelayMs,
             lrWarmupSteps: hp.lrWarmupSteps,
             sqrtBatchScalingForLR: hp.sqrtBatchScalingForLR,
-            signedAdvantageComplementCE: hp.useSignedAdvantageComplementCE,
+            negativeAdvantagePolicyLoss: hp.negativeAdvantagePolicyLoss.logToken,
             replayBufferMinPositionsBeforeTraining: p.replayBufferMinPositionsBeforeTraining,
             arenaAutoIntervalSec: p.arenaAutoIntervalSec,
             candidateProbeIntervalSec: p.candidateProbeIntervalSec,

@@ -266,7 +266,7 @@ struct TrainingSettingsPopover: View {
                     warmupText: $model.warmupText,
                     momentumText: $model.momentumText,
                     sqrtBatchScalingValue: $model.sqrtBatchScalingValue,
-                    signedAdvantageComplementCEValue: $model.signedAdvantageComplementCEValue,
+                    negativeAdvantagePolicyLossValue: $model.negativeAdvantagePolicyLossValue,
                     entropyText: $model.entropyText,
                     illegalMassWeightText: $model.illegalMassWeightText,
                     gradClipText: $model.gradClipText,
@@ -744,12 +744,56 @@ private struct CyclingTab: View {
 
 // MARK: - Optimizer tab
 
+/// The negative-advantage policy loss picker and a one-line explanation of
+/// the selected form. Live: a change applies on the next training step.
+private struct NegativeAdvantagePolicyLossRow: View {
+    @Binding var selection: NegativeAdvantagePolicyLoss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Text("Negative-A policy loss:")
+                    .frame(width: 160, alignment: .trailing)
+                Picker("", selection: $selection) {
+                    ForEach(NegativeAdvantagePolicyLoss.allCases, id: \.self) { form in
+                        Text(form.displayName).tag(form)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                Text("")
+                    .frame(width: 160, alignment: .trailing)
+                Text(Self.explanation(of: selection))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .help("What a sample whose game went worse than the value head expected teaches the policy. Applies on the next training step.")
+    }
+
+    private static func explanation(of form: NegativeAdvantagePolicyLoss) -> String {
+        switch form {
+        case .off:
+            return "Negative-advantage samples teach the policy nothing."
+        case .complementCE:
+            return "Push mass off the played move toward an even spread over the other legal moves."
+        case .unlikelihood:
+            return "Push mass off the played move; other legal moves rise in proportion to their probability."
+        }
+    }
+}
+
 private struct OptimizerTab: View {
     @Binding var lrText: String
     @Binding var warmupText: String
     @Binding var momentumText: String
     @Binding var sqrtBatchScalingValue: Bool
-    @Binding var signedAdvantageComplementCEValue: Bool
+    @Binding var negativeAdvantagePolicyLossValue: NegativeAdvantagePolicyLoss
     @Binding var entropyText: String
     @Binding var illegalMassWeightText: String
     @Binding var gradClipText: String
@@ -865,13 +909,7 @@ private struct OptimizerTab: View {
                             .toggleStyle(.checkbox)
                         Spacer()
                     }
-                    HStack(spacing: 8) {
-                        Text("")
-                            .frame(width: 160, alignment: .trailing)
-                        Toggle("Complement CE (negative-A)", isOn: $signedAdvantageComplementCEValue)
-                            .toggleStyle(.checkbox)
-                        Spacer()
-                    }
+                    NegativeAdvantagePolicyLossRow(selection: $negativeAdvantagePolicyLossValue)
                 }
                 .padding(.leading, 20)
             }

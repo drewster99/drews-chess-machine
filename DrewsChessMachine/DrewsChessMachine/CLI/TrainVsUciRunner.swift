@@ -468,7 +468,7 @@ enum TrainVsUciRunner {
                 Double(hp.valueLabelSmoothingEpsilon), Double(hp.dropoutRate),
                 hp.lrWarmupSteps, p.replayBufferCapacity
             )
-            + " complementCE=\(hp.useSignedAdvantageComplementCE ? "on" : "off")"
+            + " negAdvLoss=\(hp.negativeAdvantagePolicyLoss.logToken)"
             + " sqrtBatchLR=\(hp.sqrtBatchScalingForLR ? "on" : "off")"
             + " batchStats=\(hp.batchStatsInterval) klProbe=\(hp.klProbeInterval)"
             + " stepLineSec=" + String(format: "%g", p.parameters.stepLineIntervalSec)

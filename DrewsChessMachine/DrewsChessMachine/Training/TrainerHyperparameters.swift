@@ -50,7 +50,9 @@ struct TrainerHyperparameters: Sendable, Equatable {
     var policyLabelSmoothingPerMoveCap: Float
     var valueLabelSmoothingEpsilon: Float
     var momentumCoeff: Float
-    var useSignedAdvantageComplementCE: Bool
+    /// What negative-advantage samples train the policy with (live: fed
+    /// to the graph each step).
+    var negativeAdvantagePolicyLoss: NegativeAdvantagePolicyLoss
     var sqrtBatchScalingForLR: Bool
     var lrWarmupSteps: Int
     var batchStatsInterval: Int
@@ -81,7 +83,7 @@ struct TrainerHyperparameters: Sendable, Equatable {
         policyLabelSmoothingPerMoveCap = Float(parameters.policyLabelSmoothingPerMoveCap)
         valueLabelSmoothingEpsilon = Float(parameters.valueLabelSmoothingEpsilon)
         momentumCoeff = Float(parameters.momentumCoeff)
-        useSignedAdvantageComplementCE = parameters.signedAdvantageComplementCE
+        negativeAdvantagePolicyLoss = parameters.negativeAdvantagePolicyLoss
         sqrtBatchScalingForLR = parameters.sqrtBatchScalingLR
         lrWarmupSteps = parameters.lrWarmupSteps
         batchStatsInterval = parameters.batchStatsInterval
@@ -117,7 +119,7 @@ struct TrainerHyperparameters: Sendable, Equatable {
         policyLabelSmoothingPerMoveCap = trainer.policyLabelSmoothingPerMoveCap
         valueLabelSmoothingEpsilon = trainer.valueLabelSmoothingEpsilon
         momentumCoeff = trainer.momentumCoeff
-        useSignedAdvantageComplementCE = trainer.useSignedAdvantageComplementCE
+        negativeAdvantagePolicyLoss = trainer.negativeAdvantagePolicyLoss
         sqrtBatchScalingForLR = trainer.sqrtBatchScalingForLR
         lrWarmupSteps = trainer.lrWarmupSteps
         batchStatsInterval = trainer.batchStatsInterval
@@ -146,7 +148,7 @@ struct TrainerHyperparameters: Sendable, Equatable {
         trainer.policyLabelSmoothingPerMoveCap = policyLabelSmoothingPerMoveCap
         trainer.valueLabelSmoothingEpsilon = valueLabelSmoothingEpsilon
         trainer.momentumCoeff = momentumCoeff
-        trainer.useSignedAdvantageComplementCE = useSignedAdvantageComplementCE
+        trainer.negativeAdvantagePolicyLoss = negativeAdvantagePolicyLoss
         trainer.sqrtBatchScalingForLR = sqrtBatchScalingForLR
         trainer.lrWarmupSteps = lrWarmupSteps
         trainer.batchStatsInterval = batchStatsInterval
@@ -186,7 +188,7 @@ extension ChessTrainer {
             policyLabelSmoothingPerMoveCap: hyperparameters.policyLabelSmoothingPerMoveCap,
             valueLabelSmoothingEpsilon: hyperparameters.valueLabelSmoothingEpsilon,
             momentumCoeff: hyperparameters.momentumCoeff,
-            useSignedAdvantageComplementCE: hyperparameters.useSignedAdvantageComplementCE,
+            negativeAdvantagePolicyLoss: hyperparameters.negativeAdvantagePolicyLoss,
             sqrtBatchScalingForLR: hyperparameters.sqrtBatchScalingForLR,
             lrWarmupSteps: hyperparameters.lrWarmupSteps,
             arch: arch,

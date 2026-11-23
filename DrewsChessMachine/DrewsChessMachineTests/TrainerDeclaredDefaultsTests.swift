@@ -24,7 +24,7 @@ final class TrainerDeclaredDefaultsTests: XCTestCase {
         XCTAssertEqual(trainer.policyLabelSmoothingMode.rawValue, PolicyLabelSmoothingModeParameter.declaredDefault)
         XCTAssertEqual(trainer.policyLabelSmoothingPerMove, Float(PolicyLabelSmoothingPerMove.declaredDefault))
         XCTAssertEqual(trainer.policyLabelSmoothingPerMoveCap, Float(PolicyLabelSmoothingPerMoveCap.declaredDefault))
-        XCTAssertEqual(trainer.useSignedAdvantageComplementCE, SignedAdvantageComplementCE.declaredDefault)
+        XCTAssertEqual(trainer.negativeAdvantagePolicyLoss.rawValue, NegativeAdvantagePolicyLossParameter.declaredDefault)
         XCTAssertEqual(trainer.sqrtBatchScalingForLR, SqrtBatchScalingLR.declaredDefault)
     }
 }

@@ -71,7 +71,14 @@ struct LineageRecord: Codable, Equatable, Sendable {
     /// resume) keeps that record's snapshot word for word, nine old keys
     /// included, so its hash still names it: a schema-5 record's snapshot
     /// may hold either form, and every reader converts the old one.
-    static let currentSchema = 5
+    /// Schema 6 (negative-advantage policy loss) likewise adds no field: its
+    /// snapshot carries `negative_advantage_policy_loss` in place of the Bool
+    /// `signed_advantage_complement_ce`; an older build would read the
+    /// missing Bool as its pre-feature value (complement CE off) whatever
+    /// the run trained, so the bump makes it refuse the record instead. A
+    /// carried snapshot keeps its words; readers convert the Bool
+    /// (`LegacySignedAdvantageComplementCE`).
+    static let currentSchema = 6
     /// The oldest schema this build reads (owner decision O-23). Schema 1
     /// stays refused.
     static let oldestDecodableSchema = 2

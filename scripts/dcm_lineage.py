@@ -11,7 +11,7 @@ registry used to carry as hand-entered per-segment bases (`cumstep_base`,
 from the files instead.
 
 Every rule about reading a file is the app's: whether a file has a record (by
-format version), whether the record decodes at its schema (2 ... 5), what a
+format version), whether the record decodes at its schema (2 ... 6), what a
 header's `training_step` means (`ModelFileStepReading`), and how the puzzle
 test-set results read. This module asks the app (`dcm_arch.describe_files`,
 `--describe-model`, header-only and batched) and implements none of them; a file
