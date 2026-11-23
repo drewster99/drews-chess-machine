@@ -2287,6 +2287,34 @@
         }
       ],
       "trainset": "elite-2021_2025"
+    },
+    "relitecyc_unlik": {
+      "label": "relitecyc_unlik — R-elitecyc fork @384,964 with the unlikelihood negative-advantage loss — 8.27M",
+      "color": "#e6ab02",
+      "n_blocks": 3,
+      "params": 8271279,
+      "arch_summary": "R-elitecyc-unlik: exact resume of R-elitecyc at 384,964 with the main line's decay schedule and negative_advantage_policy_loss = unlikelihood; batches identical to R-elitecyc's. Shares R-elitecyc's step axis. Build 2701, to 1,000,000.",
+      "arch_stem": "basic24 → stem 5×5→128",
+      "arch_blocks": "3× @128, 9×9+9×9, no SE, SiLU/pre, no ReZero, clean_add, LN-out",
+      "arch_heads": "policy intermediate_conv (128) · value WDL(24→FC128) · SiLU heads · fp32 policy tail",
+      "out_model": "20261123-zlra-elitecyc-unlik-latest.safetensors",
+      "frozen_glob": "20261123-zlra-elitecyc-unlik-latest-step*-frozen.safetensors",
+      "segments": [
+        {
+          "log": "dcm_log_20261122-235822.txt",
+          "label": "fork of R-elitecyc at 384,964 (unlikelihood loss)",
+          "model_id": "20261123-1-bzUb",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "0E29BF0D-EE1A-4047-A4FC-6F37874F17B2",
+          "date": "20261122",
+          "cumstep_base": 384964,
+          "games_base": 37772534,
+          "elapsed_base_sec": 759235.9555639029,
+          "wall_base_sec": 791765.2441489697,
+          "device": "M5 Max"
+        }
+      ],
+      "trainset": "elite-2021_2025"
     }
   },
   "excluded_lineage_runs": {
