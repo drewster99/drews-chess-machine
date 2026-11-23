@@ -37,6 +37,7 @@ R-replay stopped at trainer step 86,398 (2026-10-11, SIGINT save; branched to R-
 
 ## Finished
 
+- 2026-11-22 11:59 → 21:24 — **Policy label smoothing mode 0 vs mode 1 vs none** (`20261122-label-smoothing-mode/`, E-0030): 6×3×3@64 on the elite corpus, three paired arms to 40,000 (segment 1 from 9,000 on build 2695 with a 200k buffer). Mode 1 (per move) vs mode 0 (fixed total): +0.3 ± 3.5 pElo, no difference. No policy smoothing beat ε 0.1 at all 40 checkpoints, +17 pElo / −0.042 NLL. R-elitecyc-fp32fix was stopped for it at 456,328 (hold file set).
 - 2026-11-14 00:31 → 14:05 — **R-elitecyc-fp32fix stopped at 398,310** (owner; SIGINT abort save). At 390,000 it matched R-elitecyc on the large puzzle set (1764.4 vs 1765.1 pElo), so the workaround fixes fp32 training; stopped because fp32 ran ~3.3× slower than bf16 (median 3.95 s per step). `20261008-zlra-selfplay-lr/analysis-fp32/`.
 - 2026-11-13 23:2x — **R-elitecyc-fp32 stopped at 413,778** (owner). 330–380 pElo behind R-elitecyc at 390k–410k; cause: MPSGraph fp32 conv weight gradient wrong past 2³¹ elements when the output has another consumer (`20261008-zlra-selfplay-lr/analysis-fp32/`). Not a measurement of fp32 training.
 

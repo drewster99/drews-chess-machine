@@ -557,5 +557,23 @@ window.DCM_EXPERIMENTS = [
    "E-0026"
   ],
   "supersededBy": null
+ },
+ {
+  "id": "E-0030",
+  "date": "2026-11-22",
+  "file": "E-0030_2026-11-22_label-smoothing-mode.html",
+  "title": "Policy label smoothing: per-move vs fixed-total vs none",
+  "status": "complete",
+  "tags": [
+   "label-smoothing",
+   "policy-head",
+   "basic25"
+  ],
+  "takeaway": "With the arms paired on identical batches, policy label smoothing mode 1 (per move) and mode 0 (fixed total) were indistinguishable over 40,000 steps (+0.3 ± 0.6 pElo), while no policy smoothing beat ε 0.1 at every one of 40 checkpoints (+17 pElo, −0.042 NLL) — drop policy smoothing, or test ε ≤ 0.03, on the next run.",
+  "related": [
+   "E-0002",
+   "E-0003"
+  ],
+  "supersededBy": null
  }
 ];
