@@ -1,6 +1,6 @@
 # 2026-11-23 — Unlikelihood negative-advantage loss: fork of R-elitecyc at 384,964
 
-**Status:** stopped by the owner 2026-11-24 14:15 CST at trainer step 504,514 (clean SIGINT; final save `20261123-zlra-elitecyc-unlik-latest-step504514.safetensors`, results `results-seg0.json`). Launched 2026-11-22 23:58 CST.
+**Status:** running (segment 1, resumed EXACT 2026-11-24 18:12 CST from 504,514 via `launch-seg1.sh`, log `dcm_log_20261124-181200.txt`, target 1,000,000). Segment 0: launched 2026-11-22 23:58 CST, stopped by the owner 2026-11-24 14:15 CST at 504,514 (clean SIGINT; `results-seg0.json`).
 
 ## Question
 
