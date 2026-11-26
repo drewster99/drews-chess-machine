@@ -2325,6 +2325,19 @@
           "elapsed_base_sec": 889577.53325212,
           "wall_base_sec": 929603.1700810194,
           "device": "M5 Max"
+        },
+        {
+          "log": "dcm_log_20261126-155001.txt",
+          "label": "exact resume at 637,457 after owner stop on battery (unlikelihood loss)",
+          "model_id": "20261126-1-kRxA",
+          "lineage_run_id": "E709F4EB-1D95-4166-90FA-F0D31002BB89",
+          "segment_id": "FDDA2BBD-448A-40FA-AF69-23C7BDAB677A",
+          "date": "20261126",
+          "cumstep_base": 637457,
+          "games_base": 62558433,
+          "elapsed_base_sec": 1041234.16741395,
+          "wall_base_sec": 1089843.0933670998,
+          "device": "M5 Max"
         }
       ],
       "trainset": "elite-2021_2025"
