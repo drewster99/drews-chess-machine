@@ -15,7 +15,7 @@ HI = int(sys.argv[2]) if len(sys.argv) > 2 else 10**9
 
 FORK = "/Users/andrew/cursor/drews-chess-machine/experiments/20261123-unlikelihood-fork"
 # Session logs of the fork's segments, in order (stdout is block-buffered).
-FORK_LOGS = ["dcm_log_20261122-235822.txt", "dcm_log_20261124-181200.txt"]
+FORK_LOGS = ["dcm_log_20261122-235822.txt", "dcm_log_20261124-181200.txt", "dcm_log_20261126-155001.txt"]
 BIN = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/FrozenBuilds/DCM-2701-e5e79ab2.app/Contents/MacOS/DrewsChessMachine")
 LARGE = os.path.expanduser("~/Library/Application Support/DrewsChessMachine/OpsScripts/lichess_probes_large.json")
 
