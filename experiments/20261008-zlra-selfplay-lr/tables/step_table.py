@@ -100,7 +100,7 @@ if which=="fp32fix": replay(["dcm_log_20261114-003038.txt","dcm_log_20261114-154
 if which=="lsA": replay(["dcm_log_20261122-115904-2.txt","dcm_log_20261122-153853.txt"],"Models/20261122-lsmode-A-*step*.safetensors")
 if which=="lsB": replay(["dcm_log_20261122-115904-3.txt","dcm_log_20261122-153923-2.txt"],"Models/20261122-lsmode-B-*step*.safetensors")
 if which=="lsC": replay(["dcm_log_20261122-115904.txt","dcm_log_20261122-153923.txt"],"Models/20261122-lsmode-C-*step*.safetensors")
-if which=="unlik": replay(["dcm_log_20261122-235822.txt","dcm_log_20261124-181200.txt","dcm_log_20261126-155001.txt"],"Models/20261123-zlra-elitecyc-unlik-latest-step*.safetensors")
+if which=="unlik": replay(["dcm_log_20261122-235822.txt","dcm_log_20261124-181200.txt","dcm_log_20261126-155001.txt","dcm_log_20261127-192648.txt"],"Models/20261123-zlra-elitecyc-unlik-latest-step*.safetensors")
 if which=="anneal": replay("dcm_log_20261025-142424.txt","Models/20261025-zlra-elitecyc-anneal-latest-step*.safetensors")
 if which=="elitefresh": replay(["dcm_log_20261012-153151.txt","dcm_log_20261014-201112-2.txt","dcm_log_20261017-145133.txt","dcm_log_20261017-201253-2.txt","dcm_log_20261017-235728-2.txt","dcm_log_20261018-142539.txt","dcm_log_20261018-190000.txt","dcm_log_20261019-230141.txt","dcm_log_20261023-072631.txt","dcm_log_20261024-224808-3.txt","dcm_log_20261028-213703.txt","dcm_log_20261029-230847.txt","dcm_log_20261101-193002.txt"],"Models/20261012-zlra-elitefresh-latest-step*.safetensors")
 if which=="fixed": gui(["dcm_log_20261008-094623.txt","dcm_log_20261010-113351.txt","dcm_log_20261010-224411.txt","dcm_log_20261012-161833.txt","dcm_log_20261014-140421.txt","dcm_log_20261015-102200.txt","dcm_log_20261024-023842.txt"],"A2599216")
